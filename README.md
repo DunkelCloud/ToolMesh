@@ -1,0 +1,137 @@
+# ToolMesh
+
+> The secure, durable execution layer between AI agents and enterprise infrastructure.
+
+[![Go](https://img.shields.io/badge/Go-1.24+-00ADD8?style=flat&logo=go)](https://go.dev)
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+[![CI](https://github.com/DunkelCloud/ToolMesh/actions/workflows/ci.yml/badge.svg)](https://github.com/DunkelCloud/ToolMesh/actions/workflows/ci.yml)
+
+## The Problem
+
+MCP gateways pass tool calls straight through. That creates real risks in production:
+
+- **Confused Deputy** — an LLM can invoke any tool with any user's privileges
+- **Credential Leakage** — API keys end up in prompts, logs, and model context
+- **No Durability** — if a tool call fails mid-flight, there is no retry or audit trail
+- **No Output Control** — raw backend responses flow directly to the model without filtering
+
+ToolMesh solves this by sitting between the AI agent and your MCP servers, enforcing authorization, injecting credentials securely, providing durable execution, and gating output.
+
+## The Six Pillars
+
+| Pillar | What it does | Backed by |
+|--------|-------------|-----------|
+| **Code Mode** | LLMs write typed JS instead of error-prone JSON | AST-parsed tool calls |
+| **Temporal** | Durable execution with retry, timeout, audit trail | Temporal.io |
+| **OpenFGA** | Fine-grained authorization (user → plan → tool) | OpenFGA |
+| **MCP Aggregation** | Connect any number of external MCP servers | Go MCP SDK |
+| **Credential Store** | Inject secrets at execution time, never in prompts | Env-based (Phase 1) |
+| **Output Gate** | JavaScript policies filter and validate responses | goja |
+
+## Quickstart
+
+```bash
+# Clone
+git clone https://github.com/DunkelCloud/ToolMesh.git
+cd ToolMesh
+
+# Configure
+cp .env.example .env
+# Edit .env with your settings
+
+# Start all services
+docker compose up -d
+
+# Bootstrap OpenFGA (authorization model + example tuples)
+docker compose exec toolmesh /tm-bootstrap
+
+# Connect from Claude Desktop or any MCP client
+# MCP endpoint: http://localhost:8080/mcp
+```
+
+### Connect to Claude Desktop
+
+Add to your Claude Desktop MCP config:
+
+```json
+{
+  "mcpServers": {
+    "toolmesh": {
+      "url": "http://localhost:8080/mcp"
+    }
+  }
+}
+```
+
+### Connect to Claude.ai (Custom Connector)
+
+ToolMesh supports OAuth 2.1 for remote access. Set `TOOLMESH_AUTH_PASSWORD` in your `.env` and use the public URL as the MCP endpoint.
+
+## Configuration
+
+See [docs/configuration.md](docs/configuration.md) for all environment variables.
+
+## Architecture
+
+See [docs/architecture.md](docs/architecture.md) for the full architecture documentation.
+
+```mermaid
+graph LR
+    Agent[AI Agent] -->|MCP| TM[ToolMesh]
+    TM -->|AuthZ| FGA[OpenFGA]
+    TM -->|Durable Exec| Temporal
+    TM -->|Credentials| CS[Credential Store]
+    TM -->|MCP Client| B1[MCP Server 1]
+    TM -->|MCP Client| B2[MCP Server 2]
+    TM -->|Output Gate| Policy[JS Policies]
+```
+
+## Adding an External MCP Server
+
+Create or edit `config/backends.yaml`:
+
+```yaml
+backends:
+  - name: memorizer
+    transport: http
+    url: "https://memorizer.example.com/mcp"
+    api_key_env: "MEMORIZER_API_KEY"
+
+  - name: local-tools
+    transport: stdio
+    command: "./my-mcp-server"
+    args: ["--port", "0"]
+```
+
+Set the credential as an environment variable:
+
+```bash
+CREDENTIAL_MEMORIZER_API_KEY=sk-mem-xxxxx
+```
+
+Tools from each backend are exposed with a prefix: `memorizer:retrieve_knowledge`, `local-tools:my_tool`.
+
+## Code Mode
+
+Instead of raw JSON tool calls, LLMs can use typed JavaScript:
+
+```javascript
+// List available tools with TypeScript definitions
+const tools = await toolmesh.list_tools();
+
+// Execute tools with typed parameters
+const result = await toolmesh.memorizer_retrieve_knowledge({
+  query: "project architecture",
+  top_k: 5
+});
+```
+
+ToolMesh parses the code, extracts tool calls, and routes them through the full execution pipeline (AuthZ → Credentials → Backend → Output Gate).
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## License
+
+Apache 2.0 — Copyright 2025 [Dunkel Cloud GmbH](https://dunkel.cloud)

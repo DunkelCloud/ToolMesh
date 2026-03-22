@@ -1,0 +1,141 @@
+services:
+  toolmesh:
+    build: .
+    ports:
+      - "${TOOLMESH_PORT:-8080}:8080"
+    env_file: .env
+    depends_on:
+      temporal:
+        condition: service_healthy
+      openfga:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      everything:
+        condition: service_started
+    volumes:
+      - ./config:/app/config:ro
+      - ./internal/gate/policies:/app/policies:ro
+
+  # Demo MCP backend — official MCP reference server with 17 tools
+  # (echo, get-sum, get-tiny-image, etc.)
+  # Runs in SSE/HTTP mode on port 3001.
+  everything:
+    image: mcp/everything
+    entrypoint: ["node", "dist/sse.js"]
+    ports:
+      - "3001:3001"
+
+  temporal:
+    image: temporalio/auto-setup:latest
+    ports:
+      - "7233:7233"
+    environment:
+      - DB=postgres12
+      - DB_PORT=5432
+      - POSTGRES_USER=${TEMPORAL_DB_USER:-temporal}
+      - POSTGRES_PWD=${TEMPORAL_DB_PASSWORD:-temporal}
+      - POSTGRES_SEEDS=postgres
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "temporal", "operator", "cluster", "health", "--address", "temporal:7233"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 30s
+
+  temporal-ui:
+    image: temporalio/ui:latest
+    ports:
+      - "8233:8080"
+    environment:
+      - TEMPORAL_ADDRESS=temporal:7233
+
+  openfga-migrate:
+    image: openfga/openfga:latest
+    command: migrate
+    environment:
+      - OPENFGA_DATASTORE_ENGINE=mysql
+      - OPENFGA_DATASTORE_URI=${OPENFGA_DB_USER:-openfga}:${OPENFGA_DB_PASSWORD:-openfga}@tcp(mysql:3306)/${OPENFGA_DB_NAME:-openfga}?parseTime=true
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+  openfga:
+    image: openfga/openfga:latest
+    ports:
+      - "8081:8080"
+      - "8082:8081"
+    command: run
+    environment:
+      - OPENFGA_DATASTORE_ENGINE=mysql
+      - OPENFGA_DATASTORE_URI=${OPENFGA_DB_USER:-openfga}:${OPENFGA_DB_PASSWORD:-openfga}@tcp(mysql:3306)/${OPENFGA_DB_NAME:-openfga}?parseTime=true
+    depends_on:
+      openfga-migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/grpc_health_probe", "-addr=:8081"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./init-db.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  mysql:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-rootpassword}
+      MYSQL_DATABASE: ${OPENFGA_DB_NAME:-openfga}
+      MYSQL_USER: ${OPENFGA_DB_USER:-openfga}
+      MYSQL_PASSWORD: ${OPENFGA_DB_PASSWORD:-openfga}
+    volumes:
+      - mysqldata:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # --- Reverse proxy (uncomment for HTTPS / Claude.ai access) ---
+  # caddy:
+  #   image: caddy:2-alpine
+  #   ports:
+  #     - "443:443"
+  #     - "80:80"
+  #   volumes:
+  #     - ./Caddyfile:/etc/caddy/Caddyfile:ro
+  #     - caddy_data:/data
+  #     - caddy_config:/config
+  #   depends_on:
+  #     - toolmesh
+
+volumes:
+  pgdata:
+  mysqldata:
+  # caddy_data:
+  # caddy_config:

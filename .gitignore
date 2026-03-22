@@ -1,0 +1,38 @@
+# Binaries (only in build output, not source dirs)
+/toolmesh
+/tm-bootstrap
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Build output
+/bin/
+/dist/
+
+# Test
+*.test
+*.out
+coverage.html
+coverage.txt
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment (contains secrets)
+.env
+
+# Vendor (use go mod)
+/vendor/
+
+# Docker
+docker-compose.override.yml

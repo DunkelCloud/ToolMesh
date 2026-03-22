@@ -1,0 +1,17 @@
+model
+  schema 1.2
+
+type user
+
+type company
+  relations
+    define member: [user]
+
+type plan
+  relations
+    define subscriber: [user, company#member]
+
+type tool
+  relations
+    define associated_plan: [plan]
+    define can_execute: subscriber from associated_plan

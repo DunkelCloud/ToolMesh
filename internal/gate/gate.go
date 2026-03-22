@@ -1,0 +1,120 @@
+// Package gate implements the Output Gate — a goja-based JavaScript policy engine
+// that evaluates tool results before returning them to the caller.
+package gate
+
+import (
+	"encoding/json"
+	"fmt"
+	"log/slog"
+	"os"
+	"path/filepath"
+
+	"github.com/dop251/goja"
+)
+
+// Gate evaluates JavaScript policies against tool results.
+type Gate struct {
+	policies    []policy
+	rateLimiter *RateLimiter
+	logger      *slog.Logger
+}
+
+type policy struct {
+	name   string
+	source string
+}
+
+// New creates a Gate by loading all .js files from the given directory.
+func New(policiesDir string, logger *slog.Logger) (*Gate, error) {
+	g := &Gate{
+		rateLimiter: NewRateLimiter(),
+		logger:      logger,
+	}
+
+	entries, err := os.ReadDir(policiesDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			logger.Warn("policies directory not found, running without policies", "dir", policiesDir)
+			return g, nil
+		}
+		return nil, fmt.Errorf("read policies dir %s: %w", policiesDir, err)
+	}
+
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".js" {
+			continue
+		}
+
+		path := filepath.Join(policiesDir, entry.Name())
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("read policy %s: %w", path, err)
+		}
+
+		g.policies = append(g.policies, policy{
+			name:   entry.Name(),
+			source: string(data),
+		})
+		logger.Info("loaded policy", "name", entry.Name())
+	}
+
+	return g, nil
+}
+
+// Evaluate runs all policies against the given context.
+// Policies can modify the response or throw an error to reject the request.
+func (g *Gate) Evaluate(gctx GateContext) error {
+	for _, p := range g.policies {
+		if err := g.evalPolicy(p, gctx); err != nil {
+			g.logger.Warn("policy rejected request",
+				"policy", p.name,
+				"tool", gctx.Tool,
+				"user", gctx.User.UserID,
+				"error", err,
+			)
+			return fmt.Errorf("policy %s: %w", p.name, err)
+		}
+	}
+	return nil
+}
+
+func (g *Gate) evalPolicy(p policy, gctx GateContext) error {
+	vm := goja.New()
+
+	// Marshal the context to a JS-friendly object
+	ctxJSON, err := json.Marshal(gctx)
+	if err != nil {
+		return fmt.Errorf("marshal gate context: %w", err)
+	}
+
+	var ctxObj map[string]any
+	if err := json.Unmarshal(ctxJSON, &ctxObj); err != nil {
+		return fmt.Errorf("unmarshal gate context: %w", err)
+	}
+
+	// Add rate limit check function
+	userID := gctx.User.UserID
+	ctxObj["rateLimitExceeded"] = func(call goja.FunctionCall) goja.Value {
+		limit := 100
+		if len(call.Arguments) > 0 {
+			if v, ok := call.Arguments[0].Export().(int64); ok {
+				limit = int(v)
+			}
+		}
+		return vm.ToValue(g.rateLimiter.Check(userID, limit))
+	}
+
+	if err := vm.Set("ctx", ctxObj); err != nil {
+		return fmt.Errorf("set ctx: %w", err)
+	}
+
+	_, err = vm.RunString(p.source)
+	if err != nil {
+		if jsErr, ok := err.(*goja.Exception); ok {
+			return fmt.Errorf("%s", jsErr.Value().String())
+		}
+		return err
+	}
+
+	return nil
+}

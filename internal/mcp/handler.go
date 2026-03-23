@@ -1,3 +1,17 @@
+// Copyright 2026 Dunkel Cloud GmbH
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package mcp
 
 import (
@@ -8,22 +22,27 @@ import (
 
 	"github.com/DunkelCloud/ToolMesh/internal/backend"
 	"github.com/DunkelCloud/ToolMesh/internal/executor"
+	"github.com/DunkelCloud/ToolMesh/internal/tsdef"
 )
 
 // Handler processes incoming MCP tool calls and routes them through the executor.
 type Handler struct {
-	executor    *executor.Executor
-	backend     backend.ToolBackend
-	codeParser  *CodeModeParser
-	logger      *slog.Logger
+	executor   *executor.Executor
+	backend    backend.ToolBackend
+	codeParser *CodeModeParser
+	coercer    *tsdef.Coercer
+	rawTS      string // raw TypeScript content for built-in tools
+	logger     *slog.Logger
 }
 
 // NewHandler creates a new MCP tool call handler.
-func NewHandler(exec *executor.Executor, back backend.ToolBackend, logger *slog.Logger) *Handler {
+func NewHandler(exec *executor.Executor, back backend.ToolBackend, coercer *tsdef.Coercer, rawTS string, logger *slog.Logger) *Handler {
 	return &Handler{
 		executor:   exec,
 		backend:    back,
 		codeParser: &CodeModeParser{},
+		coercer:    coercer,
+		rawTS:      rawTS,
 		logger:     logger,
 	}
 }
@@ -38,6 +57,21 @@ func (h *Handler) HandleToolCall(ctx context.Context, toolName string, params ma
 	case "execute_code":
 		return h.handleExecuteCode(ctx, params)
 	default:
+		// Apply type coercion before execution
+		if h.coercer != nil {
+			coerced, err := h.coercer.Coerce(toolName, params)
+			if err != nil {
+				return &backend.ToolResult{
+					IsError: true,
+					Content: []any{map[string]any{
+						"type": "text",
+						"text": fmt.Sprintf("Parameter coercion failed: %s", err),
+					}},
+				}, nil
+			}
+			params = coerced
+		}
+
 		return h.executor.ExecuteTool(ctx, executor.ExecuteToolRequest{
 			ToolName: toolName,
 			Params:   params,
@@ -51,7 +85,12 @@ func (h *Handler) handleListTools(ctx context.Context) (*backend.ToolResult, err
 		return nil, fmt.Errorf("list tools: %w", err)
 	}
 
-	definitions := GenerateToolDefinitions(tools)
+	// Serve raw TypeScript for built-in tools + generated TS for external tools
+	var definitions string
+	if h.rawTS != "" {
+		definitions = h.rawTS + "\n\n"
+	}
+	definitions += GenerateToolDefinitions(tools)
 
 	return &backend.ToolResult{
 		Content: []any{map[string]any{
@@ -95,12 +134,25 @@ func (h *Handler) handleExecuteCode(ctx context.Context, params map[string]any) 
 		}, nil
 	}
 
-	// Execute each parsed tool call and collect results
 	var results []any
 	for _, call := range calls {
+		// Apply coercion for each parsed call
+		callParams := call.Params
+		if h.coercer != nil {
+			coerced, err := h.coercer.Coerce(call.ToolName, callParams)
+			if err != nil {
+				results = append(results, map[string]any{
+					"tool":  call.ToolName,
+					"error": fmt.Sprintf("coercion failed: %s", err),
+				})
+				continue
+			}
+			callParams = coerced
+		}
+
 		result, err := h.executor.ExecuteTool(ctx, executor.ExecuteToolRequest{
 			ToolName: call.ToolName,
-			Params:   call.Params,
+			Params:   callParams,
 		})
 		if err != nil {
 			results = append(results, map[string]any{
@@ -130,7 +182,6 @@ func (h *Handler) handleExecuteCode(ctx context.Context, params map[string]any) 
 
 // BuildToolList returns all tools including Code Mode tools.
 func (h *Handler) BuildToolList(ctx context.Context) ([]ToolDefinition, error) {
-	// Code Mode tools
 	tools := []ToolDefinition{
 		{
 			Name:        "list_tools",
@@ -156,7 +207,6 @@ func (h *Handler) BuildToolList(ctx context.Context) ([]ToolDefinition, error) {
 		},
 	}
 
-	// Add all backend tools
 	backendTools, err := h.backend.ListTools(ctx)
 	if err != nil {
 		h.logger.WarnContext(ctx, "failed to list backend tools", "error", err)
@@ -179,4 +229,3 @@ type ToolDefinition struct {
 	Description string         `json:"description"`
 	InputSchema map[string]any `json:"inputSchema"`
 }
-

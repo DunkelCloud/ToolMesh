@@ -16,6 +16,7 @@ services:
     volumes:
       - ./config:/app/config:ro
       - ./internal/gate/policies:/app/policies:ro
+      - ./tools:/app/tools:ro
 
   # Demo MCP backend — official MCP reference server with 17 tools
   # (echo, get-sum, get-tiny-image, etc.)

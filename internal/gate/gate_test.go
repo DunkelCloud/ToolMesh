@@ -159,7 +159,7 @@ func TestGate_PIIProtection(t *testing.T) {
 			input:    "SSN: 123-45-6789",
 			contains: "[SSN]",
 		},
-		{
+		{ //nolint:gosec // G101: intentional test data for PII masking
 			name:     "masks AWS key",
 			input:    "Key: AKIAIOSFODNN7EXAMPLE",
 			contains: "[AWS_KEY]",
@@ -322,7 +322,7 @@ func stringContains(s, substr string) bool {
 func writePolicy(t *testing.T, dir, name, content string) {
 	t.Helper()
 	path := filepath.Join(dir, name)
-	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0600); err != nil { //nolint:gosec // G703: test helper with controlled path
 		t.Fatalf("write policy: %v", err)
 	}
 }

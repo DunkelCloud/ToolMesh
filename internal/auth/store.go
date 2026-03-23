@@ -110,7 +110,7 @@ func NewRedisTokenStore(rdb *redis.Client) *RedisTokenStore {
 
 // SaveClient stores an OAuth client registration in Redis.
 func (s *RedisTokenStore) SaveClient(ctx context.Context, c *OAuthClient) error {
-	data, err := json.Marshal(c)
+	data, err := json.Marshal(c) //nolint:gosec // G117: intentional — storing OAuth data in Redis
 	if err != nil {
 		return fmt.Errorf("marshal client: %w", err)
 	}
@@ -160,7 +160,7 @@ func (s *RedisTokenStore) ConsumeAuthCode(ctx context.Context, code string) (*Au
 
 // SaveToken stores an access token with the configured TTL.
 func (s *RedisTokenStore) SaveToken(ctx context.Context, ti *TokenInfo) error {
-	data, err := json.Marshal(ti)
+	data, err := json.Marshal(ti) //nolint:gosec // G117: intentional — storing OAuth data in Redis
 	if err != nil {
 		return fmt.Errorf("marshal token: %w", err)
 	}
@@ -190,7 +190,7 @@ func (s *RedisTokenStore) DeleteToken(ctx context.Context, accessToken string) e
 
 // SaveRefreshToken stores a refresh token with the configured TTL.
 func (s *RedisTokenStore) SaveRefreshToken(ctx context.Context, ti *TokenInfo) error {
-	data, err := json.Marshal(ti)
+	data, err := json.Marshal(ti) //nolint:gosec // G117: intentional — storing OAuth data in Redis
 	if err != nil {
 		return fmt.Errorf("marshal refresh token: %w", err)
 	}

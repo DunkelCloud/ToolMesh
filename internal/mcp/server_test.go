@@ -93,7 +93,7 @@ func (m *mockTestBackend) Healthy(_ context.Context) error {
 func TestServer_Health(t *testing.T) {
 	_, mux := newTestServer(t, &config.Config{})
 
-	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/health", nil)
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
 
@@ -111,7 +111,7 @@ func TestServer_Health(t *testing.T) {
 func TestServer_OAuthMetadata(t *testing.T) {
 	_, mux := newTestServer(t, &config.Config{Issuer: "https://toolmesh.io/"})
 
-	req := httptest.NewRequest(http.MethodGet, "/.well-known/oauth-authorization-server", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/.well-known/oauth-authorization-server", nil)
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
 
@@ -136,7 +136,7 @@ func TestServer_OAuthMetadata(t *testing.T) {
 func TestServer_ProtectedResource(t *testing.T) {
 	_, mux := newTestServer(t, &config.Config{Issuer: "https://toolmesh.io/"})
 
-	req := httptest.NewRequest(http.MethodGet, "/.well-known/oauth-protected-resource", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/.well-known/oauth-protected-resource", nil)
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
 
@@ -149,7 +149,7 @@ func TestServer_Register(t *testing.T) {
 	_, mux, _ := newTestServerWithRedis(t, &config.Config{})
 
 	body := `{"redirect_uris": ["https://example.com/callback"], "client_name": "test"}`
-	req := httptest.NewRequest(http.MethodPost, "/register", strings.NewReader(body))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/register", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
@@ -172,7 +172,7 @@ func TestServer_Register(t *testing.T) {
 func TestServer_CORSHeaders(t *testing.T) {
 	_, mux := newTestServer(t, &config.Config{})
 
-	req := httptest.NewRequest(http.MethodOptions, "/mcp", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodOptions, "/mcp", nil)
 	req.Header.Set("Origin", "https://claude.ai")
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
@@ -189,7 +189,7 @@ func TestServer_MCP_Initialize(t *testing.T) {
 	_, mux := newTestServer(t, &config.Config{})
 
 	body := `{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}`
-	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(body))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
@@ -214,7 +214,7 @@ func TestServer_MCP_Ping(t *testing.T) {
 	_, mux := newTestServer(t, &config.Config{})
 
 	body := `{"jsonrpc": "2.0", "id": 2, "method": "ping"}`
-	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(body))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
@@ -231,7 +231,7 @@ func TestServer_MCP_UnknownMethod(t *testing.T) {
 	_, mux := newTestServer(t, &config.Config{})
 
 	body := `{"jsonrpc": "2.0", "id": 3, "method": "unknown/method"}`
-	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(body))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
@@ -251,7 +251,7 @@ func TestServer_MCP_UnknownMethod(t *testing.T) {
 func TestServer_MCP_InvalidJSON(t *testing.T) {
 	_, mux := newTestServer(t, &config.Config{})
 
-	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader("not json"))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp", strings.NewReader("not json"))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
@@ -271,7 +271,7 @@ func TestServer_MCP_InvalidJSON(t *testing.T) {
 func TestServer_MCP_MethodNotAllowed(t *testing.T) {
 	_, mux := newTestServer(t, &config.Config{})
 
-	req := httptest.NewRequest(http.MethodGet, "/mcp", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/mcp", nil)
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
 
@@ -284,7 +284,7 @@ func TestServer_MCP_Unauthorized(t *testing.T) {
 	_, mux, _ := newTestServerWithRedis(t, &config.Config{AuthPassword: "secret"})
 
 	body := `{"jsonrpc": "2.0", "id": 1, "method": "initialize"}`
-	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(body))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
@@ -305,7 +305,7 @@ func TestServer_MCP_APIKeyAuth(t *testing.T) {
 	_, mux := newTestServer(t, &config.Config{APIKey: "my-secret-key"})
 
 	body := `{"jsonrpc": "2.0", "id": 1, "method": "initialize"}`
-	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(body))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer my-secret-key")
 	w := httptest.NewRecorder()
@@ -327,7 +327,7 @@ func TestServer_OAuthFlow(t *testing.T) {
 
 	// Step 1: Register client
 	regBody := `{"redirect_uris": ["https://example.com/callback"], "client_name": "test"}`
-	regReq := httptest.NewRequest(http.MethodPost, "/register", strings.NewReader(regBody))
+	regReq := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/register", strings.NewReader(regBody))
 	regReq.Header.Set("Content-Type", "application/json")
 	regW := httptest.NewRecorder()
 	mux.ServeHTTP(regW, regReq)
@@ -349,7 +349,7 @@ func TestServer_OAuthFlow(t *testing.T) {
 		"code_challenge": {codeChallenge},
 		"scope":          {"claudeai"},
 	}
-	authReq := httptest.NewRequest(http.MethodPost, "/authorize", strings.NewReader(form.Encode()))
+	authReq := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/authorize", strings.NewReader(form.Encode()))
 	authReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	authW := httptest.NewRecorder()
 	mux.ServeHTTP(authW, authReq)
@@ -373,7 +373,7 @@ func TestServer_OAuthFlow(t *testing.T) {
 		"code":          {code},
 		"code_verifier": {codeVerifier},
 	}
-	tokenReq := httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(tokenForm.Encode()))
+	tokenReq := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/token", strings.NewReader(tokenForm.Encode()))
 	tokenReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	tokenW := httptest.NewRecorder()
 	mux.ServeHTTP(tokenW, tokenReq)
@@ -399,7 +399,7 @@ func TestServer_OAuthFlow(t *testing.T) {
 
 	// Step 4: Use access token to make an MCP call
 	mcpBody := `{"jsonrpc": "2.0", "id": 1, "method": "ping"}`
-	mcpReq := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(mcpBody))
+	mcpReq := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp", strings.NewReader(mcpBody))
 	mcpReq.Header.Set("Content-Type", "application/json")
 	mcpReq.Header.Set("Authorization", "Bearer "+accessToken)
 	mcpW := httptest.NewRecorder()
@@ -416,7 +416,7 @@ func TestServer_OAuthFlow(t *testing.T) {
 		"grant_type":    {"refresh_token"},
 		"refresh_token": {refreshToken},
 	}
-	refreshReq := httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(refreshForm.Encode()))
+	refreshReq := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/token", strings.NewReader(refreshForm.Encode()))
 	refreshReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	refreshW := httptest.NewRecorder()
 	mux.ServeHTTP(refreshW, refreshReq)
@@ -442,7 +442,7 @@ func TestServer_Authorize_WrongPassword(t *testing.T) {
 		"redirect_uri": {"https://example.com/callback"},
 		"state":        {"s1"},
 	}
-	req := httptest.NewRequest(http.MethodPost, "/authorize", strings.NewReader(form.Encode()))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/authorize", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
@@ -463,7 +463,7 @@ func TestServer_Token_InvalidGrant(t *testing.T) {
 		"grant_type": {"authorization_code"},
 		"code":       {"invalid-code"},
 	}
-	req := httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(form.Encode()))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/token", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
@@ -481,7 +481,7 @@ func TestServer_Token_UnsupportedGrantType(t *testing.T) {
 	form := url.Values{
 		"grant_type": {"client_credentials"},
 	}
-	req := httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(form.Encode()))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/token", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
@@ -497,7 +497,7 @@ func TestServer_ToolsList(t *testing.T) {
 	_, mux := newTestServer(t, &config.Config{})
 
 	body := `{"jsonrpc": "2.0", "id": 1, "method": "tools/list"}`
-	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(body))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)

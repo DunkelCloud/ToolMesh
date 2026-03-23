@@ -117,7 +117,7 @@ func main() {
 	// Create echo backend — use TS definitions if available, else fallback
 	var echoBackend backend.ToolBackend
 	if len(toolDefs) > 0 {
-		var echoDescs []backend.ToolDescriptor
+		echoDescs := make([]backend.ToolDescriptor, 0, len(toolDefs))
 		for _, td := range toolDefs {
 			echoDescs = append(echoDescs, td.ToToolDescriptor("builtin:echo"))
 		}

@@ -59,11 +59,11 @@ func GenerateToolDefinitions(tools []backend.ToolDescriptor) string {
 	sb.WriteString("declare namespace toolmesh {\n")
 
 	for _, tool := range tools {
-		sb.WriteString(fmt.Sprintf("  /** %s */\n", tool.Description))
+		fmt.Fprintf(&sb, "  /** %s */\n", tool.Description)
 
 		// Generate parameter signature from input schema
 		params := schemaToTypeScript(tool.InputSchema)
-		sb.WriteString(fmt.Sprintf("  function %s(%s): Promise<any>;\n\n", sanitizeName(tool.Name), params))
+		fmt.Fprintf(&sb, "  function %s(%s): Promise<any>;\n\n", sanitizeName(tool.Name), params)
 	}
 
 	sb.WriteString("}\n")

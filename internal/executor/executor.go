@@ -43,14 +43,14 @@ type Executor struct {
 func New(
 	authorizer *authz.Authorizer,
 	creds credentials.CredentialStore,
-	backend backend.ToolBackend,
+	be backend.ToolBackend,
 	gatePipeline *gate.Pipeline,
 	logger *slog.Logger,
 ) *Executor {
 	return &Executor{
 		authorizer: authorizer,
 		creds:      creds,
-		backend:    backend,
+		backend:    be,
 		gate:       gatePipeline,
 		logger:     logger,
 	}

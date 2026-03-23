@@ -149,7 +149,7 @@ func (a *MCPAdapter) createTransport(ctx context.Context, entry BackendEntry) (m
 	case "http":
 		return a.createHTTPTransport(ctx, entry)
 	case "stdio":
-		return a.createSTDIOTransport(entry)
+		return a.createSTDIOTransport(ctx, entry)
 	default:
 		return nil, fmt.Errorf("unsupported transport %q", entry.Transport)
 	}
@@ -185,11 +185,11 @@ func (a *MCPAdapter) createHTTPTransport(ctx context.Context, entry BackendEntry
 	}, nil
 }
 
-func (a *MCPAdapter) createSTDIOTransport(entry BackendEntry) (mcp.Transport, error) {
+func (a *MCPAdapter) createSTDIOTransport(ctx context.Context, entry BackendEntry) (mcp.Transport, error) {
 	if entry.Command == "" {
 		return nil, fmt.Errorf("stdio transport requires a command")
 	}
-	cmd := exec.Command(entry.Command, entry.Args...) //nolint:gosec // command from trusted backends config
+	cmd := exec.CommandContext(ctx, entry.Command, entry.Args...) //nolint:gosec // command from trusted backends config
 	return &mcp.CommandTransport{Command: cmd}, nil
 }
 

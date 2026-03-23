@@ -403,6 +403,7 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if r.Method == http.MethodPost {
+		r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1 MB limit
 		if err := r.ParseForm(); err != nil {
 			http.Error(w, "Bad request", http.StatusBadRequest)
 			return
@@ -482,6 +483,7 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1 MB limit
 	if err := r.ParseForm(); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_request"})
 		return
@@ -498,8 +500,8 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Request) {
-	code := r.FormValue("code")
-	codeVerifier := r.FormValue("code_verifier")
+	code := r.FormValue("code")                  //nolint:gosec // G120: body size limited in handleToken
+	codeVerifier := r.FormValue("code_verifier") //nolint:gosec // G120: body size limited in handleToken
 
 	if s.tokenStore == nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_grant"})
@@ -574,7 +576,7 @@ func (s *Server) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Req
 }
 
 func (s *Server) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request) {
-	refreshToken := r.FormValue("refresh_token")
+	refreshToken := r.FormValue("refresh_token") //nolint:gosec // G120: body size limited in handleToken
 
 	if s.tokenStore == nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_grant"})

@@ -37,6 +37,7 @@ type Config struct {
 	// OpenFGA
 	OpenFGAAPIURL  string
 	OpenFGAStoreID string
+	OpenFGAMode    string // "bypass" (default) or "restrict"
 
 	// Redis
 	RedisURL string
@@ -77,6 +78,7 @@ func Load() (*Config, error) {
 		TemporalTaskQueue:       envStr("TEMPORAL_TASK_QUEUE", "toolmesh"),
 		OpenFGAAPIURL:           envStr("OPENFGA_API_URL", "http://localhost:8080"),
 		OpenFGAStoreID:          envStr("OPENFGA_STORE_ID", ""),
+		OpenFGAMode:             envStr("OPENFGA_MODE", "bypass"),
 		RedisURL:                envStr("REDIS_URL", "redis://localhost:6379/0"),
 		LogLevel:                envStr("LOG_LEVEL", "info"),
 		LogFormat:               envStr("LOG_FORMAT", "json"),
@@ -92,6 +94,10 @@ func Load() (*Config, error) {
 
 	if cfg.Transport != "http" && cfg.Transport != "stdio" {
 		return nil, fmt.Errorf("invalid TOOLMESH_TRANSPORT: %q (must be \"http\" or \"stdio\")", cfg.Transport)
+	}
+
+	if cfg.OpenFGAMode != "bypass" && cfg.OpenFGAMode != "restrict" {
+		return nil, fmt.Errorf("invalid OPENFGA_MODE: %q (must be \"bypass\" or \"restrict\")", cfg.OpenFGAMode)
 	}
 
 	return cfg, nil

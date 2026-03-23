@@ -4,6 +4,8 @@ services:
     ports:
       - "${TOOLMESH_PORT:-8123}:8080"
     env_file: .env
+    environment:
+      - OPENFGA_MODE=${OPENFGA_MODE:-bypass}
     depends_on:
       temporal:
         condition: service_healthy

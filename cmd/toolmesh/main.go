@@ -137,17 +137,21 @@ func main() {
 	})
 	compositeBackend.AddPassthrough(mcpAdapter)
 
-	// Initialize OpenFGA authorizer (optional — skip if no store ID configured)
+	// Initialize OpenFGA authorizer based on OPENFGA_MODE
 	var authorizer *authz.Authorizer
-	if cfg.OpenFGAStoreID != "" {
+	if cfg.OpenFGAMode == "restrict" {
+		if cfg.OpenFGAStoreID == "" {
+			logger.Error("OPENFGA_MODE=restrict requires OPENFGA_STORE_ID to be set")
+			os.Exit(1)
+		}
 		authorizer, err = authz.NewAuthorizer(cfg.OpenFGAAPIURL, cfg.OpenFGAStoreID, logger)
 		if err != nil {
 			logger.Error("failed to create authorizer", "error", err)
 			os.Exit(1)
 		}
-		logger.Info("OpenFGA authorizer initialized", "storeId", cfg.OpenFGAStoreID)
+		logger.Info("OpenFGA authorizer initialized", "mode", "restrict", "storeId", cfg.OpenFGAStoreID)
 	} else {
-		logger.Warn("OpenFGA store ID not configured, running without authorization")
+		logger.Warn("OpenFGA authorization bypassed", "mode", "bypass")
 	}
 
 	// Initialize output gate pipeline via registry

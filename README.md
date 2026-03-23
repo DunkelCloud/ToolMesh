@@ -40,11 +40,12 @@ cd ToolMesh
 cp .env.example .env
 # Edit .env with your settings
 
-# Start all services
+# Start all services (runs in bypass mode by default — no authz required)
 docker compose up -d
 
-# Bootstrap OpenFGA (authorization model + example tuples)
+# Optional: Bootstrap OpenFGA and enable authorization
 docker compose exec toolmesh /tm-bootstrap
+# Set OPENFGA_MODE=restrict in .env and restart to enforce authz
 
 # Connect from Claude Desktop or any MCP client
 # MCP endpoint: http://localhost:8080/mcp
@@ -151,6 +152,17 @@ ToolMeshCallerClass = "untrusted" AND ToolMeshToolName = "memorizer:retrieve_kno
 ```
 
 Register search attributes with: `docker compose exec toolmesh /tm-bootstrap temporal-search-attrs`
+
+## Authorization Mode
+
+`OPENFGA_MODE` controls whether OpenFGA authorization is enforced:
+
+| Mode | Behavior |
+|------|----------|
+| `bypass` (default) | All tool calls are allowed without authz checks |
+| `restrict` | OpenFGA enforces user → plan → tool authorization (requires `OPENFGA_STORE_ID`) |
+
+Start with `bypass` to get running quickly, then switch to `restrict` after bootstrapping OpenFGA.
 
 ## Configuration
 

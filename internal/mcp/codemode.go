@@ -25,7 +25,22 @@ import (
 
 // CodeModeParser extracts tool calls from JavaScript-like code.
 // It parses the AST structure but does not execute the JavaScript.
-type CodeModeParser struct{}
+// It maintains a reverse lookup from sanitized JS names back to canonical tool names.
+type CodeModeParser struct {
+	// nameMap maps sanitized names (e.g. "memorizer_knowledge_status")
+	// back to canonical tool names (e.g. "memorizer:knowledge_status").
+	nameMap map[string]string
+}
+
+// NewCodeModeParser creates a parser with a reverse name lookup built from
+// the registered tool descriptors.
+func NewCodeModeParser(tools []backend.ToolDescriptor) *CodeModeParser {
+	m := make(map[string]string, len(tools))
+	for _, t := range tools {
+		m[sanitizeName(t.Name)] = t.Name
+	}
+	return &CodeModeParser{nameMap: m}
+}
 
 // ParsedToolCall represents a tool call extracted from code.
 type ParsedToolCall struct {
@@ -70,6 +85,11 @@ func (p *CodeModeParser) ParseCode(code string) ([]ParsedToolCall, error) {
 		params, err := parseArgs(argsStr)
 		if err != nil {
 			return nil, fmt.Errorf("parse args for %s: %w", toolName, err)
+		}
+
+		// Reverse-map sanitized JS name back to canonical tool name
+		if canonical, ok := p.nameMap[toolName]; ok {
+			toolName = canonical
 		}
 
 		calls = append(calls, ParsedToolCall{

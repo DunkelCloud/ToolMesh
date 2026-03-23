@@ -37,10 +37,12 @@ type Handler struct {
 
 // NewHandler creates a new MCP tool call handler.
 func NewHandler(exec *executor.Executor, back backend.ToolBackend, coercer *tsdef.Coercer, rawTS string, logger *slog.Logger) *Handler {
+	// Build the code mode parser with reverse name lookup from all registered tools
+	tools, _ := back.ListTools(context.Background())
 	return &Handler{
 		executor:   exec,
 		backend:    back,
-		codeParser: &CodeModeParser{},
+		codeParser: NewCodeModeParser(tools),
 		coercer:    coercer,
 		rawTS:      rawTS,
 		logger:     logger,

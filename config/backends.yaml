@@ -5,11 +5,11 @@ backends:
   #   transport: http
   #   url: "http://everything:3001/sse"
 
-  # Example: connect to a remote MCP server
-  # - name: memorizer
-  #   transport: http
-  #   url: "https://memorizer.dunkel.cloud/mcp"
-  #   api_key_env: "MEMORIZER_API_KEY"
+  # Memorizer — personal knowledge base with semantic search
+  - name: memorizer
+    transport: http
+    url: "https://memorizer.dunkel.cloud/mcp"
+    api_key_env: "MEMORIZER_API_KEY"
 
   # Example: connect to a local MCP server via STDIO
   # - name: local-tools

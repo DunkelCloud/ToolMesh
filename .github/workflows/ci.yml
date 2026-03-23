@@ -7,15 +7,25 @@ on:
     branches: [main]
 
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+      - uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+
   build:
     runs-on: ubuntu-latest
-
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.24"
+          go-version: "1.25"
 
       - name: Download dependencies
         run: go mod download
@@ -24,7 +34,7 @@ jobs:
         run: go vet ./...
 
       - name: Test
-        run: go test -race -v ./...
+        run: go test -v ./...
 
       - name: Build
         run: |

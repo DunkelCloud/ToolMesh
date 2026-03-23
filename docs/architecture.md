@@ -103,5 +103,28 @@ toolmesh/
 │   ├── userctx/        # UserContext propagation
 │   └── config/         # Environment-based configuration
 ├── config/             # Backend configuration (backends.yaml)
+├── tools/              # TypeScript tool definitions (canonical source)
 └── docs/               # Documentation
 ```
+
+## Extension Model
+
+ToolMesh uses a registry-based extension model inspired by Go's `database/sql`
+driver pattern. Three component types are extensible:
+
+| Component | Registry | Built-in | Extension Point |
+|-----------|----------|----------|-----------------|
+| Credential Store | `credentials.Register()` | `embedded` | `CREDENTIAL_STORE=<name>` |
+| Tool Backend | `backend.Register()` | `mcp`, `echo` | `config/backends.yaml` |
+| Output Gate Evaluator | `gate.RegisterEvaluator()` | `goja` | `GATE_EVALUATORS=<list>` |
+
+Extensions register themselves via `init()` functions. Enterprise extensions
+live in a separate module and are included via Go build tags:
+
+```
+go build -tags enterprise ./cmd/toolmesh
+```
+
+The open-source core includes all interfaces and the built-in implementations.
+Enterprise implementations (InfisicalStore, VaultStore, Compliance-LLM evaluator,
+etc.) are available separately.

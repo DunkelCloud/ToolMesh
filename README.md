@@ -2,9 +2,10 @@
 
 > The secure, durable execution layer between AI agents and enterprise infrastructure.
 
-[![Go](https://img.shields.io/badge/Go-1.24+-00ADD8?style=flat&logo=go)](https://go.dev)
+[![Go](https://img.shields.io/badge/Go-1.25+-00ADD8?style=flat&logo=go)](https://go.dev)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![CI](https://github.com/DunkelCloud/ToolMesh/actions/workflows/ci.yml/badge.svg)](https://github.com/DunkelCloud/ToolMesh/actions/workflows/ci.yml)
+[![Go Report Card](https://goreportcard.com/badge/github.com/DunkelCloud/ToolMesh)](https://goreportcard.com/report/github.com/DunkelCloud/ToolMesh)
 
 ## The Problem
 
@@ -127,6 +128,20 @@ const result = await toolmesh.memorizer_retrieve_knowledge({
 ```
 
 ToolMesh parses the code, extracts tool calls, and routes them through the full execution pipeline (AuthZ → Credentials → Backend → Output Gate).
+
+## Extension Model
+
+ToolMesh uses a registry-based extension model inspired by Go's `database/sql` driver pattern. Three component types are extensible via `init()` registration:
+
+| Component | Built-in | Config |
+|-----------|----------|--------|
+| Credential Store | `embedded` | `CREDENTIAL_STORE=<name>` |
+| Tool Backend | `mcp`, `echo` | `config/backends.yaml` |
+| Output Gate Evaluator | `goja` | `GATE_EVALUATORS=<list>` |
+
+Enterprise extensions (InfisicalStore, VaultStore, Compliance-LLM, etc.) are available separately and included via Go build tags: `go build -tags enterprise ./cmd/toolmesh`.
+
+See [docs/architecture.md](docs/architecture.md#extension-model) for details.
 
 ## Contributing
 

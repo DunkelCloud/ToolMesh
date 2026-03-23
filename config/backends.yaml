@@ -1,9 +1,9 @@
 backends:
-  # MCP reference server (mcp/everything) — included in docker-compose
-  # Uses SSE transport (legacy protocol)
-  - name: everything
-    transport: http
-    url: "http://everything:3001/sse"
+  # MCP reference server (uncomment if running mcp/everything in docker-compose)
+  # Note: mcp/everything has SSE stability issues — crashes on idle timers.
+  # - name: everything
+  #   transport: http
+  #   url: "http://everything:3001/sse"
 
   # Example: connect to a remote MCP server
   # - name: memorizer

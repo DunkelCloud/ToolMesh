@@ -11,21 +11,19 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-      everything:
-        condition: service_started
     volumes:
       - ./config:/app/config:ro
       - ./internal/gate/policies:/app/policies:ro
       - ./tools:/app/tools:ro
 
-  # Demo MCP backend — official MCP reference server with 17 tools
-  # (echo, get-sum, get-tiny-image, etc.)
-  # Runs in SSE/HTTP mode on port 3001.
-  everything:
-    image: mcp/everything
-    entrypoint: ["node", "dist/sse.js"]
-    ports:
-      - "3001:3001"
+  # Demo MCP backend (optional — uncomment to enable)
+  # Note: mcp/everything has a known crash loop with SSE transport.
+  # Use only for testing, not in production.
+  # everything:
+  #   image: mcp/everything
+  #   entrypoint: ["node", "dist/sse.js"]
+  #   ports:
+  #     - "3001:3001"
 
   temporal:
     image: temporalio/auto-setup:latest

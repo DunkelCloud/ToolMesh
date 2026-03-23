@@ -34,6 +34,8 @@ type UserContext struct {
 	Roles         []string `json:"roles"`
 	Plan          string   `json:"plan"` // "free" | "pro"
 	Authenticated bool     `json:"authenticated"`
+	CallerID      string   `json:"callerId"`    // e.g. "claude-code", "expertcouncil"
+	CallerClass   string   `json:"callerClass"` // "trusted" | "standard" | "untrusted"
 }
 
 type contextKey struct{}

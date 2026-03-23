@@ -56,8 +56,9 @@ type Config struct {
 	ToolsDir string
 
 	// User identity config paths
-	UsersConfigPath  string
-	APIKeysConfigPath string
+	UsersConfigPath       string
+	APIKeysConfigPath     string
+	CallerClassesConfigPath string
 
 	// Registry-based provider selection
 	CredentialStore string // registered store name (default: "embedded")
@@ -83,8 +84,9 @@ func Load() (*Config, error) {
 		BackendsConfigPath: envStr("TOOLMESH_BACKENDS_CONFIG", "/app/config/backends.yaml"),
 		PoliciesDir:        envStr("TOOLMESH_POLICIES_DIR", "/app/policies"),
 		ToolsDir:           envStr("TOOLMESH_TOOLS_DIR", "/app/tools"),
-		UsersConfigPath:    envStr("TOOLMESH_USERS_CONFIG", "/app/config/users.yaml"),
-		APIKeysConfigPath:  envStr("TOOLMESH_APIKEYS_CONFIG", "/app/config/apikeys.yaml"),
+		UsersConfigPath:         envStr("TOOLMESH_USERS_CONFIG", "/app/config/users.yaml"),
+		APIKeysConfigPath:       envStr("TOOLMESH_APIKEYS_CONFIG", "/app/config/apikeys.yaml"),
+		CallerClassesConfigPath: envStr("TOOLMESH_CALLER_CLASSES_CONFIG", "/app/config/caller-classes.yaml"),
 		CredentialStore:    envStr("CREDENTIAL_STORE", "embedded"),
 		GateEvaluators:     envStr("GATE_EVALUATORS", "goja"),
 	}

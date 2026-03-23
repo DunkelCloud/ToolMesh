@@ -23,6 +23,15 @@ import (
 	"go.temporal.io/sdk/workflow"
 )
 
+// Temporal custom search attribute keys for audit queries.
+var (
+	SAKeyUserID      = temporal.NewSearchAttributeKeyKeyword("ToolMeshUserID")
+	SAKeyCompanyID   = temporal.NewSearchAttributeKeyKeyword("ToolMeshCompanyID")
+	SAKeyCallerID    = temporal.NewSearchAttributeKeyKeyword("ToolMeshCallerID")
+	SAKeyCallerClass = temporal.NewSearchAttributeKeyKeyword("ToolMeshCallerClass")
+	SAKeyToolName    = temporal.NewSearchAttributeKeyKeyword("ToolMeshToolName")
+)
+
 // ToolExecutionWorkflow is a Temporal workflow that executes a tool call
 // through the full pipeline. It provides durability guarantees and an
 // audit trail via workflow history.
@@ -37,6 +46,18 @@ func ToolExecutionWorkflow(ctx workflow.Context, req ExecuteToolRequest) (*backe
 	}
 
 	ctx = workflow.WithActivityOptions(ctx, activityOpts)
+
+	// Set search attributes for audit queries.
+	// UserID, CompanyID etc. are passed via the request for workflow visibility.
+	if req.UserID != "" {
+		_ = workflow.UpsertTypedSearchAttributes(ctx,
+			SAKeyUserID.ValueSet(req.UserID),
+			SAKeyCompanyID.ValueSet(req.CompanyID),
+			SAKeyCallerID.ValueSet(req.CallerID),
+			SAKeyCallerClass.ValueSet(req.CallerClass),
+			SAKeyToolName.ValueSet(req.ToolName),
+		)
+	}
 
 	var result backend.ToolResult
 	err := workflow.ExecuteActivity(ctx, "ExecuteToolActivity", req).Get(ctx, &result)

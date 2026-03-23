@@ -1,0 +1,10 @@
+classes:
+  trusted:
+    - claude-code
+    - claude-desktop
+    - claude-ai
+    - expertcouncil
+    - local-llm
+  standard:
+    - partner-*
+  # Everything else defaults to "untrusted"

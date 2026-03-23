@@ -29,6 +29,7 @@ import (
 type OAuthClient struct {
 	ClientID     string   `json:"client_id"`
 	ClientSecret string   `json:"client_secret"`
+	ClientName   string   `json:"client_name,omitempty"`
 	RedirectURIs []string `json:"redirect_uris"`
 	CreatedAt    time.Time `json:"created_at"`
 }
@@ -56,6 +57,7 @@ type TokenInfo struct {
 	CompanyID    string   `json:"company_id"`
 	Plan         string   `json:"plan"`
 	Roles        []string `json:"roles"`
+	CallerID     string   `json:"caller_id,omitempty"`
 	Scope        string   `json:"scope"`
 	ExpiresAt    time.Time `json:"expires_at"`
 }

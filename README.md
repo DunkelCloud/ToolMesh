@@ -26,7 +26,7 @@ ToolMesh solves this by sitting between the AI agent and your MCP servers, enfor
 | **Temporal** | Durable execution with retry, timeout, audit trail | Temporal.io |
 | **OpenFGA** | Fine-grained authorization (user → plan → tool) | OpenFGA |
 | **MCP Aggregation** | Connect any number of external MCP servers | Go MCP SDK |
-| **Credential Store** | Inject secrets at execution time, never in prompts | Env-based (Phase 1) |
+| **Credential Store** | Inject secrets at execution time, never in prompts | Per-request injection via Executor pipeline |
 | **Output Gate** | JavaScript policies filter and validate responses | goja |
 
 ## Quickstart
@@ -114,6 +114,44 @@ For single-key setups, `TOOLMESH_API_KEY` still works as a fallback.
 
 Dynamic Client Registration is rate-limited to 5 registrations per hour per IP to prevent abuse.
 
+## Caller-Origin
+
+ToolMesh tracks which AI client triggers each tool call. No known MCP gateway differentiates by the calling AI model — ToolMesh does.
+
+**CallerID** is derived automatically from the authentication source:
+- **OAuth clients:** The `client_name` from Dynamic Client Registration (e.g. `"claude-code"`)
+- **API keys:** The `caller_id` field in `config/apikeys.yaml`
+- **Anonymous:** Falls back to `"anonymous"`
+
+**CallerClass** maps CallerIDs to trust levels via `config/caller-classes.yaml`:
+
+```yaml
+classes:
+  trusted:
+    - claude-code
+    - claude-desktop
+    - local-llm
+  standard:
+    - partner-*
+  # Everything else defaults to "untrusted"
+```
+
+Trust levels affect the execution pipeline:
+
+| CallerClass | PII Filtering | Tool Access | Audit |
+|-------------|--------------|-------------|-------|
+| `trusted` | Credentials only (AWS keys, API tokens) | Full | Temporal search attributes |
+| `standard` | High-risk PII + credentials | Full | Temporal search attributes |
+| `untrusted` | All PII patterns | Sensitive tools blocked | Temporal search attributes |
+
+Temporal search attributes (`ToolMeshCallerID`, `ToolMeshCallerClass`, `ToolMeshUserID`, `ToolMeshCompanyID`, `ToolMeshToolName`) enable audit queries like:
+
+```
+ToolMeshCallerClass = "untrusted" AND ToolMeshToolName = "memorizer:retrieve_knowledge"
+```
+
+Register search attributes with: `docker compose exec toolmesh /tm-bootstrap temporal-search-attrs`
+
 ## Configuration
 
 See [docs/configuration.md](docs/configuration.md) for all environment variables.
@@ -124,14 +162,14 @@ See [docs/architecture.md](docs/architecture.md) for the full architecture docum
 
 ```mermaid
 graph LR
-    Agent[AI Agent] -->|MCP| TM[ToolMesh]
+    Agent[AI Agent] -->|"MCP + CallerID"| TM[ToolMesh]
     TM -->|AuthN/State| Redis
     TM -->|AuthZ| FGA[OpenFGA]
-    TM -->|Durable Exec| Temporal
-    TM -->|Credentials| CS[Credential Store]
+    TM -->|Durable Exec + Search Attrs| Temporal
+    TM -->|Per-Request Injection| CS[Credential Store]
     TM -->|MCP Client| B1[MCP Server 1]
     TM -->|MCP Client| B2[MCP Server 2]
-    TM -->|Output Gate| Policy[JS Policies]
+    TM -->|"Output Gate (CallerClass)"| Policy[JS Policies]
 ```
 
 ## Adding an External MCP Server
@@ -157,7 +195,7 @@ Set the credential as an environment variable:
 CREDENTIAL_MEMORIZER_API_KEY=sk-mem-xxxxx
 ```
 
-Tools from each backend are exposed with a prefix: `memorizer:retrieve_knowledge`, `local-tools:my_tool`.
+Tools from each backend are exposed with a prefix: `memorizer:retrieve_knowledge`, `local-tools:my_tool`. Credentials are injected by the Executor at runtime via the CredentialStore — the LLM never sees API keys.
 
 ## Code Mode
 

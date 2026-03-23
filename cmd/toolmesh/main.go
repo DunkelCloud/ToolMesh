@@ -235,9 +235,18 @@ func main() {
 		logger.Info("loaded apikeys config", "path", cfg.APIKeysConfigPath)
 	}
 
+	callerClasses, err := config.LoadCallerClasses(cfg.CallerClassesConfigPath)
+	if err != nil {
+		logger.Error("failed to load caller-classes config", "error", err)
+		os.Exit(1)
+	}
+	if callerClasses != nil {
+		logger.Info("loaded caller-classes config", "path", cfg.CallerClassesConfigPath)
+	}
+
 	// Initialize MCP handler and server
 	mcpHandler := mcp.NewHandler(exec, compositeBackend, coercer, rawTS, logger)
-	mcpServer := mcp.NewServer(mcpHandler, cfg, logger, tokenStore, userStore, apiKeyStore, rateLimiter)
+	mcpServer := mcp.NewServer(mcpHandler, cfg, logger, tokenStore, userStore, apiKeyStore, rateLimiter, callerClasses)
 
 	httpMux := http.NewServeMux()
 	mcpServer.SetupRoutes(httpMux)

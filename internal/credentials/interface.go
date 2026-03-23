@@ -22,6 +22,8 @@ type TenantInfo struct {
 	CompanyID   string
 	UserID      string
 	Environment string // "production" | "staging"
+	CallerID    string
+	CallerClass string
 }
 
 // CredentialStore is the interface for retrieving credentials by logical name.

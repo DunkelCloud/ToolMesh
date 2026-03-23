@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/DunkelCloud/ToolMesh/internal/authz"
@@ -57,8 +58,13 @@ func New(
 
 // ExecuteToolRequest holds the parameters for a tool execution.
 type ExecuteToolRequest struct {
-	ToolName string         `json:"toolName"`
-	Params   map[string]any `json:"params"`
+	ToolName    string         `json:"toolName"`
+	Params      map[string]any `json:"params"`
+	// Caller context for Temporal search attributes (set by executor, not by caller)
+	UserID      string `json:"userId,omitempty"`
+	CompanyID   string `json:"companyId,omitempty"`
+	CallerID    string `json:"callerId,omitempty"`
+	CallerClass string `json:"callerClass,omitempty"`
 }
 
 // ExecuteTool runs the full pipeline: AuthZ → Credentials → Backend → Gate.
@@ -74,6 +80,8 @@ func (e *Executor) ExecuteTool(ctx context.Context, req ExecuteToolRequest) (*ba
 		"tool", req.ToolName,
 		"user", uc.UserID,
 		"company", uc.CompanyID,
+		"callerId", uc.CallerID,
+		"callerClass", uc.CallerClass,
 	)
 
 	// Step 1: AuthZ check via OpenFGA
@@ -97,8 +105,23 @@ func (e *Executor) ExecuteTool(ctx context.Context, req ExecuteToolRequest) (*ba
 		}
 	}
 
-	// Step 2: Credential injection (credentials are used by the backend internally)
-	// The backend handles credential lookup via its configuration.
+	// Step 2: Credential injection via context
+	if e.creds != nil {
+		tenant := credentials.TenantInfo{
+			CompanyID:   uc.CompanyID,
+			UserID:      uc.UserID,
+			CallerID:    uc.CallerID,
+			CallerClass: uc.CallerClass,
+		}
+		// Determine backend name from tool prefix for credential lookup
+		if parts := splitToolPrefix(req.ToolName); parts[0] != "" {
+			credName := parts[0] + "_API_KEY"
+			if cred, err := e.creds.Get(ctx, credName, tenant); err == nil {
+				ctx = credentials.WithCredentials(ctx, map[string]string{parts[0]: cred})
+				e.logger.InfoContext(ctx, "credential injected", "backend", parts[0])
+			}
+		}
+	}
 
 	// Step 3: Backend execution
 	result, err := e.backend.Execute(ctx, req.ToolName, req.Params)
@@ -139,4 +162,13 @@ func (e *Executor) ExecuteTool(ctx context.Context, req ExecuteToolRequest) (*ba
 	)
 
 	return result, nil
+}
+
+// splitToolPrefix extracts the backend prefix from a tool name like "backend:tool".
+func splitToolPrefix(toolName string) [2]string {
+	parts := strings.SplitN(toolName, ":", 2)
+	if len(parts) == 2 {
+		return [2]string{parts[0], parts[1]}
+	}
+	return [2]string{"", toolName}
 }

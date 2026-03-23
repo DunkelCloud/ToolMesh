@@ -40,25 +40,27 @@ import (
 // Server is the ToolMesh MCP server that handles Streamable HTTP transport,
 // OAuth 2.1 authentication, and tool call routing.
 type Server struct {
-	handler    *Handler
-	cfg        *config.Config
-	logger     *slog.Logger
-	tokenStore auth.TokenStore
-	userStore  *auth.UserStore
-	apiKeys    *auth.APIKeyStore
-	rateLimiter *auth.DCRRateLimiter
+	handler       *Handler
+	cfg           *config.Config
+	logger        *slog.Logger
+	tokenStore    auth.TokenStore
+	userStore     *auth.UserStore
+	apiKeys       *auth.APIKeyStore
+	rateLimiter   *auth.DCRRateLimiter
+	callerClasses *config.CallerClasses
 }
 
 // NewServer creates a new MCP server.
-func NewServer(handler *Handler, cfg *config.Config, logger *slog.Logger, tokenStore auth.TokenStore, userStore *auth.UserStore, apiKeys *auth.APIKeyStore, rateLimiter *auth.DCRRateLimiter) *Server {
+func NewServer(handler *Handler, cfg *config.Config, logger *slog.Logger, tokenStore auth.TokenStore, userStore *auth.UserStore, apiKeys *auth.APIKeyStore, rateLimiter *auth.DCRRateLimiter, callerClasses *config.CallerClasses) *Server {
 	return &Server{
-		handler:     handler,
-		cfg:         cfg,
-		logger:      logger,
-		tokenStore:  tokenStore,
-		userStore:   userStore,
-		apiKeys:     apiKeys,
-		rateLimiter: rateLimiter,
+		handler:       handler,
+		cfg:           cfg,
+		logger:        logger,
+		tokenStore:    tokenStore,
+		userStore:     userStore,
+		apiKeys:       apiKeys,
+		rateLimiter:   rateLimiter,
+		callerClasses: callerClasses,
 	}
 }
 
@@ -214,12 +216,18 @@ func (s *Server) authenticate(r *http.Request) *userctx.UserContext {
 	// 1. API-Key Check (from apikeys.yaml — bcrypt hashed)
 	if bearer != "" && s.apiKeys != nil {
 		if entry := s.apiKeys.Match(bearer); entry != nil {
+			callerID := entry.CallerID
+			if callerID == "" {
+				callerID = entry.UserID
+			}
 			return &userctx.UserContext{
 				UserID:        entry.UserID,
 				CompanyID:     entry.CompanyID,
 				Roles:         entry.Roles,
 				Plan:          entry.Plan,
 				Authenticated: true,
+				CallerID:      callerID,
+				CallerClass:   s.callerClasses.Resolve(callerID),
 			}
 		}
 	}
@@ -233,6 +241,8 @@ func (s *Server) authenticate(r *http.Request) *userctx.UserContext {
 				Roles:         []string{"admin"},
 				Plan:          "pro",
 				Authenticated: true,
+				CallerID:      "api-key-user",
+				CallerClass:   s.callerClasses.Resolve("api-key-user"),
 			}
 		}
 	}
@@ -241,12 +251,18 @@ func (s *Server) authenticate(r *http.Request) *userctx.UserContext {
 	if bearer != "" && s.tokenStore != nil {
 		ti, err := s.tokenStore.GetToken(r.Context(), bearer)
 		if err == nil && time.Now().Before(ti.ExpiresAt) {
+			callerID := ti.CallerID
+			if callerID == "" {
+				callerID = ti.ClientID
+			}
 			return &userctx.UserContext{
 				UserID:        ti.UserID,
 				CompanyID:     ti.CompanyID,
 				Roles:         ti.Roles,
 				Plan:          ti.Plan,
 				Authenticated: true,
+				CallerID:      callerID,
+				CallerClass:   s.callerClasses.Resolve(callerID),
 			}
 		}
 	}
@@ -259,12 +275,16 @@ func (s *Server) authenticate(r *http.Request) *userctx.UserContext {
 			Roles:         []string{},
 			Plan:          "free",
 			Authenticated: true,
+			CallerID:      "anonymous",
+			CallerClass:   "untrusted",
 		}
 	}
 
 	return &userctx.UserContext{
 		UserID:        "anonymous",
 		Authenticated: false,
+		CallerID:      "anonymous",
+		CallerClass:   "untrusted",
 	}
 }
 
@@ -347,6 +367,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	client := &auth.OAuthClient{
 		ClientID:     clientID,
 		ClientSecret: clientSecret,
+		ClientName:   req.ClientName,
 		RedirectURIs: req.RedirectURIs,
 		CreatedAt:    time.Now(),
 	}
@@ -510,6 +531,12 @@ func (s *Server) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Req
 		}
 	}
 
+	// Derive CallerID from registered client's name
+	callerID := ac.ClientID // fallback to ClientID
+	if client, err := s.tokenStore.GetClient(r.Context(), ac.ClientID); err == nil && client.ClientName != "" {
+		callerID = client.ClientName
+	}
+
 	accessToken := generateID()
 	refreshToken := generateID()
 
@@ -521,6 +548,7 @@ func (s *Server) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Req
 		CompanyID:    ac.CompanyID,
 		Plan:         ac.Plan,
 		Roles:        ac.Roles,
+		CallerID:     callerID,
 		Scope:        ac.Scope,
 		ExpiresAt:    time.Now().Add(time.Hour),
 	}
@@ -573,6 +601,7 @@ func (s *Server) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request)
 		CompanyID:    oldTI.CompanyID,
 		Plan:         oldTI.Plan,
 		Roles:        oldTI.Roles,
+		CallerID:     oldTI.CallerID,
 		Scope:        oldTI.Scope,
 		ExpiresAt:    time.Now().Add(time.Hour),
 	}

@@ -26,6 +26,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/DunkelCloud/ToolMesh/internal/auth"
 	"github.com/DunkelCloud/ToolMesh/internal/authz"
 	"github.com/DunkelCloud/ToolMesh/internal/backend"
 	"github.com/DunkelCloud/ToolMesh/internal/config"
@@ -36,6 +37,7 @@ import (
 	"github.com/DunkelCloud/ToolMesh/internal/tsdef"
 	"github.com/DunkelCloud/ToolMesh/internal/userctx"
 	"github.com/DunkelCloud/ToolMesh/internal/version"
+	"github.com/redis/go-redis/v9"
 	temporalclient "go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/worker"
 	"go.temporal.io/sdk/workflow"
@@ -136,9 +138,9 @@ func main() {
 	compositeBackend.AddPassthrough(mcpAdapter)
 
 	// Initialize OpenFGA authorizer (optional — skip if no store ID configured)
-	var auth *authz.Authorizer
+	var authorizer *authz.Authorizer
 	if cfg.OpenFGAStoreID != "" {
-		auth, err = authz.NewAuthorizer(cfg.OpenFGAAPIURL, cfg.OpenFGAStoreID, logger)
+		authorizer, err = authz.NewAuthorizer(cfg.OpenFGAAPIURL, cfg.OpenFGAStoreID, logger)
 		if err != nil {
 			logger.Error("failed to create authorizer", "error", err)
 			os.Exit(1)
@@ -167,7 +169,7 @@ func main() {
 	gatePipeline := gate.NewPipeline(evaluators)
 
 	// Initialize executor
-	exec := executor.New(auth, credStore, compositeBackend, gatePipeline, logger)
+	exec := executor.New(authorizer, credStore, compositeBackend, gatePipeline, logger)
 
 	// Initialize Temporal client and worker
 	var temporalWorker worker.Worker
@@ -196,9 +198,46 @@ func main() {
 		logger.Info("Temporal worker started", "taskQueue", cfg.TemporalTaskQueue)
 	}
 
+	// Initialize Redis client for auth state
+	redisOpts, err := redis.ParseURL(cfg.RedisURL)
+	if err != nil {
+		logger.Error("failed to parse Redis URL", "error", err)
+		os.Exit(1)
+	}
+	rdb := redis.NewClient(redisOpts)
+	defer rdb.Close()
+
+	if err := rdb.Ping(ctx).Err(); err != nil {
+		logger.Warn("Redis not available, auth persistence disabled", "error", err)
+	} else {
+		logger.Info("Redis connected for auth state")
+	}
+
+	tokenStore := auth.NewRedisTokenStore(rdb)
+	rateLimiter := auth.NewDCRRateLimiter(rdb)
+
+	// Load user identity configs
+	userStore, err := auth.NewUserStore(cfg.UsersConfigPath)
+	if err != nil {
+		logger.Error("failed to load users config", "error", err)
+		os.Exit(1)
+	}
+	if userStore != nil {
+		logger.Info("loaded users config", "path", cfg.UsersConfigPath)
+	}
+
+	apiKeyStore, err := auth.NewAPIKeyStore(cfg.APIKeysConfigPath)
+	if err != nil {
+		logger.Error("failed to load apikeys config", "error", err)
+		os.Exit(1)
+	}
+	if apiKeyStore != nil {
+		logger.Info("loaded apikeys config", "path", cfg.APIKeysConfigPath)
+	}
+
 	// Initialize MCP handler and server
 	mcpHandler := mcp.NewHandler(exec, compositeBackend, coercer, rawTS, logger)
-	mcpServer := mcp.NewServer(mcpHandler, cfg, logger)
+	mcpServer := mcp.NewServer(mcpHandler, cfg, logger, tokenStore, userStore, apiKeyStore, rateLimiter)
 
 	httpMux := http.NewServeMux()
 	mcpServer.SetupRoutes(httpMux)

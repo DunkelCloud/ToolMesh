@@ -25,11 +25,12 @@ import (
 	"fmt"
 	"html/template"
 	"log/slog"
+	"net"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 
+	"github.com/DunkelCloud/ToolMesh/internal/auth"
 	"github.com/DunkelCloud/ToolMesh/internal/backend"
 	"github.com/DunkelCloud/ToolMesh/internal/config"
 	"github.com/DunkelCloud/ToolMesh/internal/userctx"
@@ -39,53 +40,25 @@ import (
 // Server is the ToolMesh MCP server that handles Streamable HTTP transport,
 // OAuth 2.1 authentication, and tool call routing.
 type Server struct {
-	handler *Handler
-	cfg     *config.Config
-	logger  *slog.Logger
-
-	// OAuth state
-	mu            sync.RWMutex
-	clients       map[string]*oauthClient
-	authCodes     map[string]*authCode
-	tokens        map[string]*tokenInfo
-	refreshTokens map[string]*tokenInfo
-}
-
-type oauthClient struct {
-	ClientID     string   `json:"client_id"`
-	ClientSecret string   `json:"client_secret"`
-	RedirectURIs []string `json:"redirect_uris"`
-	CreatedAt    time.Time
-}
-
-type authCode struct {
-	Code          string
-	ClientID      string
-	RedirectURI   string
-	CodeChallenge string
-	Scope         string
-	ExpiresAt     time.Time
-}
-
-type tokenInfo struct {
-	AccessToken  string
-	RefreshToken string
-	ClientID     string
-	UserID       string
-	Scope        string
-	ExpiresAt    time.Time
+	handler    *Handler
+	cfg        *config.Config
+	logger     *slog.Logger
+	tokenStore auth.TokenStore
+	userStore  *auth.UserStore
+	apiKeys    *auth.APIKeyStore
+	rateLimiter *auth.DCRRateLimiter
 }
 
 // NewServer creates a new MCP server.
-func NewServer(handler *Handler, cfg *config.Config, logger *slog.Logger) *Server {
+func NewServer(handler *Handler, cfg *config.Config, logger *slog.Logger, tokenStore auth.TokenStore, userStore *auth.UserStore, apiKeys *auth.APIKeyStore, rateLimiter *auth.DCRRateLimiter) *Server {
 	return &Server{
-		handler:       handler,
-		cfg:           cfg,
-		logger:        logger,
-		clients:       make(map[string]*oauthClient),
-		authCodes:     make(map[string]*authCode),
-		tokens:        make(map[string]*tokenInfo),
-		refreshTokens: make(map[string]*tokenInfo),
+		handler:     handler,
+		cfg:         cfg,
+		logger:      logger,
+		tokenStore:  tokenStore,
+		userStore:   userStore,
+		apiKeys:     apiKeys,
+		rateLimiter: rateLimiter,
 	}
 }
 
@@ -131,7 +104,7 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 
 	// Authenticate
 	uc := s.authenticate(r)
-	if !uc.Authenticated && s.cfg.AuthPassword != "" {
+	if !uc.Authenticated && s.authRequired() {
 		s.writeJSONRPCError(w, nil, -32001, "Unauthorized")
 		return
 	}
@@ -159,6 +132,11 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 	default:
 		s.writeJSONRPCError(w, req.ID, -32601, fmt.Sprintf("Method not found: %s", req.Method))
 	}
+}
+
+// authRequired returns true if any authentication mechanism is configured.
+func (s *Server) authRequired() bool {
+	return s.cfg.AuthPassword != "" || s.cfg.APIKey != "" || s.userStore != nil || s.apiKeys != nil
 }
 
 func (s *Server) handleInitialize(w http.ResponseWriter, req *jsonRPCRequest) {
@@ -233,8 +211,21 @@ func toolResultToMCP(result *backend.ToolResult) map[string]any {
 func (s *Server) authenticate(r *http.Request) *userctx.UserContext {
 	bearer := extractBearer(r)
 
-	// Check static API key
-	if s.cfg.APIKey != "" && bearer != "" {
+	// 1. API-Key Check (from apikeys.yaml — bcrypt hashed)
+	if bearer != "" && s.apiKeys != nil {
+		if entry := s.apiKeys.Match(bearer); entry != nil {
+			return &userctx.UserContext{
+				UserID:        entry.UserID,
+				CompanyID:     entry.CompanyID,
+				Roles:         entry.Roles,
+				Plan:          entry.Plan,
+				Authenticated: true,
+			}
+		}
+	}
+
+	// 2. Legacy single API key (env var fallback)
+	if s.cfg.APIKey != "" && bearer != "" && s.apiKeys == nil {
 		if subtle.ConstantTimeCompare([]byte(bearer), []byte(s.cfg.APIKey)) == 1 {
 			return &userctx.UserContext{
 				UserID:        "api-key-user",
@@ -246,24 +237,22 @@ func (s *Server) authenticate(r *http.Request) *userctx.UserContext {
 		}
 	}
 
-	// Check OAuth bearer token
-	if bearer != "" {
-		s.mu.RLock()
-		ti, ok := s.tokens[bearer]
-		s.mu.RUnlock()
-		if ok && time.Now().Before(ti.ExpiresAt) {
+	// 3. OAuth Bearer Token (from Redis)
+	if bearer != "" && s.tokenStore != nil {
+		ti, err := s.tokenStore.GetToken(r.Context(), bearer)
+		if err == nil && time.Now().Before(ti.ExpiresAt) {
 			return &userctx.UserContext{
 				UserID:        ti.UserID,
-				CompanyID:     "default",
-				Roles:         []string{"admin"},
-				Plan:          "pro",
+				CompanyID:     ti.CompanyID,
+				Roles:         ti.Roles,
+				Plan:          ti.Plan,
 				Authenticated: true,
 			}
 		}
 	}
 
-	// No auth configured — allow anonymous
-	if s.cfg.AuthPassword == "" && s.cfg.APIKey == "" {
+	// 4. No auth configured — allow anonymous
+	if !s.authRequired() {
 		return &userctx.UserContext{
 			UserID:        "anonymous",
 			CompanyID:     "default",
@@ -285,6 +274,19 @@ func extractBearer(r *http.Request) string {
 		return strings.TrimPrefix(h, "Bearer ")
 	}
 	return h
+}
+
+// clientIP extracts the client IP address, preferring X-Forwarded-For.
+func clientIP(r *http.Request) string {
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		parts := strings.SplitN(xff, ",", 2)
+		return strings.TrimSpace(parts[0])
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
 }
 
 // OAuth 2.1 Endpoints
@@ -318,6 +320,18 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// DCR Rate Limiting
+	if s.rateLimiter != nil {
+		ip := clientIP(r)
+		allowed, err := s.rateLimiter.Allow(r.Context(), ip)
+		if err != nil {
+			s.logger.Error("dcr rate limit check failed", "error", err)
+		} else if !allowed {
+			writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "too_many_requests"})
+			return
+		}
+	}
+
 	var req struct {
 		RedirectURIs []string `json:"redirect_uris"`
 		ClientName   string   `json:"client_name"`
@@ -330,16 +344,20 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	clientID := generateID()
 	clientSecret := generateID()
 
-	client := &oauthClient{
+	client := &auth.OAuthClient{
 		ClientID:     clientID,
 		ClientSecret: clientSecret,
 		RedirectURIs: req.RedirectURIs,
 		CreatedAt:    time.Now(),
 	}
 
-	s.mu.Lock()
-	s.clients[clientID] = client
-	s.mu.Unlock()
+	if s.tokenStore != nil {
+		if err := s.tokenStore.SaveClient(r.Context(), client); err != nil {
+			s.logger.Error("failed to save client", "error", err)
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
+			return
+		}
+	}
 
 	s.logger.Info("registered oauth client", "clientId", clientID)
 
@@ -369,6 +387,7 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		username := r.FormValue("username")
 		password := r.FormValue("password")
 		clientID := r.FormValue("client_id")
 		redirectURI := r.FormValue("redirect_uri")
@@ -376,22 +395,54 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		codeChallenge := r.FormValue("code_challenge")
 		scope := r.FormValue("scope")
 
-		if subtle.ConstantTimeCompare([]byte(password), []byte(s.cfg.AuthPassword)) != 1 {
-			s.renderLoginForm(w, clientID, redirectURI, state, codeChallenge, scope)
-			return
+		// Authenticate user
+		var userID, companyID, plan string
+		var roles []string
+
+		if s.userStore != nil {
+			// Multi-user mode (users.yaml)
+			user := s.userStore.Authenticate(username, password)
+			if user == nil {
+				s.renderLoginForm(w, clientID, redirectURI, state, codeChallenge, scope)
+				return
+			}
+			userID = user.Username
+			companyID = user.Company
+			plan = user.Plan
+			roles = user.Roles
+		} else {
+			// Legacy single-password mode
+			if subtle.ConstantTimeCompare([]byte(password), []byte(s.cfg.AuthPassword)) != 1 {
+				s.renderLoginForm(w, clientID, redirectURI, state, codeChallenge, scope)
+				return
+			}
+			userID = "owner"
+			companyID = "default"
+			plan = "pro"
+			roles = []string{"admin"}
 		}
 
 		code := generateID()
-		s.mu.Lock()
-		s.authCodes[code] = &authCode{
+		ac := &auth.AuthCode{
 			Code:          code,
 			ClientID:      clientID,
 			RedirectURI:   redirectURI,
 			CodeChallenge: codeChallenge,
 			Scope:         scope,
+			UserID:        userID,
+			CompanyID:     companyID,
+			Plan:          plan,
+			Roles:         roles,
 			ExpiresAt:     time.Now().Add(5 * time.Minute),
 		}
-		s.mu.Unlock()
+
+		if s.tokenStore != nil {
+			if err := s.tokenStore.SaveAuthCode(r.Context(), ac); err != nil {
+				s.logger.Error("failed to save auth code", "error", err)
+				http.Error(w, "Internal server error", http.StatusInternalServerError)
+				return
+			}
+		}
 
 		sep := "?"
 		if strings.Contains(redirectURI, "?") {
@@ -429,15 +480,18 @@ func (s *Server) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Req
 	code := r.FormValue("code")
 	codeVerifier := r.FormValue("code_verifier")
 
-	s.mu.Lock()
-	ac, ok := s.authCodes[code]
-	if ok {
-		delete(s.authCodes, code)
+	if s.tokenStore == nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_grant"})
+		return
 	}
-	s.cleanupExpiredLocked()
-	s.mu.Unlock()
 
-	if !ok || time.Now().After(ac.ExpiresAt) {
+	ac, err := s.tokenStore.ConsumeAuthCode(r.Context(), code)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_grant"})
+		return
+	}
+
+	if time.Now().After(ac.ExpiresAt) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_grant"})
 		return
 	}
@@ -459,19 +513,28 @@ func (s *Server) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Req
 	accessToken := generateID()
 	refreshToken := generateID()
 
-	ti := &tokenInfo{
+	ti := &auth.TokenInfo{
 		AccessToken:  accessToken,
 		RefreshToken: refreshToken,
 		ClientID:     ac.ClientID,
-		UserID:       "owner",
+		UserID:       ac.UserID,
+		CompanyID:    ac.CompanyID,
+		Plan:         ac.Plan,
+		Roles:        ac.Roles,
 		Scope:        ac.Scope,
 		ExpiresAt:    time.Now().Add(time.Hour),
 	}
 
-	s.mu.Lock()
-	s.tokens[accessToken] = ti
-	s.refreshTokens[refreshToken] = ti
-	s.mu.Unlock()
+	if err := s.tokenStore.SaveToken(r.Context(), ti); err != nil {
+		s.logger.Error("failed to save token", "error", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
+		return
+	}
+	if err := s.tokenStore.SaveRefreshToken(r.Context(), ti); err != nil {
+		s.logger.Error("failed to save refresh token", "error", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
+		return
+	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"access_token":  accessToken,
@@ -485,35 +548,45 @@ func (s *Server) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Req
 func (s *Server) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request) {
 	refreshToken := r.FormValue("refresh_token")
 
-	s.mu.Lock()
-	oldTI, ok := s.refreshTokens[refreshToken]
-	if ok {
-		delete(s.refreshTokens, refreshToken)
-		delete(s.tokens, oldTI.AccessToken)
-	}
-	s.mu.Unlock()
-
-	if !ok {
+	if s.tokenStore == nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_grant"})
 		return
 	}
 
+	oldTI, err := s.tokenStore.ConsumeRefreshToken(r.Context(), refreshToken)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_grant"})
+		return
+	}
+
+	// Delete old access token
+	_ = s.tokenStore.DeleteToken(r.Context(), oldTI.AccessToken)
+
 	newAccessToken := generateID()
 	newRefreshToken := generateID()
 
-	ti := &tokenInfo{
+	ti := &auth.TokenInfo{
 		AccessToken:  newAccessToken,
 		RefreshToken: newRefreshToken,
 		ClientID:     oldTI.ClientID,
 		UserID:       oldTI.UserID,
+		CompanyID:    oldTI.CompanyID,
+		Plan:         oldTI.Plan,
+		Roles:        oldTI.Roles,
 		Scope:        oldTI.Scope,
 		ExpiresAt:    time.Now().Add(time.Hour),
 	}
 
-	s.mu.Lock()
-	s.tokens[newAccessToken] = ti
-	s.refreshTokens[newRefreshToken] = ti
-	s.mu.Unlock()
+	if err := s.tokenStore.SaveToken(r.Context(), ti); err != nil {
+		s.logger.Error("failed to save token", "error", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
+		return
+	}
+	if err := s.tokenStore.SaveRefreshToken(r.Context(), ti); err != nil {
+		s.logger.Error("failed to save refresh token", "error", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
+		return
+	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"access_token":  newAccessToken,
@@ -528,22 +601,6 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
-// cleanupExpiredLocked removes expired auth codes and tokens.
-// Must be called with s.mu held.
-func (s *Server) cleanupExpiredLocked() {
-	now := time.Now()
-	for k, ac := range s.authCodes {
-		if now.After(ac.ExpiresAt) {
-			delete(s.authCodes, k)
-		}
-	}
-	for k, ti := range s.tokens {
-		if now.After(ti.ExpiresAt) {
-			delete(s.tokens, k)
-		}
-	}
-}
-
 var loginTmpl = template.Must(template.New("login").Parse(`<!DOCTYPE html>
 <html>
 <head><title>ToolMesh Login</title>
@@ -553,14 +610,15 @@ button{width:100%;padding:10px;background:#2563eb;color:white;border:none;border
 button:hover{background:#1d4ed8}</style></head>
 <body>
 <h2>ToolMesh</h2>
-<p>Enter your password to authorize access.</p>
+<p>Enter your credentials to authorize access.</p>
 <form method="POST" action="/authorize">
 <input type="hidden" name="client_id" value="{{.ClientID}}">
 <input type="hidden" name="redirect_uri" value="{{.RedirectURI}}">
 <input type="hidden" name="state" value="{{.State}}">
 <input type="hidden" name="code_challenge" value="{{.CodeChallenge}}">
 <input type="hidden" name="scope" value="{{.Scope}}">
-<input type="password" name="password" placeholder="Password" autofocus>
+<input type="text" name="username" placeholder="Username" autofocus>
+<input type="password" name="password" placeholder="Password">
 <button type="submit">Authorize</button>
 </form>
 </body>

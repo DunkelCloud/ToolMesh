@@ -13,7 +13,7 @@
 // limitations under the License.
 
 // Command tm-bootstrap initializes the OpenFGA store with the ToolMesh
-// authorization model and example tuples.
+// authorization model and example tuples, and provides utility commands.
 package main
 
 import (
@@ -24,9 +24,34 @@ import (
 
 	"github.com/DunkelCloud/ToolMesh/internal/authz"
 	"github.com/openfga/go-sdk/client"
+	"golang.org/x/crypto/bcrypt"
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "hash-password" {
+		hashPassword()
+		return
+	}
+
+	bootstrapOpenFGA()
+}
+
+func hashPassword() {
+	if len(os.Args) < 3 {
+		fmt.Fprintf(os.Stderr, "Usage: tm-bootstrap hash-password <password>\n")
+		os.Exit(1)
+	}
+
+	password := os.Args[2]
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println(string(hash))
+}
+
+func bootstrapOpenFGA() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
 	apiURL := os.Getenv("OPENFGA_API_URL")

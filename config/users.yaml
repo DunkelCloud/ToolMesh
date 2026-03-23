@@ -1,0 +1,11 @@
+users:
+  - username: admin
+    password_hash: "$2a$10$SoKDgc0osG0JzBxw20TlLO9VNQbcwOQJrNl.HYzLjGkskUv7Pyb3G"  # admin-password
+    company: dunkelcloud
+    plan: pro
+    roles: [admin]
+  - username: demo
+    password_hash: "$2a$10$n5MZ70btMZVi8qVs9nPCaukibnaCs8vtB9Wksv4LtRADDvfOvrlg6"  # demo-password
+    company: demo-corp
+    plan: free
+    roles: [viewer]

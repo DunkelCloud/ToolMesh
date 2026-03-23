@@ -55,6 +55,10 @@ type Config struct {
 	// Tool definitions directory (TypeScript canonical source)
 	ToolsDir string
 
+	// User identity config paths
+	UsersConfigPath  string
+	APIKeysConfigPath string
+
 	// Registry-based provider selection
 	CredentialStore string // registered store name (default: "embedded")
 	GateEvaluators  string // comma-separated evaluator chain (default: "goja")
@@ -79,6 +83,8 @@ func Load() (*Config, error) {
 		BackendsConfigPath: envStr("TOOLMESH_BACKENDS_CONFIG", "/app/config/backends.yaml"),
 		PoliciesDir:        envStr("TOOLMESH_POLICIES_DIR", "/app/policies"),
 		ToolsDir:           envStr("TOOLMESH_TOOLS_DIR", "/app/tools"),
+		UsersConfigPath:    envStr("TOOLMESH_USERS_CONFIG", "/app/config/users.yaml"),
+		APIKeysConfigPath:  envStr("TOOLMESH_APIKEYS_CONFIG", "/app/config/apikeys.yaml"),
 		CredentialStore:    envStr("CREDENTIAL_STORE", "embedded"),
 		GateEvaluators:     envStr("GATE_EVALUATORS", "goja"),
 	}

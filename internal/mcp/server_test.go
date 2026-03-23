@@ -27,9 +27,12 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/DunkelCloud/ToolMesh/internal/auth"
 	"github.com/DunkelCloud/ToolMesh/internal/backend"
 	"github.com/DunkelCloud/ToolMesh/internal/config"
 	"github.com/DunkelCloud/ToolMesh/internal/executor"
+	"github.com/alicebob/miniredis/v2"
+	"github.com/redis/go-redis/v9"
 )
 
 func newTestServer(t *testing.T, cfg *config.Config) (*Server, *http.ServeMux) {
@@ -40,11 +43,33 @@ func newTestServer(t *testing.T, cfg *config.Config) (*Server, *http.ServeMux) {
 	exec := executor.New(nil, nil, mb, nil, logger)
 	handler := NewHandler(exec, mb, nil, "", logger)
 
-	srv := NewServer(handler, cfg, logger)
+	srv := NewServer(handler, cfg, logger, nil, nil, nil, nil)
 	mux := http.NewServeMux()
 	srv.SetupRoutes(mux)
 
 	return srv, mux
+}
+
+func newTestServerWithRedis(t *testing.T, cfg *config.Config) (*Server, *http.ServeMux, *miniredis.Miniredis) {
+	t.Helper()
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { rdb.Close() })
+
+	tokenStore := auth.NewRedisTokenStore(rdb)
+	rateLimiter := auth.NewDCRRateLimiter(rdb)
+
+	mb := &mockTestBackend{}
+	exec := executor.New(nil, nil, mb, nil, logger)
+	handler := NewHandler(exec, mb, nil, "", logger)
+
+	srv := NewServer(handler, cfg, logger, tokenStore, nil, nil, rateLimiter)
+	mux := http.NewServeMux()
+	srv.SetupRoutes(mux)
+
+	return srv, mux, mr
 }
 
 type mockTestBackend struct{}
@@ -121,7 +146,7 @@ func TestServer_ProtectedResource(t *testing.T) {
 }
 
 func TestServer_Register(t *testing.T) {
-	_, mux := newTestServer(t, &config.Config{})
+	_, mux, _ := newTestServerWithRedis(t, &config.Config{})
 
 	body := `{"redirect_uris": ["https://example.com/callback"], "client_name": "test"}`
 	req := httptest.NewRequest(http.MethodPost, "/register", strings.NewReader(body))
@@ -256,7 +281,7 @@ func TestServer_MCP_MethodNotAllowed(t *testing.T) {
 }
 
 func TestServer_MCP_Unauthorized(t *testing.T) {
-	_, mux := newTestServer(t, &config.Config{AuthPassword: "secret"})
+	_, mux, _ := newTestServerWithRedis(t, &config.Config{AuthPassword: "secret"})
 
 	body := `{"jsonrpc": "2.0", "id": 1, "method": "initialize"}`
 	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(body))
@@ -295,7 +320,7 @@ func TestServer_MCP_APIKeyAuth(t *testing.T) {
 }
 
 func TestServer_OAuthFlow(t *testing.T) {
-	_, mux := newTestServer(t, &config.Config{
+	_, mux, _ := newTestServerWithRedis(t, &config.Config{
 		AuthPassword: "test-password",
 		Issuer:       "https://toolmesh.io/",
 	})
@@ -409,7 +434,7 @@ func TestServer_OAuthFlow(t *testing.T) {
 }
 
 func TestServer_Authorize_WrongPassword(t *testing.T) {
-	_, mux := newTestServer(t, &config.Config{AuthPassword: "correct"})
+	_, mux, _ := newTestServerWithRedis(t, &config.Config{AuthPassword: "correct"})
 
 	form := url.Values{
 		"password":     {"wrong"},
@@ -432,7 +457,7 @@ func TestServer_Authorize_WrongPassword(t *testing.T) {
 }
 
 func TestServer_Token_InvalidGrant(t *testing.T) {
-	_, mux := newTestServer(t, &config.Config{})
+	_, mux, _ := newTestServerWithRedis(t, &config.Config{})
 
 	form := url.Values{
 		"grant_type": {"authorization_code"},

@@ -66,7 +66,53 @@ Add to your Claude Desktop MCP config:
 
 ### Connect to Claude.ai (Custom Connector)
 
-ToolMesh supports OAuth 2.1 for remote access. Set `TOOLMESH_AUTH_PASSWORD` in your `.env` and use the public URL as the MCP endpoint.
+ToolMesh supports OAuth 2.1 with PKCE S256 for remote access. Configure users in `config/users.yaml` and use the public URL as the MCP endpoint.
+
+## Authentication
+
+ToolMesh supports two authentication methods that can be used independently or together. All OAuth state (tokens, auth codes, clients) is persisted in Redis and survives server restarts.
+
+### OAuth 2.1 (Interactive Login)
+
+Define users in `config/users.yaml` with bcrypt-hashed passwords:
+
+```yaml
+users:
+  - username: admin
+    password_hash: "$2a$10$..."
+    company: dunkelcloud
+    plan: pro
+    roles: [admin]
+```
+
+Generate password hashes with the bootstrap tool:
+
+```bash
+docker compose exec toolmesh /tm-bootstrap hash-password "my-password"
+```
+
+For single-user setups, `TOOLMESH_AUTH_PASSWORD` still works as a fallback.
+
+### API Keys (Programmatic Access)
+
+Define API keys in `config/apikeys.yaml` with bcrypt-hashed keys:
+
+```yaml
+keys:
+  - key_hash: "$2a$10$..."
+    user_id: claude-code-user
+    company_id: dunkelcloud
+    plan: pro
+    roles: [tool-executor]
+```
+
+Each key maps to a distinct user identity with its own plan and roles, which flow through to OpenFGA authorization.
+
+For single-key setups, `TOOLMESH_API_KEY` still works as a fallback.
+
+### DCR Rate Limiting
+
+Dynamic Client Registration is rate-limited to 5 registrations per hour per IP to prevent abuse.
 
 ## Configuration
 
@@ -79,6 +125,7 @@ See [docs/architecture.md](docs/architecture.md) for the full architecture docum
 ```mermaid
 graph LR
     Agent[AI Agent] -->|MCP| TM[ToolMesh]
+    TM -->|AuthN/State| Redis
     TM -->|AuthZ| FGA[OpenFGA]
     TM -->|Durable Exec| Temporal
     TM -->|Credentials| CS[Credential Store]

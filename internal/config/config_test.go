@@ -57,7 +57,6 @@ func TestLoad_Defaults(t *testing.T) {
 }
 
 func TestLoad_CustomValues(t *testing.T) {
-	t.Setenv("TOOLMESH_PORT", "9090")
 	t.Setenv("TOOLMESH_TRANSPORT", "stdio")
 	t.Setenv("TOOLMESH_AUTH_PASSWORD", "secret123")
 	t.Setenv("TOOLMESH_API_KEY", "my-api-key")
@@ -70,8 +69,8 @@ func TestLoad_CustomValues(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if cfg.Port != 9090 {
-		t.Errorf("Port = %d, want 9090", cfg.Port)
+	if cfg.Port != 8080 {
+		t.Errorf("Port = %d, want 8080 (fixed internal port)", cfg.Port)
 	}
 	if cfg.Transport != "stdio" {
 		t.Errorf("Transport = %q, want \"stdio\"", cfg.Transport)
@@ -102,8 +101,8 @@ func TestLoad_InvalidTransport(t *testing.T) {
 	}
 }
 
-func TestLoad_InvalidPortFallsBackToDefault(t *testing.T) {
-	t.Setenv("TOOLMESH_PORT", "notanumber")
+func TestLoad_PortIsAlwaysFixed(t *testing.T) {
+	// Port is hardcoded to 8080; TOOLMESH_PORT only controls docker host mapping
 	t.Setenv("TOOLMESH_TRANSPORT", "http")
 
 	cfg, err := Load()
@@ -111,6 +110,6 @@ func TestLoad_InvalidPortFallsBackToDefault(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if cfg.Port != 8080 {
-		t.Errorf("Port = %d, want 8080 (fallback)", cfg.Port)
+		t.Errorf("Port = %d, want 8080 (fixed)", cfg.Port)
 	}
 }

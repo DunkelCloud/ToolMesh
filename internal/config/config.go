@@ -68,7 +68,7 @@ type Config struct {
 // Load reads configuration from environment variables with sensible defaults.
 func Load() (*Config, error) {
 	cfg := &Config{
-		Port:               envInt("TOOLMESH_PORT", 8080),
+		Port:               8080, // always listen on 8080 inside container; TOOLMESH_PORT controls host-side mapping only
 		Transport:          envStr("TOOLMESH_TRANSPORT", "http"),
 		AuthPassword:       envStr("TOOLMESH_AUTH_PASSWORD", ""),
 		APIKey:             envStr("TOOLMESH_API_KEY", ""),

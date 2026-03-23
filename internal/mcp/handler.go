@@ -209,18 +209,9 @@ func (h *Handler) BuildToolList(ctx context.Context) ([]ToolDefinition, error) {
 		},
 	}
 
-	backendTools, err := h.backend.ListTools(ctx)
-	if err != nil {
-		h.logger.WarnContext(ctx, "failed to list backend tools", "error", err)
-	} else {
-		for _, bt := range backendTools {
-			tools = append(tools, ToolDefinition{
-				Name:        bt.Name,
-				Description: bt.Description,
-				InputSchema: bt.InputSchema,
-			})
-		}
-	}
+	// Backend tools are intentionally NOT exposed as individual MCP tools.
+	// They are only accessible via execute_code (Code Mode) and list_tools.
+	// This keeps the MCP surface minimal and avoids tool name validation issues.
 
 	return tools, nil
 }

@@ -515,8 +515,8 @@ func TestServer_ToolsList(t *testing.T) {
 		t.Fatal("expected tools array")
 	}
 
-	// Should have at least list_tools, execute_code, and test:tool
-	if len(tools) < 3 {
-		t.Errorf("expected at least 3 tools, got %d", len(tools))
+	// Only list_tools and execute_code are exposed as MCP tools
+	if len(tools) != 2 {
+		t.Errorf("expected 2 tools (list_tools, execute_code), got %d", len(tools))
 	}
 }

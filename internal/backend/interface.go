@@ -27,7 +27,7 @@ type ToolDescriptor struct {
 
 // ToolResult holds the result of a tool execution.
 type ToolResult struct {
-	Content  []any          `json:"content"`  // MCP content blocks
+	Content  []any          `json:"content"` // MCP content blocks
 	IsError  bool           `json:"isError"`
 	Metadata map[string]any `json:"metadata"` // latency, backend name, etc.
 }

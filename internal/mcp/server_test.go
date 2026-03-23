@@ -35,7 +35,7 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-func newTestServer(t *testing.T, cfg *config.Config) (*Server, *http.ServeMux) {
+func newTestServer(t *testing.T, cfg *config.Config) (*Server, *http.ServeMux) { //nolint:unparam // Server used in some callers
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 
@@ -50,7 +50,7 @@ func newTestServer(t *testing.T, cfg *config.Config) (*Server, *http.ServeMux) {
 	return srv, mux
 }
 
-func newTestServerWithRedis(t *testing.T, cfg *config.Config) (*Server, *http.ServeMux, *miniredis.Miniredis) {
+func newTestServerWithRedis(t *testing.T, cfg *config.Config) (*Server, *http.ServeMux, *miniredis.Miniredis) { //nolint:unparam // Server used in some callers
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 

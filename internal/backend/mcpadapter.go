@@ -72,7 +72,7 @@ func NewMCPAdapter(configPath string, creds credentials.CredentialStore, logger 
 		client:   mcp.NewClient(&mcp.Implementation{Name: "toolmesh", Version: "0.1.0"}, nil),
 	}
 
-	data, err := os.ReadFile(configPath)
+	data, err := os.ReadFile(configPath) //nolint:gosec // path from trusted config
 	if err != nil {
 		if os.IsNotExist(err) {
 			logger.Warn("backends config not found, starting with no backends", "path", configPath)
@@ -189,7 +189,7 @@ func (a *MCPAdapter) createSTDIOTransport(entry BackendEntry) (mcp.Transport, er
 	if entry.Command == "" {
 		return nil, fmt.Errorf("stdio transport requires a command")
 	}
-	cmd := exec.Command(entry.Command, entry.Args...)
+	cmd := exec.Command(entry.Command, entry.Args...) //nolint:gosec // command from trusted backends config
 	return &mcp.CommandTransport{Command: cmd}, nil
 }
 
@@ -208,7 +208,7 @@ func (a *MCPAdapter) discoverTools(ctx context.Context, name string, conn *backe
 		schema := make(map[string]any)
 		if t.InputSchema != nil {
 			schemaBytes, _ := json.Marshal(t.InputSchema)
-			json.Unmarshal(schemaBytes, &schema)
+			_ = json.Unmarshal(schemaBytes, &schema)
 		}
 
 		conn.tools = append(conn.tools, ToolDescriptor{
@@ -318,7 +318,7 @@ func (a *MCPAdapter) Close() {
 
 	for name, conn := range a.backends {
 		if conn.session != nil {
-			conn.session.Close()
+			_ = conn.session.Close()
 			conn.session = nil
 			a.logger.Info("disconnected backend", "name", name)
 		}
@@ -339,7 +339,7 @@ func (a *MCPAdapter) RegisterTools(backendName string, tools []ToolDescriptor) {
 	}
 }
 
-func (a *MCPAdapter) parseToolName(toolName string) (string, string, error) {
+func (a *MCPAdapter) parseToolName(toolName string) (backendName, tool string, err error) {
 	parts := strings.SplitN(toolName, ":", 2)
 	if len(parts) != 2 {
 		return "", "", fmt.Errorf("invalid tool name %q: expected format \"backend:tool_name\"", toolName)
@@ -366,6 +366,7 @@ type bearerTransport struct {
 	token string
 }
 
+// RoundTrip implements http.RoundTripper by adding a Bearer token header.
 func (t *bearerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	req = req.Clone(req.Context())
 	req.Header.Set("Authorization", "Bearer "+t.token)

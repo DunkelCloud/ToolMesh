@@ -27,14 +27,14 @@ import (
 
 // Authorizer checks whether users are allowed to execute tools.
 type Authorizer struct {
-	client  *client.OpenFgaClient
-	logger  *slog.Logger
+	client *client.OpenFgaClient
+	logger *slog.Logger
 }
 
 // NewAuthorizer creates an Authorizer backed by OpenFGA.
 func NewAuthorizer(apiURL, storeID string, logger *slog.Logger) (*Authorizer, error) {
 	cfg := &client.ClientConfiguration{
-		ApiUrl: apiURL,
+		ApiUrl:  apiURL,
 		StoreId: storeID,
 	}
 
@@ -220,5 +220,5 @@ func (a *Authorizer) Healthy(ctx context.Context) error {
 	return nil
 }
 
-func ptr(s string) *string           { return &s }
-func ptrMap(m map[string]any) *map[string]any { return &m }
+func ptr(s string) *string                    { return &s }
+func ptrMap(m map[string]any) *map[string]any { return &m } //nolint:gocritic // required by OpenFGA SDK

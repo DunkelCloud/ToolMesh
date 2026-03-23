@@ -27,7 +27,7 @@ func testLogger() *slog.Logger {
 func TestCoerce_StringToNumber(t *testing.T) {
 	c := NewCoercer([]ToolDef{{
 		Name:   "test",
-		Params: []ParamDef{{Name: "n", Type: ParamType{Kind: "number"}, Required: true}},
+		Params: []ParamDef{{Name: "n", Type: ParamType{Kind: kindNumber}, Required: true}},
 	}}, testLogger())
 
 	result, err := c.Coerce("test", map[string]any{"n": "42"})
@@ -42,7 +42,7 @@ func TestCoerce_StringToNumber(t *testing.T) {
 func TestCoerce_StringToBoolean(t *testing.T) {
 	c := NewCoercer([]ToolDef{{
 		Name:   "test",
-		Params: []ParamDef{{Name: "b", Type: ParamType{Kind: "boolean"}, Required: true}},
+		Params: []ParamDef{{Name: "b", Type: ParamType{Kind: kindBoolean}, Required: true}},
 	}}, testLogger())
 
 	tests := []struct {
@@ -71,7 +71,7 @@ func TestCoerce_StringToBoolean(t *testing.T) {
 func TestCoerce_NumberToString(t *testing.T) {
 	c := NewCoercer([]ToolDef{{
 		Name:   "test",
-		Params: []ParamDef{{Name: "s", Type: ParamType{Kind: "string"}, Required: true}},
+		Params: []ParamDef{{Name: "s", Type: ParamType{Kind: kindString}, Required: true}},
 	}}, testLogger())
 
 	result, err := c.Coerce("test", map[string]any{"s": 42})
@@ -86,7 +86,7 @@ func TestCoerce_NumberToString(t *testing.T) {
 func TestCoerce_SingleToArray(t *testing.T) {
 	c := NewCoercer([]ToolDef{{
 		Name:   "test",
-		Params: []ParamDef{{Name: "tags", Type: ParamType{Kind: "array", ItemKind: "string"}, Required: true}},
+		Params: []ParamDef{{Name: "tags", Type: ParamType{Kind: "array", ItemKind: kindString}, Required: true}},
 	}}, testLogger())
 
 	result, err := c.Coerce("test", map[string]any{"tags": "single"})
@@ -102,7 +102,7 @@ func TestCoerce_SingleToArray(t *testing.T) {
 func TestCoerce_StripExtraFields(t *testing.T) {
 	c := NewCoercer([]ToolDef{{
 		Name:   "test",
-		Params: []ParamDef{{Name: "a", Type: ParamType{Kind: "string"}, Required: true}},
+		Params: []ParamDef{{Name: "a", Type: ParamType{Kind: kindString}, Required: true}},
 	}}, testLogger())
 
 	result, err := c.Coerce("test", map[string]any{"a": "ok", "unknown": "strip me"})
@@ -120,7 +120,7 @@ func TestCoerce_StripExtraFields(t *testing.T) {
 func TestCoerce_MissingRequired(t *testing.T) {
 	c := NewCoercer([]ToolDef{{
 		Name:   "test",
-		Params: []ParamDef{{Name: "req", Type: ParamType{Kind: "string"}, Required: true}},
+		Params: []ParamDef{{Name: "req", Type: ParamType{Kind: kindString}, Required: true}},
 	}}, testLogger())
 
 	_, err := c.Coerce("test", map[string]any{})
@@ -132,7 +132,7 @@ func TestCoerce_MissingRequired(t *testing.T) {
 func TestCoerce_MissingOptional(t *testing.T) {
 	c := NewCoercer([]ToolDef{{
 		Name:   "test",
-		Params: []ParamDef{{Name: "opt", Type: ParamType{Kind: "string"}, Required: false}},
+		Params: []ParamDef{{Name: "opt", Type: ParamType{Kind: kindString}, Required: false}},
 	}}, testLogger())
 
 	result, err := c.Coerce("test", map[string]any{})
@@ -148,7 +148,7 @@ func TestCoerce_EnumCaseInsensitive(t *testing.T) {
 	c := NewCoercer([]ToolDef{{
 		Name: "test",
 		Params: []ParamDef{{
-			Name: "dir", Type: ParamType{Kind: "string"}, Required: true,
+			Name: "dir", Type: ParamType{Kind: kindString}, Required: true,
 			Enum: []string{"up", "down"},
 		}},
 	}}, testLogger())

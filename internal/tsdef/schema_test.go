@@ -22,22 +22,22 @@ func TestToInputSchema_BasicTypes(t *testing.T) {
 	td := ToolDef{
 		Name: "test",
 		Params: []ParamDef{
-			{Name: "q", Type: ParamType{Kind: "string"}, Required: true},
-			{Name: "n", Type: ParamType{Kind: "number"}, Required: true},
-			{Name: "b", Type: ParamType{Kind: "boolean"}, Required: false},
+			{Name: "q", Type: ParamType{Kind: kindString}, Required: true},
+			{Name: "n", Type: ParamType{Kind: kindNumber}, Required: true},
+			{Name: "b", Type: ParamType{Kind: kindBoolean}, Required: false},
 		},
 	}
 
 	schema := td.ToInputSchema()
 
 	props, _ := schema["properties"].(map[string]any)
-	if props["q"].(map[string]any)["type"] != "string" {
+	if props["q"].(map[string]any)["type"] != kindString {
 		t.Error("q should be string")
 	}
-	if props["n"].(map[string]any)["type"] != "number" {
+	if props["n"].(map[string]any)["type"] != kindNumber {
 		t.Error("n should be number")
 	}
-	if props["b"].(map[string]any)["type"] != "boolean" {
+	if props["b"].(map[string]any)["type"] != kindBoolean {
 		t.Error("b should be boolean")
 	}
 
@@ -50,7 +50,7 @@ func TestToInputSchema_BasicTypes(t *testing.T) {
 func TestToInputSchema_Enum(t *testing.T) {
 	td := ToolDef{
 		Params: []ParamDef{
-			{Name: "dir", Type: ParamType{Kind: "string"}, Enum: []string{"up", "down"}, Required: true},
+			{Name: "dir", Type: ParamType{Kind: kindString}, Enum: []string{"up", "down"}, Required: true},
 		},
 	}
 
@@ -58,7 +58,7 @@ func TestToInputSchema_Enum(t *testing.T) {
 	props, _ := schema["properties"].(map[string]any)
 	dir := props["dir"].(map[string]any)
 
-	if dir["type"] != "string" {
+	if dir["type"] != kindString {
 		t.Error("enum should be string type")
 	}
 	enum, _ := dir["enum"].([]any)
@@ -70,7 +70,7 @@ func TestToInputSchema_Enum(t *testing.T) {
 func TestToInputSchema_Array(t *testing.T) {
 	td := ToolDef{
 		Params: []ParamDef{
-			{Name: "tags", Type: ParamType{Kind: "array", ItemKind: "string"}, Required: true},
+			{Name: "tags", Type: ParamType{Kind: kindArray, ItemKind: kindString}, Required: true},
 		},
 	}
 
@@ -78,11 +78,11 @@ func TestToInputSchema_Array(t *testing.T) {
 	props, _ := schema["properties"].(map[string]any)
 	tags := props["tags"].(map[string]any)
 
-	if tags["type"] != "array" {
+	if tags["type"] != kindArray {
 		t.Error("should be array type")
 	}
 	items, _ := tags["items"].(map[string]any)
-	if items["type"] != "string" {
+	if items["type"] != kindString {
 		t.Error("items should be string")
 	}
 }
@@ -100,8 +100,8 @@ func TestToolDefFromSchema_Roundtrip(t *testing.T) {
 		Name:        "search",
 		Description: "Search things",
 		Params: []ParamDef{
-			{Name: "query", Type: ParamType{Kind: "string"}, Required: true, Description: "The query"},
-			{Name: "limit", Type: ParamType{Kind: "number"}, Required: false, Description: "Max results"},
+			{Name: "query", Type: ParamType{Kind: kindString}, Required: true, Description: "The query"},
+			{Name: "limit", Type: ParamType{Kind: kindNumber}, Required: false, Description: "Max results"},
 		},
 	}
 
@@ -126,8 +126,8 @@ func TestToolDefFromSchema_Roundtrip(t *testing.T) {
 	if queryParam == nil {
 		t.Fatal("query param not found")
 	}
-	if queryParam.Type.Kind != "string" {
-		t.Errorf("query type = %q, want %q", queryParam.Type.Kind, "string")
+	if queryParam.Type.Kind != kindString {
+		t.Errorf("query type = %q, want %q", queryParam.Type.Kind, kindString)
 	}
 	if !queryParam.Required {
 		t.Error("query should be required")

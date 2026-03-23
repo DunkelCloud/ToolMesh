@@ -136,7 +136,7 @@ func (h *Handler) handleExecuteCode(ctx context.Context, params map[string]any) 
 		}, nil
 	}
 
-	var results []any
+	results := make([]any, 0, len(calls))
 	for _, call := range calls {
 		// Apply coercion for each parsed call
 		callParams := call.Params

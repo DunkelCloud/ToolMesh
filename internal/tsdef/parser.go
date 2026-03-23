@@ -48,16 +48,14 @@ type ParamType struct {
 
 var (
 	funcPattern    = regexp.MustCompile(`(?s)/\*\*(.*?)\*/\s*export\s+function\s+(\w+)\s*\((.*?)\)\s*:\s*Promise<any>`)
-	jsdocPattern   = regexp.MustCompile(`/\*\*\s*(.*?)\s*\*/`)
 	propPattern    = regexp.MustCompile(`(?s)(?:/\*\*\s*(.*?)\s*\*/\s*)?(\w+)(\?)?:\s*([^;,]+)`)
 	enumValPattern = regexp.MustCompile(`"([^"]+)"`)
 )
 
 // ParseSource parses TypeScript source code and returns tool definitions.
 func ParseSource(source, filename string) ([]ToolDef, error) {
-	var defs []ToolDef
-
 	matches := funcPattern.FindAllStringSubmatch(source, -1)
+	defs := make([]ToolDef, 0, len(matches))
 	for _, m := range matches {
 		jsdoc := cleanJSDoc(m[1])
 		name := m[2]
@@ -96,10 +94,9 @@ func parseParamsBlock(block string) []ParamDef {
 
 // parseProperties parses property definitions from an object body.
 func parseProperties(body string) []ParamDef {
-	var params []ParamDef
-
 	// Split into individual property entries by semicolons
 	entries := splitBySemicolon(body)
+	params := make([]ParamDef, 0, len(entries))
 
 	for _, entry := range entries {
 		entry = strings.TrimSpace(entry)
@@ -130,7 +127,7 @@ func parseProperties(body string) []ParamDef {
 			for _, v := range vals {
 				param.Enum = append(param.Enum, v[1])
 			}
-			param.Type.Kind = "string"
+			param.Type.Kind = kindString
 		}
 
 		params = append(params, param)
@@ -144,41 +141,41 @@ func parseType(ts string) ParamType {
 	ts = strings.TrimSpace(ts)
 
 	switch ts {
-	case "string":
-		return ParamType{Kind: "string"}
-	case "number":
-		return ParamType{Kind: "number"}
-	case "boolean":
-		return ParamType{Kind: "boolean"}
-	case "any":
-		return ParamType{Kind: "any"}
+	case kindString:
+		return ParamType{Kind: kindString}
+	case kindNumber:
+		return ParamType{Kind: kindNumber}
+	case kindBoolean:
+		return ParamType{Kind: kindBoolean}
+	case kindAny:
+		return ParamType{Kind: kindAny}
 	case "string[]":
-		return ParamType{Kind: "array", ItemKind: "string"}
+		return ParamType{Kind: kindArray, ItemKind: kindString}
 	case "number[]":
-		return ParamType{Kind: "array", ItemKind: "number"}
+		return ParamType{Kind: kindArray, ItemKind: kindNumber}
 	case "boolean[]":
-		return ParamType{Kind: "array", ItemKind: "boolean"}
+		return ParamType{Kind: kindArray, ItemKind: kindBoolean}
 	case "any[]":
-		return ParamType{Kind: "array", ItemKind: "any"}
+		return ParamType{Kind: kindArray, ItemKind: kindAny}
 	case "Record<string, any>":
-		return ParamType{Kind: "object"}
+		return ParamType{Kind: kindObject}
 	}
 
 	// Inline object type: { key: type; ... }
 	if strings.HasPrefix(ts, "{") && strings.HasSuffix(ts, "}") {
 		inner := ts[1 : len(ts)-1]
 		return ParamType{
-			Kind:       "object",
+			Kind:       kindObject,
 			Properties: parseProperties(inner),
 		}
 	}
 
 	// String literal union: "a" | "b" | "c"
 	if strings.Contains(ts, "|") && strings.Contains(ts, "\"") {
-		return ParamType{Kind: "string"}
+		return ParamType{Kind: kindString}
 	}
 
-	return ParamType{Kind: "any"}
+	return ParamType{Kind: kindAny}
 }
 
 // splitBySemicolon splits a string by semicolons at depth 0.

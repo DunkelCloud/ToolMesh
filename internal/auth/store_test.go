@@ -16,6 +16,7 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -23,6 +24,12 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+const (
+	testUserAdmin = "admin"
+	testPlanPro   = "pro"
+)
+
+//nolint:unparam // miniredis returned for callers that need direct Redis access
 func newTestStore(t *testing.T) (*RedisTokenStore, *miniredis.Miniredis) {
 	t.Helper()
 	mr := miniredis.RunT(t)
@@ -62,7 +69,7 @@ func TestRedisTokenStore_Client(t *testing.T) {
 
 	// Non-existent client
 	_, err = store.GetClient(ctx, "nonexistent")
-	if err != ErrNotFound {
+	if !errors.Is(err, ErrNotFound) {
 		t.Errorf("expected ErrNotFound, got %v", err)
 	}
 }
@@ -77,10 +84,10 @@ func TestRedisTokenStore_AuthCode(t *testing.T) {
 		RedirectURI:   "https://example.com/callback",
 		CodeChallenge: "challenge",
 		Scope:         "claudeai",
-		UserID:        "admin",
+		UserID:        testUserAdmin,
 		CompanyID:     "dunkelcloud",
-		Plan:          "pro",
-		Roles:         []string{"admin"},
+		Plan:          testPlanPro,
+		Roles:         []string{testUserAdmin},
 		ExpiresAt:     time.Now().Add(5 * time.Minute),
 	}
 
@@ -96,16 +103,16 @@ func TestRedisTokenStore_AuthCode(t *testing.T) {
 	if got.Code != ac.Code {
 		t.Errorf("Code = %q, want %q", got.Code, ac.Code)
 	}
-	if got.UserID != "admin" {
-		t.Errorf("UserID = %q, want %q", got.UserID, "admin")
+	if got.UserID != testUserAdmin {
+		t.Errorf("UserID = %q, want %q", got.UserID, testUserAdmin)
 	}
-	if got.Plan != "pro" {
-		t.Errorf("Plan = %q, want %q", got.Plan, "pro")
+	if got.Plan != testPlanPro {
+		t.Errorf("Plan = %q, want %q", got.Plan, testPlanPro)
 	}
 
 	// Second consume should fail (atomic delete)
 	_, err = store.ConsumeAuthCode(ctx, "test-code")
-	if err != ErrNotFound {
+	if !errors.Is(err, ErrNotFound) {
 		t.Errorf("expected ErrNotFound on second consume, got %v", err)
 	}
 }
@@ -118,10 +125,10 @@ func TestRedisTokenStore_Token(t *testing.T) {
 		AccessToken:  "at-123",
 		RefreshToken: "rt-123",
 		ClientID:     "c1",
-		UserID:       "admin",
+		UserID:       testUserAdmin,
 		CompanyID:    "dunkelcloud",
-		Plan:         "pro",
-		Roles:        []string{"admin"},
+		Plan:         testPlanPro,
+		Roles:        []string{testUserAdmin},
 		Scope:        "claudeai",
 		ExpiresAt:    time.Now().Add(time.Hour),
 	}
@@ -137,14 +144,14 @@ func TestRedisTokenStore_Token(t *testing.T) {
 	if got.AccessToken != ti.AccessToken {
 		t.Errorf("AccessToken = %q, want %q", got.AccessToken, ti.AccessToken)
 	}
-	if got.UserID != "admin" {
-		t.Errorf("UserID = %q, want %q", got.UserID, "admin")
+	if got.UserID != testUserAdmin {
+		t.Errorf("UserID = %q, want %q", got.UserID, testUserAdmin)
 	}
 	if got.CompanyID != "dunkelcloud" {
 		t.Errorf("CompanyID = %q, want %q", got.CompanyID, "dunkelcloud")
 	}
-	if got.Plan != "pro" {
-		t.Errorf("Plan = %q, want %q", got.Plan, "pro")
+	if got.Plan != testPlanPro {
+		t.Errorf("Plan = %q, want %q", got.Plan, testPlanPro)
 	}
 
 	// Delete token
@@ -152,7 +159,7 @@ func TestRedisTokenStore_Token(t *testing.T) {
 		t.Fatalf("DeleteToken: %v", err)
 	}
 	_, err = store.GetToken(ctx, "at-123")
-	if err != ErrNotFound {
+	if !errors.Is(err, ErrNotFound) {
 		t.Errorf("expected ErrNotFound after delete, got %v", err)
 	}
 }
@@ -188,7 +195,7 @@ func TestRedisTokenStore_RefreshToken(t *testing.T) {
 
 	// Second consume should fail
 	_, err = store.ConsumeRefreshToken(ctx, "rt-456")
-	if err != ErrNotFound {
+	if !errors.Is(err, ErrNotFound) {
 		t.Errorf("expected ErrNotFound on second consume, got %v", err)
 	}
 }
@@ -206,10 +213,10 @@ func TestRedisTokenStore_Persistence(t *testing.T) {
 		AccessToken:  "persistent-token",
 		RefreshToken: "persistent-refresh",
 		ClientID:     "c1",
-		UserID:       "admin",
+		UserID:       testUserAdmin,
 		CompanyID:    "dunkelcloud",
-		Plan:         "pro",
-		Roles:        []string{"admin"},
+		Plan:         testPlanPro,
+		Roles:        []string{testUserAdmin},
 		Scope:        "claudeai",
 		ExpiresAt:    time.Now().Add(time.Hour),
 	}
@@ -228,7 +235,7 @@ func TestRedisTokenStore_Persistence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetToken after restart: %v", err)
 	}
-	if got.UserID != "admin" {
-		t.Errorf("UserID = %q, want %q", got.UserID, "admin")
+	if got.UserID != testUserAdmin {
+		t.Errorf("UserID = %q, want %q", got.UserID, testUserAdmin)
 	}
 }

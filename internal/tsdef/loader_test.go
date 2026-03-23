@@ -23,11 +23,11 @@ import (
 func TestLoadDir(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "a.ts"), []byte(`/** Tool A */
-export function toolA(): Promise<any>;`), 0644)
+export function toolA(): Promise<any>;`), 0600)
 	os.WriteFile(filepath.Join(dir, "b.ts"), []byte(`/** Tool B */
 export function toolB(params: {
   x: number;
-}): Promise<any>;`), 0644)
+}): Promise<any>;`), 0600)
 
 	defs, err := LoadDir(dir)
 	if err != nil {
@@ -61,7 +61,7 @@ func TestLoadDir_Missing(t *testing.T) {
 
 func TestLoadRawTS(t *testing.T) {
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "echo.ts"), []byte("// echo tools\n"), 0644)
+	os.WriteFile(filepath.Join(dir, "echo.ts"), []byte("// echo tools\n"), 0600)
 
 	raw, err := LoadRawTS(dir)
 	if err != nil {

@@ -27,38 +27,38 @@ import (
 
 // OAuthClient represents a registered OAuth 2.1 Dynamic Client.
 type OAuthClient struct {
-	ClientID     string   `json:"client_id"`
-	ClientSecret string   `json:"client_secret"`
-	ClientName   string   `json:"client_name,omitempty"`
-	RedirectURIs []string `json:"redirect_uris"`
+	ClientID     string    `json:"client_id"`
+	ClientSecret string    `json:"client_secret"`
+	ClientName   string    `json:"client_name,omitempty"`
+	RedirectURIs []string  `json:"redirect_uris"`
 	CreatedAt    time.Time `json:"created_at"`
 }
 
 // AuthCode represents a short-lived authorization code.
 type AuthCode struct {
-	Code          string `json:"code"`
-	ClientID      string `json:"client_id"`
-	RedirectURI   string `json:"redirect_uri"`
-	CodeChallenge string `json:"code_challenge"`
-	Scope         string `json:"scope"`
-	UserID        string `json:"user_id"`
-	CompanyID     string `json:"company_id"`
-	Plan          string `json:"plan"`
-	Roles         []string `json:"roles"`
+	Code          string    `json:"code"`
+	ClientID      string    `json:"client_id"`
+	RedirectURI   string    `json:"redirect_uri"`
+	CodeChallenge string    `json:"code_challenge"`
+	Scope         string    `json:"scope"`
+	UserID        string    `json:"user_id"`
+	CompanyID     string    `json:"company_id"`
+	Plan          string    `json:"plan"`
+	Roles         []string  `json:"roles"`
 	ExpiresAt     time.Time `json:"expires_at"`
 }
 
 // TokenInfo represents an access or refresh token with associated user data.
 type TokenInfo struct {
-	AccessToken  string   `json:"access_token"`
-	RefreshToken string   `json:"refresh_token"`
-	ClientID     string   `json:"client_id"`
-	UserID       string   `json:"user_id"`
-	CompanyID    string   `json:"company_id"`
-	Plan         string   `json:"plan"`
-	Roles        []string `json:"roles"`
-	CallerID     string   `json:"caller_id,omitempty"`
-	Scope        string   `json:"scope"`
+	AccessToken  string    `json:"access_token"`
+	RefreshToken string    `json:"refresh_token"`
+	ClientID     string    `json:"client_id"`
+	UserID       string    `json:"user_id"`
+	CompanyID    string    `json:"company_id"`
+	Plan         string    `json:"plan"`
+	Roles        []string  `json:"roles"`
+	CallerID     string    `json:"caller_id,omitempty"`
+	Scope        string    `json:"scope"`
 	ExpiresAt    time.Time `json:"expires_at"`
 }
 
@@ -81,7 +81,7 @@ type TokenStore interface {
 const (
 	prefixClient  = "oauth:client:"
 	prefixCode    = "oauth:code:"
-	prefixToken   = "oauth:token:"
+	prefixToken   = "oauth:token:" //nolint:gosec // Redis key prefix, not a credential
 	prefixRefresh = "oauth:refresh:"
 
 	ttlAuthCode     = 5 * time.Minute
@@ -108,6 +108,7 @@ func NewRedisTokenStore(rdb *redis.Client) *RedisTokenStore {
 	return &RedisTokenStore{rdb: rdb}
 }
 
+// SaveClient stores an OAuth client registration in Redis.
 func (s *RedisTokenStore) SaveClient(ctx context.Context, c *OAuthClient) error {
 	data, err := json.Marshal(c)
 	if err != nil {
@@ -116,6 +117,7 @@ func (s *RedisTokenStore) SaveClient(ctx context.Context, c *OAuthClient) error 
 	return s.rdb.Set(ctx, prefixClient+c.ClientID, data, 0).Err()
 }
 
+// GetClient retrieves an OAuth client by its client ID.
 func (s *RedisTokenStore) GetClient(ctx context.Context, clientID string) (*OAuthClient, error) {
 	data, err := s.rdb.Get(ctx, prefixClient+clientID).Bytes()
 	if errors.Is(err, redis.Nil) {
@@ -131,6 +133,7 @@ func (s *RedisTokenStore) GetClient(ctx context.Context, clientID string) (*OAut
 	return &c, nil
 }
 
+// SaveAuthCode stores an authorization code with a short TTL.
 func (s *RedisTokenStore) SaveAuthCode(ctx context.Context, ac *AuthCode) error {
 	data, err := json.Marshal(ac)
 	if err != nil {
@@ -139,6 +142,7 @@ func (s *RedisTokenStore) SaveAuthCode(ctx context.Context, ac *AuthCode) error 
 	return s.rdb.Set(ctx, prefixCode+ac.Code, data, ttlAuthCode).Err()
 }
 
+// ConsumeAuthCode atomically retrieves and deletes an authorization code.
 func (s *RedisTokenStore) ConsumeAuthCode(ctx context.Context, code string) (*AuthCode, error) {
 	val, err := consumeScript.Run(ctx, s.rdb, []string{prefixCode + code}).Result()
 	if errors.Is(err, redis.Nil) || val == nil {
@@ -154,6 +158,7 @@ func (s *RedisTokenStore) ConsumeAuthCode(ctx context.Context, code string) (*Au
 	return &ac, nil
 }
 
+// SaveToken stores an access token with the configured TTL.
 func (s *RedisTokenStore) SaveToken(ctx context.Context, ti *TokenInfo) error {
 	data, err := json.Marshal(ti)
 	if err != nil {
@@ -162,6 +167,7 @@ func (s *RedisTokenStore) SaveToken(ctx context.Context, ti *TokenInfo) error {
 	return s.rdb.Set(ctx, prefixToken+ti.AccessToken, data, ttlAccessToken).Err()
 }
 
+// GetToken retrieves token information by access token.
 func (s *RedisTokenStore) GetToken(ctx context.Context, accessToken string) (*TokenInfo, error) {
 	data, err := s.rdb.Get(ctx, prefixToken+accessToken).Bytes()
 	if errors.Is(err, redis.Nil) {
@@ -177,10 +183,12 @@ func (s *RedisTokenStore) GetToken(ctx context.Context, accessToken string) (*To
 	return &ti, nil
 }
 
+// DeleteToken removes an access token from the store.
 func (s *RedisTokenStore) DeleteToken(ctx context.Context, accessToken string) error {
 	return s.rdb.Del(ctx, prefixToken+accessToken).Err()
 }
 
+// SaveRefreshToken stores a refresh token with the configured TTL.
 func (s *RedisTokenStore) SaveRefreshToken(ctx context.Context, ti *TokenInfo) error {
 	data, err := json.Marshal(ti)
 	if err != nil {
@@ -189,6 +197,7 @@ func (s *RedisTokenStore) SaveRefreshToken(ctx context.Context, ti *TokenInfo) e
 	return s.rdb.Set(ctx, prefixRefresh+ti.RefreshToken, data, ttlRefreshToken).Err()
 }
 
+// ConsumeRefreshToken atomically retrieves and deletes a refresh token.
 func (s *RedisTokenStore) ConsumeRefreshToken(ctx context.Context, refreshToken string) (*TokenInfo, error) {
 	val, err := consumeScript.Run(ctx, s.rdb, []string{prefixRefresh + refreshToken}).Result()
 	if errors.Is(err, redis.Nil) || val == nil {

@@ -89,7 +89,7 @@ func main() {
 	credStore, err := credentials.New(cfg.CredentialStore, nil)
 	if err != nil {
 		logger.Error("failed to create credential store", "type", cfg.CredentialStore, "error", err)
-		os.Exit(1)
+		os.Exit(1) //nolint:gocritic // intentional in main
 	}
 	logger.Info("credential store initialized", "type", cfg.CredentialStore)
 
@@ -151,8 +151,9 @@ func main() {
 	}
 
 	// Initialize output gate pipeline via registry
-	var evaluators []gate.Evaluator
-	for _, name := range strings.Split(cfg.GateEvaluators, ",") {
+	gateNames := strings.Split(cfg.GateEvaluators, ",")
+	evaluators := make([]gate.Evaluator, 0, len(gateNames))
+	for _, name := range gateNames {
 		name = strings.TrimSpace(name)
 		if name == "" {
 			continue
@@ -205,7 +206,7 @@ func main() {
 		os.Exit(1)
 	}
 	rdb := redis.NewClient(redisOpts)
-	defer rdb.Close()
+	defer func() { _ = rdb.Close() }()
 
 	if err := rdb.Ping(ctx).Err(); err != nil {
 		logger.Warn("Redis not available, auth persistence disabled", "error", err)
@@ -298,7 +299,14 @@ func newTemporalLogger(l *slog.Logger) *temporalLogger {
 	return &temporalLogger{logger: l.With("component", "temporal")}
 }
 
-func (l *temporalLogger) Debug(msg string, keyvals ...any)  { l.logger.Debug(msg, keyvals...) }
-func (l *temporalLogger) Info(msg string, keyvals ...any)   { l.logger.Info(msg, keyvals...) }
-func (l *temporalLogger) Warn(msg string, keyvals ...any)   { l.logger.Warn(msg, keyvals...) }
-func (l *temporalLogger) Error(msg string, keyvals ...any)  { l.logger.Error(msg, keyvals...) }
+// Debug implements the Temporal logger interface.
+func (l *temporalLogger) Debug(msg string, keyvals ...any) { l.logger.Debug(msg, keyvals...) }
+
+// Info implements the Temporal logger interface.
+func (l *temporalLogger) Info(msg string, keyvals ...any) { l.logger.Info(msg, keyvals...) }
+
+// Warn implements the Temporal logger interface.
+func (l *temporalLogger) Warn(msg string, keyvals ...any) { l.logger.Warn(msg, keyvals...) }
+
+// Error implements the Temporal logger interface.
+func (l *temporalLogger) Error(msg string, keyvals ...any) { l.logger.Error(msg, keyvals...) }

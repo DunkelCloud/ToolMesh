@@ -38,7 +38,7 @@ backends:
     transport: stdio
     command: "./echo"
     args: ["--verbose"]
-`), 0644)
+`), 0600)
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	creds := credentials.NewEmbeddedStore()
@@ -76,7 +76,7 @@ func TestNewMCPAdapter_MissingConfig(t *testing.T) {
 func TestNewMCPAdapter_EmptyConfig(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "backends.yaml")
-	os.WriteFile(configPath, []byte("backends:\n"), 0644)
+	os.WriteFile(configPath, []byte("backends:\n"), 0600)
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	creds := credentials.NewEmbeddedStore()
@@ -93,7 +93,7 @@ func TestNewMCPAdapter_EmptyConfig(t *testing.T) {
 func TestNewMCPAdapter_InvalidYAML(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "backends.yaml")
-	os.WriteFile(configPath, []byte("{{invalid yaml"), 0644)
+	os.WriteFile(configPath, []byte("{{invalid yaml"), 0600)
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	creds := credentials.NewEmbeddedStore()

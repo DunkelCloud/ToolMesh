@@ -18,7 +18,6 @@ package config
 import (
 	"fmt"
 	"os"
-	"strconv"
 )
 
 // Config holds all ToolMesh configuration values.
@@ -56,8 +55,8 @@ type Config struct {
 	ToolsDir string
 
 	// User identity config paths
-	UsersConfigPath       string
-	APIKeysConfigPath     string
+	UsersConfigPath         string
+	APIKeysConfigPath       string
 	CallerClassesConfigPath string
 
 	// Registry-based provider selection
@@ -68,27 +67,27 @@ type Config struct {
 // Load reads configuration from environment variables with sensible defaults.
 func Load() (*Config, error) {
 	cfg := &Config{
-		Port:               8080, // always listen on 8080 inside container; TOOLMESH_PORT controls host-side mapping only
-		Transport:          envStr("TOOLMESH_TRANSPORT", "http"),
-		AuthPassword:       envStr("TOOLMESH_AUTH_PASSWORD", ""),
-		APIKey:             envStr("TOOLMESH_API_KEY", ""),
-		Issuer:             envStr("TOOLMESH_ISSUER", "https://toolmesh.io/"),
-		TemporalAddress:    envStr("TEMPORAL_ADDRESS", "localhost:7233"),
-		TemporalNamespace:  envStr("TEMPORAL_NAMESPACE", "default"),
-		TemporalTaskQueue:  envStr("TEMPORAL_TASK_QUEUE", "toolmesh"),
-		OpenFGAAPIURL:      envStr("OPENFGA_API_URL", "http://localhost:8080"),
-		OpenFGAStoreID:     envStr("OPENFGA_STORE_ID", ""),
-		RedisURL:           envStr("REDIS_URL", "redis://localhost:6379/0"),
-		LogLevel:           envStr("LOG_LEVEL", "info"),
-		LogFormat:          envStr("LOG_FORMAT", "json"),
-		BackendsConfigPath: envStr("TOOLMESH_BACKENDS_CONFIG", "/app/config/backends.yaml"),
-		PoliciesDir:        envStr("TOOLMESH_POLICIES_DIR", "/app/policies"),
-		ToolsDir:           envStr("TOOLMESH_TOOLS_DIR", "/app/tools"),
+		Port:                    8080, // always listen on 8080 inside container; TOOLMESH_PORT controls host-side mapping only
+		Transport:               envStr("TOOLMESH_TRANSPORT", "http"),
+		AuthPassword:            envStr("TOOLMESH_AUTH_PASSWORD", ""),
+		APIKey:                  envStr("TOOLMESH_API_KEY", ""),
+		Issuer:                  envStr("TOOLMESH_ISSUER", "https://toolmesh.io/"),
+		TemporalAddress:         envStr("TEMPORAL_ADDRESS", "localhost:7233"),
+		TemporalNamespace:       envStr("TEMPORAL_NAMESPACE", "default"),
+		TemporalTaskQueue:       envStr("TEMPORAL_TASK_QUEUE", "toolmesh"),
+		OpenFGAAPIURL:           envStr("OPENFGA_API_URL", "http://localhost:8080"),
+		OpenFGAStoreID:          envStr("OPENFGA_STORE_ID", ""),
+		RedisURL:                envStr("REDIS_URL", "redis://localhost:6379/0"),
+		LogLevel:                envStr("LOG_LEVEL", "info"),
+		LogFormat:               envStr("LOG_FORMAT", "json"),
+		BackendsConfigPath:      envStr("TOOLMESH_BACKENDS_CONFIG", "/app/config/backends.yaml"),
+		PoliciesDir:             envStr("TOOLMESH_POLICIES_DIR", "/app/policies"),
+		ToolsDir:                envStr("TOOLMESH_TOOLS_DIR", "/app/tools"),
 		UsersConfigPath:         envStr("TOOLMESH_USERS_CONFIG", "/app/config/users.yaml"),
 		APIKeysConfigPath:       envStr("TOOLMESH_APIKEYS_CONFIG", "/app/config/apikeys.yaml"),
 		CallerClassesConfigPath: envStr("TOOLMESH_CALLER_CLASSES_CONFIG", "/app/config/caller-classes.yaml"),
-		CredentialStore:    envStr("CREDENTIAL_STORE", "embedded"),
-		GateEvaluators:     envStr("GATE_EVALUATORS", "goja"),
+		CredentialStore:         envStr("CREDENTIAL_STORE", "embedded"),
+		GateEvaluators:          envStr("GATE_EVALUATORS", "goja"),
 	}
 
 	if cfg.Transport != "http" && cfg.Transport != "stdio" {
@@ -101,15 +100,6 @@ func Load() (*Config, error) {
 func envStr(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
-	}
-	return fallback
-}
-
-func envInt(key string, fallback int) int {
-	if v := os.Getenv(key); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			return n
-		}
 	}
 	return fallback
 }

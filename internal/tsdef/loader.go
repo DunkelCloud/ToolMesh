@@ -38,7 +38,7 @@ func LoadDir(dir string) ([]ToolDef, error) {
 		}
 
 		path := filepath.Join(dir, entry.Name())
-		data, err := os.ReadFile(path)
+		data, err := os.ReadFile(path) //nolint:gosec // path from trusted config dir
 		if err != nil {
 			return nil, fmt.Errorf("read tool file %s: %w", path, err)
 		}
@@ -65,14 +65,14 @@ func LoadRawTS(dir string) (string, error) {
 		return "", fmt.Errorf("read tools dir %s: %w", dir, err)
 	}
 
-	var parts []string
+	parts := make([]string, 0, len(entries))
 	for _, entry := range entries {
 		if entry.IsDir() || filepath.Ext(entry.Name()) != ".ts" {
 			continue
 		}
 
 		path := filepath.Join(dir, entry.Name())
-		data, err := os.ReadFile(path)
+		data, err := os.ReadFile(path) //nolint:gosec // path from trusted config dir
 		if err != nil {
 			return "", fmt.Errorf("read tool file %s: %w", path, err)
 		}

@@ -31,7 +31,7 @@ func TestCallerClasses_Resolve(t *testing.T) {
   standard:
     - partner-*
 `
-	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
 		t.Fatal(err)
 	}
 

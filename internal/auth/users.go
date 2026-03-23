@@ -43,7 +43,7 @@ type UserStore struct {
 
 // NewUserStore loads users from a YAML file. Returns nil if the file doesn't exist.
 func NewUserStore(path string) (*UserStore, error) {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //nolint:gosec // path from trusted config
 	if os.IsNotExist(err) {
 		return nil, nil
 	}
@@ -97,7 +97,7 @@ type APIKeyStore struct {
 
 // NewAPIKeyStore loads API keys from a YAML file. Returns nil if the file doesn't exist.
 func NewAPIKeyStore(path string) (*APIKeyStore, error) {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //nolint:gosec // path from trusted config
 	if os.IsNotExist(err) {
 		return nil, nil
 	}

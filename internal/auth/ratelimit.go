@@ -23,9 +23,9 @@ import (
 )
 
 const (
-	prefixDCRRate  = "oauth:dcr:ratelimit:"
-	dcrRateLimit   = 5
-	dcrRateWindow  = time.Hour
+	prefixDCRRate = "oauth:dcr:ratelimit:"
+	dcrRateLimit  = 5
+	dcrRateWindow = time.Hour
 )
 
 // DCRRateLimiter enforces per-IP rate limits on Dynamic Client Registration.

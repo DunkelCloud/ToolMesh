@@ -320,7 +320,7 @@ func (s *Server) handleOAuthMetadata(w http.ResponseWriter, _ *http.Request) {
 		"registration_endpoint":                 iss + "register",
 		"response_types_supported":              []string{"code"},
 		"grant_types_supported":                 []string{"authorization_code", "refresh_token"},
-		"code_challenge_methods_supported":       []string{"S256"},
+		"code_challenge_methods_supported":      []string{"S256"},
 		"token_endpoint_auth_methods_supported": []string{"none"},
 		"scopes_supported":                      []string{"claudeai"},
 	})
@@ -666,7 +666,7 @@ func (s *Server) renderLoginForm(w http.ResponseWriter, clientID, redirectURI, s
 	}
 }
 
-func (s *Server) writeJSONRPCResult(w http.ResponseWriter, id any, result any) {
+func (s *Server) writeJSONRPCResult(w http.ResponseWriter, id, result any) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"jsonrpc": "2.0",
 		"id":      id,

@@ -31,9 +31,9 @@ type Evaluator interface {
 
 // EvalResult describes the outcome of an evaluation.
 type EvalResult struct {
-	Allowed  bool               // Whether the result may be returned to the caller.
+	Allowed  bool                // Whether the result may be returned to the caller.
 	Modified *backend.ToolResult // Optional: modified result (fields removed, etc.).
-	Reason   string             // If rejected: reason.
+	Reason   string              // If rejected: reason.
 }
 
 // EvaluatorFactory creates an Evaluator instance from configuration.

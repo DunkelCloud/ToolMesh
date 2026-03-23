@@ -63,7 +63,7 @@ func paramToSchema(p ParamDef) map[string]any {
 	}
 
 	if len(p.Enum) > 0 {
-		s["type"] = "string"
+		s["type"] = kindString
 		enumVals := make([]any, len(p.Enum))
 		for i, v := range p.Enum {
 			enumVals[i] = v
@@ -73,19 +73,19 @@ func paramToSchema(p ParamDef) map[string]any {
 	}
 
 	switch p.Type.Kind {
-	case "string":
-		s["type"] = "string"
-	case "number":
-		s["type"] = "number"
-	case "boolean":
-		s["type"] = "boolean"
-	case "array":
-		s["type"] = "array"
-		if p.Type.ItemKind != "" && p.Type.ItemKind != "any" {
+	case kindString:
+		s["type"] = kindString
+	case kindNumber:
+		s["type"] = kindNumber
+	case kindBoolean:
+		s["type"] = kindBoolean
+	case kindArray:
+		s["type"] = kindArray
+		if p.Type.ItemKind != "" && p.Type.ItemKind != kindAny {
 			s["items"] = map[string]any{"type": p.Type.ItemKind}
 		}
-	case "object":
-		s["type"] = "object"
+	case kindObject:
+		s["type"] = kindObject
 		if len(p.Type.Properties) > 0 {
 			nested := make(map[string]any)
 			var req []any
@@ -146,7 +146,7 @@ func ToolDefFromSchema(name, description string, schema map[string]any) ToolDef 
 					param.Enum = append(param.Enum, s)
 				}
 			}
-			param.Type = ParamType{Kind: "string"}
+			param.Type = ParamType{Kind: kindString}
 		} else {
 			param.Type = schemaTypeToParamType(propMap)
 		}
@@ -160,23 +160,23 @@ func ToolDefFromSchema(name, description string, schema map[string]any) ToolDef 
 func schemaTypeToParamType(schema map[string]any) ParamType {
 	t, _ := schema["type"].(string)
 	switch t {
-	case "string":
-		return ParamType{Kind: "string"}
-	case "number", "integer":
-		return ParamType{Kind: "number"}
-	case "boolean":
-		return ParamType{Kind: "boolean"}
-	case "array":
-		itemKind := "any"
+	case kindString:
+		return ParamType{Kind: kindString}
+	case kindNumber, "integer":
+		return ParamType{Kind: kindNumber}
+	case kindBoolean:
+		return ParamType{Kind: kindBoolean}
+	case kindArray:
+		itemKind := kindAny
 		if items, ok := schema["items"].(map[string]any); ok {
 			if it, ok := items["type"].(string); ok {
 				itemKind = it
 			}
 		}
-		return ParamType{Kind: "array", ItemKind: itemKind}
-	case "object":
-		return ParamType{Kind: "object"}
+		return ParamType{Kind: kindArray, ItemKind: itemKind}
+	case kindObject:
+		return ParamType{Kind: kindObject}
 	default:
-		return ParamType{Kind: "any"}
+		return ParamType{Kind: kindAny}
 	}
 }

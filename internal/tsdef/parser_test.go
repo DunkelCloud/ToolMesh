@@ -50,8 +50,8 @@ export function search(params: {
 	if q.Name != "query" {
 		t.Errorf("param[0].name = %q, want %q", q.Name, "query")
 	}
-	if q.Type.Kind != "string" {
-		t.Errorf("param[0].type = %q, want %q", q.Type.Kind, "string")
+	if q.Type.Kind != kindString {
+		t.Errorf("param[0].type = %q, want %q", q.Type.Kind, kindString)
 	}
 	if !q.Required {
 		t.Error("param[0] should be required")
@@ -157,7 +157,7 @@ export function setTags(params: {
 	}
 
 	tags := defs[0].Params[0]
-	if tags.Type.Kind != "array" || tags.Type.ItemKind != "string" {
+	if tags.Type.Kind != kindArray || tags.Type.ItemKind != kindString {
 		t.Errorf("tags type = %v, want array of string", tags.Type)
 	}
 }

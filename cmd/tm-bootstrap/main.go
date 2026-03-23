@@ -188,7 +188,7 @@ func bootstrapTemporalSearchAttrs() {
 	})
 	if err != nil {
 		logger.Error("failed to add search attributes", "error", err)
-		os.Exit(1)
+		os.Exit(1) //nolint:gocritic // intentional in main
 	}
 
 	logger.Info("Temporal search attributes registered", "namespace", namespace)

@@ -58,8 +58,8 @@ func New(
 
 // ExecuteToolRequest holds the parameters for a tool execution.
 type ExecuteToolRequest struct {
-	ToolName    string         `json:"toolName"`
-	Params      map[string]any `json:"params"`
+	ToolName string         `json:"toolName"`
+	Params   map[string]any `json:"params"`
 	// Caller context for Temporal search attributes (set by executor, not by caller)
 	UserID      string `json:"userId,omitempty"`
 	CompanyID   string `json:"companyId,omitempty"`

@@ -109,7 +109,7 @@ func (c *CompositeBackend) Healthy(ctx context.Context) error {
 	return fmt.Errorf("no healthy backends")
 }
 
-func splitToolName(toolName string) (string, string, error) {
+func splitToolName(toolName string) (backendName, tool string, err error) {
 	parts := strings.SplitN(toolName, ":", 2)
 	if len(parts) != 2 {
 		return "", "", fmt.Errorf("invalid tool name %q: expected format \"backend:tool_name\"", toolName)

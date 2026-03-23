@@ -22,6 +22,9 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// CallerClassUntrusted is the default caller class when no pattern matches.
+const CallerClassUntrusted = "untrusted"
+
 // CallerClasses maps CallerID patterns to trust classes.
 type CallerClasses struct {
 	Classes map[string][]string `yaml:"classes"` // class → list of CallerID patterns
@@ -29,7 +32,7 @@ type CallerClasses struct {
 
 // LoadCallerClasses loads caller-classes.yaml. Returns nil if the file doesn't exist.
 func LoadCallerClasses(path string) (*CallerClasses, error) {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //nolint:gosec // path from trusted config
 	if os.IsNotExist(err) {
 		return nil, nil
 	}
@@ -49,7 +52,7 @@ func LoadCallerClasses(path string) (*CallerClasses, error) {
 // Default: "untrusted" when no pattern matches.
 func (cc *CallerClasses) Resolve(callerID string) string {
 	if cc == nil || callerID == "" {
-		return "untrusted"
+		return CallerClassUntrusted
 	}
 	for class, patterns := range cc.Classes {
 		for _, pattern := range patterns {
@@ -58,7 +61,7 @@ func (cc *CallerClasses) Resolve(callerID string) string {
 			}
 		}
 	}
-	return "untrusted"
+	return CallerClassUntrusted
 }
 
 // matchPattern checks if callerID matches a pattern.

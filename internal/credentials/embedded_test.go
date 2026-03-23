@@ -26,12 +26,12 @@ func TestEmbeddedStore_Get(t *testing.T) {
 	tenant := TenantInfo{CompanyID: "acme", UserID: "user1", Environment: "production"}
 
 	tests := []struct {
-		name       string
-		envKey     string
-		envValue   string
-		logical    string
-		wantValue  string
-		wantErr    bool
+		name         string
+		envKey       string
+		envValue     string
+		logical      string
+		wantValue    string
+		wantErr      bool
 		wantNotFound bool
 	}{
 		{

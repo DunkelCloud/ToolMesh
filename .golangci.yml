@@ -4,6 +4,7 @@ run:
 
 linters:
   enable:
+    # defaults
     - errcheck
     - govet
     - staticcheck
@@ -11,14 +12,26 @@ linters:
     - gosimple
     - ineffassign
     - typecheck
+    # style & quality
     - gocritic
     - revive
     - misspell
     - gofmt
     - goimports
+    - goconst
+    - unconvert
+    - unparam
+    - dupword
+    - prealloc
+    # correctness
+    - errorlint
+    - exhaustive
+    # security & reliability
+    - gosec
+    - bodyclose
+    - noctx
   disable:
     - depguard
-    - exhaustive
 
 linters-settings:
   revive:
@@ -36,6 +49,14 @@ linters-settings:
       - hugeParam
   misspell:
     locale: US
+  exhaustive:
+    default-signifies-exhaustive: true
+  gosec:
+    excludes:
+      - G104  # unhandled errors — already covered by errcheck
+  goconst:
+    min-len: 3
+    min-occurrences: 3
 
 issues:
   exclude-use-default: false

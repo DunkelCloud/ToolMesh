@@ -18,6 +18,7 @@ package gate
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -75,7 +76,7 @@ func New(policiesDir string, logger *slog.Logger) (*Gate, error) {
 		}
 
 		path := filepath.Join(policiesDir, entry.Name())
-		data, err := os.ReadFile(path)
+		data, err := os.ReadFile(path) //nolint:gosec // path from trusted policies dir
 		if err != nil {
 			return nil, fmt.Errorf("read policy %s: %w", path, err)
 		}
@@ -144,7 +145,8 @@ func (g *Gate) evalPolicy(p policy, gctx GateContext) error {
 
 	_, err = vm.RunString(p.source)
 	if err != nil {
-		if jsErr, ok := err.(*goja.Exception); ok {
+		var jsErr *goja.Exception
+		if errors.As(err, &jsErr) {
 			return fmt.Errorf("%s", jsErr.Value().String())
 		}
 		return err

@@ -133,7 +133,7 @@ func TestExecuteTool_GateRejects(t *testing.T) {
 		if (!ctx.user.authenticated) {
 			throw new Error("not authenticated");
 		}
-	`), 0644)
+	`), 0600)
 
 	g, err := gate.New(dir, logger)
 	if err != nil {
@@ -167,7 +167,7 @@ func TestExecuteTool_GatePasses(t *testing.T) {
 		if (!ctx.user.authenticated) {
 			throw new Error("not authenticated");
 		}
-	`), 0644)
+	`), 0600)
 
 	g, err := gate.New(dir, logger)
 	if err != nil {

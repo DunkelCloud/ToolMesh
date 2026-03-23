@@ -40,7 +40,7 @@ func TestUserStore_Authenticate(t *testing.T) {
     plan: free
     roles: [viewer]
 `
-	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -116,7 +116,7 @@ func TestAPIKeyStore_Match(t *testing.T) {
     plan: free
     roles: [viewer]
 `
-	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
 		t.Fatal(err)
 	}
 

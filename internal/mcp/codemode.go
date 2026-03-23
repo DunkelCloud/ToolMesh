@@ -77,7 +77,7 @@ func (p *CodeModeParser) ParseCode(code string) ([]ParsedToolCall, error) {
 		return nil, fmt.Errorf("no tool calls found in code")
 	}
 
-	var calls []ParsedToolCall
+	calls := make([]ParsedToolCall, 0, len(matches))
 	for _, match := range matches {
 		toolName := match[1]
 		argsStr := strings.TrimSpace(match[2])
@@ -103,7 +103,7 @@ func (p *CodeModeParser) ParseCode(code string) ([]ParsedToolCall, error) {
 
 // parseArgs attempts to parse function arguments.
 // Supports: "string", number, { json objects }
-func parseArgs(argsStr string) (map[string]any, error) {
+func parseArgs(argsStr string) (map[string]any, error) { //nolint:unparam // error kept for future use
 	if argsStr == "" {
 		return map[string]any{}, nil
 	}
@@ -206,7 +206,7 @@ func schemaToTypeScript(schema map[string]any) string {
 		}
 	}
 
-	var parts []string
+	parts := make([]string, 0, len(props))
 	for name, prop := range props {
 		tsType := "any"
 		if propMap, ok := prop.(map[string]any); ok {

@@ -22,6 +22,15 @@ import (
 	"strings"
 )
 
+const (
+	kindNumber  = "number"
+	kindBoolean = "boolean"
+	kindString  = "string"
+	kindArray   = "array"
+	kindAny     = "any"
+	kindObject  = "object"
+)
+
 // Coercer applies type coercion to tool parameters based on ToolDef definitions.
 // This provides tolerance for LLM-generated tool calls where types may not match
 // exactly (e.g., sending "5" instead of 5 for a number parameter).
@@ -100,15 +109,15 @@ func coerceValue(val any, p ParamDef) (any, error) {
 	}
 
 	switch p.Type.Kind {
-	case "number":
+	case kindNumber:
 		return coerceToNumber(val)
-	case "boolean":
+	case kindBoolean:
 		return coerceToBoolean(val)
-	case "string":
+	case kindString:
 		return coerceToString(val), nil
-	case "array":
+	case kindArray:
 		return coerceToArray(val, p.Type.ItemKind)
-	case "any":
+	case kindAny:
 		return val, nil
 	default:
 		return val, nil
@@ -172,6 +181,7 @@ func coerceToString(val any) any {
 	}
 }
 
+//nolint:unparam // itemKind reserved for future typed array coercion
 func coerceToArray(val any, itemKind string) (any, error) {
 	// If already a slice, return as-is
 	if arr, ok := val.([]any); ok {

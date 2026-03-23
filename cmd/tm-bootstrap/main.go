@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 
 	"github.com/DunkelCloud/ToolMesh/internal/authz"
 	"github.com/openfga/go-sdk/client"
@@ -90,6 +91,8 @@ func bootstrapOpenFGA() {
 
 	// Write bootstrap tuples
 	logger.Info("writing bootstrap tuples")
+
+	// Plan subscriptions: all users get free plan, acme company members get pro
 	tuples := []client.ClientTupleKey{
 		{
 			User:     "user:*",
@@ -101,11 +104,38 @@ func bootstrapOpenFGA() {
 			Relation: "subscriber",
 			Object:   "plan:pro",
 		},
-		{
+	}
+
+	// Associate demo tools with plans.
+	// OpenFGA does not support wildcards on the object side (tool:*),
+	// so each tool must be registered explicitly.
+	// In production, tools are registered dynamically when backends connect.
+	demoTools := []string{
+		"echo:echo", "echo:add", "echo:time", // built-in echo backend
+		"memorizer:retrieve_knowledge", "memorizer:memorize", "memorizer:list_documents",
+		"memorizer:get_document", "memorizer:knowledge_status",
+	}
+
+	// Pro plan: all demo tools
+	// OpenFGA object IDs cannot contain colons, so replace ":" with "_"
+	// e.g. "echo:echo" → "tool:echo_echo"
+	for _, tool := range demoTools {
+		tuples = append(tuples, client.ClientTupleKey{
 			User:     "plan:pro",
 			Relation: "associated_plan",
-			Object:   "tool:*",
-		},
+			Object:   "tool:" + strings.ReplaceAll(tool, ":", "_"),
+		})
+	}
+
+	// Free plan: only echo tools
+	for _, tool := range demoTools {
+		if len(tool) > 5 && tool[:5] == "echo:" {
+			tuples = append(tuples, client.ClientTupleKey{
+				User:     "plan:free",
+				Relation: "associated_plan",
+				Object:   "tool:" + strings.ReplaceAll(tool, ":", "_"),
+			})
+		}
 	}
 
 	if err := authz.WriteTuples(ctx, apiURL, storeID, tuples); err != nil {

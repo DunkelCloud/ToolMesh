@@ -19,6 +19,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	openfga "github.com/openfga/go-sdk"
 	"github.com/openfga/go-sdk/client"
@@ -51,10 +52,13 @@ func NewAuthorizer(apiURL, storeID string, logger *slog.Logger) (*Authorizer, er
 // Check verifies if the given user is allowed to execute the specified tool.
 // Returns true if authorized, false otherwise.
 func (a *Authorizer) Check(ctx context.Context, userID, toolName string) (bool, error) {
+	// OpenFGA object IDs cannot contain colons; tool names like "echo:echo"
+	// are stored as "tool:echo_echo" in tuples.
+	fgaToolID := strings.ReplaceAll(toolName, ":", "_")
 	body := client.ClientCheckRequest{
 		User:     "user:" + userID,
 		Relation: "can_execute",
-		Object:   "tool:" + toolName,
+		Object:   "tool:" + fgaToolID,
 	}
 
 	resp, err := a.client.Check(ctx).Body(body).Execute()
@@ -140,6 +144,7 @@ func WriteModel(ctx context.Context, apiURL, storeID string) (string, error) {
 						"subscriber": {
 							DirectlyRelatedUserTypes: &[]openfga.RelationReference{
 								{Type: "user"},
+								{Type: "user", Wildcard: ptrMap(map[string]any{})},
 								{Type: "company", Relation: ptr("member")},
 							},
 						},

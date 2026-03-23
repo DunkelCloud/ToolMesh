@@ -1,3 +1,17 @@
+// Copyright 2026 Dunkel Cloud GmbH
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 // Package config provides environment-based configuration for ToolMesh.
 package config
 
@@ -37,6 +51,13 @@ type Config struct {
 
 	// Policies directory
 	PoliciesDir string
+
+	// Tool definitions directory (TypeScript canonical source)
+	ToolsDir string
+
+	// Registry-based provider selection
+	CredentialStore string // registered store name (default: "embedded")
+	GateEvaluators  string // comma-separated evaluator chain (default: "goja")
 }
 
 // Load reads configuration from environment variables with sensible defaults.
@@ -57,6 +78,9 @@ func Load() (*Config, error) {
 		LogFormat:          envStr("LOG_FORMAT", "json"),
 		BackendsConfigPath: envStr("TOOLMESH_BACKENDS_CONFIG", "/app/config/backends.yaml"),
 		PoliciesDir:        envStr("TOOLMESH_POLICIES_DIR", "/app/policies"),
+		ToolsDir:           envStr("TOOLMESH_TOOLS_DIR", "/app/tools"),
+		CredentialStore:    envStr("CREDENTIAL_STORE", "embedded"),
+		GateEvaluators:     envStr("GATE_EVALUATORS", "goja"),
 	}
 
 	if cfg.Transport != "http" && cfg.Transport != "stdio" {

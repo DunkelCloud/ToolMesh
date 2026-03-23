@@ -1,3 +1,17 @@
+// Copyright 2026 Dunkel Cloud GmbH
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 // Command toolmesh starts the ToolMesh MCP server and Temporal worker.
 package main
 
@@ -8,6 +22,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -18,6 +33,7 @@ import (
 	"github.com/DunkelCloud/ToolMesh/internal/executor"
 	"github.com/DunkelCloud/ToolMesh/internal/gate"
 	"github.com/DunkelCloud/ToolMesh/internal/mcp"
+	"github.com/DunkelCloud/ToolMesh/internal/tsdef"
 	"github.com/DunkelCloud/ToolMesh/internal/userctx"
 	"github.com/DunkelCloud/ToolMesh/internal/version"
 	temporalclient "go.temporal.io/sdk/client"
@@ -67,8 +83,13 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Initialize credential store
-	credStore := credentials.NewEmbeddedStore()
+	// Initialize credential store via registry
+	credStore, err := credentials.New(cfg.CredentialStore, nil)
+	if err != nil {
+		logger.Error("failed to create credential store", "type", cfg.CredentialStore, "error", err)
+		os.Exit(1)
+	}
+	logger.Info("credential store initialized", "type", cfg.CredentialStore)
 
 	// Initialize MCPAdapter (external MCP backends)
 	mcpAdapter, err := backend.NewMCPAdapter(cfg.BackendsConfigPath, credStore, logger)
@@ -83,11 +104,34 @@ func main() {
 		logger.Error("failed to connect backends", "error", err)
 	}
 
+	// Load TypeScript tool definitions (canonical source)
+	toolDefs, err := tsdef.LoadDir(cfg.ToolsDir)
+	if err != nil {
+		logger.Error("failed to load tool definitions", "dir", cfg.ToolsDir, "error", err)
+		os.Exit(1)
+	}
+	rawTS, _ := tsdef.LoadRawTS(cfg.ToolsDir)
+
+	// Create echo backend — use TS definitions if available, else fallback
+	var echoBackend backend.ToolBackend
+	if len(toolDefs) > 0 {
+		var echoDescs []backend.ToolDescriptor
+		for _, td := range toolDefs {
+			echoDescs = append(echoDescs, td.ToToolDescriptor("builtin:echo"))
+		}
+		echoBackend = backend.NewEchoBackendWithDefs(echoDescs)
+		logger.Info("loaded tool definitions from TypeScript", "count", len(toolDefs), "dir", cfg.ToolsDir)
+	} else {
+		echoBackend = backend.NewEchoBackend()
+		logger.Info("using fallback tool definitions (no .ts files found)")
+	}
+
+	// Create type coercer for LLM tolerance
+	coercer := tsdef.NewCoercer(toolDefs, logger)
+
 	// Compose all backends: built-in echo + external MCP backends
-	// MCPAdapter already prefixes tools (e.g. "everything:echo"),
-	// so it's registered without a prefix in the composite.
 	compositeBackend := backend.NewCompositeBackend(map[string]backend.ToolBackend{
-		"echo": backend.NewEchoBackend(),
+		"echo": echoBackend,
 	})
 	compositeBackend.AddPassthrough(mcpAdapter)
 
@@ -104,15 +148,26 @@ func main() {
 		logger.Warn("OpenFGA store ID not configured, running without authorization")
 	}
 
-	// Initialize output gate
-	outputGate, err := gate.New(cfg.PoliciesDir, logger)
-	if err != nil {
-		logger.Error("failed to create output gate", "error", err)
-		os.Exit(1)
+	// Initialize output gate pipeline via registry
+	var evaluators []gate.Evaluator
+	for _, name := range strings.Split(cfg.GateEvaluators, ",") {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		evConfig := map[string]string{"policies_dir": cfg.PoliciesDir}
+		ev, err := gate.NewEvaluator(name, evConfig)
+		if err != nil {
+			logger.Error("failed to create gate evaluator", "name", name, "error", err)
+			os.Exit(1)
+		}
+		evaluators = append(evaluators, ev)
+		logger.Info("gate evaluator initialized", "name", name)
 	}
+	gatePipeline := gate.NewPipeline(evaluators)
 
 	// Initialize executor
-	exec := executor.New(auth, credStore, compositeBackend, outputGate, logger)
+	exec := executor.New(auth, credStore, compositeBackend, gatePipeline, logger)
 
 	// Initialize Temporal client and worker
 	var temporalWorker worker.Worker
@@ -142,7 +197,7 @@ func main() {
 	}
 
 	// Initialize MCP handler and server
-	mcpHandler := mcp.NewHandler(exec, compositeBackend, logger)
+	mcpHandler := mcp.NewHandler(exec, compositeBackend, coercer, rawTS, logger)
 	mcpServer := mcp.NewServer(mcpHandler, cfg, logger)
 
 	httpMux := http.NewServeMux()

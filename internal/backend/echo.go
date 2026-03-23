@@ -1,3 +1,17 @@
+// Copyright 2026 Dunkel Cloud GmbH
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package backend
 
 import (
@@ -8,13 +22,29 @@ import (
 	"time"
 )
 
+func init() {
+	Register("echo", func(_ map[string]any) (ToolBackend, error) {
+		return NewEchoBackend(), nil
+	})
+}
+
 // EchoBackend is a built-in backend for testing and demonstration.
 // It provides simple tools that work without any external dependencies.
-type EchoBackend struct{}
+// Tool definitions are loaded from TypeScript files when available,
+// falling back to hardcoded schemas.
+type EchoBackend struct {
+	toolDefs []ToolDescriptor // populated from TS defs or fallback
+}
 
-// NewEchoBackend creates a new EchoBackend.
+// NewEchoBackend creates a new EchoBackend with fallback hardcoded schemas.
 func NewEchoBackend() *EchoBackend {
-	return &EchoBackend{}
+	return &EchoBackend{toolDefs: defaultEchoTools()}
+}
+
+// NewEchoBackendWithDefs creates an EchoBackend with tool definitions
+// sourced from parsed TypeScript files.
+func NewEchoBackendWithDefs(defs []ToolDescriptor) *EchoBackend {
+	return &EchoBackend{toolDefs: defs}
 }
 
 // Execute runs the specified echo tool.
@@ -33,6 +63,11 @@ func (b *EchoBackend) Execute(_ context.Context, toolName string, params map[str
 
 // ListTools returns the tools provided by the echo backend.
 func (b *EchoBackend) ListTools(_ context.Context) ([]ToolDescriptor, error) {
+	return b.toolDefs, nil
+}
+
+// defaultEchoTools returns fallback tool definitions when no TS files are available.
+func defaultEchoTools() []ToolDescriptor {
 	return []ToolDescriptor{
 		{
 			Name:        "echo",
@@ -71,7 +106,7 @@ func (b *EchoBackend) ListTools(_ context.Context) ([]ToolDescriptor, error) {
 			},
 			Backend: "builtin:echo",
 		},
-	}, nil
+	}
 }
 
 // Healthy always returns nil.

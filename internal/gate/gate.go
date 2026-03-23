@@ -1,3 +1,17 @@
+// Copyright 2026 Dunkel Cloud GmbH
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 // Package gate implements the Output Gate — a goja-based JavaScript policy engine
 // that evaluates tool results before returning them to the caller.
 package gate
@@ -11,6 +25,21 @@ import (
 
 	"github.com/dop251/goja"
 )
+
+func init() {
+	RegisterEvaluator("goja", func(config map[string]string) (Evaluator, error) {
+		dir := config["policies_dir"]
+		if dir == "" {
+			dir = "/app/policies"
+		}
+		logger := slog.Default()
+		g, err := New(dir, logger)
+		if err != nil {
+			return nil, err
+		}
+		return g, nil
+	})
+}
 
 // Gate evaluates JavaScript policies against tool results.
 type Gate struct {
@@ -61,9 +90,14 @@ func New(policiesDir string, logger *slog.Logger) (*Gate, error) {
 	return g, nil
 }
 
+// Name returns the evaluator name.
+func (g *Gate) Name() string {
+	return "goja"
+}
+
 // Evaluate runs all policies against the given context.
 // Policies can modify the response or throw an error to reject the request.
-func (g *Gate) Evaluate(gctx GateContext) error {
+func (g *Gate) Evaluate(gctx GateContext) (*EvalResult, error) {
 	for _, p := range g.policies {
 		if err := g.evalPolicy(p, gctx); err != nil {
 			g.logger.Warn("policy rejected request",
@@ -72,10 +106,10 @@ func (g *Gate) Evaluate(gctx GateContext) error {
 				"user", gctx.User.UserID,
 				"error", err,
 			)
-			return fmt.Errorf("policy %s: %w", p.name, err)
+			return &EvalResult{Allowed: false, Reason: fmt.Sprintf("policy %s: %s", p.name, err)}, nil
 		}
 	}
-	return nil
+	return &EvalResult{Allowed: true}, nil
 }
 
 func (g *Gate) evalPolicy(p policy, gctx GateContext) error {

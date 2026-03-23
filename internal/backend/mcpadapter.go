@@ -227,10 +227,24 @@ func (a *MCPAdapter) discoverTools(ctx context.Context, name string, conn *backe
 // Tool names use underscore as separator: "backend_toolname".
 func (a *MCPAdapter) Execute(ctx context.Context, toolName string, params map[string]any) (*ToolResult, error) {
 	a.mu.RLock()
+	// Debug: log all registered backend names for matching
+	var registeredNames []string
+	for name := range a.backends {
+		registeredNames = append(registeredNames, name)
+	}
+	a.logger.DebugContext(ctx, "MCPAdapter.Execute lookup",
+		"toolName", toolName,
+		"registeredBackends", registeredNames,
+	)
 	backendName, realTool, conn := a.matchBackend(toolName)
 	a.mu.RUnlock()
 
 	if conn == nil {
+		a.logger.WarnContext(ctx, "MCPAdapter no match",
+			"toolName", toolName,
+			"matchedBackend", backendName,
+			"realTool", realTool,
+		)
 		return nil, fmt.Errorf("no backend found for tool %q", toolName)
 	}
 

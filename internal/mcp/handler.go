@@ -39,10 +39,15 @@ type Handler struct {
 func NewHandler(exec *executor.Executor, back backend.ToolBackend, coercer *tsdef.Coercer, rawTS string, logger *slog.Logger) *Handler {
 	// Build the code mode parser with reverse name lookup from all registered tools
 	tools, _ := back.ListTools(context.Background())
+	parser := NewCodeModeParser(tools)
+	for sanitized, canonical := range parser.nameMap {
+		logger.Debug("codeParser nameMap entry", "sanitized", sanitized, "canonical", canonical)
+	}
+	logger.Info("codeParser initialized", "nameMapSize", len(parser.nameMap), "toolCount", len(tools))
 	return &Handler{
 		executor:   exec,
 		backend:    back,
-		codeParser: NewCodeModeParser(tools),
+		codeParser: parser,
 		coercer:    coercer,
 		rawTS:      rawTS,
 		logger:     logger,
@@ -125,8 +130,11 @@ func (h *Handler) handleExecuteCode(ctx context.Context, params map[string]any) 
 		}, nil
 	}
 
+	h.logger.DebugContext(ctx, "execute_code input", "code", code)
+
 	calls, err := h.codeParser.ParseCode(code)
 	if err != nil {
+		h.logger.WarnContext(ctx, "execute_code parse failed", "error", err, "code", code)
 		return &backend.ToolResult{
 			IsError: true,
 			Content: []any{map[string]any{
@@ -136,8 +144,16 @@ func (h *Handler) handleExecuteCode(ctx context.Context, params map[string]any) 
 		}, nil
 	}
 
+	h.logger.DebugContext(ctx, "execute_code parsed calls", "count", len(calls))
+
 	results := make([]any, 0, len(calls))
 	for _, call := range calls {
+		h.logger.DebugContext(ctx, "execute_code dispatching",
+			"parsedTool", call.ToolName,
+			"params", call.Params,
+			"nameMapHit", h.codeParser.nameMap[call.ToolName] != "",
+		)
+
 		// Apply coercion for each parsed call
 		callParams := call.Params
 		if h.coercer != nil {

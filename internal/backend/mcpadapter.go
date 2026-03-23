@@ -224,19 +224,14 @@ func (a *MCPAdapter) discoverTools(ctx context.Context, name string, conn *backe
 }
 
 // Execute routes a tool call to the appropriate backend via MCP.
-// Tool names are expected in the format "backend:tool_name".
+// Tool names use underscore as separator: "backend_toolname".
 func (a *MCPAdapter) Execute(ctx context.Context, toolName string, params map[string]any) (*ToolResult, error) {
-	backendName, realTool, err := a.parseToolName(toolName)
-	if err != nil {
-		return nil, err
-	}
-
 	a.mu.RLock()
-	conn, ok := a.backends[backendName]
+	backendName, realTool, conn := a.matchBackend(toolName)
 	a.mu.RUnlock()
 
-	if !ok {
-		return nil, fmt.Errorf("backend %q not found", backendName)
+	if conn == nil {
+		return nil, fmt.Errorf("no backend found for tool %q", toolName)
 	}
 
 	if conn.session == nil {
@@ -281,7 +276,7 @@ func (a *MCPAdapter) ListTools(ctx context.Context) ([]ToolDescriptor, error) {
 	for name, conn := range a.backends {
 		for _, tool := range conn.tools {
 			all = append(all, ToolDescriptor{
-				Name:        name + ":" + tool.Name,
+				Name:        name + "_" + tool.Name,
 				Description: tool.Description,
 				InputSchema: tool.InputSchema,
 				Backend:     "mcp:" + name,
@@ -339,12 +334,16 @@ func (a *MCPAdapter) RegisterTools(backendName string, tools []ToolDescriptor) {
 	}
 }
 
-func (a *MCPAdapter) parseToolName(toolName string) (backendName, tool string, err error) {
-	parts := strings.SplitN(toolName, ":", 2)
-	if len(parts) != 2 {
-		return "", "", fmt.Errorf("invalid tool name %q: expected format \"backend:tool_name\"", toolName)
+// matchBackend finds the backend whose name is a prefix of the tool name.
+// Returns the backend name, the real tool name (without prefix), and the connection.
+func (a *MCPAdapter) matchBackend(toolName string) (string, string, *backendConn) {
+	for name, conn := range a.backends {
+		prefix := name + "_"
+		if strings.HasPrefix(toolName, prefix) {
+			return name, strings.TrimPrefix(toolName, prefix), conn
+		}
 	}
-	return parts[0], parts[1], nil
+	return "", toolName, nil
 }
 
 // contentToMap converts an MCP Content interface to a JSON-friendly map.

@@ -164,11 +164,10 @@ func (e *Executor) ExecuteTool(ctx context.Context, req ExecuteToolRequest) (*ba
 	return result, nil
 }
 
-// splitToolPrefix extracts the backend prefix from a tool name like "backend:tool".
+// splitToolPrefix extracts the backend prefix from a tool name like "backend_tool".
 func splitToolPrefix(toolName string) [2]string {
-	parts := strings.SplitN(toolName, ":", 2)
-	if len(parts) == 2 {
-		return [2]string{parts[0], parts[1]}
+	if idx := strings.Index(toolName, "_"); idx > 0 {
+		return [2]string{toolName[:idx], toolName[idx+1:]}
 	}
 	return [2]string{"", toolName}
 }

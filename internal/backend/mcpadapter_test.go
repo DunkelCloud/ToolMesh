@@ -227,7 +227,7 @@ func TestMCPAdapter_ListTools(t *testing.T) {
 	for _, tool := range tools {
 		names[tool.Name] = true
 	}
-	for _, expected := range []string{"backend1:search", "backend1:fetch", "backend2:store"} {
+	for _, expected := range []string{"backend1_search", "backend1_fetch", "backend2_store"} {
 		if !names[expected] {
 			t.Errorf("expected tool %q not found", expected)
 		}

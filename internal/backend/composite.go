@@ -40,15 +40,16 @@ func (c *CompositeBackend) AddPassthrough(b ToolBackend) {
 }
 
 // Execute routes the tool call to the correct backend based on the name prefix.
+// Tool names use underscore as separator: "backend_toolname".
+// We match against known backend names (longest prefix wins).
 func (c *CompositeBackend) Execute(ctx context.Context, toolName string, params map[string]any) (*ToolResult, error) {
-	backendName, realTool, err := splitToolName(toolName)
-	if err != nil {
-		return nil, err
-	}
-
-	// Check named backends first
-	if b, ok := c.backends[backendName]; ok {
-		return b.Execute(ctx, realTool, params)
+	// Check named backends by prefix match
+	for name, b := range c.backends {
+		prefix := name + "_"
+		if strings.HasPrefix(toolName, prefix) {
+			realTool := strings.TrimPrefix(toolName, prefix)
+			return b.Execute(ctx, realTool, params)
+		}
 	}
 
 	// Try passthrough backends (they handle their own routing)
@@ -59,14 +60,15 @@ func (c *CompositeBackend) Execute(ctx context.Context, toolName string, params 
 		}
 	}
 
-	return nil, fmt.Errorf("backend %q not found", backendName)
+	return nil, fmt.Errorf("no backend found for tool %q", toolName)
 }
 
 // ListTools aggregates tools from all backends.
 func (c *CompositeBackend) ListTools(ctx context.Context) ([]ToolDescriptor, error) {
 	var all []ToolDescriptor
 
-	// Named backends — prefix tool names
+	// Named backends — prefix tool names with underscore separator
+	// (MCP spec requires tool names to match [a-zA-Z0-9_-])
 	for name, b := range c.backends {
 		tools, err := b.ListTools(ctx)
 		if err != nil {
@@ -74,7 +76,7 @@ func (c *CompositeBackend) ListTools(ctx context.Context) ([]ToolDescriptor, err
 		}
 		for _, t := range tools {
 			all = append(all, ToolDescriptor{
-				Name:        name + ":" + t.Name,
+				Name:        name + "_" + t.Name,
 				Description: t.Description,
 				InputSchema: t.InputSchema,
 				Backend:     t.Backend,
@@ -109,10 +111,3 @@ func (c *CompositeBackend) Healthy(ctx context.Context) error {
 	return fmt.Errorf("no healthy backends")
 }
 
-func splitToolName(toolName string) (backendName, tool string, err error) {
-	parts := strings.SplitN(toolName, ":", 2)
-	if len(parts) != 2 {
-		return "", "", fmt.Errorf("invalid tool name %q: expected format \"backend:tool_name\"", toolName)
-	}
-	return parts[0], parts[1], nil
-}

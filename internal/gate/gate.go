@@ -150,5 +150,18 @@ func (g *Gate) evalPolicy(p policy, gctx GateContext) error {
 		return err
 	}
 
+	// Read back potentially modified response content from the JS context.
+	// Policies can mutate ctx.response.content (e.g., mask PII, filter fields).
+	val := vm.Get("ctx")
+	if val != nil {
+		if exported, ok := val.Export().(map[string]any); ok {
+			if resp, ok := exported["response"].(map[string]any); ok {
+				if content, ok := resp["content"].([]any); ok {
+					gctx.Response.Content = content
+				}
+			}
+		}
+	}
+
 	return nil
 }

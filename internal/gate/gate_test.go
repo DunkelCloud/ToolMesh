@@ -127,6 +127,198 @@ func TestRateLimiter_Check(t *testing.T) {
 	}
 }
 
+func TestGate_PIIProtection(t *testing.T) {
+	dir := t.TempDir()
+	// Copy the actual PII policy
+	piiPolicy, _ := os.ReadFile("policies/pii_protection.js")
+	writePolicy(t, dir, "pii.js", string(piiPolicy))
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	g, err := New(dir, logger)
+	if err != nil {
+		t.Fatalf("failed to create gate: %v", err)
+	}
+
+	tests := []struct {
+		name     string
+		input    string
+		contains string
+	}{
+		{
+			name:     "masks email",
+			input:    "Contact us at admin@example.com for help",
+			contains: "[EMAIL]",
+		},
+		{
+			name:     "masks credit card",
+			input:    "Card: 4111-1111-1111-1111",
+			contains: "[CREDIT_CARD]",
+		},
+		{
+			name:     "masks SSN",
+			input:    "SSN: 123-45-6789",
+			contains: "[SSN]",
+		},
+		{
+			name:     "masks AWS key",
+			input:    "Key: AKIAIOSFODNN7EXAMPLE",
+			contains: "[AWS_KEY]",
+		},
+		{
+			name:     "preserves clean text",
+			input:    "Hello world, everything is fine",
+			contains: "Hello world",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := &backend.ToolResult{
+				Content: []any{map[string]any{
+					"type": "text",
+					"text": tt.input,
+				}},
+			}
+
+			evalResult, err := g.Evaluate(GateContext{
+				User:     userctx.UserContext{UserID: "u1", Authenticated: true},
+				Tool:     "test_tool",
+				Response: result,
+			})
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if !evalResult.Allowed {
+				t.Fatalf("expected allowed, got rejected: %s", evalResult.Reason)
+			}
+
+			text := result.Content[0].(map[string]any)["text"].(string)
+			if !contains(text, tt.contains) {
+				t.Errorf("output %q should contain %q", text, tt.contains)
+			}
+		})
+	}
+}
+
+func TestGate_PIIProtection_NoOriginalLeakage(t *testing.T) {
+	dir := t.TempDir()
+	piiPolicy, _ := os.ReadFile("policies/pii_protection.js")
+	writePolicy(t, dir, "pii.js", string(piiPolicy))
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	g, _ := New(dir, logger)
+
+	result := &backend.ToolResult{
+		Content: []any{map[string]any{
+			"type": "text",
+			"text": "Email: secret@company.com, Card: 4111 1111 1111 1111",
+		}},
+	}
+
+	g.Evaluate(GateContext{
+		User:     userctx.UserContext{UserID: "u1", Authenticated: true},
+		Tool:     "test",
+		Response: result,
+	})
+
+	text := result.Content[0].(map[string]any)["text"].(string)
+	if contains(text, "secret@company.com") {
+		t.Error("email should have been masked")
+	}
+	if contains(text, "4111") {
+		t.Error("credit card should have been masked")
+	}
+}
+
+func TestGate_RoleFieldFilter(t *testing.T) {
+	dir := t.TempDir()
+	rolePolicy, _ := os.ReadFile("policies/role_field_filter.js")
+	writePolicy(t, dir, "roles.js", string(rolePolicy))
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	g, err := New(dir, logger)
+	if err != nil {
+		t.Fatalf("failed to create gate: %v", err)
+	}
+
+	jsonContent := `{"name":"John","ssn":"123-45-6789","email":"john@test.com"}`
+
+	// Non-compliance user calling a user tool — ssn should be redacted
+	result := &backend.ToolResult{
+		Content: []any{map[string]any{
+			"type": "text",
+			"text": jsonContent,
+		}},
+	}
+
+	evalResult, err := g.Evaluate(GateContext{
+		User:     userctx.UserContext{UserID: "u1", Roles: []string{"viewer"}, Authenticated: true},
+		Tool:     "user:get_profile",
+		Response: result,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !evalResult.Allowed {
+		t.Fatalf("expected allowed, got rejected: %s", evalResult.Reason)
+	}
+
+	text := result.Content[0].(map[string]any)["text"].(string)
+	if contains(text, "123-45-6789") {
+		t.Error("SSN should have been redacted for non-compliance user")
+	}
+	if !contains(text, "[REDACTED]") {
+		t.Error("expected [REDACTED] marker in output")
+	}
+	if !contains(text, "John") {
+		t.Error("non-restricted fields should be preserved")
+	}
+}
+
+func TestGate_RoleFieldFilter_AdminBypass(t *testing.T) {
+	dir := t.TempDir()
+	rolePolicy, _ := os.ReadFile("policies/role_field_filter.js")
+	writePolicy(t, dir, "roles.js", string(rolePolicy))
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	g, _ := New(dir, logger)
+
+	jsonContent := `{"name":"John","ssn":"123-45-6789"}`
+
+	result := &backend.ToolResult{
+		Content: []any{map[string]any{
+			"type": "text",
+			"text": jsonContent,
+		}},
+	}
+
+	// Admin should see everything
+	g.Evaluate(GateContext{
+		User:     userctx.UserContext{UserID: "admin1", Roles: []string{"admin"}, Authenticated: true},
+		Tool:     "user:get_profile",
+		Response: result,
+	})
+
+	text := result.Content[0].(map[string]any)["text"].(string)
+	if contains(text, "[REDACTED]") {
+		t.Error("admin should not have fields redacted")
+	}
+}
+
+func contains(s, substr string) bool {
+	return len(s) >= len(substr) && (s == substr || len(substr) == 0 ||
+		(len(s) > 0 && len(substr) > 0 && stringContains(s, substr)))
+}
+
+func stringContains(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
+}
+
 func writePolicy(t *testing.T, dir, name, content string) {
 	t.Helper()
 	path := filepath.Join(dir, name)

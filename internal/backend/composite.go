@@ -115,4 +115,3 @@ func (c *CompositeBackend) Healthy(ctx context.Context) error {
 	}
 	return fmt.Errorf("no healthy backends")
 }
-

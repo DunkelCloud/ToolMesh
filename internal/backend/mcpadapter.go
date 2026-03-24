@@ -228,7 +228,7 @@ func (a *MCPAdapter) discoverTools(ctx context.Context, name string, conn *backe
 func (a *MCPAdapter) Execute(ctx context.Context, toolName string, params map[string]any) (*ToolResult, error) {
 	a.mu.RLock()
 	// Debug: log all registered backend names for matching
-	var registeredNames []string
+	registeredNames := make([]string, 0, len(a.backends))
 	for name := range a.backends {
 		registeredNames = append(registeredNames, name)
 	}
@@ -350,7 +350,7 @@ func (a *MCPAdapter) RegisterTools(backendName string, tools []ToolDescriptor) {
 
 // matchBackend finds the backend whose name is a prefix of the tool name.
 // Returns the backend name, the real tool name (without prefix), and the connection.
-func (a *MCPAdapter) matchBackend(toolName string) (string, string, *backendConn) {
+func (a *MCPAdapter) matchBackend(toolName string) (name string, realTool string, conn *backendConn) {
 	for name, conn := range a.backends {
 		prefix := name + "_"
 		if strings.HasPrefix(toolName, prefix) {

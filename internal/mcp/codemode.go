@@ -49,9 +49,10 @@ type ParsedToolCall struct {
 	Params   map[string]any
 }
 
-// toolCallPattern matches expressions like: toolmesh.toolName("arg", { key: value })
-// or: await toolmesh.toolName("arg", { key: "value" })
-var toolCallPattern = regexp.MustCompile(`(?:await\s+)?toolmesh\.(\w+)\(([^)]*)\)`)
+// toolCallPrefix matches the start of a tool call up to the opening parenthesis.
+// Argument extraction is handled by extractBalancedArgs which properly handles
+// parentheses inside string literals.
+var toolCallPrefix = regexp.MustCompile(`(?:await\s+)?toolmesh\.(\w+)\(`)
 
 // GenerateToolDefinitions creates TypeScript-like interface definitions for list_tools.
 func GenerateToolDefinitions(tools []backend.ToolDescriptor) string {
@@ -73,15 +74,22 @@ func GenerateToolDefinitions(tools []backend.ToolDescriptor) string {
 
 // ParseCode extracts tool calls from JavaScript code.
 func (p *CodeModeParser) ParseCode(code string) ([]ParsedToolCall, error) {
-	matches := toolCallPattern.FindAllStringSubmatch(code, -1)
-	if len(matches) == 0 {
+	locs := toolCallPrefix.FindAllStringSubmatchIndex(code, -1)
+	if len(locs) == 0 {
 		return nil, fmt.Errorf("no tool calls found in code")
 	}
 
-	calls := make([]ParsedToolCall, 0, len(matches))
-	for _, match := range matches {
-		toolName := match[1]
-		argsStr := strings.TrimSpace(match[2])
+	calls := make([]ParsedToolCall, 0, len(locs))
+	for _, loc := range locs {
+		toolName := code[loc[2]:loc[3]]
+		// loc[1] points to one past the '(' — the opening paren is at loc[1]-1
+		openParen := loc[1] - 1
+
+		argsStr, ok := extractBalancedArgs(code, openParen)
+		if !ok {
+			return nil, fmt.Errorf("unbalanced parentheses for %s", toolName)
+		}
+		argsStr = strings.TrimSpace(argsStr)
 
 		params, err := parseArgs(argsStr)
 		if err != nil {
@@ -100,6 +108,54 @@ func (p *CodeModeParser) ParseCode(code string) ([]ParsedToolCall, error) {
 	}
 
 	return calls, nil
+}
+
+// extractBalancedArgs extracts the content between balanced parentheses,
+// correctly handling parentheses inside string literals (single, double,
+// and backtick quotes).
+// startIdx must point to the opening '('.
+func extractBalancedArgs(code string, startIdx int) (string, bool) {
+	if startIdx >= len(code) || code[startIdx] != '(' {
+		return "", false
+	}
+
+	depth := 0
+	inQuote := byte(0)
+	escaped := false
+
+	for i := startIdx; i < len(code); i++ {
+		ch := code[i]
+
+		if escaped {
+			escaped = false
+			continue
+		}
+
+		if inQuote != 0 {
+			if ch == '\\' {
+				escaped = true
+				continue
+			}
+			if ch == inQuote {
+				inQuote = 0
+			}
+			continue
+		}
+
+		switch ch {
+		case '"', '\'', '`':
+			inQuote = ch
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				return code[startIdx+1 : i], true
+			}
+		}
+	}
+
+	return "", false
 }
 
 // parseArgs attempts to parse function arguments.

@@ -21,6 +21,7 @@ import (
 	"strings"
 
 	"github.com/DunkelCloud/ToolMesh/internal/backend"
+	"github.com/dop251/goja"
 )
 
 // CodeModeParser extracts tool calls from JavaScript-like code.
@@ -102,23 +103,29 @@ func (p *CodeModeParser) ParseCode(code string) ([]ParsedToolCall, error) {
 }
 
 // parseArgs attempts to parse function arguments.
-// Supports: "string", number, { json objects }
+// Supports: "string", number, { json objects }, and JavaScript object literals
+// with unquoted keys (e.g. { query: "hello", top_k: 5 }).
 func parseArgs(argsStr string) (map[string]any, error) { //nolint:unparam // error kept for future use
 	if argsStr == "" {
 		return map[string]any{}, nil
 	}
 
-	params := make(map[string]any)
-
-	// Try to parse as a single JSON object
 	argsStr = strings.TrimSpace(argsStr)
+
+	// Try strict JSON first (fastest path)
 	if strings.HasPrefix(argsStr, "{") {
+		var params map[string]any
 		if err := json.Unmarshal([]byte(argsStr), &params); err == nil {
 			return params, nil
+		}
+		// JSON failed — try JavaScript object literal via goja
+		if parsed, err := parseJSObject(argsStr); err == nil {
+			return parsed, nil
 		}
 	}
 
 	// Split by commas (respecting braces and quotes)
+	params := make(map[string]any)
 	args := splitArgs(argsStr)
 
 	for i, arg := range args {
@@ -131,10 +138,16 @@ func parseArgs(argsStr string) (map[string]any, error) { //nolint:unparam // err
 			continue
 		}
 
-		// JSON object
+		// JSON or JS object
 		if strings.HasPrefix(arg, "{") {
 			var obj map[string]any
 			if err := json.Unmarshal([]byte(arg), &obj); err == nil {
+				for k, v := range obj {
+					params[k] = v
+				}
+				continue
+			}
+			if obj, err := parseJSObject(arg); err == nil {
 				for k, v := range obj {
 					params[k] = v
 				}
@@ -147,6 +160,23 @@ func parseArgs(argsStr string) (map[string]any, error) { //nolint:unparam // err
 	}
 
 	return params, nil
+}
+
+// parseJSObject evaluates a JavaScript object literal via goja and returns
+// the resulting map. This handles unquoted keys, trailing commas, and other
+// JS syntax that is not valid JSON.
+func parseJSObject(s string) (map[string]any, error) {
+	vm := goja.New()
+	v, err := vm.RunString("(" + s + ")")
+	if err != nil {
+		return nil, fmt.Errorf("js eval: %w", err)
+	}
+	exported := v.Export()
+	m, ok := exported.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("not an object: %T", exported)
+	}
+	return m, nil
 }
 
 // splitArgs splits a comma-separated argument string respecting nested braces and quotes.

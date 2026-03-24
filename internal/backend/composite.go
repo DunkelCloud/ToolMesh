@@ -58,6 +58,11 @@ func (c *CompositeBackend) Execute(ctx context.Context, toolName string, params 
 		if err == nil {
 			return result, nil
 		}
+		// If the passthrough recognized the tool but execution failed,
+		// return the actual error instead of "no backend found".
+		if !strings.Contains(err.Error(), "no backend found") {
+			return nil, err
+		}
 	}
 
 	return nil, fmt.Errorf("no backend found for tool %q", toolName)

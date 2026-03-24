@@ -168,6 +168,20 @@ Start with `bypass` to get running quickly, then switch to `restrict` after boot
 
 See [docs/configuration.md](docs/configuration.md) for all environment variables.
 
+### Timeout tuning
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `TOOLMESH_MCP_TIMEOUT` | `120` | HTTP client timeout (seconds) for calls to downstream MCP servers |
+| `TOOLMESH_ACTIVITY_TIMEOUT` | `120` | Temporal activity StartToClose timeout (seconds) for tool execution |
+
+Increase these for backends that need more time (e.g. browser-based web fetchers):
+
+```bash
+TOOLMESH_MCP_TIMEOUT=180
+TOOLMESH_ACTIVITY_TIMEOUT=180
+```
+
 ## Architecture
 
 See [docs/architecture.md](docs/architecture.md) for the full architecture documentation.

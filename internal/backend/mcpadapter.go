@@ -22,6 +22,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -156,7 +157,7 @@ func (a *MCPAdapter) createTransport(ctx context.Context, entry BackendEntry) (m
 }
 
 func (a *MCPAdapter) createHTTPTransport(ctx context.Context, entry BackendEntry) (mcp.Transport, error) {
-	httpClient := &http.Client{Timeout: 30 * time.Second}
+	httpClient := &http.Client{Timeout: envDuration("TOOLMESH_MCP_TIMEOUT", 120*time.Second)}
 
 	// Inject API key as Bearer token if configured
 	if entry.APIKeyEnv != "" {
@@ -371,6 +372,17 @@ func contentToMap(c mcp.Content) map[string]any {
 		return map[string]any{"type": "text", "text": string(data)}
 	}
 	return m
+}
+
+// envDuration reads a duration in seconds from an environment variable,
+// falling back to the provided default if unset or unparsable.
+func envDuration(key string, fallback time.Duration) time.Duration {
+	if v := os.Getenv(key); v != "" {
+		if secs, err := strconv.Atoi(v); err == nil && secs > 0 {
+			return time.Duration(secs) * time.Second
+		}
+	}
+	return fallback
 }
 
 // bearerTransport injects an Authorization header into HTTP requests.

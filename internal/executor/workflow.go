@@ -16,6 +16,8 @@ package executor
 
 import (
 	"fmt"
+	"os"
+	"strconv"
 	"time"
 
 	"github.com/DunkelCloud/ToolMesh/internal/backend"
@@ -37,7 +39,7 @@ var (
 // audit trail via workflow history.
 func ToolExecutionWorkflow(ctx workflow.Context, req ExecuteToolRequest) (*backend.ToolResult, error) {
 	activityOpts := workflow.ActivityOptions{
-		StartToCloseTimeout: 30 * time.Second,
+		StartToCloseTimeout: envDuration("TOOLMESH_ACTIVITY_TIMEOUT", 120*time.Second),
 		RetryPolicy: &temporal.RetryPolicy{
 			InitialInterval:    time.Second,
 			BackoffCoefficient: 2.0,
@@ -66,4 +68,15 @@ func ToolExecutionWorkflow(ctx workflow.Context, req ExecuteToolRequest) (*backe
 	}
 
 	return &result, nil
+}
+
+// envDuration reads a duration in seconds from an environment variable,
+// falling back to the provided default if unset or unparsable.
+func envDuration(key string, fallback time.Duration) time.Duration {
+	if v := os.Getenv(key); v != "" {
+		if secs, err := strconv.Atoi(v); err == nil && secs > 0 {
+			return time.Duration(secs) * time.Second
+		}
+	}
+	return fallback
 }

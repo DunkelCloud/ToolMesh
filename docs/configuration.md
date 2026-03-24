@@ -47,6 +47,20 @@ CREDENTIAL_MEMORIZER_API_KEY=sk-mem-xxxxx
 CREDENTIAL_BRAVE_API_KEY=BSA-xxxxx
 ```
 
+## Timeouts
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `TOOLMESH_MCP_TIMEOUT` | `120` | HTTP client timeout in seconds for calls to downstream MCP servers |
+| `TOOLMESH_ACTIVITY_TIMEOUT` | `120` | Temporal activity StartToClose timeout in seconds for tool execution |
+
+Increase these for backends that need more time, e.g. browser-based web fetchers processing heavy pages:
+
+```bash
+TOOLMESH_MCP_TIMEOUT=180
+TOOLMESH_ACTIVITY_TIMEOUT=180
+```
+
 ## Backend Configuration
 
 | Variable | Default | Description |

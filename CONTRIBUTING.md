@@ -6,7 +6,7 @@ Thank you for your interest in contributing to ToolMesh.
 
 ### Prerequisites
 
-- Go 1.24+
+- Go 1.25+
 - Docker and Docker Compose v2
 
 ### Getting Started
@@ -43,14 +43,38 @@ docker compose up -d
 - **Table-driven tests** where appropriate
 - **GoDoc comments** on all exported types and functions
 
+## Branching & Workflow
+
+### Branch Naming
+
+- `feature/<name>` — new functionality
+- `fix/<name>` — bug fixes
+- `docs/<name>` — documentation changes
+
+### Development Cycle
+
+1. Create a feature branch from `main`
+2. Commit freely — WIP commits are expected and welcome
+3. Build and test locally with `make docker-dev` (builds and pushes a `:dev` image)
+4. Test against the dev environment using the `:dev` tag
+5. When ready: open a Pull Request
+
+### Merging
+
+- All PRs are **squash-merged** into `main`
+- The squash commit message should clearly describe the change
+- Delete the feature branch after merge
+- Direct pushes to `main` are not allowed
+
 ## Pull Requests
 
 1. Fork the repository
-2. Create a feature branch from `main`
+2. Create a feature branch from `main` (see naming conventions above)
 3. Write tests for new functionality
 4. Ensure `go test ./...` passes
 5. Ensure `go vet ./...` reports no issues
-6. Submit a pull request with a clear description
+6. Open a pull request with a clear description
+7. PRs are squash-merged — your branch commits will be combined into one clean commit on `main`
 
 ## License
 

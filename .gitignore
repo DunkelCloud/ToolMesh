@@ -36,3 +36,6 @@ Thumbs.db
 
 # Docker
 docker-compose.override.yml
+
+# Claude Code project rules (local only)
+CLAUDE.md

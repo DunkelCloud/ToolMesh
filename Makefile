@@ -10,7 +10,7 @@ LDFLAGS  := -s -w \
 
 BIN_DIR  := bin
 
-.PHONY: all build test lint vet fmt clean docker bootstrap help
+.PHONY: all build test lint vet fmt clean docker docker-dev bootstrap help
 
 all: lint test build ## Run lint, test, and build
 
@@ -43,6 +43,12 @@ clean: ## Remove build artifacts
 
 docker: ## Build Docker image
 	docker build -t toolmesh:$(VERSION) -t toolmesh:latest .
+
+docker-dev: ## Build and push dev Docker image
+	docker build -t ghcr.io/dunkelcloud/toolmesh:dev \
+		--build-arg VERSION=$(shell git describe --always --dirty) \
+		.
+	docker push ghcr.io/dunkelcloud/toolmesh:dev
 
 up: ## Start all services
 	docker compose up -d

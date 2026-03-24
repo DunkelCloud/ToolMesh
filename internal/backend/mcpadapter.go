@@ -350,7 +350,7 @@ func (a *MCPAdapter) RegisterTools(backendName string, tools []ToolDescriptor) {
 
 // matchBackend finds the backend whose name is a prefix of the tool name.
 // Returns the backend name, the real tool name (without prefix), and the connection.
-func (a *MCPAdapter) matchBackend(toolName string) (name string, realTool string, conn *backendConn) {
+func (a *MCPAdapter) matchBackend(toolName string) (name, realTool string, conn *backendConn) {
 	for name, conn := range a.backends {
 		prefix := name + "_"
 		if strings.HasPrefix(toolName, prefix) {

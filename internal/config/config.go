@@ -80,9 +80,7 @@ func Load() (*Config, error) {
 		OpenFGAStoreID:          envStr("OPENFGA_STORE_ID", ""),
 		OpenFGAMode:             envStr("OPENFGA_MODE", "bypass"),
 		RedisURL:                envStr("REDIS_URL", "redis://localhost:6379/0"),
-		// Default to "debug" so new users can diagnose MCP communication issues.
-		// For production, set LOG_LEVEL=info (or higher) to reduce log volume.
-		LogLevel:                envStr("LOG_LEVEL", "debug"),
+		LogLevel:                envStr("LOG_LEVEL", "debug"), // default "debug" for MCP diagnostics; set to "info" in production
 		LogFormat:               envStr("LOG_FORMAT", "json"),
 		BackendsConfigPath:      envStr("TOOLMESH_BACKENDS_CONFIG", "/app/config/backends.yaml"),
 		PoliciesDir:             envStr("TOOLMESH_POLICIES_DIR", "/app/policies"),

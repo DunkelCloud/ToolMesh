@@ -18,6 +18,7 @@ package executor
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -84,8 +85,14 @@ func (e *Executor) ExecuteTool(ctx context.Context, req ExecuteToolRequest) (*ba
 		"callerClass", uc.CallerClass,
 	)
 
+	e.logger.DebugContext(ctx, "executor pipeline start",
+		"tool", req.ToolName,
+		"params", req.Params,
+	)
+
 	// Step 1: AuthZ check via OpenFGA
 	if e.authorizer != nil {
+		e.logger.DebugContext(ctx, "authz check", "tool", req.ToolName, "user", uc.UserID)
 		allowed, err := e.authorizer.Check(ctx, uc.UserID, req.ToolName)
 		if err != nil {
 			return nil, fmt.Errorf("authz check failed: %w", err)
@@ -124,9 +131,19 @@ func (e *Executor) ExecuteTool(ctx context.Context, req ExecuteToolRequest) (*ba
 	}
 
 	// Step 3: Backend execution
+	e.logger.DebugContext(ctx, "backend execution start", "tool", req.ToolName)
 	result, err := e.backend.Execute(ctx, req.ToolName, req.Params)
 	if err != nil {
+		e.logger.DebugContext(ctx, "backend execution failed", "tool", req.ToolName, "error", err)
 		return nil, fmt.Errorf("backend execution failed for %s: %w", req.ToolName, err)
+	}
+	if contentJSON, err := json.Marshal(result.Content); err == nil {
+		e.logger.DebugContext(ctx, "backend execution complete",
+			"tool", req.ToolName,
+			"isError", result.IsError,
+			"contentItems", len(result.Content),
+			"content", string(contentJSON),
+		)
 	}
 
 	// Step 4: Output Gate evaluation

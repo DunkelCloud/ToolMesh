@@ -121,6 +121,7 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.logger.Info("mcp request", "method", req.Method, "id", req.ID)
+	s.logger.Debug("mcp request payload", "method", req.Method, "id", req.ID, "params", req.Params)
 
 	switch req.Method {
 	case "initialize":
@@ -669,6 +670,7 @@ func (s *Server) renderLoginForm(w http.ResponseWriter, clientID, redirectURI, s
 }
 
 func (s *Server) writeJSONRPCResult(w http.ResponseWriter, id, result any) {
+	s.logger.Debug("mcp response", "id", id, "result", result)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"jsonrpc": "2.0",
 		"id":      id,
@@ -677,6 +679,7 @@ func (s *Server) writeJSONRPCResult(w http.ResponseWriter, id, result any) {
 }
 
 func (s *Server) writeJSONRPCError(w http.ResponseWriter, id any, code int, message string) {
+	s.logger.Debug("mcp error response", "id", id, "code", code, "message", message)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"jsonrpc": "2.0",
 		"id":      id,

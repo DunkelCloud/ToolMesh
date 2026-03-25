@@ -182,6 +182,22 @@ TOOLMESH_MCP_TIMEOUT=180
 TOOLMESH_ACTIVITY_TIMEOUT=180
 ```
 
+### Logging
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `LOG_LEVEL` | `debug` | Log verbosity: `debug`, `info`, `warn`, `error` |
+| `LOG_FORMAT` | `json` | Output format: `json` or `text` |
+
+The default level is `debug` so that MCP communication issues (requests, responses, errors) are fully traceable out of the box. For production, set `LOG_LEVEL=info` to reduce log volume.
+
+At `debug` level, ToolMesh logs the complete request/response flow between clients and backends:
+- Incoming JSON-RPC method, params, and request ID
+- Outgoing JSON-RPC results and errors
+- Backend connection lifecycle (connect, discover, disconnect)
+- Tool call parameters sent to MCP backends and their responses
+- Executor pipeline steps (authz, credential injection, execution, output gate)
+
 ## Architecture
 
 See [docs/architecture.md](docs/architecture.md) for the full architecture documentation.

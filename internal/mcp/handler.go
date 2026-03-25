@@ -57,6 +57,7 @@ func NewHandler(exec *executor.Executor, back backend.ToolBackend, coercer *tsde
 // HandleToolCall processes a single tool call through the execution pipeline.
 func (h *Handler) HandleToolCall(ctx context.Context, toolName string, params map[string]any) (*backend.ToolResult, error) {
 	h.logger.InfoContext(ctx, "handling tool call", "tool", toolName)
+	h.logger.DebugContext(ctx, "tool call params", "tool", toolName, "params", params)
 
 	switch toolName {
 	case "list_tools":
@@ -68,6 +69,7 @@ func (h *Handler) HandleToolCall(ctx context.Context, toolName string, params ma
 		if h.coercer != nil {
 			coerced, err := h.coercer.Coerce(toolName, params)
 			if err != nil {
+				h.logger.DebugContext(ctx, "coercion failed", "tool", toolName, "error", err)
 				return &backend.ToolResult{
 					IsError: true,
 					Content: []any{map[string]any{
@@ -76,13 +78,22 @@ func (h *Handler) HandleToolCall(ctx context.Context, toolName string, params ma
 					}},
 				}, nil
 			}
+			if fmt.Sprintf("%v", coerced) != fmt.Sprintf("%v", params) {
+				h.logger.DebugContext(ctx, "params after coercion", "tool", toolName, "coerced", coerced)
+			}
 			params = coerced
 		}
 
-		return h.executor.ExecuteTool(ctx, executor.ExecuteToolRequest{
+		result, err := h.executor.ExecuteTool(ctx, executor.ExecuteToolRequest{
 			ToolName: toolName,
 			Params:   params,
 		})
+		if err != nil {
+			h.logger.DebugContext(ctx, "tool execution error", "tool", toolName, "error", err)
+			return nil, err
+		}
+		h.logger.DebugContext(ctx, "tool execution result", "tool", toolName, "isError", result.IsError)
+		return result, nil
 	}
 }
 
@@ -173,12 +184,26 @@ func (h *Handler) handleExecuteCode(ctx context.Context, params map[string]any) 
 			Params:   callParams,
 		})
 		if err != nil {
+			h.logger.DebugContext(ctx, "execute_code tool error",
+				"tool", call.ToolName,
+				"error", err.Error(),
+			)
 			results = append(results, map[string]any{
 				"tool":  call.ToolName,
 				"error": err.Error(),
 			})
 			continue
 		}
+
+		// Log the per-tool result content as JSON for full visibility
+		if contentJSON, merr := json.Marshal(result.Content); merr == nil {
+			h.logger.DebugContext(ctx, "execute_code tool result",
+				"tool", call.ToolName,
+				"isError", result.IsError,
+				"content", string(contentJSON),
+			)
+		}
+
 		results = append(results, map[string]any{
 			"tool":   call.ToolName,
 			"result": result,
@@ -189,6 +214,8 @@ func (h *Handler) handleExecuteCode(ctx context.Context, params map[string]any) 
 	if err != nil {
 		return nil, fmt.Errorf("marshal execute_code results: %w", err)
 	}
+
+	h.logger.DebugContext(ctx, "execute_code complete", "resultJSON", string(resultJSON))
 
 	return &backend.ToolResult{
 		Content: []any{map[string]any{

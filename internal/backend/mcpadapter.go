@@ -121,6 +121,13 @@ func (a *MCPAdapter) Connect(ctx context.Context) error {
 }
 
 func (a *MCPAdapter) connectBackend(ctx context.Context, name string, conn *backendConn) error {
+	a.logger.Debug("connecting to backend",
+		"name", name,
+		"transport", conn.entry.Transport,
+		"url", conn.entry.URL,
+		"command", conn.entry.Command,
+	)
+
 	transport, err := a.createTransport(ctx, conn.entry)
 	if err != nil {
 		return fmt.Errorf("create transport: %w", err)
@@ -204,6 +211,7 @@ func (a *MCPAdapter) discoverTools(ctx context.Context, name string, conn *backe
 		return fmt.Errorf("list tools: %w", err)
 	}
 
+	a.logger.Debug("raw tools from backend", "backend", name, "count", len(result.Tools))
 	conn.tools = make([]ToolDescriptor, 0, len(result.Tools))
 	for _, t := range result.Tools {
 		schema := make(map[string]any)
@@ -212,6 +220,7 @@ func (a *MCPAdapter) discoverTools(ctx context.Context, name string, conn *backe
 			_ = json.Unmarshal(schemaBytes, &schema)
 		}
 
+		a.logger.Debug("discovered tool", "backend", name, "tool", t.Name, "schema", schema)
 		conn.tools = append(conn.tools, ToolDescriptor{
 			Name:        t.Name,
 			Description: t.Description,
@@ -257,12 +266,22 @@ func (a *MCPAdapter) Execute(ctx context.Context, toolName string, params map[st
 		"backend", backendName,
 		"tool", realTool,
 	)
+	a.logger.DebugContext(ctx, "MCP CallTool request",
+		"backend", backendName,
+		"tool", realTool,
+		"params", params,
+	)
 
 	result, err := conn.session.CallTool(ctx, &mcp.CallToolParams{
 		Name:      realTool,
 		Arguments: params,
 	})
 	if err != nil {
+		a.logger.DebugContext(ctx, "MCP CallTool error",
+			"backend", backendName,
+			"tool", realTool,
+			"error", err,
+		)
 		return nil, fmt.Errorf("call tool %s on backend %s: %w", realTool, backendName, err)
 	}
 
@@ -270,6 +289,17 @@ func (a *MCPAdapter) Execute(ctx context.Context, toolName string, params map[st
 	content := make([]any, 0, len(result.Content))
 	for _, c := range result.Content {
 		content = append(content, contentToMap(c))
+	}
+
+	// Log the full response as JSON so it is always human-readable in the log
+	if respJSON, err := json.Marshal(content); err == nil {
+		a.logger.DebugContext(ctx, "MCP CallTool response",
+			"backend", backendName,
+			"tool", realTool,
+			"isError", result.IsError,
+			"contentItems", len(content),
+			"content", string(respJSON),
+		)
 	}
 
 	return &ToolResult{

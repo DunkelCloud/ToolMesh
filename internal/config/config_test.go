@@ -43,7 +43,7 @@ func TestLoad_Defaults(t *testing.T) {
 		{"OpenFGAAPIURL", cfg.OpenFGAAPIURL, "http://localhost:8080"},
 		{"OpenFGAStoreID", cfg.OpenFGAStoreID, ""},
 		{"RedisURL", cfg.RedisURL, "redis://localhost:6379/0"},
-		{"LogLevel", cfg.LogLevel, "info"},
+		{"LogLevel", cfg.LogLevel, "debug"},
 		{"LogFormat", cfg.LogFormat, "json"},
 	}
 

@@ -45,6 +45,13 @@ type BackendEntry struct {
 	APIKeyEnv string   `yaml:"api_key_env"`
 	Command   string   `yaml:"command"` // for STDIO transport
 	Args      []string `yaml:"args"`
+	Hint      string   `yaml:"hint"` // optional domain-specific hint for LLM tool descriptions
+}
+
+// BackendInfo provides a summary of a backend for tool description enrichment.
+type BackendInfo struct {
+	Name string
+	Hint string
 }
 
 // MCPAdapter connects ToolMesh as an MCP client to external MCP servers.
@@ -363,6 +370,22 @@ func (a *MCPAdapter) Close() {
 			a.logger.Info("disconnected backend", "name", name)
 		}
 	}
+}
+
+// BackendSummaries returns name and hint for each registered backend.
+// Used to enrich MCP tool descriptions so LLMs know what backends are available.
+func (a *MCPAdapter) BackendSummaries() []BackendInfo {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+
+	infos := make([]BackendInfo, 0, len(a.backends))
+	for _, conn := range a.backends {
+		infos = append(infos, BackendInfo{
+			Name: conn.entry.Name,
+			Hint: conn.entry.Hint,
+		})
+	}
+	return infos
 }
 
 // RegisterTools adds tools for a specific backend (used during discovery or testing).

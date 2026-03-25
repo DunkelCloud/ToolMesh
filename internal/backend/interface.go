@@ -43,3 +43,10 @@ type ToolBackend interface {
 	// Healthy checks if the backend is reachable and functional.
 	Healthy(ctx context.Context) error
 }
+
+// BackendSummarizer provides backend metadata for MCP tool description enrichment.
+// Backends that implement this interface contribute their name and hint to the
+// dynamic tool descriptions shown to LLMs.
+type BackendSummarizer interface {
+	BackendSummaries() []BackendInfo
+}

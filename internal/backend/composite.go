@@ -101,6 +101,17 @@ func (c *CompositeBackend) ListTools(ctx context.Context) ([]ToolDescriptor, err
 	return all, nil
 }
 
+// BackendSummaries collects summaries from all backends that implement BackendSummarizer.
+func (c *CompositeBackend) BackendSummaries() []BackendInfo {
+	var all []BackendInfo
+	for _, b := range c.passthroughs {
+		if s, ok := b.(BackendSummarizer); ok {
+			all = append(all, s.BackendSummaries()...)
+		}
+	}
+	return all
+}
+
 // Healthy returns nil if at least one backend is healthy.
 func (c *CompositeBackend) Healthy(ctx context.Context) error {
 	for _, b := range c.backends {

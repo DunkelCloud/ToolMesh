@@ -20,6 +20,8 @@ import (
 	"fmt"
 	"log/slog"
 
+	"strings"
+
 	"github.com/DunkelCloud/ToolMesh/internal/backend"
 	"github.com/DunkelCloud/ToolMesh/internal/executor"
 	"github.com/DunkelCloud/ToolMesh/internal/tsdef"
@@ -226,11 +228,21 @@ func (h *Handler) handleExecuteCode(ctx context.Context, params map[string]any) 
 }
 
 // BuildToolList returns all tools including Code Mode tools.
+// Tool descriptions are dynamically enriched with available backend names and hints.
 func (h *Handler) BuildToolList(ctx context.Context) ([]ToolDefinition, error) {
+	backendDesc := h.buildBackendDescription()
+
+	listToolsDesc := "Returns a machine-readable list of all available tools with TypeScript interface definitions"
+	executeCodeDesc := "Accepts JavaScript code containing tool calls and executes them through the ToolMesh pipeline"
+	if backendDesc != "" {
+		listToolsDesc += ". " + backendDesc
+		executeCodeDesc += ". " + backendDesc
+	}
+
 	tools := []ToolDefinition{
 		{
 			Name:        "list_tools",
-			Description: "Returns a machine-readable list of all available tools with TypeScript interface definitions",
+			Description: listToolsDesc,
 			InputSchema: map[string]any{
 				"type":       "object",
 				"properties": map[string]any{},
@@ -238,7 +250,7 @@ func (h *Handler) BuildToolList(ctx context.Context) ([]ToolDefinition, error) {
 		},
 		{
 			Name:        "execute_code",
-			Description: "Accepts JavaScript code containing tool calls and executes them through the ToolMesh pipeline",
+			Description: executeCodeDesc,
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -257,6 +269,40 @@ func (h *Handler) BuildToolList(ctx context.Context) ([]ToolDefinition, error) {
 	// This keeps the MCP surface minimal and avoids tool name validation issues.
 
 	return tools, nil
+}
+
+// buildBackendDescription generates a summary of available backends and their hints
+// for inclusion in MCP tool descriptions.
+func (h *Handler) buildBackendDescription() string {
+	summarizer, ok := h.backend.(backend.BackendSummarizer)
+	if !ok {
+		return ""
+	}
+
+	infos := summarizer.BackendSummaries()
+	if len(infos) == 0 {
+		return ""
+	}
+
+	// Build "Available backends: name1, name2, ..." line
+	names := make([]string, 0, len(infos))
+	for _, info := range infos {
+		names = append(names, info.Name)
+	}
+	desc := "Available backends: " + strings.Join(names, ", ")
+
+	// Collect hints from backends that have them
+	var hints []string
+	for _, info := range infos {
+		if info.Hint != "" {
+			hints = append(hints, info.Name+": "+info.Hint)
+		}
+	}
+	if len(hints) > 0 {
+		desc += ". Hints: " + strings.Join(hints, "; ")
+	}
+
+	return desc
 }
 
 // ToolDefinition represents a tool exposed by the MCP server.

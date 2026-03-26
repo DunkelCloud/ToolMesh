@@ -1,0 +1,7 @@
+keys:
+  - key_hash: "$2a$10$..."  # generate with: tm-bootstrap hash-password "tk_live_..."
+    user_id: my-agent
+    company_id: my-company
+    plan: pro
+    roles: [tool-executor]
+    caller_id: my-agent

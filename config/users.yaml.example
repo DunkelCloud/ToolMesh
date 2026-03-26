@@ -1,0 +1,11 @@
+users:
+  - username: admin
+    password_hash: "$2a$10$..."  # generate with: tm-bootstrap hash-password "my-password"
+    company: my-company
+    plan: pro
+    roles: [admin]
+  - username: viewer
+    password_hash: "$2a$10$..."
+    company: my-company
+    plan: free
+    roles: [viewer]

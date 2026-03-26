@@ -1,0 +1,13 @@
+backends:
+  # MCP server over HTTP (Streamable HTTP or legacy SSE)
+  # - name: my-service
+  #   transport: http
+  #   url: "https://my-service.example.com/mcp"
+  #   api_key_env: "MY_SERVICE_API_KEY"
+  #   hint: "Short description shown to AI agents"
+
+  # MCP server over STDIO (local process)
+  # - name: local-tools
+  #   transport: stdio
+  #   command: "./my-mcp-server"
+  #   args: ["--port", "0"]

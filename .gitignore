@@ -31,6 +31,12 @@ Thumbs.db
 # Environment (contains secrets)
 .env
 
+# Runtime config (deployment-specific, may contain hashes/URLs)
+config/backends.yaml
+config/users.yaml
+config/apikeys.yaml
+config/caller-classes.yaml
+
 # Vendor (use go mod)
 /vendor/
 

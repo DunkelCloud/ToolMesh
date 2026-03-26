@@ -50,6 +50,9 @@ type Config struct {
 	// Backends config path
 	BackendsConfigPath string
 
+	// DADL directory for REST Proxy definitions
+	DADLDir string
+
 	// Policies directory
 	PoliciesDir string
 
@@ -66,6 +69,9 @@ type Config struct {
 	AuthUser  string // TOOLMESH_AUTH_USER, default "owner"
 	AuthPlan  string // TOOLMESH_AUTH_PLAN, default "pro"
 	AuthRoles string // TOOLMESH_AUTH_ROLES, default "admin" (comma-separated)
+
+	// Persistent state directory
+	DataDir string
 
 	// Registry-based provider selection
 	CredentialStore string // registered store name (default: "embedded")
@@ -90,6 +96,7 @@ func Load() (*Config, error) {
 		LogLevel:                envStr("LOG_LEVEL", "debug"), // default "debug" for MCP diagnostics; set to "info" in production
 		LogFormat:               envStr("LOG_FORMAT", "json"),
 		BackendsConfigPath:      envStr("TOOLMESH_BACKENDS_CONFIG", "/app/config/backends.yaml"),
+		DADLDir:                 envStr("TOOLMESH_DADL_DIR", "/app/dadl"),
 		PoliciesDir:             envStr("TOOLMESH_POLICIES_DIR", "/app/policies"),
 		ToolsDir:                envStr("TOOLMESH_TOOLS_DIR", "/app/tools"),
 		UsersConfigPath:         envStr("TOOLMESH_USERS_CONFIG", "/app/config/users.yaml"),
@@ -98,6 +105,7 @@ func Load() (*Config, error) {
 		AuthUser:                envStr("TOOLMESH_AUTH_USER", "owner"),
 		AuthPlan:                envStr("TOOLMESH_AUTH_PLAN", "pro"),
 		AuthRoles:               envStr("TOOLMESH_AUTH_ROLES", "admin"),
+		DataDir:                 envStr("TOOLMESH_DATA_DIR", "/app/data"),
 		CredentialStore:         envStr("CREDENTIAL_STORE", "embedded"),
 		GateEvaluators:          envStr("GATE_EVALUATORS", "goja"),
 	}

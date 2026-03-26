@@ -31,6 +31,7 @@ import (
 	"github.com/DunkelCloud/ToolMesh/internal/backend"
 	"github.com/DunkelCloud/ToolMesh/internal/config"
 	"github.com/DunkelCloud/ToolMesh/internal/credentials"
+	"github.com/DunkelCloud/ToolMesh/internal/dadl"
 	"github.com/DunkelCloud/ToolMesh/internal/executor"
 	"github.com/DunkelCloud/ToolMesh/internal/gate"
 	"github.com/DunkelCloud/ToolMesh/internal/mcp"
@@ -38,6 +39,7 @@ import (
 	"github.com/DunkelCloud/ToolMesh/internal/userctx"
 	"github.com/DunkelCloud/ToolMesh/internal/version"
 	"github.com/redis/go-redis/v9"
+	"gopkg.in/yaml.v3"
 	temporalclient "go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/worker"
 	"go.temporal.io/sdk/workflow"
@@ -137,6 +139,9 @@ func main() {
 	})
 	compositeBackend.AddPassthrough(mcpAdapter)
 
+	// Initialize REST Proxy backends from DADL files
+	loadRESTBackends(compositeBackend, cfg.BackendsConfigPath, credStore, logger)
+
 	// Initialize OpenFGA authorizer based on OPENFGA_MODE
 	var authorizer *authz.Authorizer
 	if cfg.OpenFGAMode == "restrict" {
@@ -203,23 +208,38 @@ func main() {
 		logger.Info("Temporal worker started", "taskQueue", cfg.TemporalTaskQueue)
 	}
 
-	// Initialize Redis client for auth state
-	redisOpts, err := redis.ParseURL(cfg.RedisURL)
+	// Initialize token store for auth state.
+	// The file-based store always runs for persistence across restarts.
+	// When Redis is available, a hybrid store writes to both and reads
+	// from Redis with file-based fallback.
+	fileStore, err := auth.NewFileTokenStore(cfg.DataDir)
 	if err != nil {
-		logger.Error("failed to parse Redis URL", "error", err)
-		os.Exit(1)
+		logger.Error("failed to create file token store", "error", err)
+		os.Exit(1) //nolint:gocritic // intentional in main
 	}
-	rdb := redis.NewClient(redisOpts)
-	defer func() { _ = rdb.Close() }()
+	go fileStore.Cleanup(ctx)
+	logger.Info("file-based token store initialized", "dataDir", cfg.DataDir)
 
-	if err := rdb.Ping(ctx).Err(); err != nil {
-		logger.Warn("Redis not available, auth persistence disabled", "error", err)
-	} else {
-		logger.Info("Redis connected for auth state")
+	var tokenStore auth.TokenStore = fileStore
+	var rateLimiter *auth.DCRRateLimiter
+
+	if cfg.RedisURL != "" && cfg.RedisURL != "none" {
+		redisOpts, err := redis.ParseURL(cfg.RedisURL)
+		if err != nil {
+			logger.Warn("failed to parse Redis URL, using file-only token store", "error", err)
+		} else {
+			rdb := redis.NewClient(redisOpts)
+			defer func() { _ = rdb.Close() }()
+
+			if err := rdb.Ping(ctx).Err(); err != nil {
+				logger.Warn("Redis not reachable, using file-only token store", "error", err)
+			} else {
+				logger.Info("Redis connected, using hybrid token store")
+				tokenStore = auth.NewHybridTokenStore(auth.NewRedisTokenStore(rdb), fileStore)
+				rateLimiter = auth.NewDCRRateLimiter(rdb)
+			}
+		}
 	}
-
-	tokenStore := auth.NewRedisTokenStore(rdb)
-	rateLimiter := auth.NewDCRRateLimiter(rdb)
 
 	// Load user identity configs
 	userStore, err := auth.NewUserStore(cfg.UsersConfigPath)
@@ -314,3 +334,67 @@ func (l *temporalLogger) Warn(msg string, keyvals ...any) { l.logger.Warn(msg, k
 
 // Error implements the Temporal logger interface.
 func (l *temporalLogger) Error(msg string, keyvals ...any) { l.logger.Error(msg, keyvals...) }
+
+// loadRESTBackends scans the backends config for transport: rest entries,
+// parses their DADL files, and adds them to the composite backend.
+func loadRESTBackends(composite *backend.CompositeBackend, backendsConfigPath string, creds credentials.CredentialStore, logger *slog.Logger) {
+	data, err := os.ReadFile(backendsConfigPath) //nolint:gosec // path from trusted config
+	if err != nil {
+		return // no config = no REST backends
+	}
+
+	var cfg backend.BackendConfig
+	if err := backendsYAMLUnmarshal(data, &cfg); err != nil {
+		logger.Error("failed to parse backends config for REST entries", "error", err)
+		return
+	}
+
+	for _, entry := range cfg.Backends {
+		if entry.Transport != "rest" {
+			continue
+		}
+		if entry.DADL == "" {
+			logger.Error("REST backend missing dadl path", "name", entry.Name)
+			continue
+		}
+
+		spec, err := dadl.Parse(entry.DADL)
+		if err != nil {
+			logger.Error("failed to parse DADL file", "name", entry.Name, "path", entry.DADL, "error", err)
+			continue
+		}
+
+		// Override base_url from backends.yaml if provided
+		if entry.URL != "" {
+			spec.Backend.BaseURL = entry.URL
+		}
+
+		// Override backend name from backends.yaml if it differs
+		if entry.Name != "" && entry.Name != spec.Backend.Name {
+			spec.Backend.Name = entry.Name
+		}
+
+		// Check scoping strategy
+		if spec.Backend.Scoping != nil && spec.Backend.Scoping.Strategy != "" && spec.Backend.Scoping.Strategy != "static" {
+			logger.Warn("scoping strategy not yet implemented, exposing all tools", "strategy", spec.Backend.Scoping.Strategy)
+		}
+
+		adapter, err := backend.NewRESTAdapter(spec, creds, logger)
+		if err != nil {
+			logger.Error("failed to create REST adapter", "name", entry.Name, "error", err)
+			continue
+		}
+
+		composite.AddNamed(spec.Backend.Name, adapter)
+		logger.Info("REST proxy backend loaded",
+			"name", spec.Backend.Name,
+			"tools", len(spec.Backend.Tools),
+			"baseURL", spec.Backend.BaseURL,
+		)
+	}
+}
+
+// backendsYAMLUnmarshal unmarshals backends YAML config.
+func backendsYAMLUnmarshal(data []byte, cfg *backend.BackendConfig) error {
+	return yaml.Unmarshal(data, cfg)
+}

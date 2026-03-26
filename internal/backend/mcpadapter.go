@@ -40,12 +40,13 @@ type BackendConfig struct {
 // BackendEntry represents a single backend server configuration.
 type BackendEntry struct {
 	Name      string   `yaml:"name"`
-	Transport string   `yaml:"transport"` // "http" or "stdio"
+	Transport string   `yaml:"transport"` // "http", "stdio", or "rest"
 	URL       string   `yaml:"url"`       // for HTTP transport
 	APIKeyEnv string   `yaml:"api_key_env"`
 	Command   string   `yaml:"command"` // for STDIO transport
 	Args      []string `yaml:"args"`
 	Hint      string   `yaml:"hint"` // optional domain-specific hint for LLM tool descriptions
+	DADL      string   `yaml:"dadl"` // path to .dadl file (for transport: rest)
 }
 
 // BackendInfo provides a summary of a backend for tool description enrichment.
@@ -96,6 +97,10 @@ func NewMCPAdapter(configPath string, creds credentials.CredentialStore, logger 
 
 	for _, entry := range cfg.Backends {
 		if entry.Name == "" {
+			continue
+		}
+		// Skip REST Proxy backends — they are handled by RESTAdapter, not MCPAdapter
+		if entry.Transport == "rest" {
 			continue
 		}
 		adapter.backends[entry.Name] = &backendConn{

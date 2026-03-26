@@ -1,0 +1,1099 @@
+version: "1.0"
+backend:
+  name: gitlab
+  type: rest
+  # base_url: https://gitlab.example.com/api/v4 — provide via backends.yaml url field
+  description: "GitLab REST API v4 — projects, issues, merge requests, pipelines, CI/CD, and code search"
+
+  coverage:
+    endpoints: 52
+    total_endpoints: 400
+    percentage: 13
+    focus: "projects, issues, merge requests, branches, commits, pipelines, jobs, releases, groups, users, repository files, labels, milestones, search"
+    missing: "deploy tokens, container registry, packages, wikis, snippets, epics, environments, cluster agents, protected branches, webhooks, project hooks"
+    last_reviewed: "2026-03-26"
+
+  setup:
+    credential_steps:
+      - "Navigate to GitLab → User Settings → Access Tokens"
+      - "Enter a name (e.g. 'ToolMesh') and optional expiration date"
+      - "Select scope: api (full access) or read_api (read-only)"
+      - "Click 'Create personal access token' and copy the token (starts with glpat-)"
+    env_var: CREDENTIAL_GITLAB_TOKEN
+    backends_yaml: |
+      - name: gitlab
+        transport: rest
+        dadl: /app/dadl/gitlab.dadl
+        url: "https://your-gitlab.example.com/api/v4"
+    required_scopes:
+      - api
+    optional_scopes:
+      - read_api
+    docs_url: "https://docs.gitlab.com/ee/user/profile/personal_access_tokens.html"
+    notes: "For self-hosted GitLab, replace the URL with your instance address. SaaS users use https://gitlab.com/api/v4"
+
+  auth:
+    type: apikey
+    credential: gitlab_token
+    inject_into: header
+    header_name: PRIVATE-TOKEN
+    # Alternative: type: bearer for OAuth2 (Authorization: Bearer <token>)
+    # Alternative: JOB-TOKEN header for CI/CD job tokens
+
+  defaults:
+    headers:
+      Content-Type: application/json
+      Accept: application/json
+    pagination: &default-pagination
+      strategy: page
+      request:
+        page_param: page
+        limit_param: per_page
+        limit_default: 20
+        limit_max: 100
+      response:
+        next_link_header: Link
+        total_header: x-total
+        total_pages_header: x-total-pages
+        current_page_header: x-page
+        next_page_header: x-next-page
+        per_page_header: x-per-page
+      behavior: manual
+      max_pages: 10
+    errors: &standard-errors
+      format: json
+      message_path: "$.message"
+      retry_on: [429, 500, 502, 503]
+      terminal: [400, 401, 403, 404, 405, 409, 422]
+      retry_strategy:
+        max_retries: 3
+        backoff: exponential
+        initial_delay: 1s
+      rate_limit_headers:
+        limit: RateLimit-Limit
+        remaining: RateLimit-Remaining
+        reset: RateLimit-Reset
+        observed: RateLimit-Observed
+        retry_after: Retry-After
+
+  # ──────────────────────────────────────────────────────────────
+  # Domain notes (for LLM consumers of these tools)
+  #
+  # ID parameter:
+  #   Most endpoints accept either a numeric project/group ID or a
+  #   URL-encoded namespace path (e.g., "my-group%2Fmy-project").
+  #   Forward slashes in paths must be URL-encoded as %2F.
+  #
+  # IID vs ID:
+  #   GitLab uses "iid" (internal ID) for project-scoped numbering
+  #   of issues, merge requests, etc. The global "id" is different.
+  #   Most project-scoped endpoints use iid, not id.
+  #
+  # Rate limiting:
+  #   Response headers include RateLimit-Limit, RateLimit-Remaining,
+  #   RateLimit-Reset, RateLimit-Observed. HTTP 429 adds Retry-After.
+  #
+  # State events:
+  #   Issues use state_event: "close" or "reopen" (not state directly).
+  #   Merge requests use state_event: "close" or "reopen".
+  #
+  # Pagination:
+  #   Default: offset-based with page/per_page (max 100).
+  #   x-total and x-total-pages headers omitted for >10,000 records.
+  #   Some endpoints support keyset pagination via pagination=keyset.
+  #
+  # Error responses:
+  #   400: {"message":{"field":["error message"]}}
+  #   401: {"message":"401 Unauthorized"}
+  #   404: {"error":"404 Not Found"}
+  #   Validation errors nest by field name with arrays of messages.
+  #
+  # Dates:
+  #   ISO 8601 format. Encode '+' in timezone offsets as %2B.
+  #
+  # Arrays in params:
+  #   Use param[]=value1&param[]=value2 syntax.
+  # ──────────────────────────────────────────────────────────────
+
+  tools:
+
+    # ── Projects ─────────────────────────────────────────────────
+
+    list_projects:
+      method: GET
+      path: /projects
+      description: "List all visible projects. Use membership=true to limit to projects the user is a member of, owned=true for owned projects."
+      params:
+        search: { type: string, in: query }
+        visibility: { type: string, in: query }
+        owned: { type: boolean, in: query }
+        membership: { type: boolean, in: query }
+        starred: { type: boolean, in: query }
+        archived: { type: boolean, in: query }
+        simple: { type: boolean, in: query }
+        statistics: { type: boolean, in: query }
+        order_by: { type: string, in: query, default: "created_at" }
+        sort: { type: string, in: query, default: "desc" }
+        topic: { type: string, in: query }
+        page: { type: integer, in: query }
+        per_page: { type: integer, in: query, default: 20 }
+
+    get_project:
+      method: GET
+      path: /projects/{id}
+      description: "Get a single project by ID or URL-encoded path (e.g., 'my-group%2Fmy-project')."
+      params:
+        id: { type: string, in: path, required: true }
+        license: { type: boolean, in: query }
+        statistics: { type: boolean, in: query }
+        with_custom_attributes: { type: boolean, in: query }
+      pagination: none
+
+    create_project:
+      method: POST
+      path: /projects
+      description: "Create a new project. Requires name or path."
+      params:
+        name: { type: string, in: body, required: true }
+        path: { type: string, in: body }
+        namespace_id: { type: integer, in: body }
+        description: { type: string, in: body }
+        visibility: { type: string, in: body, default: "private" }
+        initialize_with_readme: { type: boolean, in: body }
+        default_branch: { type: string, in: body }
+        issues_access_level: { type: string, in: body }
+        merge_requests_access_level: { type: string, in: body }
+        wiki_access_level: { type: string, in: body }
+        builds_access_level: { type: string, in: body }
+      pagination: none
+
+    update_project:
+      method: PUT
+      path: /projects/{id}
+      description: "Update a project. Only include fields you want to change."
+      params:
+        id: { type: string, in: path, required: true }
+        name: { type: string, in: body }
+        description: { type: string, in: body }
+        visibility: { type: string, in: body }
+        default_branch: { type: string, in: body }
+        issues_access_level: { type: string, in: body }
+        merge_requests_access_level: { type: string, in: body }
+        wiki_access_level: { type: string, in: body }
+        builds_access_level: { type: string, in: body }
+        archived: { type: boolean, in: body }
+      pagination: none
+
+    delete_project:
+      method: DELETE
+      path: /projects/{id}
+      description: "Delete a project. Requires owner or admin access."
+      params:
+        id: { type: string, in: path, required: true }
+      pagination: none
+
+    list_group_projects:
+      method: GET
+      path: /groups/{id}/projects
+      description: "List projects in a group. Use include_subgroups to include nested group projects."
+      params:
+        id: { type: string, in: path, required: true }
+        search: { type: string, in: query }
+        visibility: { type: string, in: query }
+        order_by: { type: string, in: query }
+        sort: { type: string, in: query }
+        include_subgroups: { type: boolean, in: query }
+        page: { type: integer, in: query }
+        per_page: { type: integer, in: query, default: 20 }
+
+    # ── Issues ───────────────────────────────────────────────────
+
+    list_issues:
+      method: GET
+      path: /issues
+      description: "List all issues visible to the authenticated user. Use scope to filter by created_by_me, assigned_to_me, or all."
+      params:
+        state: { type: string, in: query, default: "opened" }
+        scope: { type: string, in: query }
+        labels: { type: string, in: query }
+        milestone: { type: string, in: query }
+        assignee_id: { type: integer, in: query }
+        author_id: { type: integer, in: query }
+        search: { type: string, in: query }
+        order_by: { type: string, in: query, default: "created_at" }
+        sort: { type: string, in: query, default: "desc" }
+        created_after: { type: string, in: query }
+        created_before: { type: string, in: query }
+        updated_after: { type: string, in: query }
+        updated_before: { type: string, in: query }
+        confidential: { type: boolean, in: query }
+        page: { type: integer, in: query }
+        per_page: { type: integer, in: query, default: 20 }
+
+    list_project_issues:
+      method: GET
+      path: /projects/{id}/issues
+      description: "List issues for a specific project."
+      params:
+        id: { type: string, in: path, required: true }
+        state: { type: string, in: query, default: "opened" }
+        labels: { type: string, in: query }
+        milestone: { type: string, in: query }
+        assignee_id: { type: integer, in: query }
+        author_id: { type: integer, in: query }
+        search: { type: string, in: query }
+        order_by: { type: string, in: query, default: "created_at" }
+        sort: { type: string, in: query, default: "desc" }
+        iids: { type: array, in: query }
+        page: { type: integer, in: query }
+        per_page: { type: integer, in: query, default: 20 }
+
+    list_group_issues:
+      method: GET
+      path: /groups/{id}/issues
+      description: "List issues for a group."
+      params:
+        id: { type: string, in: path, required: true }
+        state: { type: string, in: query, default: "opened" }
+        labels: { type: string, in: query }
+        milestone: { type: string, in: query }
+        search: { type: string, in: query }
+        order_by: { type: string, in: query, default: "created_at" }
+        sort: { type: string, in: query, default: "desc" }
+        page: { type: integer, in: query }
+        per_page: { type: integer, in: query, default: 20 }
+
+    get_project_issue:
+      method: GET
+      path: /projects/{id}/issues/{issue_iid}
+      description: "Get a single project issue by its internal ID (iid)."
+      params:
+        id: { type: string, in: path, required: true }
+        issue_iid: { type: integer, in: path, required: true }
+      pagination: none
+
+    create_issue:
+      method: POST
+      path: /projects/{id}/issues
+      description: "Create a new issue in a project."
+      params:
+        id: { type: string, in: path, required: true }
+        title: { type: string, in: body, required: true }
+        description: { type: string, in: body }
+        assignee_ids: { type: array, in: body }
+        milestone_id: { type: integer, in: body }
+        labels: { type: string, in: body }
+        due_date: { type: string, in: body }
+        confidential: { type: boolean, in: body }
+        issue_type: { type: string, in: body, default: "issue" }
+        weight: { type: integer, in: body }
+      pagination: none
+
+    update_issue:
+      method: PUT
+      path: /projects/{id}/issues/{issue_iid}
+      description: "Update an issue. Use state_event 'close' or 'reopen' to change state. At least one field required."
+      params:
+        id: { type: string, in: path, required: true }
+        issue_iid: { type: integer, in: path, required: true }
+        title: { type: string, in: body }
+        description: { type: string, in: body }
+        state_event: { type: string, in: body }
+        assignee_ids: { type: array, in: body }
+        milestone_id: { type: integer, in: body }
+        labels: { type: string, in: body }
+        add_labels: { type: string, in: body }
+        remove_labels: { type: string, in: body }
+        due_date: { type: string, in: body }
+        confidential: { type: boolean, in: body }
+        discussion_locked: { type: boolean, in: body }
+        weight: { type: integer, in: body }
+      pagination: none
+
+    delete_issue:
+      method: DELETE
+      path: /projects/{id}/issues/{issue_iid}
+      description: "Delete a project issue. Requires Planner/Owner role or issue author (GitLab 18.10+)."
+      params:
+        id: { type: string, in: path, required: true }
+        issue_iid: { type: integer, in: path, required: true }
+      pagination: none
+
+    # ── Merge Requests ───────────────────────────────────────────
+
+    list_merge_requests:
+      method: GET
+      path: /merge_requests
+      description: "List all merge requests visible to the authenticated user."
+      params:
+        state: { type: string, in: query, default: "opened" }
+        scope: { type: string, in: query }
+        author_id: { type: integer, in: query }
+        assignee_id: { type: integer, in: query }
+        reviewer_id: { type: integer, in: query }
+        labels: { type: string, in: query }
+        milestone: { type: string, in: query }
+        source_branch: { type: string, in: query }
+        target_branch: { type: string, in: query }
+        search: { type: string, in: query }
+        order_by: { type: string, in: query, default: "created_at" }
+        sort: { type: string, in: query, default: "desc" }
+        created_after: { type: string, in: query }
+        created_before: { type: string, in: query }
+        page: { type: integer, in: query }
+        per_page: { type: integer, in: query, default: 20 }
+
+    list_project_merge_requests:
+      method: GET
+      path: /projects/{id}/merge_requests
+      description: "List merge requests for a specific project."
+      params:
+        id: { type: string, in: path, required: true }
+        state: { type: string, in: query, default: "opened" }
+        scope: { type: string, in: query }
+        labels: { type: string, in: query }
+        milestone: { type: string, in: query }
+        source_branch: { type: string, in: query }
+        target_branch: { type: string, in: query }
+        search: { type: string, in: query }
+        order_by: { type: string, in: query, default: "created_at" }
+        sort: { type: string, in: query, default: "desc" }
+        iids: { type: array, in: query }
+        page: { type: integer, in: query }
+        per_page: { type: integer, in: query, default: 20 }
+
+    list_group_merge_requests:
+      method: GET
+      path: /groups/{id}/merge_requests
+      description: "List merge requests for a group."
+      params:
+        id: { type: string, in: path, required: true }
+        state: { type: string, in: query, default: "opened" }
+        labels: { type: string, in: query }
+        milestone: { type: string, in: query }
+        search: { type: string, in: query }
+        order_by: { type: string, in: query, default: "created_at" }
+        sort: { type: string, in: query, default: "desc" }
+        page: { type: integer, in: query }
+        per_page: { type: integer, in: query, default: 20 }
+
+    get_merge_request:
+      method: GET
+      path: /projects/{id}/merge_requests/{merge_request_iid}
+      description: "Get a single merge request by its internal ID."
+      params:
+        id: { type: string, in: path, required: true }
+        merge_request_iid: { type: integer, in: path, required: true }
+        include_diverged_commits_count: { type: boolean, in: query }
+        include_rebase_in_progress: { type: boolean, in: query }
+        render_html: { type: boolean, in: query }
+      pagination: none
+
+    create_merge_request:
+      method: POST
+      path: /projects/{id}/merge_requests
+      description: "Create a new merge request. source_branch and target_branch must be different. Duplicate source/target pairs are rejected."
+      params:
+        id: { type: string, in: path, required: true }
+        source_branch: { type: string, in: body, required: true }
+        target_branch: { type: string, in: body, required: true }
+        title: { type: string, in: body, required: true }
+        description: { type: string, in: body }
+        assignee_id: { type: integer, in: body }
+        assignee_ids: { type: array, in: body }
+        reviewer_ids: { type: array, in: body }
+        labels: { type: string, in: body }
+        milestone_id: { type: integer, in: body }
+        squash: { type: boolean, in: body }
+        remove_source_branch: { type: boolean, in: body }
+        allow_collaboration: { type: boolean, in: body }
+      pagination: none
+
+    update_merge_request:
+      method: PUT
+      path: /projects/{id}/merge_requests/{merge_request_iid}
+      description: "Update a merge request. Use state_event 'close' or 'reopen' to change state."
+      params:
+        id: { type: string, in: path, required: true }
+        merge_request_iid: { type: integer, in: path, required: true }
+        title: { type: string, in: body }
+        description: { type: string, in: body }
+        state_event: { type: string, in: body }
+        target_branch: { type: string, in: body }
+        assignee_id: { type: integer, in: body }
+        assignee_ids: { type: array, in: body }
+        reviewer_ids: { type: array, in: body }
+        labels: { type: string, in: body }
+        add_labels: { type: string, in: body }
+        remove_labels: { type: string, in: body }
+        milestone_id: { type: integer, in: body }
+        squash: { type: boolean, in: body }
+        remove_source_branch: { type: boolean, in: body }
+        discussion_locked: { type: boolean, in: body }
+      pagination: none
+
+    merge_merge_request:
+      method: PUT
+      path: /projects/{id}/merge_requests/{merge_request_iid}/merge
+      description: "Accept and merge a merge request. Optionally squash commits or set a custom merge commit message."
+      params:
+        id: { type: string, in: path, required: true }
+        merge_request_iid: { type: integer, in: path, required: true }
+        merge_commit_message: { type: string, in: body }
+        squash_commit_message: { type: string, in: body }
+        squash: { type: boolean, in: body }
+        should_remove_source_branch: { type: boolean, in: body }
+        merge_when_pipeline_succeeds: { type: boolean, in: body }
+        sha: { type: string, in: body }
+      pagination: none
+
+    approve_merge_request:
+      method: POST
+      path: /projects/{id}/merge_requests/{merge_request_iid}/approve
+      description: "Approve a merge request. Optionally verify HEAD SHA to ensure reviewing the correct version."
+      params:
+        id: { type: string, in: path, required: true }
+        merge_request_iid: { type: integer, in: path, required: true }
+        sha: { type: string, in: body }
+        approval_password: { type: string, in: body }
+      pagination: none
+
+    rebase_merge_request:
+      method: PUT
+      path: /projects/{id}/merge_requests/{merge_request_iid}/rebase
+      description: "Rebase a merge request's source branch onto the target branch."
+      params:
+        id: { type: string, in: path, required: true }
+        merge_request_iid: { type: integer, in: path, required: true }
+      pagination: none
+
+    # ── Branches ─────────────────────────────────────────────────
+
+    list_branches:
+      method: GET
+      path: /projects/{id}/repository/branches
+      description: "List repository branches. Use search for substring matching or regex for pattern matching."
+      params:
+        id: { type: string, in: path, required: true }
+        search: { type: string, in: query }
+        regex: { type: string, in: query }
+        page: { type: integer, in: query }
+        per_page: { type: integer, in: query, default: 20 }
+
+    get_branch:
+      method: GET
+      path: /projects/{id}/repository/branches/{branch}
+      description: "Get a single branch including its latest commit and protection status."
+      params:
+        id: { type: string, in: path, required: true }
+        branch: { type: string, in: path, required: true }
+      pagination: none
+
+    create_branch:
+      method: POST
+      path: /projects/{id}/repository/branches
+      description: "Create a new branch from a ref (branch name, tag, or commit SHA)."
+      params:
+        id: { type: string, in: path, required: true }
+        branch: { type: string, in: body, required: true }
+        ref: { type: string, in: body, required: true }
+      pagination: none
+
+    delete_branch:
+      method: DELETE
+      path: /projects/{id}/repository/branches/{branch}
+      description: "Delete a branch. Cannot delete the default or protected branches."
+      params:
+        id: { type: string, in: path, required: true }
+        branch: { type: string, in: path, required: true }
+      pagination: none
+
+    delete_merged_branches:
+      method: DELETE
+      path: /projects/{id}/repository/merged_branches
+      description: "Delete all branches that have been merged into the default branch. Returns 202 Accepted."
+      params:
+        id: { type: string, in: path, required: true }
+      pagination: none
+
+    # ── Commits ──────────────────────────────────────────────────
+
+    list_commits:
+      method: GET
+      path: /projects/{id}/repository/commits
+      description: "List commits in a repository. Filter by branch/tag (ref_name), file path, author, or date range."
+      params:
+        id: { type: string, in: path, required: true }
+        ref_name: { type: string, in: query }
+        since: { type: string, in: query }
+        until: { type: string, in: query }
+        path: { type: string, in: query }
+        author: { type: string, in: query }
+        all: { type: boolean, in: query }
+        with_stats: { type: boolean, in: query }
+        first_parent: { type: boolean, in: query }
+        page: { type: integer, in: query }
+        per_page: { type: integer, in: query, default: 20 }
+
+    get_commit:
+      method: GET
+      path: /projects/{id}/repository/commits/{sha}
+      description: "Get a single commit by SHA, branch name, or tag name. Includes author info, message, and parent SHAs."
+      params:
+        id: { type: string, in: path, required: true }
+        sha: { type: string, in: path, required: true }
+        stats: { type: boolean, in: query }
+      pagination: none
+
+    get_commit_diff:
+      method: GET
+      path: /projects/{id}/repository/commits/{sha}/diff
+      description: "Get the diff of a commit showing file changes with unified diff content."
+      params:
+        id: { type: string, in: path, required: true }
+        sha: { type: string, in: path, required: true }
+        page: { type: integer, in: query }
+        per_page: { type: integer, in: query, default: 20 }
+
+    # ── Pipelines (CI/CD) ────────────────────────────────────────
+
+    list_pipelines:
+      method: GET
+      path: /projects/{id}/pipelines
+      description: "List pipelines for a project. Child pipelines are not included by default."
+      params:
+        id: { type: string, in: path, required: true }
+        status: { type: string, in: query }
+        ref: { type: string, in: query }
+        sha: { type: string, in: query }
+        source: { type: string, in: query }
+        name: { type: string, in: query }
+        username: { type: string, in: query }
+        order_by: { type: string, in: query, default: "id" }
+        sort: { type: string, in: query, default: "desc" }
+        yaml_errors: { type: boolean, in: query }
+        updated_after: { type: string, in: query }
+        updated_before: { type: string, in: query }
+        scope: { type: string, in: query }
+        page: { type: integer, in: query }
+        per_page: { type: integer, in: query, default: 20 }
+
+    get_pipeline:
+      method: GET
+      path: /projects/{id}/pipelines/{pipeline_id}
+      description: "Get a single pipeline by ID."
+      params:
+        id: { type: string, in: path, required: true }
+        pipeline_id: { type: integer, in: path, required: true }
+      pagination: none
+
+    get_latest_pipeline:
+      method: GET
+      path: /projects/{id}/pipelines/latest
+      description: "Get the latest pipeline for a ref. Defaults to the default branch."
+      params:
+        id: { type: string, in: path, required: true }
+        ref: { type: string, in: query }
+      pagination: none
+
+    create_pipeline:
+      method: POST
+      path: /projects/{id}/pipeline
+      description: "Trigger a new pipeline on a branch or tag. Note: singular 'pipeline' in path, not 'pipelines'."
+      params:
+        id: { type: string, in: path, required: true }
+        ref: { type: string, in: body, required: true }
+        variables: { type: array, in: body }
+      pagination: none
+
+    retry_pipeline:
+      method: POST
+      path: /projects/{id}/pipelines/{pipeline_id}/retry
+      description: "Retry all failed jobs in a pipeline."
+      params:
+        id: { type: string, in: path, required: true }
+        pipeline_id: { type: integer, in: path, required: true }
+      pagination: none
+
+    cancel_pipeline:
+      method: POST
+      path: /projects/{id}/pipelines/{pipeline_id}/cancel
+      description: "Cancel a running pipeline and all its running jobs."
+      params:
+        id: { type: string, in: path, required: true }
+        pipeline_id: { type: integer, in: path, required: true }
+      pagination: none
+
+    delete_pipeline:
+      method: DELETE
+      path: /projects/{id}/pipelines/{pipeline_id}
+      description: "Delete a pipeline. Deletes builds, logs, artifacts, and triggers. Cannot be undone."
+      params:
+        id: { type: string, in: path, required: true }
+        pipeline_id: { type: integer, in: path, required: true }
+      pagination: none
+
+    get_pipeline_variables:
+      method: GET
+      path: /projects/{id}/pipelines/{pipeline_id}/variables
+      description: "Get variables for a pipeline."
+      params:
+        id: { type: string, in: path, required: true }
+        pipeline_id: { type: integer, in: path, required: true }
+      pagination: none
+
+    get_pipeline_test_report:
+      method: GET
+      path: /projects/{id}/pipelines/{pipeline_id}/test_report
+      description: "Get the test report for a pipeline."
+      params:
+        id: { type: string, in: path, required: true }
+        pipeline_id: { type: integer, in: path, required: true }
+      pagination: none
+
+    # ── Jobs ─────────────────────────────────────────────────────
+
+    list_project_jobs:
+      method: GET
+      path: /projects/{id}/jobs
+      description: "List jobs for a project. Supports both offset and keyset pagination."
+      params:
+        id: { type: string, in: path, required: true }
+        scope: { type: string, in: query }
+        order_by: { type: string, in: query }
+        sort: { type: string, in: query }
+        page: { type: integer, in: query }
+        per_page: { type: integer, in: query, default: 20 }
+
+    list_pipeline_jobs:
+      method: GET
+      path: /projects/{id}/pipelines/{pipeline_id}/jobs
+      description: "List jobs for a pipeline. Retried jobs are excluded by default; use include_retried=true to include them."
+      params:
+        id: { type: string, in: path, required: true }
+        pipeline_id: { type: integer, in: path, required: true }
+        scope: { type: string, in: query }
+        include_retried: { type: boolean, in: query }
+        page: { type: integer, in: query }
+        per_page: { type: integer, in: query, default: 20 }
+
+    get_job:
+      method: GET
+      path: /projects/{id}/jobs/{job_id}
+      description: "Get a single job by ID."
+      params:
+        id: { type: string, in: path, required: true }
+        job_id: { type: integer, in: path, required: true }
+      pagination: none
+
+    get_job_log:
+      method: GET
+      path: /projects/{id}/jobs/{job_id}/trace
+      description: "Get the log (trace) output of a job. Returns plain text, not JSON."
+      params:
+        id: { type: string, in: path, required: true }
+        job_id: { type: integer, in: path, required: true }
+      pagination: none
+
+    retry_job:
+      method: POST
+      path: /projects/{id}/jobs/{job_id}/retry
+      description: "Retry a single job."
+      params:
+        id: { type: string, in: path, required: true }
+        job_id: { type: integer, in: path, required: true }
+      pagination: none
+
+    cancel_job:
+      method: POST
+      path: /projects/{id}/jobs/{job_id}/cancel
+      description: "Cancel a running or pending job."
+      params:
+        id: { type: string, in: path, required: true }
+        job_id: { type: integer, in: path, required: true }
+        force: { type: boolean, in: query }
+      pagination: none
+
+    play_job:
+      method: POST
+      path: /projects/{id}/jobs/{job_id}/play
+      description: "Trigger a manual job."
+      params:
+        id: { type: string, in: path, required: true }
+        job_id: { type: integer, in: path, required: true }
+        job_variables_attributes: { type: array, in: body }
+      pagination: none
+
+    # ── Releases ─────────────────────────────────────────────────
+
+    list_releases:
+      method: GET
+      path: /projects/{id}/releases
+      description: "List releases for a project, sorted by released_at descending."
+      params:
+        id: { type: string, in: path, required: true }
+        order_by: { type: string, in: query, default: "released_at" }
+        sort: { type: string, in: query, default: "desc" }
+        include_html_description: { type: boolean, in: query }
+        page: { type: integer, in: query }
+        per_page: { type: integer, in: query, default: 20 }
+
+    get_release:
+      method: GET
+      path: /projects/{id}/releases/{tag_name}
+      description: "Get a single release by its associated tag name."
+      params:
+        id: { type: string, in: path, required: true }
+        tag_name: { type: string, in: path, required: true }
+        include_html_description: { type: boolean, in: query }
+      pagination: none
+
+    create_release:
+      method: POST
+      path: /projects/{id}/releases
+      description: "Create a release. If the tag does not exist, ref is required to create it."
+      params:
+        id: { type: string, in: path, required: true }
+        tag_name: { type: string, in: body, required: true }
+        name: { type: string, in: body }
+        description: { type: string, in: body }
+        ref: { type: string, in: body }
+        tag_message: { type: string, in: body }
+        milestones: { type: array, in: body }
+        released_at: { type: string, in: body }
+        assets: { type: object, in: body }
+      pagination: none
+
+    update_release:
+      method: PUT
+      path: /projects/{id}/releases/{tag_name}
+      description: "Update a release. Only name, description, milestones, and released_at can be changed."
+      params:
+        id: { type: string, in: path, required: true }
+        tag_name: { type: string, in: path, required: true }
+        name: { type: string, in: body }
+        description: { type: string, in: body }
+        milestones: { type: array, in: body }
+        released_at: { type: string, in: body }
+      pagination: none
+
+    delete_release:
+      method: DELETE
+      path: /projects/{id}/releases/{tag_name}
+      description: "Delete a release. The associated Git tag is preserved. Requires Maintainer access."
+      params:
+        id: { type: string, in: path, required: true }
+        tag_name: { type: string, in: path, required: true }
+      pagination: none
+
+    # ── Groups ───────────────────────────────────────────────────
+
+    list_groups:
+      method: GET
+      path: /groups
+      description: "List visible groups. Without authentication, only public groups are returned."
+      params:
+        search: { type: string, in: query }
+        order_by: { type: string, in: query, default: "name" }
+        sort: { type: string, in: query, default: "asc" }
+        visibility: { type: string, in: query }
+        min_access_level: { type: integer, in: query }
+        statistics: { type: boolean, in: query }
+        page: { type: integer, in: query }
+        per_page: { type: integer, in: query, default: 20 }
+
+    get_group:
+      method: GET
+      path: /groups/{id}
+      description: "Get details of a group by ID or URL-encoded path."
+      params:
+        id: { type: string, in: path, required: true }
+        with_projects: { type: boolean, in: query }
+        with_custom_attributes: { type: boolean, in: query }
+      pagination: none
+
+    list_subgroups:
+      method: GET
+      path: /groups/{id}/subgroups
+      description: "List direct subgroups of a group."
+      params:
+        id: { type: string, in: path, required: true }
+        search: { type: string, in: query }
+        owned: { type: boolean, in: query }
+        min_access_level: { type: integer, in: query }
+        order_by: { type: string, in: query }
+        sort: { type: string, in: query }
+        page: { type: integer, in: query }
+        per_page: { type: integer, in: query, default: 20 }
+
+    create_group:
+      method: POST
+      path: /groups
+      description: "Create a new group. Requires name and path."
+      params:
+        name: { type: string, in: body, required: true }
+        path: { type: string, in: body, required: true }
+        description: { type: string, in: body }
+        visibility: { type: string, in: body, default: "private" }
+        parent_id: { type: integer, in: body }
+        lfs_enabled: { type: boolean, in: body }
+      pagination: none
+
+    # ── Users ────────────────────────────────────────────────────
+
+    get_current_user:
+      method: GET
+      path: /user
+      description: "Get the currently authenticated user's profile."
+      params: {}
+      pagination: none
+
+    list_users:
+      method: GET
+      path: /users
+      description: "List all users. Admins see extended fields. Use search to find by name, username, or email."
+      params:
+        search: { type: string, in: query }
+        username: { type: string, in: query }
+        active: { type: boolean, in: query }
+        blocked: { type: boolean, in: query }
+        external: { type: boolean, in: query }
+        order_by: { type: string, in: query }
+        sort: { type: string, in: query }
+        page: { type: integer, in: query }
+        per_page: { type: integer, in: query, default: 20 }
+
+    get_user:
+      method: GET
+      path: /users/{user_id}
+      description: "Get a single user by ID. Admins see extended fields including sign-in history."
+      params:
+        user_id: { type: integer, in: path, required: true }
+      pagination: none
+
+    # ── Repository Files ─────────────────────────────────────────
+
+    get_file:
+      method: GET
+      path: /projects/{id}/repository/files/{file_path}
+      description: "Get file metadata and base64-encoded content. The file_path must be URL-encoded (slashes as %2F)."
+      params:
+        id: { type: string, in: path, required: true }
+        file_path: { type: string, in: path, required: true }
+        ref: { type: string, in: query, required: true }
+      pagination: none
+
+    get_file_raw:
+      method: GET
+      path: /projects/{id}/repository/files/{file_path}/raw
+      description: "Get raw (unencoded) file content. Returns the file directly, not JSON."
+      params:
+        id: { type: string, in: path, required: true }
+        file_path: { type: string, in: path, required: true }
+        ref: { type: string, in: query }
+        lfs: { type: boolean, in: query }
+      pagination: none
+
+    create_file:
+      method: POST
+      path: /projects/{id}/repository/files/{file_path}
+      description: "Create a new file in the repository. Creates a commit."
+      params:
+        id: { type: string, in: path, required: true }
+        file_path: { type: string, in: path, required: true }
+        branch: { type: string, in: body, required: true }
+        content: { type: string, in: body, required: true }
+        commit_message: { type: string, in: body, required: true }
+        encoding: { type: string, in: body, default: "text" }
+        author_email: { type: string, in: body }
+        author_name: { type: string, in: body }
+        start_branch: { type: string, in: body }
+      pagination: none
+
+    update_file:
+      method: PUT
+      path: /projects/{id}/repository/files/{file_path}
+      description: "Update an existing file in the repository. Creates a commit."
+      params:
+        id: { type: string, in: path, required: true }
+        file_path: { type: string, in: path, required: true }
+        branch: { type: string, in: body, required: true }
+        content: { type: string, in: body, required: true }
+        commit_message: { type: string, in: body, required: true }
+        encoding: { type: string, in: body, default: "text" }
+        author_email: { type: string, in: body }
+        author_name: { type: string, in: body }
+        last_commit_id: { type: string, in: body }
+        start_branch: { type: string, in: body }
+      pagination: none
+
+    delete_file:
+      method: DELETE
+      path: /projects/{id}/repository/files/{file_path}
+      description: "Delete a file from the repository. Creates a commit."
+      params:
+        id: { type: string, in: path, required: true }
+        file_path: { type: string, in: path, required: true }
+        branch: { type: string, in: body, required: true }
+        commit_message: { type: string, in: body, required: true }
+        author_email: { type: string, in: body }
+        author_name: { type: string, in: body }
+        last_commit_id: { type: string, in: body }
+        start_branch: { type: string, in: body }
+      pagination: none
+
+    # ── Labels ───────────────────────────────────────────────────
+
+    list_labels:
+      method: GET
+      path: /projects/{id}/labels
+      description: "List all labels for a project."
+      params:
+        id: { type: string, in: path, required: true }
+        with_counts: { type: boolean, in: query }
+        include_ancestor_groups: { type: boolean, in: query }
+        search: { type: string, in: query }
+        page: { type: integer, in: query }
+        per_page: { type: integer, in: query, default: 20 }
+
+    get_label:
+      method: GET
+      path: /projects/{id}/labels/{label_id}
+      description: "Get a single label by ID or title."
+      params:
+        id: { type: string, in: path, required: true }
+        label_id: { type: string, in: path, required: true }
+        include_ancestor_groups: { type: boolean, in: query }
+      pagination: none
+
+    create_label:
+      method: POST
+      path: /projects/{id}/labels
+      description: "Create a new label. Color must be a 6-digit hex with '#' prefix (e.g., '#FF0000') or a CSS color name."
+      params:
+        id: { type: string, in: path, required: true }
+        name: { type: string, in: body, required: true }
+        color: { type: string, in: body, required: true }
+        description: { type: string, in: body }
+        priority: { type: integer, in: body }
+      pagination: none
+
+    update_label:
+      method: PUT
+      path: /projects/{id}/labels/{label_id}
+      description: "Update a label. At least new_name or color is required."
+      params:
+        id: { type: string, in: path, required: true }
+        label_id: { type: string, in: path, required: true }
+        new_name: { type: string, in: body }
+        color: { type: string, in: body }
+        description: { type: string, in: body }
+        priority: { type: integer, in: body }
+      pagination: none
+
+    delete_label:
+      method: DELETE
+      path: /projects/{id}/labels/{label_id}
+      description: "Delete a label from the project."
+      params:
+        id: { type: string, in: path, required: true }
+        label_id: { type: string, in: path, required: true }
+      pagination: none
+
+    # ── Milestones ───────────────────────────────────────────────
+
+    list_milestones:
+      method: GET
+      path: /projects/{id}/milestones
+      description: "List all milestones for a project."
+      params:
+        id: { type: string, in: path, required: true }
+        state: { type: string, in: query }
+        title: { type: string, in: query }
+        search: { type: string, in: query }
+        updated_before: { type: string, in: query }
+        updated_after: { type: string, in: query }
+        page: { type: integer, in: query }
+        per_page: { type: integer, in: query, default: 20 }
+
+    get_milestone:
+      method: GET
+      path: /projects/{id}/milestones/{milestone_id}
+      description: "Get a single milestone by ID."
+      params:
+        id: { type: string, in: path, required: true }
+        milestone_id: { type: integer, in: path, required: true }
+      pagination: none
+
+    create_milestone:
+      method: POST
+      path: /projects/{id}/milestones
+      description: "Create a new milestone. Dates use YYYY-MM-DD format."
+      params:
+        id: { type: string, in: path, required: true }
+        title: { type: string, in: body, required: true }
+        description: { type: string, in: body }
+        due_date: { type: string, in: body }
+        start_date: { type: string, in: body }
+      pagination: none
+
+    update_milestone:
+      method: PUT
+      path: /projects/{id}/milestones/{milestone_id}
+      description: "Update a milestone. Use state_event 'close' or 'activate' to change state."
+      params:
+        id: { type: string, in: path, required: true }
+        milestone_id: { type: integer, in: path, required: true }
+        title: { type: string, in: body }
+        description: { type: string, in: body }
+        due_date: { type: string, in: body }
+        start_date: { type: string, in: body }
+        state_event: { type: string, in: body }
+      pagination: none
+
+    # ── Search ───────────────────────────────────────────────────
+
+    search_global:
+      method: GET
+      path: /search
+      description: "Search across the entire GitLab instance. Scope determines what to search: projects, issues, merge_requests, milestones, snippet_titles, users, wiki_blobs, commits, blobs, notes."
+      params:
+        scope: { type: string, in: query, required: true }
+        search: { type: string, in: query, required: true }
+        confidential: { type: boolean, in: query }
+        state: { type: string, in: query }
+        order_by: { type: string, in: query }
+        sort: { type: string, in: query }
+        page: { type: integer, in: query }
+        per_page: { type: integer, in: query, default: 20 }
+
+    search_group:
+      method: GET
+      path: /groups/{id}/search
+      description: "Search within a group. Same scopes as global search."
+      params:
+        id: { type: string, in: path, required: true }
+        scope: { type: string, in: query, required: true }
+        search: { type: string, in: query, required: true }
+        confidential: { type: boolean, in: query }
+        state: { type: string, in: query }
+        order_by: { type: string, in: query }
+        sort: { type: string, in: query }
+        page: { type: integer, in: query }
+        per_page: { type: integer, in: query, default: 20 }
+
+    search_project:
+      method: GET
+      path: /projects/{id}/search
+      description: "Search within a project. Scopes: issues, merge_requests, milestones, users, wiki_blobs, commits, blobs, notes. Use ref to search a specific branch/tag."
+      params:
+        id: { type: string, in: path, required: true }
+        scope: { type: string, in: query, required: true }
+        search: { type: string, in: query, required: true }
+        ref: { type: string, in: query }
+        confidential: { type: boolean, in: query }
+        state: { type: string, in: query }
+        order_by: { type: string, in: query }
+        sort: { type: string, in: query }
+        page: { type: integer, in: query }
+        per_page: { type: integer, in: query, default: 20 }

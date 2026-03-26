@@ -10,7 +10,7 @@ LDFLAGS  := -s -w \
 
 BIN_DIR  := bin
 
-.PHONY: all build test lint vet fmt clean docker docker-dev bootstrap help
+.PHONY: all build test lint vet fmt lint-dadl clean docker docker-dev bootstrap help
 
 all: lint test build ## Run lint, test, and build
 
@@ -18,6 +18,7 @@ build: ## Build binaries
 	@mkdir -p $(BIN_DIR)
 	CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/toolmesh ./cmd/toolmesh
 	CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/tm-bootstrap ./cmd/tm-bootstrap
+	CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/lint-dadl ./cmd/lint-dadl
 
 test: ## Run tests
 	go test ./...
@@ -37,6 +38,9 @@ fmt: ## Check formatting
 	@test -z "$$(gofmt -l .)" || (echo "Run gofmt:" && gofmt -l . && exit 1)
 
 lint: vet fmt ## Run all linters
+
+lint-dadl: build ## Scan DADL composites for security violations
+	$(BIN_DIR)/lint-dadl dadl/*.dadl
 
 clean: ## Remove build artifacts
 	rm -rf $(BIN_DIR) coverage.out coverage.html

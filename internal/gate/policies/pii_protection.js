@@ -15,8 +15,8 @@ var piiPatterns = [
     { regex: /\b\d{3}-\d{2}-\d{4}\b/g, mask: "[SSN]" },
     // Email addresses
     { regex: /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g, mask: "[EMAIL]" },
-    // Phone numbers (international and US formats)
-    { regex: /(\+?\d{1,3}[-.\s]?)?\(?\d{2,4}\)?[-.\s]?\d{3,4}[-.\s]?\d{3,4}/g, mask: "[PHONE]" },
+    // Phone numbers: must start with + or 0 (international or local format)
+    { regex: /(?:\+\d{1,3}[-.\s]?\(?\d{2,4}\)?[-.\s]?\d{3,4}[-.\s]?\d{3,4}|\b0\d{2,4}[-.\s/]?\d{3,4}[-.\s]?\d{3,4})\b/g, mask: "[PHONE]" },
     // IP addresses (IPv4)
     { regex: /\b(?:\d{1,3}\.){3}\d{1,3}\b/g, mask: "[IP_ADDRESS]" },
     // AWS access keys

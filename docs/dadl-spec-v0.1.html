@@ -1,0 +1,989 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DADL — Dunkel API Description Language</title>
+<meta name="description" content="DADL is a declarative YAML format for describing REST APIs as ToolMesh backends. Write a .dadl file, ToolMesh handles the rest.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Source+Serif+4:ital,opsz,wght@0,8..60,300;0,8..60,400;0,8..60,600;0,8..60,700;1,8..60,400&family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #0a0a0c;
+  --bg-elevated: #111115;
+  --bg-code: #16161c;
+  --bg-code-header: #1c1c24;
+  --surface: #1a1a22;
+  --border: #2a2a35;
+  --border-accent: #3d3d50;
+  --text: #e8e6e3;
+  --text-muted: #8a8898;
+  --text-dim: #5a5a6a;
+  --accent: #c9a84c;
+  --accent-dim: #8a7235;
+  --accent-glow: rgba(201, 168, 76, 0.08);
+  --keyword: #c9a84c;
+  --string: #8fbf7a;
+  --comment: #5a6a5a;
+  --key: #7ab0d6;
+  --value: #d4a0d0;
+  --type: #e0a070;
+  --bracket: #6a6a7a;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  font-family: 'DM Sans', sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.7;
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection { background: var(--accent); color: var(--bg); }
+
+.container {
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 0 2rem;
+}
+
+/* ── Hero ── */
+header {
+  padding: 6rem 0 4rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.hero-badge {
+  display: inline-block;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.7rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--accent);
+  border: 1px solid var(--accent-dim);
+  padding: 0.3em 0.9em;
+  border-radius: 2px;
+  margin-bottom: 1.5rem;
+}
+
+h1 {
+  font-family: 'Source Serif 4', serif;
+  font-size: 3.2rem;
+  font-weight: 700;
+  line-height: 1.15;
+  letter-spacing: -0.02em;
+  margin-bottom: 0.3rem;
+}
+
+h1 .thin { font-weight: 300; color: var(--text-muted); }
+
+.hero-sub {
+  font-size: 1.15rem;
+  color: var(--text-muted);
+  max-width: 600px;
+  margin-top: 1rem;
+  line-height: 1.65;
+}
+
+.hero-sub strong { color: var(--text); font-weight: 600; }
+
+.hero-meta {
+  margin-top: 2rem;
+  display: flex;
+  gap: 2rem;
+  flex-wrap: wrap;
+}
+
+.hero-meta-item {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.75rem;
+  color: var(--text-dim);
+}
+
+.hero-meta-item span { color: var(--text-muted); }
+
+/* ── Navigation ── */
+nav {
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  background: rgba(10, 10, 12, 0.85);
+  backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--border);
+  padding: 0.8rem 0;
+}
+
+nav .container {
+  display: flex;
+  gap: 1.5rem;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+nav a {
+  font-size: 0.8rem;
+  font-weight: 500;
+  color: var(--text-muted);
+  text-decoration: none;
+  white-space: nowrap;
+  transition: color 0.2s;
+}
+
+nav a:hover { color: var(--accent); }
+
+/* ── Sections ── */
+section {
+  padding: 3.5rem 0;
+  border-bottom: 1px solid var(--border);
+}
+
+h2 {
+  font-family: 'Source Serif 4', serif;
+  font-size: 1.7rem;
+  font-weight: 600;
+  margin-bottom: 1.2rem;
+  letter-spacing: -0.01em;
+}
+
+h2 .section-num {
+  color: var(--accent-dim);
+  font-weight: 300;
+  margin-right: 0.3em;
+}
+
+h3 {
+  font-size: 1.05rem;
+  font-weight: 600;
+  margin-top: 2rem;
+  margin-bottom: 0.6rem;
+  color: var(--text);
+}
+
+p { margin-bottom: 1rem; color: var(--text-muted); }
+p strong { color: var(--text); }
+
+/* ── Code Blocks ── */
+pre {
+  background: var(--bg-code);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow-x: auto;
+  margin: 1.2rem 0 1.5rem;
+  font-size: 0.82rem;
+  line-height: 1.65;
+}
+
+pre .code-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.5rem 1rem;
+  background: var(--bg-code-header);
+  border-bottom: 1px solid var(--border);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.7rem;
+  color: var(--text-dim);
+}
+
+pre code {
+  display: block;
+  padding: 1rem 1.2rem;
+  font-family: 'JetBrains Mono', monospace;
+  color: var(--text);
+  tab-size: 2;
+}
+
+/* Syntax classes */
+.k { color: var(--key); }
+.s { color: var(--string); }
+.c { color: var(--comment); font-style: italic; }
+.v { color: var(--value); }
+.t { color: var(--type); }
+.n { color: var(--text); }
+.b { color: var(--bracket); }
+.a { color: var(--accent); }
+
+/* ── Inline code ── */
+code:not(pre code) {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.85em;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  padding: 0.15em 0.4em;
+  border-radius: 3px;
+  color: var(--accent);
+}
+
+/* ── Tables ── */
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 1.2rem 0 1.5rem;
+  font-size: 0.88rem;
+}
+
+th, td {
+  text-align: left;
+  padding: 0.6rem 0.8rem;
+  border-bottom: 1px solid var(--border);
+}
+
+th {
+  font-weight: 600;
+  color: var(--text);
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+td { color: var(--text-muted); }
+td code { font-size: 0.8em; }
+
+/* ── Lists ── */
+ul, ol {
+  margin: 0.8rem 0 1.2rem 1.5rem;
+  color: var(--text-muted);
+}
+
+li { margin-bottom: 0.35rem; }
+li strong { color: var(--text); }
+
+/* ── Callout ── */
+.callout {
+  border-left: 3px solid var(--accent-dim);
+  background: var(--accent-glow);
+  padding: 1rem 1.2rem;
+  margin: 1.2rem 0;
+  border-radius: 0 4px 4px 0;
+  font-size: 0.9rem;
+}
+
+.callout p { margin-bottom: 0; }
+
+.wip-badge {
+  display: inline-block;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.65rem;
+  color: #e0a060;
+  border: 1px solid #5a4030;
+  background: rgba(224, 160, 96, 0.06);
+  padding: 0.2em 0.6em;
+  border-radius: 2px;
+  vertical-align: middle;
+  margin-left: 0.5em;
+}
+
+/* ── Footer ── */
+footer {
+  padding: 3rem 0;
+  text-align: center;
+  color: var(--text-dim);
+  font-size: 0.8rem;
+}
+
+footer a { color: var(--text-muted); text-decoration: none; }
+footer a:hover { color: var(--accent); }
+
+/* ── Responsive ── */
+@media (max-width: 640px) {
+  h1 { font-size: 2.2rem; }
+  header { padding: 3rem 0 2rem; }
+  section { padding: 2rem 0; }
+  .container { padding: 0 1.2rem; }
+  .hero-meta { flex-direction: column; gap: 0.5rem; }
+  table { font-size: 0.78rem; }
+  th, td { padding: 0.4rem 0.5rem; }
+}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="container">
+    <div class="hero-badge">Specification Draft v0.1</div>
+    <h1>DADL <span class="thin">— Dunkel API Description Language</span></h1>
+    <p class="hero-sub">
+      A <strong>declarative YAML format</strong> for describing REST APIs as
+      <a href="https://toolmesh.io" style="color:var(--accent);text-decoration:none">ToolMesh</a> backends.
+      Write a <code>.dadl</code> file — ToolMesh handles the rest.
+    </p>
+    <div class="hero-meta">
+      <div class="hero-meta-item">Version <span>0.1.0-draft</span></div>
+      <div class="hero-meta-item">Date <span>2026-03-25</span></div>
+      <div class="hero-meta-item">Author <span>Dunkel Cloud GmbH</span></div>
+      <div class="hero-meta-item">License <span>Apache 2.0</span></div>
+    </div>
+  </div>
+</header>
+
+<nav>
+  <div class="container">
+    <a href="#overview">Overview</a>
+    <a href="#design">Design Principles</a>
+    <a href="#structure">File Structure</a>
+    <a href="#backend">Backend Object</a>
+    <a href="#auth">Authentication</a>
+    <a href="#tools">Tools</a>
+    <a href="#pagination">Pagination</a>
+    <a href="#errors">Errors</a>
+    <a href="#response">Response Transformation</a>
+    <a href="#types">Types</a>
+    <a href="#includes">Includes</a>
+    <a href="#example">Full Example</a>
+  </div>
+</nav>
+
+<!-- ═══════════════════════════════════════════ -->
+<section id="overview">
+<div class="container">
+  <h2><span class="section-num">1</span> Overview</h2>
+  <p>
+    <strong>DADL</strong> (Dunkel API Description Language) is a declarative YAML format
+    that describes REST APIs for consumption by <strong>ToolMesh</strong> — a secure execution
+    layer between AI agents and enterprise infrastructure.
+  </p>
+  <p>
+    Instead of building a dedicated MCP server for each REST API, you write a <code>.dadl</code> file.
+    ToolMesh reads it, generates TypeScript interfaces, and exposes the API via
+    <strong>Code Mode</strong> — two tools (<code>search</code> + <code>execute</code>) that give
+    any AI agent access to the entire API in roughly 1,000 tokens.
+  </p>
+
+  <pre><div class="code-header"><span>Architecture</span></div><code><span class="c"># Without DADL</span>
+<span class="n">Claude → ToolMesh → custom Go/TS MCP Server → REST API</span>
+
+<span class="c"># With DADL</span>
+<span class="n">Claude → ToolMesh → REST API</span> <span class="c">(via declarative .dadl file)</span></code></pre>
+
+  <div class="callout">
+    <p><strong>Code Mode only.</strong> DADL backends are always exposed via Code Mode.
+    The LLM writes JavaScript against auto-generated TypeScript interfaces.
+    No tool-per-endpoint explosion — regardless of API size.</p>
+  </div>
+</div>
+</section>
+
+<!-- ═══════════════════════════════════════════ -->
+<section id="design">
+<div class="container">
+  <h2><span class="section-num">2</span> Design Principles</h2>
+  <p>
+    <strong>Describe the API, not the agent behavior.</strong>
+    DADL declares what endpoints exist and how to authenticate.
+    ToolMesh decides how to present them to the LLM (always Code Mode).
+    Temporal handles durability. OpenFGA handles authorization.
+  </p>
+  <ul>
+    <li><strong>YAML-native</strong> — every <code>.dadl</code> file is valid YAML. Existing editors, linters, and parsers work out of the box.</li>
+    <li><strong>Code Mode only</strong> — no tool-grouping syntax, no scope-exposure mechanics. The LLM writes code against TypeScript interfaces.</li>
+    <li><strong>OpenAPI-compatible</strong> — optional <code>openapi_source</code> field uses an existing OpenAPI spec for schemas. DADL adds only what OpenAPI lacks: credential injection, pagination strategy, response transformation.</li>
+    <li><strong>No templating</strong> — no variables, no conditionals, no loops. DADL is declarative, not generative.</li>
+    <li><strong>No workflow syntax</strong> — multi-step orchestration happens in Code Mode (the LLM writes sequential code) and Temporal (durability, retry, audit).</li>
+  </ul>
+</div>
+</section>
+
+<!-- ═══════════════════════════════════════════ -->
+<section id="structure">
+<div class="container">
+  <h2><span class="section-num">3</span> File Structure</h2>
+  <p>A DADL file has the extension <code>.dadl</code> and is a YAML document with the following top-level fields:</p>
+
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Required</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>version</code></td><td>string</td><td>yes</td><td>DADL spec version. Currently <code>"1.0"</code></td></tr>
+      <tr><td><code>author</code></td><td>string</td><td>no</td><td>Author of this DADL file (person or organization)</td></tr>
+      <tr><td><code>source_name</code></td><td>string</td><td>no</td><td>Name of the source API being described (e.g. <code>"GitHub REST API"</code>)</td></tr>
+      <tr><td><code>source_url</code></td><td>string</td><td>no</td><td>URL to the original API specification or documentation</td></tr>
+      <tr><td><code>date</code></td><td>string</td><td>no</td><td>Creation or last-modified date of this file (<code>YYYY-MM-DD</code>)</td></tr>
+      <tr><td><code>backend</code></td><td>object</td><td>yes</td><td>The backend definition</td></tr>
+      <tr><td><code>includes</code></td><td>array</td><td>no</td><td>Reusable fragments to merge in</td></tr>
+      <tr><td><code>_*</code></td><td>any</td><td>no</td><td>Underscore-prefixed keys are ignored by ToolMesh (used for YAML anchors)</td></tr>
+    </tbody>
+  </table>
+
+  <pre><div class="code-header"><span>minimal.dadl</span></div><code><span class="k">version</span>: <span class="s">"1.0"</span>
+<span class="k">author</span>: <span class="s">"Jane Doe"</span>                          <span class="c"># optional</span>
+<span class="k">source_name</span>: <span class="s">"Example REST API"</span>              <span class="c"># optional</span>
+<span class="k">source_url</span>: <span class="s">https://docs.example.com/api</span>    <span class="c"># optional</span>
+<span class="k">date</span>: <span class="s">"2026-03-25"</span>                            <span class="c"># optional</span>
+
+<span class="k">backend</span>:
+  <span class="k">name</span>: <span class="s">my-api</span>
+  <span class="k">type</span>: <span class="s">rest</span>
+  <span class="k">base_url</span>: <span class="s">https://api.example.com/v1</span>
+  <span class="k">description</span>: <span class="s">"My REST API"</span>
+
+  <span class="k">auth</span>:
+    <span class="k">type</span>: <span class="s">bearer</span>
+    <span class="k">credential</span>: <span class="s">vault/my-api-token</span>
+
+  <span class="k">tools</span>:
+    <span class="k">list_items</span>:
+      <span class="k">method</span>: <span class="s">GET</span>
+      <span class="k">path</span>: <span class="s">/items</span>
+      <span class="k">description</span>: <span class="s">"List all items"</span></code></pre>
+</div>
+</section>
+
+<!-- ═══════════════════════════════════════════ -->
+<section id="backend">
+<div class="container">
+  <h2><span class="section-num">4</span> Backend Object</h2>
+
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Required</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>name</code></td><td>string</td><td>yes</td><td>Unique backend identifier (slug format: lowercase, hyphens)</td></tr>
+      <tr><td><code>type</code></td><td>string</td><td>yes</td><td>Always <code>rest</code> for DADL backends</td></tr>
+      <tr><td><code>base_url</code></td><td>string</td><td>yes</td><td>Base URL for all API requests</td></tr>
+      <tr><td><code>description</code></td><td>string</td><td>yes</td><td>Human-readable description (used in Code Mode prompt)</td></tr>
+      <tr><td><code>openapi_source</code></td><td>string</td><td>no</td><td>Path or URL to OpenAPI 3.x spec. When provided, schemas and parameters are derived from it.</td></tr>
+      <tr><td><code>arazzo_source</code></td><td>string</td><td>no</td><td>Path or URL to Arazzo workflow file. Used as documentation context for Code Mode, not executed.</td></tr>
+      <tr><td><code>auth</code></td><td>object</td><td>yes</td><td>Authentication configuration</td></tr>
+      <tr><td><code>defaults</code></td><td>object</td><td>no</td><td>Default pagination, error, and response config for all tools</td></tr>
+      <tr><td><code>types</code></td><td>object</td><td>no</td><td>Type definitions (JSON Schema subset). Only needed without <code>openapi_source</code>.</td></tr>
+      <tr><td><code>tools</code></td><td>object</td><td>yes</td><td>Map of tool definitions</td></tr>
+      <tr><td><code>examples</code></td><td>array</td><td>no</td><td>Code examples for multi-step workflows (few-shot prompts for the LLM)</td></tr>
+      <tr><td><code>coverage</code></td><td>object</td><td>no</td><td>API coverage metadata. Helps LLMs understand scope and users assess fitness.</td></tr>
+      <tr><td><code>hints</code></td><td>object</td><td>no</td><td>Per-tool domain knowledge for LLM consumers (structured key-value). Injected into tool descriptions at load time. Subject to security scanning.</td></tr>
+      <tr><td><code>setup</code></td><td>object</td><td>no</td><td>Human-readable setup instructions. Describes how to obtain credentials, configure backends.yaml, and required permissions. Powers <code>toolmesh setup &lt;name&gt;</code> CLI.</td></tr>
+    </tbody>
+  </table>
+
+  <h3>4.1 Coverage Object</h3>
+  <p>Optional metadata describing how much of the target API this DADL file covers. Useful for discovery, community contributions, and LLM decision-making.</p>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Required</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>endpoints</code></td><td>integer</td><td>no</td><td>Number of tools defined in this DADL file</td></tr>
+      <tr><td><code>total_endpoints</code></td><td>integer</td><td>no</td><td>Estimated total number of REST endpoints in the target API</td></tr>
+      <tr><td><code>percentage</code></td><td>integer</td><td>no</td><td>Approximate coverage percentage (0–100)</td></tr>
+      <tr><td><code>focus</code></td><td>string</td><td>no</td><td>Comma-separated list of covered API areas (e.g. "repos, issues, PRs, search")</td></tr>
+      <tr><td><code>missing</code></td><td>string</td><td>no</td><td>Notable uncovered API areas (e.g. "webhooks, teams, code scanning")</td></tr>
+      <tr><td><code>last_reviewed</code></td><td>string</td><td>no</td><td>ISO 8601 date when coverage was last verified (e.g. "2026-03-26")</td></tr>
+    </tbody>
+  </table>
+
+  <h3>4.2 Hints Object</h3>
+  <p>Structured domain knowledge that is injected into tool descriptions at load time. Helps LLMs use tools correctly without trial and error. Hints are per-tool and use key-value pairs rather than free text to reduce prompt injection surface.</p>
+  <p><strong>Security:</strong> Hint values are subject to automated security scanning. DADL files from untrusted sources (community registries) are scanned for imperative instructions, URLs, shell commands, and authority claims. Suspicious content is rejected or flagged.</p>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Required</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>&lt;tool_name&gt;</code></td><td>object</td><td>no</td><td>Map of hint key-value pairs for a specific tool</td></tr>
+    </tbody>
+  </table>
+
+  <div class="code-block"><div class="code-header">Example: coverage and hints</div><pre><code><span class="key">backend</span><span class="bracket">:</span>
+  <span class="key">name</span><span class="bracket">:</span> <span class="string">github</span>
+  <span class="key">coverage</span><span class="bracket">:</span>
+    <span class="key">endpoints</span><span class="bracket">:</span> <span class="value">24</span>
+    <span class="key">total_endpoints</span><span class="bracket">:</span> <span class="value">900</span>
+    <span class="key">percentage</span><span class="bracket">:</span> <span class="value">3</span>
+    <span class="key">focus</span><span class="bracket">:</span> <span class="string">"repos, issues, PRs, commits, search, releases, actions"</span>
+    <span class="key">missing</span><span class="bracket">:</span> <span class="string">"git primitives, projects v2, teams, webhooks, code scanning"</span>
+    <span class="key">last_reviewed</span><span class="bracket">:</span> <span class="string">"2026-03-26"</span>
+
+  <span class="key">hints</span><span class="bracket">:</span>
+    <span class="key">list_project_tasks</span><span class="bracket">:</span>
+      <span class="key">position_type</span><span class="bracket">:</span> <span class="string">float64</span>
+      <span class="key">requires</span><span class="bracket">:</span> <span class="string">"call list_views first to get view_id"</span>
+      <span class="key">kanban_note</span><span class="bracket">:</span> <span class="string">"kanban views return buckets with nested tasks, not a flat list"</span></code></pre></div>
+
+  <h3>4.3 Setup Object</h3>
+  <p>Human-readable instructions for setting up this DADL backend. Intended for operators, not LLMs. Powers the <code>toolmesh setup &lt;name&gt;</code> CLI command that guides users through credential creation and configuration.</p>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Required</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>credential_steps</code></td><td>array&nbsp;of&nbsp;string</td><td>no</td><td>Step-by-step instructions to obtain the required credential (API key, PAT, etc.)</td></tr>
+      <tr><td><code>env_var</code></td><td>string</td><td>no</td><td>Name of the environment variable to set in <code>.env</code></td></tr>
+      <tr><td><code>backends_yaml</code></td><td>string</td><td>no</td><td>Example <code>backends.yaml</code> entry (multiline YAML string)</td></tr>
+      <tr><td><code>required_scopes</code></td><td>array&nbsp;of&nbsp;string</td><td>no</td><td>API scopes or permissions needed for full functionality</td></tr>
+      <tr><td><code>optional_scopes</code></td><td>array&nbsp;of&nbsp;string</td><td>no</td><td>Additional scopes for extended features (read-only alternatives, etc.)</td></tr>
+      <tr><td><code>docs_url</code></td><td>string</td><td>no</td><td>Link to the API provider's credential/authentication documentation</td></tr>
+      <tr><td><code>notes</code></td><td>string</td><td>no</td><td>Additional setup notes (e.g. self-hosted URL patterns, regional endpoints)</td></tr>
+    </tbody>
+  </table>
+
+  <div class="code-block"><div class="code-header">Example: setup</div><pre><code><span class="key">setup</span><span class="bracket">:</span>
+  <span class="key">credential_steps</span><span class="bracket">:</span>
+    <span class="string">- "Navigate to GitLab → Settings → Access Tokens"</span>
+    <span class="string">- "Create a token with scope: api (full access) or read_api (read-only)"</span>
+    <span class="string">- "Copy the token (starts with glpat-)"</span>
+  <span class="key">env_var</span><span class="bracket">:</span> <span class="string">CREDENTIAL_GITLAB_TOKEN</span>
+  <span class="key">backends_yaml</span><span class="bracket">:</span> <span class="string">|</span>
+    <span class="string">- name: gitlab</span>
+    <span class="string">  transport: rest</span>
+    <span class="string">  dadl: /app/dadl/gitlab.dadl</span>
+    <span class="string">  url: "https://your-gitlab.example.com/api/v4"</span>
+  <span class="key">required_scopes</span><span class="bracket">:</span>
+    <span class="string">- api</span>
+  <span class="key">optional_scopes</span><span class="bracket">:</span>
+    <span class="string">- read_api</span>
+  <span class="key">docs_url</span><span class="bracket">:</span> <span class="string">"https://docs.gitlab.com/ee/user/profile/personal_access_tokens.html"</span>
+  <span class="key">notes</span><span class="bracket">:</span> <span class="string">"For self-hosted GitLab, replace the URL with your instance. The token prefix glpat- is for personal access tokens."</span></code></pre></div>
+</div>
+</section>
+
+<!-- ═══════════════════════════════════════════ -->
+<section id="auth">
+<div class="container">
+  <h2><span class="section-num">5</span> Authentication</h2>
+  <p>
+    DADL supports three authentication patterns. Credentials are referenced by logical name
+    and resolved at runtime by ToolMesh's three-tier Credential Store
+    (Embedded → Infisical → Vault/OpenBao). <strong>The LLM never sees credentials.</strong>
+  </p>
+
+  <h3>5.1 Bearer Token</h3>
+  <pre><div class="code-header"><span>auth — bearer</span></div><code><span class="k">auth</span>:
+  <span class="k">type</span>: <span class="s">bearer</span>
+  <span class="k">credential</span>: <span class="s">vault/stripe-secret-key</span>
+  <span class="k">inject_into</span>: <span class="s">header</span>          <span class="c"># default</span>
+  <span class="k">header_name</span>: <span class="s">Authorization</span>   <span class="c"># default</span>
+  <span class="k">prefix</span>: <span class="s">"Bearer "</span>             <span class="c"># default</span></code></pre>
+
+  <h3>5.2 OAuth 2.0 Client Credentials</h3>
+  <pre><div class="code-header"><span>auth — oauth2</span></div><code><span class="k">auth</span>:
+  <span class="k">type</span>: <span class="s">oauth2</span>
+  <span class="k">flow</span>: <span class="s">client_credentials</span>
+  <span class="k">token_url</span>: <span class="s">https://api.example.com/oauth/token</span>
+  <span class="k">client_id_credential</span>: <span class="s">vault/example-client-id</span>
+  <span class="k">client_secret_credential</span>: <span class="s">vault/example-client-secret</span>
+  <span class="k">scopes</span>: [<span class="s">"read"</span>, <span class="s">"write"</span>]
+  <span class="k">token_cache_key</span>: <span class="s">example-api-token</span>
+  <span class="k">refresh_before_expiry</span>: <span class="s">60s</span></code></pre>
+
+  <h3>5.3 Session-based (Login → Token → Use)</h3>
+  <pre><div class="code-header"><span>auth — session</span></div><code><span class="k">auth</span>:
+  <span class="k">type</span>: <span class="s">session</span>
+  <span class="k">login</span>:
+    <span class="k">method</span>: <span class="s">POST</span>
+    <span class="k">path</span>: <span class="s">/auth/login</span>
+    <span class="k">body</span>:
+      <span class="k">username_credential</span>: <span class="s">vault/example-username</span>
+      <span class="k">password_credential</span>: <span class="s">vault/example-password</span>
+    <span class="k">extract</span>:
+      <span class="k">token</span>: <span class="s">"$.data.access_token"</span>
+      <span class="k">csrf</span>: <span class="s">"$.data.csrf_token"</span>
+  <span class="k">inject</span>:
+    - <span class="k">header</span>: <span class="s">Authorization</span>
+      <span class="k">value</span>: <span class="s">"Bearer {{token}}"</span>
+    - <span class="k">header</span>: <span class="s">X-CSRF-Token</span>
+      <span class="k">value</span>: <span class="s">"{{csrf}}"</span>
+  <span class="k">refresh</span>:
+    <span class="k">trigger</span>: <span class="s">status_code_401</span>
+    <span class="k">action</span>: <span class="s">re_login</span></code></pre>
+
+  <h3>5.4 API Key</h3>
+  <pre><div class="code-header"><span>auth — api_key</span></div><code><span class="k">auth</span>:
+  <span class="k">type</span>: <span class="s">api_key</span>
+  <span class="k">credential</span>: <span class="s">vault/my-api-key</span>
+  <span class="k">inject_into</span>: <span class="s">header</span>          <span class="c"># header | query</span>
+  <span class="k">header_name</span>: <span class="s">X-API-Key</span></code></pre>
+</div>
+</section>
+
+<!-- ═══════════════════════════════════════════ -->
+<section id="tools">
+<div class="container">
+  <h2><span class="section-num">6</span> Tools</h2>
+  <p>
+    Each tool maps to one REST API endpoint. In Code Mode, tools become methods on the
+    auto-generated TypeScript interface that the LLM writes code against.
+  </p>
+
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Required</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>method</code></td><td>string</td><td>yes</td><td>HTTP method: GET, POST, PUT, PATCH, DELETE</td></tr>
+      <tr><td><code>path</code></td><td>string</td><td>yes</td><td>URL path (may contain <code>{param}</code> placeholders)</td></tr>
+      <tr><td><code>description</code></td><td>string</td><td>yes</td><td>Used as JSDoc comment in TypeScript interface</td></tr>
+      <tr><td><code>params</code></td><td>object</td><td>no</td><td>Parameter definitions (path, query, header)</td></tr>
+      <tr><td><code>body</code></td><td>object</td><td>no</td><td>Request body schema</td></tr>
+      <tr><td><code>content_type</code></td><td>string</td><td>no</td><td>Request content type. Default: <code>application/json</code>. Use <code>multipart/form-data</code> for file uploads.</td></tr>
+      <tr><td><code>max_body_size</code></td><td>string</td><td>no</td><td>Max upload size, e.g. <code>50MB</code></td></tr>
+      <tr><td><code>depends_on</code></td><td>array</td><td>no</td><td>Informational: other tools that should be called first. Becomes JSDoc hint.</td></tr>
+      <tr><td><code>response</code></td><td>object</td><td>no</td><td>Response transformation config (overrides <code>defaults.response</code>)</td></tr>
+      <tr><td><code>pagination</code></td><td>string|object</td><td>no</td><td><code>none</code> to disable, or object to override default pagination</td></tr>
+      <tr><td><code>errors</code></td><td>object</td><td>no</td><td>Error mapping (overrides <code>defaults.errors</code>)</td></tr>
+    </tbody>
+  </table>
+
+  <h3>6.1 Parameter Definition</h3>
+  <pre><div class="code-header"><span>params</span></div><code><span class="k">params</span>:
+  <span class="k">id</span>:
+    <span class="k">type</span>: <span class="s">string</span>
+    <span class="k">in</span>: <span class="s">path</span>
+    <span class="k">required</span>: <span class="v">true</span>
+  <span class="k">limit</span>:
+    <span class="k">type</span>: <span class="s">integer</span>
+    <span class="k">in</span>: <span class="s">query</span>
+    <span class="k">default</span>: <span class="v">10</span>
+    <span class="k">description</span>: <span class="s">"Max items to return"</span></code></pre>
+
+  <h3>6.2 File Handling</h3>
+  <p>
+    Files in DADL are always referenced by <strong>URL</strong> — never as inline data or local file paths.
+    This keeps tool calls lightweight (only a URL string in the context, not megabytes of Base64) and
+    works with any storage backend (S3, MinIO, NextCloud, ToolMesh's built-in file broker).
+  </p>
+
+  <h4>6.2.1 File Input (<code>type: file_url</code>)</h4>
+  <p>
+    When a tool accepts a file, the parameter type is <code>file_url</code>. The caller provides a URL,
+    and ToolMesh fetches the file and builds the appropriate request (e.g. multipart/form-data upload)
+    to the backend API.
+  </p>
+  <p>Supported URL schemes:</p>
+  <ul>
+    <li><code>https://s3.amazonaws.com/bucket/file.pdf</code> — S3 / MinIO / any HTTP(S) URL</li>
+    <li><code>https://toolmesh-host/files/f-abc123</code> — ToolMesh file broker (uploaded via <code>POST /files/upload</code>)</li>
+    <li><code>file:///path/on/host</code> — local filesystem (only for same-host deployments)</li>
+  </ul>
+  <pre><div class="code-header"><span>file upload tool — URL-based</span></div><code><span class="k">convert_pdf</span>:
+  <span class="k">method</span>: <span class="s">POST</span>
+  <span class="k">path</span>: <span class="s">/api/v1/convert</span>
+  <span class="k">description</span>: <span class="s">"Convert a PDF to Markdown"</span>
+  <span class="k">content_type</span>: <span class="s">multipart/form-data</span>
+  <span class="k">max_body_size</span>: <span class="s">100MB</span>
+  <span class="k">params</span>:
+    <span class="k">file</span>: { <span class="k">type</span>: <span class="s">file_url</span>, <span class="k">in</span>: <span class="s">body</span>, <span class="k">required</span>: <span class="v">true</span> }
+    <span class="k">title</span>: { <span class="k">type</span>: <span class="s">string</span>, <span class="k">in</span>: <span class="s">body</span> }</code></pre>
+
+  <h4>6.2.2 File Output (<code>response.type: file_url</code>)</h4>
+  <p>
+    When a backend returns binary data (PDFs, images, exports), ToolMesh stores the response
+    in its file broker and returns a download URL to the caller. The URL has a configurable TTL
+    and can be shared across sessions.
+  </p>
+  <pre><div class="code-header"><span>binary response → file URL</span></div><code><span class="k">export_report</span>:
+  <span class="k">method</span>: <span class="s">GET</span>
+  <span class="k">path</span>: <span class="s">/reports/{id}/export</span>
+  <span class="k">description</span>: <span class="s">"Export report as PDF"</span>
+  <span class="k">params</span>:
+    <span class="k">id</span>: { <span class="k">type</span>: <span class="s">string</span>, <span class="k">in</span>: <span class="s">path</span>, <span class="k">required</span>: <span class="v">true</span> }
+  <span class="k">response</span>:
+    <span class="k">type</span>: <span class="s">file_url</span>
+    <span class="k">ttl</span>: <span class="s">24h</span></code></pre>
+
+  <h4>6.2.3 ToolMesh File Broker</h4>
+  <p>
+    ToolMesh provides a built-in file broker for uploading and downloading files outside the MCP channel.
+    Files are stored temporarily with a TTL and referenced by ID. This avoids Base64 overhead in tool calls
+    and enables session-independent file handling.
+  </p>
+  <table>
+    <thead><tr><th>Endpoint</th><th>Method</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>/files/upload</code></td><td>POST</td><td>Upload a file (multipart). Returns <code>{"file_id": "f-...", "url": "...", "expires": "..."}</code></td></tr>
+      <tr><td><code>/files/{file_id}</code></td><td>GET</td><td>Download a file by ID</td></tr>
+      <tr><td><code>/files/{file_id}</code></td><td>DELETE</td><td>Delete a file before TTL expires</td></tr>
+    </tbody>
+  </table>
+
+  <h3>6.3 Binary Download &amp; Streaming</h3>
+  <pre><div class="code-header"><span>binary &amp; streaming responses</span></div><code><span class="k">download_report</span>:
+  <span class="k">method</span>: <span class="s">GET</span>
+  <span class="k">path</span>: <span class="s">/reports/{id}/pdf</span>
+  <span class="k">description</span>: <span class="s">"Download report as PDF"</span>
+  <span class="k">response</span>:
+    <span class="k">binary</span>: <span class="v">true</span>
+    <span class="k">content_type</span>: <span class="s">application/pdf</span>
+
+<span class="k">event_stream</span>:
+  <span class="k">method</span>: <span class="s">GET</span>
+  <span class="k">path</span>: <span class="s">/events</span>
+  <span class="k">description</span>: <span class="s">"Stream real-time events"</span>
+  <span class="k">response</span>:
+    <span class="k">streaming</span>: <span class="v">true</span>
+    <span class="k">stream_handling</span>: <span class="s">collect</span>    <span class="c"># collect | skip</span>
+    <span class="k">max_duration</span>: <span class="s">30s</span>
+    <span class="k">max_items</span>: <span class="v">100</span></code></pre>
+</div>
+</section>
+
+<!-- ═══════════════════════════════════════════ -->
+<section id="pagination">
+<div class="container">
+  <h2><span class="section-num">7</span> Pagination</h2>
+  <p>
+    Pagination config is adapted from the
+    <a href="https://docs.airbyte.com" style="color:var(--accent)">Airbyte Low-Code CDK</a>,
+    battle-tested across 400+ connectors. Set it in <code>defaults.pagination</code> to apply
+    to all list endpoints, or override per tool.
+  </p>
+
+  <table>
+    <thead><tr><th>Strategy</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>cursor</code></td><td>Cursor-based (Stripe, Slack). Uses a token from the response to fetch the next page.</td></tr>
+      <tr><td><code>offset</code></td><td>Offset-based. Increments an offset parameter.</td></tr>
+      <tr><td><code>page</code></td><td>Page number-based. Increments a page parameter.</td></tr>
+      <tr><td><code>link_header</code></td><td>RFC 8288 Link header (GitHub). Follows the <code>next</code> relation.</td></tr>
+    </tbody>
+  </table>
+
+  <pre><div class="code-header"><span>pagination — cursor example</span></div><code><span class="k">pagination</span>:
+  <span class="k">strategy</span>: <span class="s">cursor</span>
+  <span class="k">request</span>:
+    <span class="k">cursor_param</span>: <span class="s">after</span>
+    <span class="k">limit_param</span>: <span class="s">per_page</span>
+    <span class="k">limit_default</span>: <span class="v">50</span>
+  <span class="k">response</span>:
+    <span class="k">next_cursor</span>: <span class="s">"$.meta.next_cursor"</span>
+    <span class="k">has_more</span>: <span class="s">"$.meta.has_more"</span>
+  <span class="k">behavior</span>: <span class="s">auto</span>              <span class="c"># auto | expose</span>
+  <span class="k">max_pages</span>: <span class="v">10</span>              <span class="c"># safety limit</span></code></pre>
+
+  <p>
+    When <code>behavior</code> is <code>auto</code>, ToolMesh fetches all pages transparently.
+    When <code>expose</code>, the LLM controls pagination via the cursor parameter in Code Mode.
+  </p>
+</div>
+</section>
+
+<!-- ═══════════════════════════════════════════ -->
+<section id="errors">
+<div class="container">
+  <h2><span class="section-num">8</span> Error Mapping</h2>
+
+  <pre><div class="code-header"><span>defaults.errors</span></div><code><span class="k">errors</span>:
+  <span class="k">format</span>: <span class="s">json</span>
+  <span class="k">message_path</span>: <span class="s">"$.error.message"</span>
+  <span class="k">code_path</span>: <span class="s">"$.error.code"</span>
+  <span class="k">retry_on</span>: [<span class="v">429</span>, <span class="v">502</span>, <span class="v">503</span>, <span class="v">504</span>]
+  <span class="k">retry_strategy</span>:
+    <span class="k">max_retries</span>: <span class="v">3</span>
+    <span class="k">backoff</span>: <span class="s">exponential</span>
+    <span class="k">initial_delay</span>: <span class="s">1s</span>
+  <span class="k">terminal</span>: [<span class="v">400</span>, <span class="v">401</span>, <span class="v">403</span>, <span class="v">404</span>, <span class="v">409</span>]
+  <span class="k">rate_limit</span>:
+    <span class="k">header</span>: <span class="s">X-RateLimit-Remaining</span>
+    <span class="k">retry_after_header</span>: <span class="s">Retry-After</span></code></pre>
+</div>
+</section>
+
+<!-- ═══════════════════════════════════════════ -->
+<section id="response">
+<div class="container">
+  <h2><span class="section-num">9</span> Response Transformation</h2>
+  <p>
+    Most APIs wrap results in container objects. Response transformation extracts the
+    relevant data before it reaches the LLM, reducing token consumption.
+  </p>
+
+  <pre><div class="code-header"><span>defaults.response</span></div><code><span class="k">response</span>:
+  <span class="k">result_path</span>: <span class="s">"$.data"</span>             <span class="c"># JSONPath to the actual result</span>
+  <span class="k">metadata_path</span>: <span class="s">"$.meta"</span>           <span class="c"># extracted separately (for pagination, not sent to LLM)</span>
+  <span class="k">transform</span>: |                      <span class="c"># optional jq filter</span>
+    <span class="s">.data | map({id, name, status})</span>
+  <span class="k">max_items</span>: <span class="v">100</span>
+  <span class="k">allow_jq_override</span>: <span class="v">true</span>           <span class="c"># LLM can pass ad-hoc jq filters</span></code></pre>
+</div>
+</section>
+
+<!-- ═══════════════════════════════════════════ -->
+<section id="types">
+<div class="container">
+  <h2><span class="section-num">10</span> Types <span class="wip-badge">optional</span></h2>
+  <p>
+    When <code>openapi_source</code> is provided, types are derived from the OpenAPI spec.
+    Without it, you can define types inline using a JSON Schema subset.
+    These are used to generate TypeScript interfaces for Code Mode.
+  </p>
+
+  <pre><div class="code-header"><span>types — inline definitions</span></div><code><span class="k">types</span>:
+  <span class="k">Customer</span>:
+    <span class="k">type</span>: <span class="s">object</span>
+    <span class="k">properties</span>:
+      <span class="k">id</span>: { <span class="k">type</span>: <span class="s">string</span> }
+      <span class="k">email</span>: { <span class="k">type</span>: <span class="s">string</span> }
+      <span class="k">name</span>: { <span class="k">type</span>: <span class="s">string</span> }
+      <span class="k">metadata</span>:
+        <span class="k">type</span>: <span class="s">object</span>
+        <span class="k">additionalProperties</span>: { <span class="k">type</span>: <span class="s">string</span> }
+    <span class="k">required</span>: [<span class="s">id</span>]</code></pre>
+
+  <p><strong>Supported JSON Schema keywords</strong> (for TypeScript generation):</p>
+  <p>
+    <code>type</code>, <code>properties</code>, <code>items</code>, <code>required</code>,
+    <code>$ref</code>, <code>enum</code>, <code>description</code>,
+    <code>additionalProperties</code>, <code>oneOf</code>, <code>anyOf</code>, <code>allOf</code>.
+  </p>
+  <p>
+    Validation keywords (<code>minLength</code>, <code>pattern</code>, <code>minimum</code>, etc.)
+    are accepted but not used for TypeScript generation. This allows copy-paste from
+    OpenAPI schemas without modification.
+  </p>
+</div>
+</section>
+
+<!-- ═══════════════════════════════════════════ -->
+<section id="includes">
+<div class="container">
+  <h2><span class="section-num">11</span> Includes &amp; Composability</h2>
+  <p>
+    DADL supports two levels of reuse: standard YAML anchors (intra-file) and
+    DADL includes (cross-file). There is no templating, no inheritance, no conditionals.
+  </p>
+
+  <h3>11.1 YAML Anchors (intra-file)</h3>
+  <pre><div class="code-header"><span>YAML anchors — native DRY</span></div><code><span class="c"># Underscore-prefixed keys are ignored by ToolMesh</span>
+<span class="k">_defaults</span>:
+  <span class="k">pagination</span>: <span class="a">&amp;default-pagination</span>
+    <span class="k">strategy</span>: <span class="s">cursor</span>
+    <span class="k">request</span>:
+      <span class="k">limit_param</span>: <span class="s">limit</span>
+      <span class="k">limit_default</span>: <span class="v">50</span>
+    <span class="k">behavior</span>: <span class="s">auto</span>
+    <span class="k">max_pages</span>: <span class="v">20</span>
+
+<span class="k">backend</span>:
+  <span class="k">defaults</span>:
+    <span class="k">pagination</span>:
+      <span class="a">&lt;&lt;: *default-pagination</span>
+      <span class="k">request</span>:
+        <span class="k">cursor_param</span>: <span class="s">starting_after</span></code></pre>
+
+  <h3>11.2 Cross-file Includes</h3>
+  <pre><div class="code-header"><span>includes</span></div><code><span class="k">includes</span>:
+  - <span class="k">path</span>: <span class="s">common/oauth2-client-credentials.dadl.yaml</span>
+    <span class="k">merge_into</span>: <span class="s">backend.auth</span>
+    <span class="k">overrides</span>:
+      <span class="k">token_url</span>: <span class="s">https://api.stripe.com/oauth/token</span>
+      <span class="k">client_id_credential</span>: <span class="s">vault/stripe-client-id</span>
+
+  - <span class="k">path</span>: <span class="s">common/standard-rest-errors.dadl.yaml</span>
+    <span class="k">merge_into</span>: <span class="s">backend.defaults.errors</span></code></pre>
+  <p>
+    Include fragments are files with <code>_fragment: true</code> at the top level.
+    Merge semantics: deep merge, overrides win. Arrays are replaced, not appended.
+    Includes are flat — no nested includes (max 1 level).
+  </p>
+</div>
+</section>
+
+<!-- ═══════════════════════════════════════════ -->
+<section id="example">
+<div class="container">
+  <h2><span class="section-num">12</span> Full Example</h2>
+
+  <pre><div class="code-header"><span>stripe.dadl</span></div><code><span class="k">version</span>: <span class="s">"1.0"</span>
+
+<span class="k">backend</span>:
+  <span class="k">name</span>: <span class="s">stripe</span>
+  <span class="k">type</span>: <span class="s">rest</span>
+  <span class="k">base_url</span>: <span class="s">https://api.stripe.com/v1</span>
+  <span class="k">description</span>: <span class="s">"Stripe payment processing API"</span>
+  <span class="k">openapi_source</span>: <span class="s">https://raw.githubusercontent.com/stripe/openapi/master/openapi/spec3.yaml</span>
+
+  <span class="k">auth</span>:
+    <span class="k">type</span>: <span class="s">bearer</span>
+    <span class="k">credential</span>: <span class="s">vault/stripe-secret-key</span>
+
+  <span class="k">defaults</span>:
+    <span class="k">headers</span>:
+      <span class="k">Content-Type</span>: <span class="s">application/x-www-form-urlencoded</span>
+    <span class="k">pagination</span>:
+      <span class="k">strategy</span>: <span class="s">cursor</span>
+      <span class="k">request</span>:
+        <span class="k">cursor_param</span>: <span class="s">starting_after</span>
+        <span class="k">limit_param</span>: <span class="s">limit</span>
+        <span class="k">limit_default</span>: <span class="v">100</span>
+      <span class="k">response</span>:
+        <span class="k">next_cursor</span>: <span class="s">"$.data[-1].id"</span>
+        <span class="k">has_more</span>: <span class="s">"$.has_more"</span>
+      <span class="k">behavior</span>: <span class="s">expose</span>
+      <span class="k">max_pages</span>: <span class="v">10</span>
+    <span class="k">errors</span>:
+      <span class="k">format</span>: <span class="s">json</span>
+      <span class="k">message_path</span>: <span class="s">"$.error.message"</span>
+      <span class="k">code_path</span>: <span class="s">"$.error.type"</span>
+      <span class="k">retry_on</span>: [<span class="v">429</span>, <span class="v">502</span>, <span class="v">503</span>]
+    <span class="k">response</span>:
+      <span class="k">result_path</span>: <span class="s">"$.data"</span>
+      <span class="k">allow_jq_override</span>: <span class="v">true</span>
+
+  <span class="k">tools</span>:
+    <span class="k">list_customers</span>:
+      <span class="k">method</span>: <span class="s">GET</span>
+      <span class="k">path</span>: <span class="s">/customers</span>
+      <span class="k">description</span>: <span class="s">"List all customers"</span>
+      <span class="k">params</span>:
+        <span class="k">email</span>: { <span class="k">type</span>: <span class="s">string</span>, <span class="k">in</span>: <span class="s">query</span>, <span class="k">required</span>: <span class="v">false</span> }
+        <span class="k">limit</span>: { <span class="k">type</span>: <span class="s">integer</span>, <span class="k">in</span>: <span class="s">query</span>, <span class="k">default</span>: <span class="v">10</span> }
+
+    <span class="k">get_customer</span>:
+      <span class="k">method</span>: <span class="s">GET</span>
+      <span class="k">path</span>: <span class="s">/customers/{id}</span>
+      <span class="k">description</span>: <span class="s">"Retrieve a single customer by ID"</span>
+      <span class="k">params</span>:
+        <span class="k">id</span>: { <span class="k">type</span>: <span class="s">string</span>, <span class="k">in</span>: <span class="s">path</span>, <span class="k">required</span>: <span class="v">true</span> }
+      <span class="k">response</span>:
+        <span class="k">result_path</span>: <span class="s">"$"</span>
+      <span class="k">pagination</span>: <span class="s">none</span>
+
+    <span class="k">create_customer</span>:
+      <span class="k">method</span>: <span class="s">POST</span>
+      <span class="k">path</span>: <span class="s">/customers</span>
+      <span class="k">description</span>: <span class="s">"Create a new customer"</span>
+      <span class="k">response</span>:
+        <span class="k">result_path</span>: <span class="s">"$"</span>
+      <span class="k">pagination</span>: <span class="s">none</span>
+
+  <span class="k">examples</span>:
+    - <span class="k">name</span>: <span class="s">"Customer onboarding"</span>
+      <span class="k">description</span>: <span class="s">"Create a customer and retrieve their details"</span>
+      <span class="k">code</span>: |
+        <span class="n">const customer = await api.create_customer({</span>
+        <span class="n">  email: "jane@example.com",</span>
+        <span class="n">  name: "Jane Doe"</span>
+        <span class="n">});</span>
+        <span class="n">const details = await api.get_customer({ id: customer.id });</span>
+        <span class="n">return details;</span></code></pre>
+</div>
+</section>
+
+<!-- ═══════════════════════════════════════════ -->
+<section id="toolmesh" style="border-bottom: none;">
+<div class="container">
+  <h2><span class="section-num">13</span> ToolMesh Integration</h2>
+  <p>
+    DADL files are consumed by <strong>ToolMesh</strong> and integrated into its six-pillar architecture:
+  </p>
+  <table>
+    <thead><tr><th>Pillar</th><th>DADL Integration</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Code Mode</strong></td><td>TypeScript interfaces are auto-generated from DADL tools and types. The LLM writes code against <code>api.*</code> methods.</td></tr>
+      <tr><td><strong>Temporal</strong></td><td>Each <code>execute()</code> call runs as a Temporal Activity — retry, timeout, and full audit trail.</td></tr>
+      <tr><td><strong>OpenFGA</strong></td><td>Per-tool authorization. Policies can restrict access by user, plan, or caller origin.</td></tr>
+      <tr><td><strong>MCP Aggregation</strong></td><td>DADL backends mix seamlessly with native MCP backends in the same ToolMesh instance.</td></tr>
+      <tr><td><strong>Credential Store</strong></td><td><code>credential: vault/xxx</code> references are resolved through the three-tier store (Embedded → Infisical → Vault/OpenBao).</td></tr>
+      <tr><td><strong>Output Gate</strong></td><td>Responses pass through goja-based policies (PII redaction, rate limiting, caller-dependent filtering).</td></tr>
+    </tbody>
+  </table>
+</div>
+</section>
+
+<footer>
+  <div class="container">
+    <p style="margin-bottom: 0.5rem">
+      <strong style="color:var(--text-muted)">DADL</strong> is created and maintained by
+      <a href="https://dunkel.cloud">Dunkel Cloud GmbH</a>
+    </p>
+    <p>
+      <a href="https://toolmesh.io">ToolMesh</a> ·
+      <a href="https://github.com/DunkelCloud">GitHub</a> ·
+      Apache 2.0
+    </p>
+  </div>
+</footer>
+
+</body>
+</html>

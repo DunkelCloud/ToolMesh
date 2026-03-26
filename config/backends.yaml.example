@@ -11,3 +11,9 @@ backends:
   #   transport: stdio
   #   command: "./my-mcp-server"
   #   args: ["--port", "0"]
+
+  # REST Proxy via DADL (no MCP server needed)
+  # - name: vikunja
+  #   transport: rest
+  #   dadl: /app/dadl/vikunja.dadl
+  #   url: "https://vikunja.example.com/api/v1"  # overrides base_url in .dadl (optional)

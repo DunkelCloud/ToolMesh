@@ -1,0 +1,426 @@
+version: "1.0"
+backend:
+  name: github
+  type: rest
+  # base_url: https://api.github.com — provide via backends.yaml url field
+  description: "GitHub REST API — repositories, issues, pull requests, commits, and code search"
+
+  coverage:
+    endpoints: 26
+    total_endpoints: 900
+    percentage: 3
+    focus: "repos, orgs, issues, PRs, commits, branches, contents, search, releases, actions, topics"
+    missing: "git primitives, projects v2, teams, webhooks, deployments, code scanning, packages, gists, notifications"
+    last_reviewed: "2026-03-26"
+
+  setup:
+    credential_steps:
+      - "Navigate to GitHub → Settings → Developer settings → Personal access tokens → Tokens (classic)"
+      - "Click 'Generate new token (classic)'"
+      - "Select scopes: repo (full access), read:org (list organizations)"
+      - "Copy the token (starts with ghp_ or github_pat_)"
+    env_var: CREDENTIAL_GITHUB_TOKEN
+    backends_yaml: |
+      - name: github
+        transport: rest
+        dadl: /app/dadl/github.dadl
+        url: "https://api.github.com"
+    required_scopes:
+      - repo
+      - read:org
+    optional_scopes:
+      - read:user
+      - workflow
+    docs_url: "https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens"
+
+  auth:
+    type: bearer
+    credential: github_token
+    inject_into: header
+    header_name: Authorization
+    prefix: "Bearer "
+
+  defaults:
+    headers:
+      Accept: application/vnd.github+json
+      Content-Type: application/json
+      X-GitHub-Api-Version: "2022-11-28"
+    pagination: &default-pagination
+      strategy: page
+      request:
+        page_param: page
+        limit_param: per_page
+        limit_default: 30
+      response:
+        # GitHub uses Link header for pagination
+        next_link_header: Link
+      behavior: manual
+      max_pages: 10
+    errors: &standard-errors
+      format: json
+      message_path: "$.message"
+      retry_on: [429, 502, 503]
+      terminal: [400, 401, 403, 404, 409, 422]
+      retry_strategy:
+        max_retries: 3
+        backoff: exponential
+        initial_delay: 1s
+
+  # ──────────────────────────────────────────────────────────────
+  # Domain notes (for LLM consumers of these tools)
+  #
+  # Owner/Repo pattern:
+  #   Most endpoints require owner (user or org) and repo name.
+  #   These are path parameters, not the full URL.
+  #   Example: owner="DunkelCloud", repo="ToolMesh"
+  #
+  # Rate limiting:
+  #   Authenticated: 5000 requests/hour. Check response headers
+  #   X-RateLimit-Remaining and X-RateLimit-Reset.
+  #
+  # Issue vs PR:
+  #   In GitHub's API, pull requests ARE issues with extra fields.
+  #   list_issues may return PRs too — use filter or check for
+  #   pull_request field in response.
+  #
+  # State values:
+  #   Issues/PRs: "open", "closed", "all"
+  #   For PRs also: "merged" (but query via is:merged in search)
+  #
+  # Labels:
+  #   Passed as array of label name strings, not objects.
+  #   Example: ["bug", "priority:high"]
+  #
+  # Markdown:
+  #   Body fields (issues, PRs, comments) support GitHub-Flavored
+  #   Markdown including task lists, code blocks, and @mentions.
+  # ──────────────────────────────────────────────────────────────
+
+  tools:
+
+    # ── Repositories ──────────────────────────────────────────
+
+    list_user_repos:
+      method: GET
+      path: /user/repos
+      description: "List repositories for the authenticated user. Use type to filter (owner, member, all)."
+      params:
+        type: { type: string, in: query, default: "owner" }
+        sort: { type: string, in: query, default: "updated" }
+        direction: { type: string, in: query, default: "desc" }
+        page: { type: integer, in: query }
+        per_page: { type: integer, in: query, default: 30 }
+
+    # ── Organizations ──────────────────────────────────────
+
+    list_orgs:
+      method: GET
+      path: /user/orgs
+      description: "List organizations the authenticated user belongs to."
+      params:
+        page: { type: integer, in: query }
+        per_page: { type: integer, in: query, default: 30 }
+
+    list_org_repos:
+      method: GET
+      path: /orgs/{org}/repos
+      description: "List repositories for an organization. Use list_orgs first to find org names."
+      params:
+        org: { type: string, in: path, required: true }
+        type: { type: string, in: query, default: "all" }
+        sort: { type: string, in: query, default: "updated" }
+        direction: { type: string, in: query, default: "desc" }
+        page: { type: integer, in: query }
+        per_page: { type: integer, in: query, default: 30 }
+
+    get_repo:
+      method: GET
+      path: /repos/{owner}/{repo}
+      description: "Get a single repository by owner and name."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+      pagination: none
+
+    update_repo:
+      method: PATCH
+      path: /repos/{owner}/{repo}
+      description: "Update repository settings. Only include fields you want to change. Use for description, homepage, visibility, merge settings, etc."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        description: { type: string, in: body }
+        homepage: { type: string, in: body }
+        private: { type: boolean, in: body }
+        has_issues: { type: boolean, in: body }
+        has_projects: { type: boolean, in: body }
+        has_wiki: { type: boolean, in: body }
+        has_discussions: { type: boolean, in: body }
+        allow_squash_merge: { type: boolean, in: body }
+        allow_merge_commit: { type: boolean, in: body }
+        allow_rebase_merge: { type: boolean, in: body }
+        delete_branch_on_merge: { type: boolean, in: body }
+        allow_forking: { type: boolean, in: body }
+        allow_auto_merge: { type: boolean, in: body }
+        allow_update_branch: { type: boolean, in: body }
+        archived: { type: boolean, in: body }
+      pagination: none
+
+    replace_topics:
+      method: PUT
+      path: /repos/{owner}/{repo}/topics
+      description: "Replace all repository topics. Provide the full list of desired topics."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        names: { type: array, in: body, required: true }
+      pagination: none
+
+    # ── Issues ────────────────────────────────────────────────
+
+    list_issues:
+      method: GET
+      path: /repos/{owner}/{repo}/issues
+      description: "List issues for a repository. Also returns PRs unless filtered. State: open, closed, all. Note: GitHub treats PRs as issues — check for pull_request field to distinguish."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        state: { type: string, in: query, default: "open" }
+        labels: { type: string, in: query }
+        assignee: { type: string, in: query }
+        sort: { type: string, in: query, default: "created" }
+        direction: { type: string, in: query, default: "desc" }
+        since: { type: string, in: query }
+        page: { type: integer, in: query }
+        per_page: { type: integer, in: query, default: 30 }
+
+    get_issue:
+      method: GET
+      path: /repos/{owner}/{repo}/issues/{issue_number}
+      description: "Get a single issue by number, including body, labels, assignees, and milestone."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        issue_number: { type: integer, in: path, required: true }
+      pagination: none
+
+    create_issue:
+      method: POST
+      path: /repos/{owner}/{repo}/issues
+      description: "Create a new issue. Labels are an array of label name strings."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        title: { type: string, in: body, required: true }
+        body: { type: string, in: body }
+        labels: { type: array, in: body }
+        assignees: { type: array, in: body }
+        milestone: { type: integer, in: body }
+      pagination: none
+
+    update_issue:
+      method: PATCH
+      path: /repos/{owner}/{repo}/issues/{issue_number}
+      description: "Update an issue. Set state to 'closed' to close it. Only include fields you want to change."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        issue_number: { type: integer, in: path, required: true }
+        title: { type: string, in: body }
+        body: { type: string, in: body }
+        state: { type: string, in: body }
+        labels: { type: array, in: body }
+        assignees: { type: array, in: body }
+      pagination: none
+
+    list_issue_comments:
+      method: GET
+      path: /repos/{owner}/{repo}/issues/{issue_number}/comments
+      description: "List comments on an issue or pull request."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        issue_number: { type: integer, in: path, required: true }
+        page: { type: integer, in: query }
+        per_page: { type: integer, in: query, default: 30 }
+
+    create_issue_comment:
+      method: POST
+      path: /repos/{owner}/{repo}/issues/{issue_number}/comments
+      description: "Add a comment to an issue or pull request. Body supports GitHub-Flavored Markdown."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        issue_number: { type: integer, in: path, required: true }
+        body: { type: string, in: body, required: true }
+      pagination: none
+
+    # ── Pull Requests ─────────────────────────────────────────
+
+    list_pulls:
+      method: GET
+      path: /repos/{owner}/{repo}/pulls
+      description: "List pull requests for a repository. State: open, closed, all."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        state: { type: string, in: query, default: "open" }
+        sort: { type: string, in: query, default: "created" }
+        direction: { type: string, in: query, default: "desc" }
+        head: { type: string, in: query }
+        base: { type: string, in: query }
+        page: { type: integer, in: query }
+        per_page: { type: integer, in: query, default: 30 }
+
+    get_pull:
+      method: GET
+      path: /repos/{owner}/{repo}/pulls/{pull_number}
+      description: "Get a single pull request including diff stats, mergeable state, and review status."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        pull_number: { type: integer, in: path, required: true }
+      pagination: none
+
+    list_pull_files:
+      method: GET
+      path: /repos/{owner}/{repo}/pulls/{pull_number}/files
+      description: "List files changed in a pull request with patch diffs and stats."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        pull_number: { type: integer, in: path, required: true }
+        page: { type: integer, in: query }
+        per_page: { type: integer, in: query, default: 30 }
+
+    list_pull_reviews:
+      method: GET
+      path: /repos/{owner}/{repo}/pulls/{pull_number}/reviews
+      description: "List reviews on a pull request (approved, changes_requested, commented)."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        pull_number: { type: integer, in: path, required: true }
+        page: { type: integer, in: query }
+        per_page: { type: integer, in: query, default: 30 }
+
+    # ── Commits & Branches ────────────────────────────────────
+
+    list_commits:
+      method: GET
+      path: /repos/{owner}/{repo}/commits
+      description: "List commits on a repository. Filter by sha (branch), path, author, or date range."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        sha: { type: string, in: query }
+        path: { type: string, in: query }
+        author: { type: string, in: query }
+        since: { type: string, in: query }
+        until: { type: string, in: query }
+        page: { type: integer, in: query }
+        per_page: { type: integer, in: query, default: 30 }
+
+    get_commit:
+      method: GET
+      path: /repos/{owner}/{repo}/commits/{ref}
+      description: "Get a single commit by SHA or ref, including full diff stats and file changes."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        ref: { type: string, in: path, required: true }
+      pagination: none
+
+    list_branches:
+      method: GET
+      path: /repos/{owner}/{repo}/branches
+      description: "List branches for a repository."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        protected: { type: boolean, in: query }
+        page: { type: integer, in: query }
+        per_page: { type: integer, in: query, default: 30 }
+
+    # ── File Contents ─────────────────────────────────────────
+
+    get_content:
+      method: GET
+      path: /repos/{owner}/{repo}/contents/{path}
+      description: "Get file or directory contents. Files are base64 encoded. Directories return a listing. Use ref for a specific branch/tag/SHA."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        path: { type: string, in: path, required: true }
+        ref: { type: string, in: query }
+      pagination: none
+
+    # ── Search ────────────────────────────────────────────────
+
+    search_code:
+      method: GET
+      path: /search/code
+      description: "Search for code across repositories. Query syntax: 'keyword repo:owner/repo language:go path:internal'. Results include file path, repo, and text matches."
+      params:
+        q: { type: string, in: query, required: true }
+        sort: { type: string, in: query }
+        order: { type: string, in: query, default: "desc" }
+        page: { type: integer, in: query }
+        per_page: { type: integer, in: query, default: 30 }
+
+    search_issues:
+      method: GET
+      path: /search/issues
+      description: "Search issues and PRs across repositories. Query syntax: 'bug repo:owner/repo is:open label:bug'. Use is:pr or is:issue to filter."
+      params:
+        q: { type: string, in: query, required: true }
+        sort: { type: string, in: query }
+        order: { type: string, in: query, default: "desc" }
+        page: { type: integer, in: query }
+        per_page: { type: integer, in: query, default: 30 }
+
+    # ── Releases ──────────────────────────────────────────────
+
+    list_releases:
+      method: GET
+      path: /repos/{owner}/{repo}/releases
+      description: "List releases for a repository, newest first."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        page: { type: integer, in: query }
+        per_page: { type: integer, in: query, default: 30 }
+
+    get_latest_release:
+      method: GET
+      path: /repos/{owner}/{repo}/releases/latest
+      description: "Get the latest published release (not draft/prerelease)."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+      pagination: none
+
+    # ── Actions (CI/CD) ───────────────────────────────────────
+
+    list_workflow_runs:
+      method: GET
+      path: /repos/{owner}/{repo}/actions/runs
+      description: "List workflow runs for a repository. Filter by branch, status (queued, in_progress, completed), or event (push, pull_request)."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        branch: { type: string, in: query }
+        status: { type: string, in: query }
+        event: { type: string, in: query }
+        page: { type: integer, in: query }
+        per_page: { type: integer, in: query, default: 30 }
+
+    get_workflow_run:
+      method: GET
+      path: /repos/{owner}/{repo}/actions/runs/{run_id}
+      description: "Get a single workflow run including status, conclusion, and timing."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        run_id: { type: integer, in: path, required: true }
+      pagination: none

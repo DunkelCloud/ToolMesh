@@ -1,0 +1,519 @@
+version: "1.0"
+author: "Dunkel Cloud GmbH"
+source_name: "Shelly Cloud Control API"
+source_url: https://shelly-api-docs.shelly.cloud/cloud-control-api/
+date: "2026-03-26"
+
+backend:
+  name: shelly-cloud
+  type: rest
+  # base_url: https://shelly-103-eu.shelly.cloud — per-account, provide via backends.yaml url field
+  description: "Shelly Cloud Control API — monitor and control Shelly IoT devices (switches, covers, lights) via the Shelly Cloud"
+
+  coverage:
+    endpoints: 14
+    total_endpoints: 18
+    percentage: 78
+    focus: "device status, switch control, cover control, light control, group control, bulk relay, bulk light, bulk roller"
+    missing: "real-time WebSocket events, integrator token exchange, OAuth token exchange"
+    last_reviewed: "2026-03-26"
+
+  setup:
+    credential_steps:
+      - "Install the Shelly mobile app (iOS/Android) and create a Shelly Cloud account"
+      - "Add your Shelly devices to the app and ensure they are cloud-connected"
+      - "In the app, go to User Settings > Authorization cloud key"
+      - "Copy both the 'auth_key' and the 'server_uri' values"
+      - "The server_uri becomes the base URL (e.g. https://shelly-103-eu.shelly.cloud)"
+    env_var: CREDENTIAL_SHELLY_AUTH_KEY
+    backends_yaml: |
+      - name: shelly-cloud
+        transport: rest
+        dadl: /app/dadl/shellycloud.dadl
+        url: "https://<your-server-uri>"
+    required_scopes: []
+    docs_url: "https://shelly-api-docs.shelly.cloud/cloud-control-api/"
+    notes: >
+      The server_uri is per-account and region-specific (e.g. shelly-103-eu.shelly.cloud).
+      You MUST use the server_uri shown in your Shelly app — there is no universal base URL.
+      The auth_key regenerates automatically if you change your account password.
+
+  auth:
+    type: apikey
+    credential: shelly_auth_key
+    inject_into: query
+    query_param: auth_key
+    # The auth_key is passed as a query parameter on every request.
+    # Example: POST /v2/devices/api/get?auth_key=<KEY>
+
+  defaults:
+    headers:
+      Accept: application/json
+    # No pagination — Shelly Cloud API has none. The v2 /get endpoint
+    # accepts max 10 device IDs per call. /device/all_status returns
+    # all devices at once. Each tool sets pagination: none explicitly.
+    errors: &standard-errors
+      format: json
+      message_path: "$.error"
+      code_path: "$.error"
+      retry_on: [429, 502, 503, 504]
+      terminal: [400, 401, 403, 404]
+      retry_strategy:
+        max_retries: 3
+        backoff: exponential
+        initial_delay: 1s
+      rate_limit:
+        # Shelly enforces 1 request per second globally.
+        # No rate limit headers — enforce client-side delay.
+        requests_per_second: 1
+    response:
+      allow_jq_override: true
+
+  # ──────────────────────────────────────────────────────────────
+  # Domain notes (for LLM consumers of these tools)
+  #
+  # Server URI:
+  #   The base URL is per-account and region-specific. It must be
+  #   obtained from the Shelly app (User Settings > Auth cloud key).
+  #   Example: https://shelly-103-eu.shelly.cloud
+  #
+  # Device IDs:
+  #   Shelly device IDs are hexadecimal strings (e.g. "e8db84aabbcc").
+  #   Some older endpoints accept decimal format. Always use hex.
+  #
+  # Device generations:
+  #   G1 (gen1) — older devices, HTTP-only local API
+  #   G2 (gen2) — newer devices, RPC-based local API
+  #   G3 (gen3) — latest generation, similar to G2
+  #   GBLE — Bluetooth LE devices (limited cloud features)
+  #   V1 — virtual devices
+  #
+  # Status field mapping (CRITICAL — varies by generation):
+  #   Gen1 relays:  relays[].ison (boolean)
+  #   Gen1 lights:  lights[].ison (boolean), lights[].brightness
+  #   Gen2/3 switch: "switch:0".output (boolean), "switch:0".apower
+  #   Gen2/3 light:  "light:0".output (boolean), "light:0".brightness
+  #   Gen2/3 cover:  "cover:0".state ("open"/"closed"/"stopped"), "cover:0".current_pos
+  #   Always check BOTH patterns when scanning device status.
+  #
+  # Channels:
+  #   Multi-channel devices (e.g. Shelly 2.5, Shelly Pro 4PM)
+  #   use a channel parameter (0-indexed). Single-channel devices
+  #   default to channel 0.
+  #
+  # Rate limiting:
+  #   Strict 1 request/second limit. No rate-limit headers returned.
+  #   Exceeding this results in HTTP 429 or connection throttling.
+  #   Always add >=1s delay between consecutive API calls.
+  #
+  # v2 vs v1 API:
+  #   v2 (prefix /v2/) is the current API — uses JSON bodies.
+  #   v1 (no prefix) is deprecated but still functional — uses
+  #   form-encoded bodies. Prefer v2 endpoints where available.
+  #
+  # Error format (v2):
+  #   { "error": "BAD_REQUEST", "data": { "messages": [...] } }
+  #   Common codes: BAD_REQUEST, DEVICE_OFFLINE, DEVICE_NOT_FOUND,
+  #   DEVICE_FAILED_COMMAND, DEVICE_INVALID_CHANNEL,
+  #   DEVICE_INVALID_MODE, DEVICE_UNSUPPORTED_COMMAND
+  #
+  # Error format (v1 deprecated):
+  #   Success: { "isok": true, "data": { ... } }
+  #   Error:   { "isok": false, "errors": [ ... ] }
+  #
+  # Batch limits:
+  #   v2 /get endpoint: max 10 device IDs per request.
+  #   v2 /set/groups: multiple devices per device type per call.
+  #   v1 bulk endpoints: multiple device+channel pairs per call.
+  #
+  # Cover positions:
+  #   0 = fully closed, 100 = fully open.
+  #   "open"/"close"/"stop" are string commands.
+  #   Numeric values and relative offsets are also supported.
+  #
+  # Light modes:
+  #   "color" — uses red/green/blue/white/gain parameters.
+  #   "white" — uses brightness/temperature parameters.
+  #   Not all Shelly light devices support both modes.
+  # ──────────────────────────────────────────────────────────────
+
+  tools:
+
+    # ── v2 Device Status ──────────────────────────────────────────
+
+    get_devices_status:
+      method: POST
+      path: /v2/devices/api/get
+      description: >
+        Get state of up to 10 Shelly devices. Returns online status,
+        settings, and/or live sensor/relay data per device.
+        Use list_devices first to discover device IDs.
+      depends_on: [list_devices]
+      content_type: application/json
+      params:
+        ids: { type: array, in: body, required: true, description: "Device IDs (hex format, max 10)" }
+        select: { type: array, in: body, description: "What to return: 'status' (live state), 'settings' (config), or both" }
+        pick: { type: object, in: body, description: "Cherry-pick specific fields from status/settings to reduce payload" }
+      pagination: none
+
+    # ── v2 Switch Control ─────────────────────────────────────────
+
+    set_switch:
+      method: POST
+      path: /v2/devices/api/set/switch
+      description: >
+        Turn a Shelly relay/switch on or off. Supports auto-off timer
+        via toggle_after.
+      content_type: application/json
+      params:
+        id: { type: string, in: body, required: true, description: "Device ID (hex)" }
+        channel: { type: integer, in: body, description: "Channel index, default 0" }
+        on: { type: boolean, in: body, required: true, description: "true = on, false = off" }
+        toggle_after: { type: number, in: body, description: "Auto-toggle back after N seconds" }
+      pagination: none
+
+    # ── v2 Cover/Roller Control ───────────────────────────────────
+
+    set_cover:
+      method: POST
+      path: /v2/devices/api/set/cover
+      description: >
+        Control a Shelly cover/roller. Supports open/close/stop commands,
+        absolute position (0-100), relative movement, and slat control.
+        position and relative are mutually exclusive.
+        slatPosition and slatRelative are mutually exclusive.
+      content_type: application/json
+      params:
+        id: { type: string, in: body, required: true, description: "Device ID (hex)" }
+        channel: { type: integer, in: body, description: "Channel index, default 0" }
+        position: { type: string, in: body, description: "'open', 'close', 'stop', or 0-100 (0=closed, 100=open)" }
+        duration: { type: number, in: body, description: "Movement duration in seconds (only with open/close/stop)" }
+        relative: { type: number, in: body, description: "Relative movement -100 to 100 (mutually exclusive with position)" }
+        slatPosition: { type: number, in: body, description: "Slat position 0-100" }
+        slatRelative: { type: number, in: body, description: "Relative slat movement -100 to 100" }
+      pagination: none
+
+    # ── v2 Light/Dimmer Control ───────────────────────────────────
+
+    set_light:
+      method: POST
+      path: /v2/devices/api/set/light
+      description: >
+        Control a Shelly light or dimmer. Supports on/off, brightness,
+        color temperature, RGBW color, and effects.
+      content_type: application/json
+      params:
+        id: { type: string, in: body, required: true, description: "Device ID (hex)" }
+        channel: { type: integer, in: body, description: "Channel index, default 0" }
+        on: { type: boolean, in: body, description: "true = on, false = off" }
+        toggle_after: { type: number, in: body, description: "Auto-toggle after N seconds" }
+        mode: { type: string, in: body, description: "Light mode: 'color' or 'white'" }
+        temperature: { type: integer, in: body, description: "Color temperature 2700-7000K (white mode)" }
+        brightness: { type: integer, in: body, description: "Brightness 0-100 (white mode)" }
+        red: { type: integer, in: body, description: "Red channel 0-255 (color mode)" }
+        green: { type: integer, in: body, description: "Green channel 0-255 (color mode)" }
+        blue: { type: integer, in: body, description: "Blue channel 0-255 (color mode)" }
+        white: { type: integer, in: body, description: "White channel 0-255 (color mode)" }
+        gain: { type: integer, in: body, description: "Color gain/brightness 0-100 (color mode)" }
+        effect: { type: integer, in: body, description: "Effect ID 0-6 (color mode only)" }
+      pagination: none
+
+    # ── v2 Group/Batch Control ────────────────────────────────────
+
+    set_groups:
+      method: POST
+      path: /v2/devices/api/set/groups
+      description: >
+        Batch-control multiple devices at once by type. Send commands to
+        groups of switches, covers, and/or lights in a single request.
+        Device IDs in group arrays use format "deviceId_channel".
+        Response may include failedCommands for devices that errored.
+      content_type: application/json
+      params:
+        switch: { type: object, in: body, description: "Switch group: {ids: ['id_ch'], command: {on: bool}}" }
+        cover: { type: object, in: body, description: "Cover group: {ids: ['id_ch'], command: {position: 'open'|'close'|'stop'|0-100}}" }
+        light: { type: object, in: body, description: "Light group: {ids: ['id_ch'], command: {on: bool, brightness: 0-100}}" }
+      pagination: none
+
+    # ── v1 Device Status (deprecated) ─────────────────────────────
+
+    v1_device_status:
+      method: POST
+      path: /device/status
+      description: >
+        [DEPRECATED — use get_devices_status] Get device online status
+        and state. Returns relay states, power readings, sensor data.
+      content_type: application/x-www-form-urlencoded
+      params:
+        id: { type: string, in: body, required: true, description: "Device ID" }
+      response:
+        result_path: "$.data"
+      pagination: none
+
+    # ── v1 Relay Control (deprecated) ─────────────────────────────
+
+    v1_relay_control:
+      method: POST
+      path: /device/relay/control
+      description: >
+        [DEPRECATED — use set_switch] Control a relay on/off.
+      content_type: application/x-www-form-urlencoded
+      params:
+        id: { type: string, in: body, required: true, description: "Device ID" }
+        channel: { type: integer, in: body, required: true, description: "Relay channel (0-indexed)" }
+        turn: { type: string, in: body, required: true, description: "Relay action: 'on', 'off', or 'toggle'" }
+      response:
+        result_path: "$.data"
+      pagination: none
+
+    # ── v1 Roller Control (deprecated) ────────────────────────────
+
+    v1_roller_control:
+      method: POST
+      path: /device/relay/roller/control
+      description: >
+        [DEPRECATED — use set_cover] Control a roller/cover shutter.
+      content_type: application/x-www-form-urlencoded
+      params:
+        id: { type: string, in: body, required: true, description: "Device ID" }
+        channel: { type: integer, in: body, required: true, description: "Roller channel" }
+        direction: { type: string, in: body, description: "Movement command: 'open', 'close', or 'stop'" }
+        pos: { type: integer, in: body, description: "Target position 0-100" }
+      response:
+        result_path: "$.data"
+      pagination: none
+
+    # ── v1 Light Control (deprecated) ─────────────────────────────
+
+    v1_light_control:
+      method: POST
+      path: /device/light/control
+      description: >
+        [DEPRECATED — use set_light] Control a light (RGBW or white mode).
+      content_type: application/x-www-form-urlencoded
+      params:
+        id: { type: string, in: body, required: true, description: "Device ID" }
+        channel: { type: integer, in: body, required: true, description: "Light channel" }
+        turn: { type: string, in: body, description: "Action: 'on', 'off', or 'toggle'" }
+        mode: { type: string, in: body, description: "Light mode: 'color' or 'white'" }
+        red: { type: integer, in: body, description: "Red 0-255" }
+        green: { type: integer, in: body, description: "Green 0-255" }
+        blue: { type: integer, in: body, description: "Blue 0-255" }
+        white: { type: integer, in: body, description: "White 0-255" }
+        gain: { type: integer, in: body, description: "Gain 0-100" }
+        brightness: { type: integer, in: body, description: "Brightness 0-100" }
+        temp: { type: integer, in: body, description: "Color temperature in Kelvin" }
+      response:
+        result_path: "$.data"
+      pagination: none
+
+    # ── v1 Bulk Relay Control (deprecated) ────────────────────────
+
+    v1_relay_bulk_control:
+      method: POST
+      path: /device/relay/bulk_control
+      description: >
+        [DEPRECATED — use set_groups] Bulk-control multiple relays at once.
+      content_type: application/x-www-form-urlencoded
+      params:
+        devices: { type: array, in: body, required: true, description: "Array of {id, channel} objects" }
+        turn: { type: string, in: body, required: true, description: "Action: 'on', 'off', or 'toggle'" }
+      response:
+        result_path: "$.data"
+      pagination: none
+
+    # ── v1 Bulk Light Control (deprecated) ────────────────────────
+
+    v1_light_bulk_control:
+      method: POST
+      path: /device/light/bulk_control
+      description: >
+        [DEPRECATED — use set_groups] Bulk-control multiple lights at once.
+      content_type: application/x-www-form-urlencoded
+      params:
+        devices: { type: array, in: body, required: true, description: "Array of {id, channel} objects" }
+        turn: { type: string, in: body, description: "Action: 'on', 'off', or 'toggle'" }
+        mode: { type: string, in: body, description: "Light mode: 'color' or 'white'" }
+      response:
+        result_path: "$.data"
+      pagination: none
+
+    # ── v1 Bulk Roller Control (deprecated) ───────────────────────
+
+    v1_roller_bulk_control:
+      method: POST
+      path: /device/roller/bulk_control
+      description: >
+        [DEPRECATED — use set_groups] Bulk-control multiple rollers at once.
+      content_type: application/x-www-form-urlencoded
+      params:
+        devices: { type: array, in: body, required: true, description: "Array of {id, channel} objects" }
+        direction: { type: string, in: body, description: "Direction: 'open', 'close', or 'stop'" }
+        pos: { type: integer, in: body, description: "Target position 0-100" }
+      response:
+        result_path: "$.data"
+      pagination: none
+
+    # ── Device List (unofficial but widely used) ──────────────────
+
+    list_devices:
+      method: POST
+      path: /interface/device/list
+      description: >
+        List all devices on the account with names, types, and IDs.
+        Unofficial endpoint used by the Shelly app — not in the
+        official API docs but stable and widely used by integrations.
+      response:
+        result_path: "$.data.devices"
+        transform: |
+          to_entries | map({
+            id: .key,
+            name: .value.name,
+            type: .value.type,
+            category: .value.category,
+            room_id: .value.room_id,
+            online: .value.cloud_online,
+            gen: .value.gen
+          })
+      pagination: none
+
+    # ── All Device Status ─────────────────────────────────────────
+
+    get_all_device_status:
+      method: POST
+      path: /device/all_status
+      description: >
+        Get status of all devices on the account in a single call.
+        Returns online state, relay/sensor data for every device.
+        Use show_info=true to include device names and types inline
+        (avoids a separate list_devices call).
+      depends_on: [list_devices]
+      params:
+        show_info:
+          type: boolean
+          in: query
+          default: true
+          description: "Include _dev_info (name, type, gen, online) per device — RECOMMENDED"
+        no_shared:
+          type: boolean
+          in: query
+          default: false
+          description: "Exclude devices shared with this account"
+      response:
+        result_path: "$.data.devices_status"
+        transform: |
+          to_entries | map({
+            id: .key,
+            code: (.value._dev_info.code // "unknown"),
+            gen: (.value._dev_info.gen // "unknown"),
+            online: (.value._dev_info.online // false),
+            relay_on: [.value.relays // [] | .[] | select(.ison == true)] | length > 0,
+            light_on: [.value.lights // [] | .[] | select(.ison == true)] | length > 0,
+            switch_on: (.value."switch:0".output // false),
+            light_output_on: (.value."light:0".output // false),
+            power_w: (
+              (.value.meters // [] | map(.power // 0) | add) //
+              (.value."switch:0".apower // null) //
+              (.value."light:0".apower // null) //
+              0
+            )
+          })
+      pagination: none
+
+  hints:
+    get_devices_status:
+      max_ids: "10 device IDs per request"
+      select_default: "if select is omitted, both status and settings are returned"
+      pick_usage: "use pick to reduce payload size — e.g. pick.status: ['switch:0']"
+    get_all_device_status:
+      no_names: >
+        This endpoint does NOT return user-assigned device names.
+        Always call list_devices first to build an id→name lookup,
+        then join with the status results in code.
+    set_cover:
+      position_mutex: "position and relative are mutually exclusive"
+      slat_mutex: "slatPosition and slatRelative are mutually exclusive"
+      duration_note: "duration only works with position set to open/close/stop"
+    set_light:
+      color_mode: "in color mode use red/green/blue/white/gain; in white mode use brightness/temperature"
+      effect_range: "effect 0-6, only available in color mode"
+    set_groups:
+      id_format: "device IDs in group arrays use format 'deviceId_channel' (e.g. 'e8db84aabbcc_0')"
+      partial_failure: "response may include failedCommands map for devices that errored"
+    list_devices:
+      unofficial: "not officially documented — used by the Shelly mobile app, stable in practice"
+      use_first: "call this BEFORE get_all_device_status to get device names for joining"
+
+  composites:
+    get_named_status:
+      description: >
+        Get all device status with human-readable names and on/off summary.
+        Joins list_devices (names) with get_all_device_status (live state).
+      params:
+        only_on:
+          type: boolean
+          default: false
+          description: "If true, return only devices that are currently on"
+      depends_on: [list_devices, get_all_device_status]
+      timeout: 30s
+      code: |
+        const devices = await api.list_devices();
+        const nameMap = Object.fromEntries(devices.map(d => [d.id, d.name]));
+        const status = await api.get_all_device_status({ show_info: true });
+        const result = status.map(d => ({
+          ...d,
+          name: nameMap[d.id] || d.id
+        }));
+        if (params.only_on) {
+          return result.filter(d => d.relay_on || d.light_on || d.switch_on || d.light_output_on);
+        }
+        return result;
+
+  examples:
+    - name: "Turn on a switch"
+      description: "Turn on a relay and check its status"
+      code: |
+        await api.set_switch({ id: "e8db84aabbcc", on: true });
+        const status = await api.get_devices_status({
+          ids: ["e8db84aabbcc"],
+          select: ["status"]
+        });
+        return status;
+
+    - name: "Close all covers"
+      description: "Batch-close multiple cover devices"
+      code: |
+        await api.set_groups({
+          cover: {
+            ids: ["aabb11223344_0", "ccdd55667788_0"],
+            command: { position: "close" }
+          }
+        });
+
+    - name: "Set light to warm white"
+      description: "Set a Shelly Duo to warm white at 80% brightness"
+      code: |
+        await api.set_light({
+          id: "e8db84aabbcc",
+          on: true,
+          mode: "white",
+          temperature: 2700,
+          brightness: 80
+        });
+
+    - name: "Which devices are on?"
+      description: "Get all device status with names by joining list_devices + get_all_device_status"
+      code: |
+        // Step 1: get names from list_devices
+        const devices = await api.list_devices();
+        const nameMap = {};
+        for (const d of devices) {
+          nameMap[d.id] = d.name;
+        }
+        // Step 2: get live status (already transformed to compact form)
+        const status = await api.get_all_device_status({ show_info: true });
+        // Step 3: join names and filter to ON devices
+        const onDevices = status
+          .map(d => ({ ...d, name: nameMap[d.id] || d.id }))
+          .filter(d => d.relay_on || d.light_on || d.switch_on || d.light_output_on);
+        return onDevices;

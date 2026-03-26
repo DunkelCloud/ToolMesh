@@ -99,6 +99,13 @@ func (s *Server) cors(next http.HandlerFunc) http.HandlerFunc {
 
 // handleMCP processes MCP Streamable HTTP requests.
 func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet {
+		// MCP clients may attempt GET for SSE streaming.
+		// We don't support server-initiated events; return 405.
+		s.logger.Debug("mcp GET request rejected (SSE not supported)")
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -122,6 +129,14 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 
 	s.logger.Info("mcp request", "method", req.Method, "id", req.ID)
 	s.logger.Debug("mcp request payload", "method", req.Method, "id", req.ID, "params", req.Params)
+
+	// JSON-RPC notifications have no "id" field.
+	// Per MCP Streamable HTTP spec, respond with 202 Accepted (no body).
+	if req.ID == nil {
+		s.logger.Debug("mcp notification (no id)", "method", req.Method)
+		w.WriteHeader(http.StatusAccepted)
+		return
+	}
 
 	switch req.Method {
 	case "initialize":

@@ -6,6 +6,7 @@ services:
     env_file: .env
     environment:
       - OPENFGA_MODE=${OPENFGA_MODE:-bypass}
+      - TOOLMESH_DATA_DIR=/app/data
     depends_on:
       temporal:
         condition: service_healthy
@@ -17,6 +18,8 @@ services:
       - ./config:/app/config:ro
       - ./internal/gate/policies:/app/policies:ro
       - ./tools:/app/tools:ro
+      - ./dadl:/app/dadl:ro
+      - ./data:/app/data
 
   # Demo MCP backend (optional — uncomment to enable)
   # Note: mcp/everything has a known crash loop with SSE transport.
@@ -140,5 +143,6 @@ services:
 volumes:
   pgdata:
   mysqldata:
+
   # caddy_data:
   # caddy_config:

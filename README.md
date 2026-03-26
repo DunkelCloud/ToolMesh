@@ -26,6 +26,7 @@ ToolMesh solves this by sitting between the AI agent and your MCP servers, enfor
 | **Temporal** | Durable execution with retry, timeout, audit trail | Temporal.io |
 | **OpenFGA** | Fine-grained authorization (user → plan → tool) | OpenFGA |
 | **MCP Aggregation** | Connect any number of external MCP servers | Go MCP SDK |
+| **REST Proxy Mode** | Declarative YAML describes any REST API — no MCP server needed | DADL (.dadl files) |
 | **Credential Store** | Inject secrets at execution time, never in prompts | Per-request injection via Executor pipeline |
 | **Output Gate** | JavaScript policies filter and validate responses | goja |
 
@@ -237,7 +238,112 @@ Set the credential as an environment variable:
 CREDENTIAL_MEMORIZER_API_KEY=sk-mem-xxxxx
 ```
 
-Tools from each backend are exposed with a prefix: `memorizer:retrieve_knowledge`, `local-tools:my_tool`. Credentials are injected by the Executor at runtime via the CredentialStore — the LLM never sees API keys.
+Tools from each backend are exposed with a prefix: `memorizer_retrieve_knowledge`, `local-tools_my_tool`. Credentials are injected by the Executor at runtime via the CredentialStore — the LLM never sees API keys.
+
+## REST Proxy Mode (DADL)
+
+MCP servers are structurally always a subset of the REST API they wrap. After just a few minutes of productive usage, you will hit endpoints that the MCP server does not expose. The REST Proxy Mode solves this permanently: describe any REST API in a `.dadl` file and ToolMesh calls it directly — no MCP server needed.
+
+```
+Current:    Claude → ToolMesh → MCP Server → REST API
+New:        Claude → ToolMesh → REST API (via .dadl file)
+```
+
+Both modes run in parallel. Add a REST backend to `config/backends.yaml`:
+
+```yaml
+backends:
+  - name: vikunja
+    transport: rest
+    dadl: /app/dadl/vikunja.dadl
+    url: "https://vikunja.example.com/api/v1"  # overrides base_url in .dadl
+```
+
+The `url` field is optional — it overrides the `base_url` in the `.dadl` file. This is useful for APIs like Vikunja where each deployment has a different URL, while APIs like Stripe can hardcode their URL in the `.dadl` file.
+
+### Writing a .dadl File
+
+A `.dadl` file describes a REST API declaratively:
+
+```yaml
+version: "1.0"
+backend:
+  name: myapi
+  type: rest
+  base_url: https://api.example.com/v1  # optional if url is set in backends.yaml
+  description: "My API service"
+
+  auth:
+    type: bearer                    # bearer, oauth2, session, apikey
+    credential: my-api-token        # logical name for CredentialStore
+    inject_into: header
+    header_name: Authorization
+    prefix: "Bearer "
+
+  defaults:
+    headers:
+      Content-Type: application/json
+    pagination:
+      strategy: page                # cursor, offset, page, link_header
+      request:
+        page_param: page
+        limit_param: per_page
+        limit_default: 50
+      response:
+        total_pages_header: x-total-pages
+      behavior: auto
+      max_pages: 20
+    errors:
+      format: json
+      message_path: "$.message"
+      retry_on: [429, 502, 503]
+      terminal: [400, 404]
+      retry_strategy:
+        max_retries: 3
+        backoff: exponential
+        initial_delay: 1s
+
+  tools:
+    list_items:
+      method: GET
+      path: /items
+      description: "List all items"
+      params:
+        page: { type: integer, in: query }
+        search: { type: string, in: query }
+
+    get_item:
+      method: GET
+      path: /items/{id}
+      description: "Get a single item"
+      params:
+        id: { type: integer, in: path, required: true }
+      pagination: none
+
+    create_item:
+      method: POST
+      path: /items
+      description: "Create an item"
+      params:
+        name: { type: string, in: body, required: true }
+        tags: { type: array, in: body }
+      pagination: none
+```
+
+REST Proxy tools integrate seamlessly into Code Mode:
+
+```javascript
+const tasks = await toolmesh.vikunja_list_project_tasks({ project_id: 1 });
+await toolmesh.vikunja_set_task_position({ id: 42, position: 1.5, project_view_id: 1 });
+```
+
+### DADL Features
+
+- **Auth**: Bearer token, OAuth2 client_credentials, session-based login, API key (header or query)
+- **Pagination**: Automatic multi-page fetching (cursor, offset, page number, Link header)
+- **Error Handling**: Configurable retry on transient errors (429, 5xx) with exponential backoff
+- **Response Transformation**: JSONPath extraction (`result_path`) and jq filters (`transform`)
+- **Scoping**: Type definitions ready for large APIs (>100 tools) — implementation progressive
 
 ## Code Mode
 

@@ -101,9 +101,19 @@ func (c *CompositeBackend) ListTools(ctx context.Context) ([]ToolDescriptor, err
 	return all, nil
 }
 
+// AddNamed adds a named backend after construction.
+func (c *CompositeBackend) AddNamed(name string, b ToolBackend) {
+	c.backends[name] = b
+}
+
 // BackendSummaries collects summaries from all backends that implement BackendSummarizer.
 func (c *CompositeBackend) BackendSummaries() []BackendInfo {
 	var all []BackendInfo
+	for _, b := range c.backends {
+		if s, ok := b.(BackendSummarizer); ok {
+			all = append(all, s.BackendSummaries()...)
+		}
+	}
 	for _, b := range c.passthroughs {
 		if s, ok := b.(BackendSummarizer); ok {
 			all = append(all, s.BackendSummaries()...)

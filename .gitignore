@@ -37,6 +37,9 @@ config/users.yaml
 config/apikeys.yaml
 config/caller-classes.yaml
 
+# Persistent state (OAuth tokens, session data)
+data/
+
 # Vendor (use go mod)
 /vendor/
 

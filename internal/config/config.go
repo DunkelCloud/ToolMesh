@@ -18,6 +18,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strings"
 )
 
 // Config holds all ToolMesh configuration values.
@@ -60,6 +61,12 @@ type Config struct {
 	APIKeysConfigPath       string
 	CallerClassesConfigPath string
 
+	// Simple-mode auth identity (used with TOOLMESH_AUTH_PASSWORD / TOOLMESH_API_KEY
+	// when no users.yaml or apikeys.yaml is configured)
+	AuthUser  string // TOOLMESH_AUTH_USER, default "owner"
+	AuthPlan  string // TOOLMESH_AUTH_PLAN, default "pro"
+	AuthRoles string // TOOLMESH_AUTH_ROLES, default "admin" (comma-separated)
+
 	// Registry-based provider selection
 	CredentialStore string // registered store name (default: "embedded")
 	GateEvaluators  string // comma-separated evaluator chain (default: "goja")
@@ -88,6 +95,9 @@ func Load() (*Config, error) {
 		UsersConfigPath:         envStr("TOOLMESH_USERS_CONFIG", "/app/config/users.yaml"),
 		APIKeysConfigPath:       envStr("TOOLMESH_APIKEYS_CONFIG", "/app/config/apikeys.yaml"),
 		CallerClassesConfigPath: envStr("TOOLMESH_CALLER_CLASSES_CONFIG", "/app/config/caller-classes.yaml"),
+		AuthUser:                envStr("TOOLMESH_AUTH_USER", "owner"),
+		AuthPlan:                envStr("TOOLMESH_AUTH_PLAN", "pro"),
+		AuthRoles:               envStr("TOOLMESH_AUTH_ROLES", "admin"),
 		CredentialStore:         envStr("CREDENTIAL_STORE", "embedded"),
 		GateEvaluators:          envStr("GATE_EVALUATORS", "goja"),
 	}
@@ -101,6 +111,11 @@ func Load() (*Config, error) {
 	}
 
 	return cfg, nil
+}
+
+// AuthRolesList returns the simple-mode auth roles as a string slice.
+func (c *Config) AuthRolesList() []string {
+	return strings.Split(c.AuthRoles, ",")
 }
 
 func envStr(key, fallback string) string {

@@ -237,13 +237,13 @@ func (s *Server) authenticate(r *http.Request) *userctx.UserContext {
 	if s.cfg.APIKey != "" && bearer != "" && s.apiKeys == nil {
 		if subtle.ConstantTimeCompare([]byte(bearer), []byte(s.cfg.APIKey)) == 1 {
 			return &userctx.UserContext{
-				UserID:        "api-key-user",
+				UserID:        s.cfg.AuthUser,
 				CompanyID:     "default",
-				Roles:         []string{"admin"},
-				Plan:          "pro",
+				Roles:         s.cfg.AuthRolesList(),
+				Plan:          s.cfg.AuthPlan,
 				Authenticated: true,
-				CallerID:      "api-key-user",
-				CallerClass:   s.callerClasses.Resolve("api-key-user"),
+				CallerID:      s.cfg.AuthUser,
+				CallerClass:   s.callerClasses.Resolve(s.cfg.AuthUser),
 			}
 		}
 	}
@@ -439,10 +439,10 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 				s.renderLoginForm(w, clientID, redirectURI, state, codeChallenge, scope)
 				return
 			}
-			userID = "owner"
+			userID = s.cfg.AuthUser
 			companyID = "default"
-			plan = "pro"
-			roles = []string{"admin"}
+			plan = s.cfg.AuthPlan
+			roles = s.cfg.AuthRolesList()
 		}
 
 		code := generateID()

@@ -92,7 +92,7 @@ Generate password hashes with the bootstrap tool:
 docker compose exec toolmesh /tm-bootstrap hash-password "my-password"
 ```
 
-For single-user setups, `TOOLMESH_AUTH_PASSWORD` still works as a fallback.
+For single-user setups, `TOOLMESH_AUTH_PASSWORD` still works as a fallback. Configure the identity with `TOOLMESH_AUTH_USER`, `TOOLMESH_AUTH_PLAN`, and `TOOLMESH_AUTH_ROLES` (defaults: `owner`, `pro`, `admin`).
 
 ### API Keys (Programmatic Access)
 
@@ -109,7 +109,7 @@ keys:
 
 Each key maps to a distinct user identity with its own plan and roles, which flow through to OpenFGA authorization.
 
-For single-key setups, `TOOLMESH_API_KEY` still works as a fallback.
+For single-key setups, `TOOLMESH_API_KEY` still works as a fallback. The same `TOOLMESH_AUTH_USER`, `TOOLMESH_AUTH_PLAN`, and `TOOLMESH_AUTH_ROLES` variables control the identity.
 
 ### DCR Rate Limiting
 

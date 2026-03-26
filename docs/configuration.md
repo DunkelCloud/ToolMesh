@@ -10,6 +10,9 @@ All configuration is done via environment variables. Copy `.env.example` to `.en
 | `TOOLMESH_TRANSPORT` | `http` | Transport mode: `http` or `stdio` |
 | `TOOLMESH_AUTH_PASSWORD` | *(empty)* | Password for OAuth 2.1 single-user authentication |
 | `TOOLMESH_API_KEY` | *(empty)* | Static API key (bypasses OAuth when set) |
+| `TOOLMESH_AUTH_USER` | `owner` | User identity in simple auth mode (password/single API key) |
+| `TOOLMESH_AUTH_PLAN` | `pro` | Plan in simple auth mode |
+| `TOOLMESH_AUTH_ROLES` | `admin` | Comma-separated roles in simple auth mode |
 | `TOOLMESH_ISSUER` | `https://toolmesh.io/` | OAuth issuer URL (must end with `/`) |
 
 ## Temporal

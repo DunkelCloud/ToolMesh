@@ -22,6 +22,7 @@ import (
 	"testing"
 
 	"github.com/DunkelCloud/ToolMesh/internal/backend"
+	"github.com/DunkelCloud/ToolMesh/internal/credentials"
 	"github.com/DunkelCloud/ToolMesh/internal/gate"
 	"github.com/DunkelCloud/ToolMesh/internal/userctx"
 )
@@ -328,5 +329,215 @@ func TestExecuteTool_BackendResultWithExistingMetadata(t *testing.T) {
 	}
 	if result.Metadata["user"] != "user-1" {
 		t.Error("expected user to be added to metadata")
+	}
+}
+
+// TestCallerCredentialDurchstich is the Sprint 2 integration test that verifies
+// the complete flow: CallerID → UserContext → Executor → Credential injection →
+// Pre-Gate (JS policy with callerId/callerClass) → Backend → Post-Gate.
+func TestCallerCredentialDurchstich(t *testing.T) {
+	// Set env-var credentials for the EmbeddedStore
+	t.Setenv("CREDENTIAL_GITHUB_API_KEY", "ghp_test_token_123")
+	t.Setenv("CREDENTIAL_GITHUB_WEBHOOK_SECRET", "whsec_test_456")
+
+	credStore := credentials.NewEmbeddedStore()
+
+	// Backend that verifies credentials arrived via context
+	var receivedCreds map[string]string
+	mb := &mockBackend{
+		executeFunc: func(ctx context.Context, toolName string, params map[string]any) (*backend.ToolResult, error) {
+			receivedCreds = credentials.CredentialsFromContext(ctx)
+			return &backend.ToolResult{
+				Content: []any{map[string]any{"type": "text", "text": "executed " + toolName}},
+			}, nil
+		},
+	}
+
+	// Gate policies: pre-gate blocks untrusted callers on destructive tools,
+	// post-gate blocks responses containing "BLOCKED_MARKER".
+	policyDir := t.TempDir()
+	os.WriteFile(policyDir+"/caller_class.js", []byte(`
+		if (ctx.phase === "pre") {
+			if (ctx.user.callerClass === "untrusted" && ctx.tool.match(/_(delete|drop|remove)/i)) {
+				throw new Error("destructive op blocked for " + ctx.user.callerId);
+			}
+		}
+		if (ctx.phase === "post" && ctx.response && ctx.response.content) {
+			for (var i = 0; i < ctx.response.content.length; i++) {
+				var item = ctx.response.content[i];
+				if (item.text && item.text.indexOf("BLOCKED_MARKER") !== -1) {
+					throw new Error("response contains blocked content");
+				}
+			}
+		}
+	`), 0600)
+
+	g, err := gate.New(policyDir, newTestLogger())
+	if err != nil {
+		t.Fatalf("failed to create gate: %v", err)
+	}
+	pipeline := gate.NewPipeline([]gate.Evaluator{g})
+
+	exec := New(nil, credStore, mb, pipeline, newTestLogger())
+
+	tests := []struct {
+		name             string
+		callerID         string
+		callerClass      string
+		tool             string
+		wantError        bool
+		wantCredCount    int
+		wantCredKey      string
+		wantCredVal      string
+		wantRequestField bool // verify request fields populated for Temporal
+	}{
+		{
+			name:             "trusted caller executes read tool with multi-credential injection",
+			callerID:         "claude-code",
+			callerClass:      "trusted",
+			tool:             "github_get_repo",
+			wantError:        false,
+			wantCredCount:    2,
+			wantCredKey:      "GITHUB_API_KEY",
+			wantCredVal:      "ghp_test_token_123",
+			wantRequestField: true,
+		},
+		{
+			name:        "untrusted caller blocked on destructive tool by pre-gate",
+			callerID:    "anonymous",
+			callerClass: "untrusted",
+			tool:        "github_delete_repo",
+			wantError:   true,
+		},
+		{
+			name:          "untrusted caller allowed on read tool",
+			callerID:      "anonymous",
+			callerClass:   "untrusted",
+			tool:          "github_get_repo",
+			wantError:     false,
+			wantCredCount: 2,
+			wantCredKey:   "GITHUB_WEBHOOK_SECRET",
+			wantCredVal:   "whsec_test_456",
+		},
+		{
+			name:          "standard caller executes tool normally",
+			callerID:      "partner-acme",
+			callerClass:   "standard",
+			tool:          "github_list_issues",
+			wantError:     false,
+			wantCredCount: 2,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			receivedCreds = nil
+
+			ctx := userctx.WithUserContext(context.Background(), &userctx.UserContext{
+				UserID:        "user-1",
+				CompanyID:     "acme",
+				Authenticated: true,
+				CallerID:      tt.callerID,
+				CallerClass:   tt.callerClass,
+			})
+
+			req := ExecuteToolRequest{
+				ToolName: tt.tool,
+				Params:   map[string]any{"repo": "test"},
+			}
+
+			result, err := exec.ExecuteTool(ctx, req)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			if tt.wantError {
+				if !result.IsError {
+					t.Error("expected IsError = true")
+				}
+				return
+			}
+
+			if result.IsError {
+				t.Errorf("expected IsError = false, got error result")
+			}
+
+			// Verify credentials were injected via context
+			if tt.wantCredCount > 0 {
+				if len(receivedCreds) != tt.wantCredCount {
+					t.Errorf("expected %d credentials, got %d: %v", tt.wantCredCount, len(receivedCreds), receivedCreds)
+				}
+			}
+			if tt.wantCredKey != "" {
+				if receivedCreds[tt.wantCredKey] != tt.wantCredVal {
+					t.Errorf("credential %s = %q, want %q", tt.wantCredKey, receivedCreds[tt.wantCredKey], tt.wantCredVal)
+				}
+			}
+
+			// Verify request fields are populated for Temporal search attributes
+			if tt.wantRequestField {
+				// The executor populates req fields internally, so we verify
+				// the metadata reflects the correct user
+				if result.Metadata["user"] != "user-1" {
+					t.Errorf("metadata user = %v, want user-1", result.Metadata["user"])
+				}
+			}
+		})
+	}
+}
+
+// TestCallerCredentialDurchstich_PostGateWithCallerClass verifies the post-gate
+// has access to callerClass for response filtering.
+func TestCallerCredentialDurchstich_PostGateWithCallerClass(t *testing.T) {
+	mb := &mockBackend{
+		executeFunc: func(_ context.Context, _ string, _ map[string]any) (*backend.ToolResult, error) {
+			return &backend.ToolResult{
+				Content: []any{map[string]any{"type": "text", "text": "secret internal data"}},
+			}, nil
+		},
+	}
+
+	policyDir := t.TempDir()
+	os.WriteFile(policyDir+"/post_filter.js", []byte(`
+		if (ctx.phase === "post" && ctx.user.callerClass === "untrusted") {
+			throw new Error("untrusted callers cannot view this tool's output");
+		}
+	`), 0600)
+
+	g, err := gate.New(policyDir, newTestLogger())
+	if err != nil {
+		t.Fatalf("failed to create gate: %v", err)
+	}
+
+	exec := New(nil, nil, mb, gate.NewPipeline([]gate.Evaluator{g}), newTestLogger())
+
+	// Trusted caller should see the response
+	ctx := userctx.WithUserContext(context.Background(), &userctx.UserContext{
+		UserID:        "user-1",
+		Authenticated: true,
+		CallerID:      "claude-code",
+		CallerClass:   "trusted",
+	})
+	result, err := exec.ExecuteTool(ctx, ExecuteToolRequest{ToolName: "internal_data"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Error("trusted caller should not be blocked by post-gate")
+	}
+
+	// Untrusted caller should be blocked
+	ctx = userctx.WithUserContext(context.Background(), &userctx.UserContext{
+		UserID:        "user-2",
+		Authenticated: true,
+		CallerID:      "anonymous",
+		CallerClass:   "untrusted",
+	})
+	result, err = exec.ExecuteTool(ctx, ExecuteToolRequest{ToolName: "internal_data"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("untrusted caller should be blocked by post-gate")
 	}
 }

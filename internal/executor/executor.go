@@ -77,6 +77,12 @@ func (e *Executor) ExecuteTool(ctx context.Context, req ExecuteToolRequest) (*ba
 		return nil, fmt.Errorf("no user context found")
 	}
 
+	// Populate caller context on the request for Temporal search attributes.
+	req.UserID = uc.UserID
+	req.CompanyID = uc.CompanyID
+	req.CallerID = uc.CallerID
+	req.CallerClass = uc.CallerClass
+
 	e.logger.InfoContext(ctx, "executing tool",
 		"tool", req.ToolName,
 		"user", uc.UserID,
@@ -120,12 +126,14 @@ func (e *Executor) ExecuteTool(ctx context.Context, req ExecuteToolRequest) (*ba
 			CallerID:    uc.CallerID,
 			CallerClass: uc.CallerClass,
 		}
-		// Determine backend name from tool prefix for credential lookup
 		if parts := splitToolPrefix(req.ToolName); parts[0] != "" {
-			credName := parts[0] + "_API_KEY"
-			if cred, err := e.creds.Get(ctx, credName, tenant); err == nil {
-				ctx = credentials.WithCredentials(ctx, map[string]string{parts[0]: cred})
-				e.logger.InfoContext(ctx, "credential injected", "backend", parts[0])
+			creds := e.resolveCredentials(ctx, parts[0], tenant)
+			if len(creds) > 0 {
+				ctx = credentials.WithCredentials(ctx, creds)
+				e.logger.InfoContext(ctx, "credentials injected",
+					"backend", parts[0],
+					"count", len(creds),
+				)
 			}
 		}
 	}
@@ -212,6 +220,29 @@ func (e *Executor) ExecuteTool(ctx context.Context, req ExecuteToolRequest) (*ba
 	)
 
 	return result, nil
+}
+
+// resolveCredentials loads all credentials for a backend. It first tries
+// PrefixLister (convention: CREDENTIAL_<BACKEND>_*) to inject multiple
+// credentials per backend. Falls back to a single <BACKEND>_API_KEY lookup.
+func (e *Executor) resolveCredentials(ctx context.Context, backendPrefix string, tenant credentials.TenantInfo) map[string]string {
+	prefix := strings.ToUpper(backendPrefix) + "_"
+
+	// Try prefix-based listing first (e.g. CREDENTIAL_GITHUB_API_KEY, CREDENTIAL_GITHUB_TOKEN)
+	if lister, ok := e.creds.(credentials.PrefixLister); ok {
+		creds, err := lister.ListByPrefix(ctx, prefix, tenant)
+		if err == nil && len(creds) > 0 {
+			return creds
+		}
+	}
+
+	// Fallback: single <BACKEND>_API_KEY credential
+	credName := strings.ToUpper(backendPrefix) + "_API_KEY"
+	if cred, err := e.creds.Get(ctx, credName, tenant); err == nil {
+		return map[string]string{credName: cred}
+	}
+
+	return nil
 }
 
 // splitToolPrefix extracts the backend prefix from a tool name like "backend_tool".

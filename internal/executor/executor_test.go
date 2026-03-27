@@ -388,9 +388,9 @@ func TestCallerCredentialDurchstich(t *testing.T) {
 		callerClass      string
 		tool             string
 		wantError        bool
-		wantCount    int
-		wantKey      string
-		wantVal      string
+		wantCount        int
+		wantKey          string
+		wantVal          string
 		wantRequestField bool // verify request fields populated for Temporal
 	}{
 		{
@@ -399,9 +399,9 @@ func TestCallerCredentialDurchstich(t *testing.T) {
 			callerClass:      "trusted",
 			tool:             "github_get_repo",
 			wantError:        false,
-			wantCount:    2,
-			wantKey:      "GITHUB_API_KEY",
-			wantVal:      "ghp_test_token_123",
+			wantCount:        2,
+			wantKey:          "GITHUB_API_KEY",
+			wantVal:          "ghp_test_token_123",
 			wantRequestField: true,
 		},
 		{
@@ -412,22 +412,22 @@ func TestCallerCredentialDurchstich(t *testing.T) {
 			wantError:   true,
 		},
 		{
-			name:          "untrusted caller allowed on read tool",
-			callerID:      "anonymous",
-			callerClass:   "untrusted",
-			tool:          "github_get_repo",
-			wantError:     false,
-			wantCount: 2,
-			wantKey:   "GITHUB_WEBHOOK_SECRET",
-			wantVal:   "whsec_test_456",
+			name:        "untrusted caller allowed on read tool",
+			callerID:    "anonymous",
+			callerClass: "untrusted",
+			tool:        "github_get_repo",
+			wantError:   false,
+			wantCount:   2,
+			wantKey:     "GITHUB_WEBHOOK_SECRET",
+			wantVal:     "whsec_test_456",
 		},
 		{
-			name:          "standard caller executes tool normally",
-			callerID:      "partner-acme",
-			callerClass:   "standard",
-			tool:          "github_list_issues",
-			wantError:     false,
-			wantCount: 2,
+			name:        "standard caller executes tool normally",
+			callerID:    "partner-acme",
+			callerClass: "standard",
+			tool:        "github_list_issues",
+			wantError:   false,
+			wantCount:   2,
 		},
 	}
 

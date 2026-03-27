@@ -232,8 +232,8 @@ func (h *Handler) handleExecuteCode(ctx context.Context, params map[string]any) 
 func (h *Handler) BuildToolList(ctx context.Context) ([]ToolDefinition, error) {
 	backendDesc := h.buildBackendDescription()
 
-	listToolsDesc := "Returns a machine-readable list of all available tools with TypeScript interface definitions"
-	executeCodeDesc := "Accepts JavaScript code containing tool calls and executes them through the ToolMesh pipeline"
+	listToolsDesc := "Returns a machine-readable list of all available tools with TypeScript interface definitions. Call this BEFORE execute_code to discover the correct function names and parameter types — without it you will not know the correct API signatures and your calls will fail"
+	executeCodeDesc := "Accepts JavaScript code containing tool calls and executes them through the ToolMesh pipeline. IMPORTANT: You MUST call list_tools first to discover available function signatures before using this tool. Do not guess function names or parameters from the hints below"
 	if backendDesc != "" {
 		listToolsDesc += ". " + backendDesc
 		executeCodeDesc += ". " + backendDesc

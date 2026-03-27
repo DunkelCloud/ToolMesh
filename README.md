@@ -1,4 +1,4 @@
-# ToolMesh
+# ToolMesh — Turn any REST API into MCP tools
 
 > The secure, durable execution layer between AI agents and enterprise infrastructure.
 

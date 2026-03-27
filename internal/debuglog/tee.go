@@ -169,5 +169,5 @@ func (h *FilteredTeeHandler) WithGroup(name string) slog.Handler {
 // OpenDebugFile opens the debug log file for writing (append mode, create if needed).
 // The caller is responsible for closing the returned file.
 func OpenDebugFile(path string) (*os.File, error) {
-	return os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	return os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600) //nolint:gosec // path from trusted config
 }

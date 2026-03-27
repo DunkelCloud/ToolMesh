@@ -97,7 +97,7 @@ func main() {
 			logger.Error("failed to open debug file, continuing without debug logging",
 				"path", cfg.DebugFile, "error", dfErr)
 		} else {
-			defer debugFile.Close()
+			defer func() { _ = debugFile.Close() }()
 			debugSet = make(map[string]bool, len(debugBackends))
 			for _, name := range debugBackends {
 				debugSet[name] = true

@@ -108,6 +108,7 @@ func (a *RESTAdapter) Execute(ctx context.Context, toolName string, params map[s
 		"backend", a.spec.Backend.Name,
 		"tool", toolName,
 		"method", tool.Method,
+		"params", params,
 	)
 
 	// Build and execute request (doRequest reads and closes the response body)
@@ -204,6 +205,7 @@ func (a *RESTAdapter) Execute(ctx context.Context, toolName string, params map[s
 		"tool", toolName,
 		"status", resp.StatusCode,
 		"bodyLen", len(body),
+		"body", string(body),
 	)
 
 	return &ToolResult{
@@ -296,6 +298,13 @@ func (a *RESTAdapter) doRequest(ctx context.Context, tool *dadl.ToolDef, params 
 	if err := a.auth.InjectAuth(ctx, req); err != nil {
 		return nil, nil, fmt.Errorf("inject auth: %w", err)
 	}
+
+	// Log full request details (URL without auth headers)
+	a.logger.DebugContext(ctx, "REST request",
+		"backend", a.spec.Backend.Name,
+		"method", req.Method,
+		"url", urlStr,
+	)
 
 	resp, err := a.httpClient.Do(req)
 	if err != nil {

@@ -278,11 +278,6 @@ backends:
     transport: http
     url: "https://memorizer.example.com/mcp"
     api_key_env: "MEMORIZER_API_KEY"
-
-  - name: local-tools
-    transport: stdio
-    command: "./my-mcp-server"
-    args: ["--port", "0"]
 ```
 
 Set the credential as an environment variable:
@@ -291,7 +286,7 @@ Set the credential as an environment variable:
 CREDENTIAL_MEMORIZER_API_KEY=sk-mem-xxxxx
 ```
 
-Tools from each backend are exposed with a prefix: `memorizer_retrieve_knowledge`, `local-tools_my_tool`. Credentials are injected by the Executor at runtime via the CredentialStore — the LLM never sees API keys.
+Tools from each backend are exposed with a prefix (e.g. `memorizer_retrieve_knowledge`). Credentials are injected by the Executor at runtime via the CredentialStore — the LLM never sees API keys.
 
 ## REST Proxy Mode (DADL)
 

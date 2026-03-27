@@ -7,27 +7,30 @@
 [![CI](https://github.com/DunkelCloud/ToolMesh/actions/workflows/ci.yml/badge.svg)](https://github.com/DunkelCloud/ToolMesh/actions/workflows/ci.yml)
 [![Go Report Card](https://goreportcard.com/badge/github.com/DunkelCloud/ToolMesh)](https://goreportcard.com/report/github.com/DunkelCloud/ToolMesh)
 
-## The Problem
+## 30 lines of YAML. No server to build.
 
-MCP gateways pass tool calls straight through. That creates real risks in production:
+MCP servers are structurally always a subset of the REST API they wrap. ToolMesh replaces them with `.dadl` files — a declarative YAML format that describes any REST API as MCP tools. No code, no deployment, no maintenance.
 
-- **Confused Deputy** — an LLM can invoke any tool with any user's privileges
-- **Credential Leakage** — API keys end up in prompts, logs, and model context
-- **No Durability** — if a tool call fails mid-flight, there is no retry or audit trail
-- **No Input Control** — any parameter combination is accepted without validation
-- **No Output Control** — raw backend responses flow directly to the model without filtering
+```
+Current:    Claude → ToolMesh → MCP Server → REST API
+With DADL:  Claude → ToolMesh → REST API (via .dadl file)
+```
 
-ToolMesh solves this by sitting between the AI agent and your MCP servers, enforcing authorization, injecting credentials securely, providing durable execution, and gating output.
+And unlike MCP gateways that just pass tool calls through, ToolMesh adds what production deployments actually need:
+
+- **Authorization** — fine-grained user → plan → tool control (OpenFGA)
+- **Credential Security** — secrets injected at execution time, never in prompts
+- **Durable Execution** — retry, timeout, and full audit trail (Temporal)
+- **Input & Output Gating** — JS policies validate parameters and filter responses
 
 ## The Six Pillars
 
 | Pillar | What it does | Backed by |
 |--------|-------------|-----------|
+| **Any Backend** | Connect MCP servers or describe REST APIs declaratively via DADL | Go MCP SDK + DADL (.dadl files) |
 | **Code Mode** | LLMs write typed JS instead of error-prone JSON | AST-parsed tool calls |
 | **Temporal** | Durable execution with retry, timeout, audit trail | Temporal.io |
 | **OpenFGA** | Fine-grained authorization (user → plan → tool) | OpenFGA |
-| **MCP Aggregation** | Connect any number of external MCP servers | Go MCP SDK |
-| **REST Proxy Mode** | Declarative YAML describes any REST API — no MCP server needed | DADL (.dadl files) |
 | **Credential Store** | Inject secrets at execution time, never in prompts | Per-request injection via Executor pipeline |
 | **Gate** | JavaScript policies validate inputs (pre) and filter outputs (post) | goja |
 

@@ -9,7 +9,7 @@
 
 ## 30 lines of YAML. No server to build.
 
-MCP servers are structurally always a subset of the REST API they wrap. ToolMesh replaces them with `.dadl` files — a declarative YAML format that describes any REST API as MCP tools. No code, no deployment, no maintenance.
+In practice, MCP servers only expose a fraction of the REST API they wrap — and you'll hit the gaps fast. ToolMesh replaces them with `.dadl` files — a declarative YAML format that describes any REST API as MCP tools. No code, no deployment, no maintenance.
 
 ```
 Current:    Claude → ToolMesh → MCP Server → REST API
@@ -52,14 +52,16 @@ docker compose up -d
 docker compose exec toolmesh /tm-bootstrap
 # Set OPENFGA_MODE=restrict in .env and restart to enforce authz
 
-# Connect from Claude Desktop or any MCP client
+# Verify it's running
+curl http://localhost:8080/health
+
 # MCP endpoint: http://localhost:8080/mcp
 # Note: Most MCP clients require HTTPS — see TLS section below
 ```
 
-### TLS
+### TLS (important)
 
-ToolMesh itself serves plain HTTP. Most MCP clients — including Claude Desktop's connector UI — **require HTTPS**. Put a TLS-terminating reverse proxy in front of ToolMesh:
+ToolMesh itself serves plain HTTP. **Most MCP clients — including Claude Desktop — require HTTPS** and will reject `http://` URLs. You need a TLS-terminating reverse proxy in front of ToolMesh:
 
 | Option | When to use |
 |--------|-------------|
@@ -151,7 +153,7 @@ Dynamic Client Registration is rate-limited to 5 registrations per hour per IP t
 
 ## Caller-Origin
 
-ToolMesh tracks which AI client triggers each tool call. No known MCP gateway differentiates by the calling AI model — ToolMesh does.
+ToolMesh tracks which AI client triggers each tool call. This lets operators restrict high-risk tools for low-trust clients, apply different PII filtering per caller, and audit who did what — all without maintaining separate MCP deployments.
 
 **CallerID** is derived automatically from the authentication source:
 - **OAuth clients:** The `client_name` from Dynamic Client Registration (e.g. `"claude-code"`)
@@ -225,7 +227,7 @@ TOOLMESH_ACTIVITY_TIMEOUT=180
 | `DEBUG_BACKENDS` | *(empty)* | Comma-separated backend names for per-backend debug logging |
 | `DEBUG_FILE` | *(empty)* | Path to a separate debug log file (e.g. `debug.log`) |
 
-The default level is `debug` so that MCP communication issues (requests, responses, errors) are fully traceable out of the box. For production, set `LOG_LEVEL=info` to reduce log volume.
+**Development default.** The default level is `debug` so that MCP communication issues are fully traceable out of the box. At this level, ToolMesh logs complete request/response payloads which may include sensitive data. **For production, set `LOG_LEVEL=info` or higher.**
 
 At `debug` level, ToolMesh logs the complete request/response flow between clients and backends:
 - Incoming JSON-RPC method, params, and request ID
@@ -290,7 +292,7 @@ Tools from each backend are exposed with a prefix (e.g. `memorizer_retrieve_know
 
 ## REST Proxy Mode (DADL)
 
-MCP servers are structurally always a subset of the REST API they wrap. After just a few minutes of productive usage, you will hit endpoints that the MCP server does not expose. The REST Proxy Mode solves this permanently: describe any REST API in a `.dadl` file and ToolMesh calls it directly — no MCP server needed.
+In practice, MCP servers only expose a fraction of the REST API they wrap. After just a few minutes of productive usage, you will hit endpoints that the MCP server does not cover. The REST Proxy Mode closes this gap: describe any REST API in a `.dadl` file and ToolMesh calls it directly — no MCP server needed.
 
 ```
 Current:    Claude → ToolMesh → MCP Server → REST API
@@ -308,6 +310,24 @@ backends:
 ```
 
 The `url` field is optional — it overrides the `base_url` in the `.dadl` file. This is useful for APIs like Vikunja where each deployment has a different URL, while APIs like Stripe can hardcode their URL in the `.dadl` file.
+
+### A taste of DADL
+
+Want Claude to list GitHub issues? Here's all it takes:
+
+```yaml
+tools:
+  list_issues:
+    method: GET
+    path: /repos/{owner}/{repo}/issues
+    description: "List issues for a repository"
+    params:
+      owner: { type: string, in: path, required: true }
+      repo:  { type: string, in: path, required: true }
+      state: { type: string, in: query }
+```
+
+That's it — ToolMesh handles auth, pagination, retries, and error mapping. The full `.dadl` format below adds these as declarative defaults.
 
 ### Writing a .dadl File
 

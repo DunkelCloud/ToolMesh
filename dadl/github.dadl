@@ -6,12 +6,12 @@ backend:
   description: "GitHub REST API — repositories, issues, pull requests, commits, and code search"
 
   coverage:
-    endpoints: 26
+    endpoints: 58
     total_endpoints: 900
-    percentage: 3
-    focus: "repos, orgs, issues, PRs, commits, branches, contents, search, releases, actions, topics"
-    missing: "git primitives, projects v2, teams, webhooks, deployments, code scanning, packages, gists, notifications"
-    last_reviewed: "2026-03-26"
+    percentage: 7
+    focus: "repos, orgs, issues, PRs (full CRUD + merge + reviews), commits, branches, git refs, file management, labels, milestones, search, releases (full CRUD), actions/workflows/jobs, users, tags, topics"
+    missing: "projects v2, teams, webhooks, deployments, code scanning, packages, gists, notifications, environments, pages"
+    last_reviewed: "2026-03-27"
 
   setup:
     credential_steps:
@@ -304,6 +304,74 @@ backend:
         page: { type: integer, in: query }
         per_page: { type: integer, in: query, default: 30 }
 
+    create_pull:
+      method: POST
+      path: /repos/{owner}/{repo}/pulls
+      description: "Create a new pull request. head is the branch with changes, base is the target branch (e.g. main). Set draft=true to create a draft PR."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        title: { type: string, in: body, required: true }
+        head: { type: string, in: body, required: true }
+        base: { type: string, in: body, required: true }
+        body: { type: string, in: body }
+        draft: { type: boolean, in: body }
+        maintainer_can_modify: { type: boolean, in: body }
+      pagination: none
+
+    update_pull:
+      method: PATCH
+      path: /repos/{owner}/{repo}/pulls/{pull_number}
+      description: "Update a pull request. Set state to 'closed' to close it. Only include fields you want to change."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        pull_number: { type: integer, in: path, required: true }
+        title: { type: string, in: body }
+        body: { type: string, in: body }
+        state: { type: string, in: body }
+        base: { type: string, in: body }
+        maintainer_can_modify: { type: boolean, in: body }
+      pagination: none
+
+    merge_pull:
+      method: PUT
+      path: /repos/{owner}/{repo}/pulls/{pull_number}/merge
+      description: "Merge a pull request. merge_method: merge, squash, or rebase. Optionally provide sha to ensure merging the expected head commit."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        pull_number: { type: integer, in: path, required: true }
+        commit_title: { type: string, in: body }
+        commit_message: { type: string, in: body }
+        sha: { type: string, in: body }
+        merge_method: { type: string, in: body }
+      pagination: none
+
+    list_pull_commits:
+      method: GET
+      path: /repos/{owner}/{repo}/pulls/{pull_number}/commits
+      description: "List commits on a pull request, ordered chronologically."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        pull_number: { type: integer, in: path, required: true }
+        page: { type: integer, in: query }
+        per_page: { type: integer, in: query, default: 30 }
+
+    create_pull_review:
+      method: POST
+      path: /repos/{owner}/{repo}/pulls/{pull_number}/reviews
+      description: "Create a review on a pull request. event: APPROVE, REQUEST_CHANGES, or COMMENT. Body is the review summary."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        pull_number: { type: integer, in: path, required: true }
+        body: { type: string, in: body }
+        event: { type: string, in: body, required: true }
+        comments: { type: array, in: body }
+      pagination: none
+
     # ── Commits & Branches ────────────────────────────────────
 
     list_commits:
@@ -342,6 +410,39 @@ backend:
         page: { type: integer, in: query }
         per_page: { type: integer, in: query, default: 30 }
 
+    get_branch:
+      method: GET
+      path: /repos/{owner}/{repo}/branches/{branch}
+      description: "Get a single branch including its latest commit SHA and protection status."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        branch: { type: string, in: path, required: true }
+      pagination: none
+
+    # ── Git Refs ─────────────────────────────────────────────
+
+    create_ref:
+      method: POST
+      path: /repos/{owner}/{repo}/git/refs
+      description: "Create a git reference (branch or tag). For branches use ref='refs/heads/branch-name'. sha is the commit to point to."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        ref: { type: string, in: body, required: true }
+        sha: { type: string, in: body, required: true }
+      pagination: none
+
+    delete_ref:
+      method: DELETE
+      path: /repos/{owner}/{repo}/git/refs/{ref}
+      description: "Delete a git reference. For branches use ref='heads/branch-name' (without refs/ prefix). For tags use ref='tags/tag-name'."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        ref: { type: string, in: path, required: true }
+      pagination: none
+
     # ── File Contents ─────────────────────────────────────────
 
     get_content:
@@ -353,6 +454,35 @@ backend:
         repo: { type: string, in: path, required: true }
         path: { type: string, in: path, required: true }
         ref: { type: string, in: query }
+      pagination: none
+
+    create_or_update_file:
+      method: PUT
+      path: /repos/{owner}/{repo}/contents/{path}
+      description: "Create or update a file. Content must be base64 encoded. To update an existing file, provide the current blob sha (from get_content). Creates a commit."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        path: { type: string, in: path, required: true }
+        message: { type: string, in: body, required: true }
+        content: { type: string, in: body, required: true }
+        sha: { type: string, in: body }
+        branch: { type: string, in: body }
+        committer: { type: object, in: body }
+        author: { type: object, in: body }
+      pagination: none
+
+    delete_file:
+      method: DELETE
+      path: /repos/{owner}/{repo}/contents/{path}
+      description: "Delete a file from the repository. Requires the current blob sha (from get_content). Creates a commit."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        path: { type: string, in: path, required: true }
+        message: { type: string, in: body, required: true }
+        sha: { type: string, in: body, required: true }
+        branch: { type: string, in: body }
       pagination: none
 
     # ── Search ────────────────────────────────────────────────
@@ -400,6 +530,58 @@ backend:
         repo: { type: string, in: path, required: true }
       pagination: none
 
+    get_release:
+      method: GET
+      path: /repos/{owner}/{repo}/releases/{release_id}
+      description: "Get a single release by its numeric ID."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        release_id: { type: integer, in: path, required: true }
+      pagination: none
+
+    create_release:
+      method: POST
+      path: /repos/{owner}/{repo}/releases
+      description: "Create a release. tag_name is required. If the tag does not exist, target_commitish (branch or SHA) is used to create it. Set draft=true for unpublished releases."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        tag_name: { type: string, in: body, required: true }
+        target_commitish: { type: string, in: body }
+        name: { type: string, in: body }
+        body: { type: string, in: body }
+        draft: { type: boolean, in: body }
+        prerelease: { type: boolean, in: body }
+        generate_release_notes: { type: boolean, in: body }
+      pagination: none
+
+    update_release:
+      method: PATCH
+      path: /repos/{owner}/{repo}/releases/{release_id}
+      description: "Update a release. Only include fields you want to change."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        release_id: { type: integer, in: path, required: true }
+        tag_name: { type: string, in: body }
+        target_commitish: { type: string, in: body }
+        name: { type: string, in: body }
+        body: { type: string, in: body }
+        draft: { type: boolean, in: body }
+        prerelease: { type: boolean, in: body }
+      pagination: none
+
+    delete_release:
+      method: DELETE
+      path: /repos/{owner}/{repo}/releases/{release_id}
+      description: "Delete a release. Does not delete the associated git tag."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        release_id: { type: integer, in: path, required: true }
+      pagination: none
+
     # ── Actions (CI/CD) ───────────────────────────────────────
 
     list_workflow_runs:
@@ -424,3 +606,203 @@ backend:
         repo: { type: string, in: path, required: true }
         run_id: { type: integer, in: path, required: true }
       pagination: none
+
+    list_workflows:
+      method: GET
+      path: /repos/{owner}/{repo}/actions/workflows
+      description: "List all workflows in a repository. Returns workflow ID, name, path, and state."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        page: { type: integer, in: query }
+        per_page: { type: integer, in: query, default: 30 }
+
+    list_workflow_run_jobs:
+      method: GET
+      path: /repos/{owner}/{repo}/actions/runs/{run_id}/jobs
+      description: "List jobs for a workflow run. Filter by latest attempt or all attempts."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        run_id: { type: integer, in: path, required: true }
+        filter: { type: string, in: query, default: "latest" }
+        page: { type: integer, in: query }
+        per_page: { type: integer, in: query, default: 30 }
+
+    get_job:
+      method: GET
+      path: /repos/{owner}/{repo}/actions/jobs/{job_id}
+      description: "Get a single workflow job by ID, including steps with status and timing."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        job_id: { type: integer, in: path, required: true }
+      pagination: none
+
+    cancel_workflow_run:
+      method: POST
+      path: /repos/{owner}/{repo}/actions/runs/{run_id}/cancel
+      description: "Cancel a workflow run that is in progress or queued."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        run_id: { type: integer, in: path, required: true }
+      pagination: none
+
+    rerun_workflow:
+      method: POST
+      path: /repos/{owner}/{repo}/actions/runs/{run_id}/rerun
+      description: "Re-run an entire workflow run. Only works for completed runs."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        run_id: { type: integer, in: path, required: true }
+      pagination: none
+
+    # ── Labels ───────────────────────────────────────────────
+
+    list_labels:
+      method: GET
+      path: /repos/{owner}/{repo}/labels
+      description: "List all labels for a repository."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        page: { type: integer, in: query }
+        per_page: { type: integer, in: query, default: 30 }
+
+    get_label:
+      method: GET
+      path: /repos/{owner}/{repo}/labels/{name}
+      description: "Get a single label by name."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        name: { type: string, in: path, required: true }
+      pagination: none
+
+    create_label:
+      method: POST
+      path: /repos/{owner}/{repo}/labels
+      description: "Create a label. Color is a 6-character hex code without '#' prefix (e.g. 'ff0000' for red)."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        name: { type: string, in: body, required: true }
+        color: { type: string, in: body, required: true }
+        description: { type: string, in: body }
+      pagination: none
+
+    update_label:
+      method: PATCH
+      path: /repos/{owner}/{repo}/labels/{name}
+      description: "Update a label. Only include fields you want to change. Use new_name to rename."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        name: { type: string, in: path, required: true }
+        new_name: { type: string, in: body }
+        color: { type: string, in: body }
+        description: { type: string, in: body }
+      pagination: none
+
+    delete_label:
+      method: DELETE
+      path: /repos/{owner}/{repo}/labels/{name}
+      description: "Delete a label from the repository."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        name: { type: string, in: path, required: true }
+      pagination: none
+
+    # ── Milestones ───────────────────────────────────────────
+
+    list_milestones:
+      method: GET
+      path: /repos/{owner}/{repo}/milestones
+      description: "List milestones for a repository. State: open, closed, all."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        state: { type: string, in: query, default: "open" }
+        sort: { type: string, in: query, default: "due_on" }
+        direction: { type: string, in: query, default: "asc" }
+        page: { type: integer, in: query }
+        per_page: { type: integer, in: query, default: 30 }
+
+    get_milestone:
+      method: GET
+      path: /repos/{owner}/{repo}/milestones/{milestone_number}
+      description: "Get a single milestone by its number, including open/closed issue counts."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        milestone_number: { type: integer, in: path, required: true }
+      pagination: none
+
+    create_milestone:
+      method: POST
+      path: /repos/{owner}/{repo}/milestones
+      description: "Create a milestone. due_on is an ISO 8601 timestamp (e.g. '2026-04-01T00:00:00Z')."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        title: { type: string, in: body, required: true }
+        description: { type: string, in: body }
+        due_on: { type: string, in: body }
+        state: { type: string, in: body, default: "open" }
+      pagination: none
+
+    update_milestone:
+      method: PATCH
+      path: /repos/{owner}/{repo}/milestones/{milestone_number}
+      description: "Update a milestone. Set state to 'closed' to close it. Only include fields you want to change."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        milestone_number: { type: integer, in: path, required: true }
+        title: { type: string, in: body }
+        description: { type: string, in: body }
+        due_on: { type: string, in: body }
+        state: { type: string, in: body }
+      pagination: none
+
+    delete_milestone:
+      method: DELETE
+      path: /repos/{owner}/{repo}/milestones/{milestone_number}
+      description: "Delete a milestone."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        milestone_number: { type: integer, in: path, required: true }
+      pagination: none
+
+    # ── Users ────────────────────────────────────────────────
+
+    get_authenticated_user:
+      method: GET
+      path: /user
+      description: "Get the currently authenticated user's profile including login, name, email, and bio."
+      params: {}
+      pagination: none
+
+    get_user:
+      method: GET
+      path: /users/{username}
+      description: "Get a public user profile by username."
+      params:
+        username: { type: string, in: path, required: true }
+      pagination: none
+
+    # ── Tags ─────────────────────────────────────────────────
+
+    list_tags:
+      method: GET
+      path: /repos/{owner}/{repo}/tags
+      description: "List tags for a repository, newest first. Each tag includes name and commit SHA."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        page: { type: integer, in: query }
+        per_page: { type: integer, in: query, default: 30 }

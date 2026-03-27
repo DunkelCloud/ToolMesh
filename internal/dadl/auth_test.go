@@ -44,6 +44,7 @@ func (m *mockCredStore) Healthy(_ context.Context) error { return nil }
 const (
 	authTypeBearer = "bearer"
 	authTypeOAuth2 = "oauth2"
+	bearerPrefix   = "Bearer "
 )
 
 func TestRestAuth_Bearer(t *testing.T) {
@@ -52,7 +53,7 @@ func TestRestAuth_Bearer(t *testing.T) {
 		Type:       authTypeBearer,
 		Credential: "my-token",
 		HeaderName: "Authorization",
-		Prefix:     "Bearer ",
+		Prefix:     bearerPrefix,
 	}, creds)
 
 	req, _ := http.NewRequestWithContext(context.Background(), "GET", "https://api.example.com/test", nil)
@@ -184,7 +185,7 @@ func (a *testRestAuth) InjectAuth(ctx context.Context, req *http.Request) error 
 		}
 		prefix := a.config.Prefix
 		if prefix == "" {
-			prefix = "Bearer "
+			prefix = bearerPrefix
 		}
 		req.Header.Set(headerName, prefix+token)
 	case "apikey":
@@ -213,7 +214,7 @@ func (a *testRestAuth) InjectAuth(ctx context.Context, req *http.Request) error 
 
 func (a *testRestAuth) injectOAuth2(ctx context.Context, req *http.Request) error {
 	if a.cachedToken != "" {
-		req.Header.Set("Authorization", "Bearer "+a.cachedToken)
+		req.Header.Set("Authorization", bearerPrefix+a.cachedToken)
 		return nil
 	}
 
@@ -245,7 +246,7 @@ func (a *testRestAuth) injectOAuth2(ctx context.Context, req *http.Request) erro
 		return err
 	}
 	a.cachedToken = tokenResp.AccessToken
-	req.Header.Set("Authorization", "Bearer "+a.cachedToken)
+	req.Header.Set("Authorization", bearerPrefix+a.cachedToken)
 	return nil
 }
 

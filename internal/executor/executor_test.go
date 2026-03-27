@@ -339,7 +339,7 @@ func TestExecuteTool_BackendResultWithExistingMetadata(t *testing.T) {
 // Pre-Gate (JS policy with callerId/callerClass) → Backend → Post-Gate.
 func TestCallerCredentialDurchstich(t *testing.T) {
 	// Set env-var credentials for the EmbeddedStore
-	t.Setenv("CREDENTIAL_GITHUB_API_KEY", "ghp_test_token_123")       //nolint:gosec // G101: intentional test data
+	t.Setenv("CREDENTIAL_GITHUB_API_KEY", "ghp_test_token_123")    //nolint:gosec // G101: intentional test data
 	t.Setenv("CREDENTIAL_GITHUB_WEBHOOK_SECRET", "whsec_test_456") //nolint:gosec // G101: intentional test data
 
 	credStore := credentials.NewEmbeddedStore()
@@ -388,9 +388,9 @@ func TestCallerCredentialDurchstich(t *testing.T) {
 		callerClass      string
 		tool             string
 		wantError        bool
-		wantCredCount    int
-		wantCredKey      string
-		wantCredVal      string
+		wantCount    int
+		wantKey      string
+		wantVal      string
 		wantRequestField bool // verify request fields populated for Temporal
 	}{
 		{
@@ -399,9 +399,9 @@ func TestCallerCredentialDurchstich(t *testing.T) {
 			callerClass:      "trusted",
 			tool:             "github_get_repo",
 			wantError:        false,
-			wantCredCount:    2,
-			wantCredKey:      "GITHUB_API_KEY",
-			wantCredVal:      "ghp_test_token_123",
+			wantCount:    2,
+			wantKey:      "GITHUB_API_KEY",
+			wantVal:      "ghp_test_token_123",
 			wantRequestField: true,
 		},
 		{
@@ -417,9 +417,9 @@ func TestCallerCredentialDurchstich(t *testing.T) {
 			callerClass:   "untrusted",
 			tool:          "github_get_repo",
 			wantError:     false,
-			wantCredCount: 2,
-			wantCredKey:   "GITHUB_WEBHOOK_SECRET",
-			wantCredVal:   "whsec_test_456",
+			wantCount: 2,
+			wantKey:   "GITHUB_WEBHOOK_SECRET",
+			wantVal:   "whsec_test_456",
 		},
 		{
 			name:          "standard caller executes tool normally",
@@ -427,7 +427,7 @@ func TestCallerCredentialDurchstich(t *testing.T) {
 			callerClass:   "standard",
 			tool:          "github_list_issues",
 			wantError:     false,
-			wantCredCount: 2,
+			wantCount: 2,
 		},
 	}
 
@@ -465,14 +465,14 @@ func TestCallerCredentialDurchstich(t *testing.T) {
 			}
 
 			// Verify credentials were injected via context
-			if tt.wantCredCount > 0 {
-				if len(receivedCreds) != tt.wantCredCount {
-					t.Errorf("expected %d credentials, got %d: %v", tt.wantCredCount, len(receivedCreds), receivedCreds)
+			if tt.wantCount > 0 {
+				if len(receivedCreds) != tt.wantCount {
+					t.Errorf("expected %d credentials, got %d: %v", tt.wantCount, len(receivedCreds), receivedCreds)
 				}
 			}
-			if tt.wantCredKey != "" {
-				if receivedCreds[tt.wantCredKey] != tt.wantCredVal {
-					t.Errorf("credential %s = %q, want %q", tt.wantCredKey, receivedCreds[tt.wantCredKey], tt.wantCredVal)
+			if tt.wantKey != "" {
+				if receivedCreds[tt.wantKey] != tt.wantVal {
+					t.Errorf("credential %s = %q, want %q", tt.wantKey, receivedCreds[tt.wantKey], tt.wantVal)
 				}
 			}
 

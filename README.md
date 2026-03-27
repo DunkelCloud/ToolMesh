@@ -9,7 +9,7 @@
 
 ## 30 lines of YAML. No server to build.
 
-In practice, MCP servers only expose a fraction of the REST API they wrap — and you'll hit the gaps fast. ToolMesh replaces them with `.dadl` files — a declarative YAML format that describes any REST API as MCP tools. No code, no deployment, no maintenance.
+In practice, MCP servers only expose a fraction of the REST API they wrap — and you'll hit the gaps fast. ToolMesh lets you replace the wrapper layer with `.dadl` files — a declarative YAML format that describes any REST API as MCP tools. No wrapper server to build, deploy, or maintain.
 
 ```
 Current:    Claude → ToolMesh → MCP Server → REST API
@@ -292,7 +292,7 @@ Tools from each backend are exposed with a prefix (e.g. `memorizer_retrieve_know
 
 ## REST Proxy Mode (DADL)
 
-In practice, MCP servers only expose a fraction of the REST API they wrap. After just a few minutes of productive usage, you will hit endpoints that the MCP server does not cover. The REST Proxy Mode closes this gap: describe any REST API in a `.dadl` file and ToolMesh calls it directly — no MCP server needed.
+When an MCP server doesn't expose an endpoint you need, describe it in a `.dadl` file and ToolMesh calls the REST API directly — no wrapper server needed.
 
 ```
 Current:    Claude → ToolMesh → MCP Server → REST API

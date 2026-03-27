@@ -132,10 +132,12 @@ func main() {
 	logger.Info("credential store initialized", "type", cfg.CredentialStore)
 
 	// Initialize MCPAdapter (external MCP backends)
+	// Use FilteredTeeHandler so only records with a matching "backend"
+	// attribute are written to the debug file.
 	mcpLogger := logger
 	if debugFile != nil && debugSet != nil {
-		tee := debuglog.NewTeeHandler(handler, debugFile)
-		mcpLogger = slog.New(tee)
+		filtered := debuglog.NewFilteredTeeHandler(handler, debugFile, debugSet)
+		mcpLogger = slog.New(filtered)
 	}
 	mcpAdapter, err := backend.NewMCPAdapter(cfg.BackendsConfigPath, credStore, mcpLogger)
 	if err != nil {
@@ -381,7 +383,7 @@ func (l *temporalLogger) Error(msg string, keyvals ...any) { l.logger.Error(msg,
 func backendLogger(name string, globalLogger *slog.Logger, stdoutHandler slog.Handler, debugFile *os.File, debugSet map[string]bool) *slog.Logger {
 	if debugSet[name] && debugFile != nil {
 		tee := debuglog.NewTeeHandler(stdoutHandler, debugFile)
-		return slog.New(tee).With("backend", name)
+		return slog.New(tee)
 	}
 	return globalLogger
 }

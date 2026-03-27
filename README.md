@@ -263,9 +263,10 @@ graph LR
     end
 
     subgraph Backends
-        TM -->|MCP Client| B1[MCP Server 1]
-        TM -->|MCP Client| B2[MCP Server 2]
-        TM -->|"REST via .dadl"| API[REST API]
+        TM -->|MCP Client| B1[MCP Server]
+        TM -->|".dadl"| D1[Stripe API]
+        TM -->|".dadl"| D2[GitHub API]
+        TM -->|".dadl"| D3[Vikunja API]
     end
 ```
 

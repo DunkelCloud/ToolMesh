@@ -296,14 +296,14 @@ func TestRESTAdapter_MultipartFileUpload(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		receivedContentType = r.Header.Get("Content-Type")
 
-		err := r.ParseMultipartForm(32 << 20)
+		err := r.ParseMultipartForm(32 << 20) //nolint:gosec // test server with controlled input
 		if err != nil {
 			http.Error(w, err.Error(), 500)
 			return
 		}
 
 		// Check form field
-		receivedFormField = r.FormValue("description")
+		receivedFormField = r.FormValue("description") //nolint:gosec // test server
 
 		// Check file
 		file, header, err := r.FormFile("file")

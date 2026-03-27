@@ -47,6 +47,25 @@ func (s *EmbeddedStore) Get(_ context.Context, logicalName string, _ TenantInfo)
 	return val, nil
 }
 
+// ListByPrefix returns all credentials whose logical name starts with the given prefix.
+// For EmbeddedStore, it scans environment variables matching CREDENTIAL_<PREFIX>*.
+func (s *EmbeddedStore) ListByPrefix(_ context.Context, prefix string, _ TenantInfo) (map[string]string, error) {
+	envPrefix := "CREDENTIAL_" + strings.ToUpper(prefix)
+	result := make(map[string]string)
+	for _, env := range os.Environ() {
+		key, val, ok := strings.Cut(env, "=")
+		if !ok || val == "" {
+			continue
+		}
+		if strings.HasPrefix(key, envPrefix) {
+			// Convert env key back to logical name: CREDENTIAL_GITHUB_TOKEN → GITHUB_TOKEN
+			logicalName := strings.TrimPrefix(key, "CREDENTIAL_")
+			result[logicalName] = val
+		}
+	}
+	return result, nil
+}
+
 // Healthy always returns nil for EmbeddedStore since env vars are always available.
 func (s *EmbeddedStore) Healthy(_ context.Context) error {
 	return nil

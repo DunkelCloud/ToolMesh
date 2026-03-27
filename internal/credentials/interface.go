@@ -34,3 +34,13 @@ type CredentialStore interface {
 	// Healthy checks if the credential store is reachable.
 	Healthy(ctx context.Context) error
 }
+
+// PrefixLister is an optional interface for credential stores that support
+// listing all credentials matching a prefix. Used by the executor to inject
+// all credentials for a backend (e.g. CREDENTIAL_GITHUB_API_KEY, CREDENTIAL_GITHUB_TOKEN).
+type PrefixLister interface {
+	// ListByPrefix returns all credential name→value pairs whose logical name
+	// starts with the given prefix. The returned map keys are the full logical
+	// names (without the CREDENTIAL_ env prefix).
+	ListByPrefix(ctx context.Context, prefix string, tenant TenantInfo) (map[string]string, error)
+}

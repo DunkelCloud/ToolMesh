@@ -59,7 +59,7 @@ var scanBlocklist = map[unistring.String]bool{
 //   - DotExpression nodes accessing globalThis/window/self
 //
 // Returns a list of violations with line numbers.
-func ScanCode(code string, compositeName string) ([]Violation, error) {
+func ScanCode(code, compositeName string) ([]Violation, error) {
 	// Wrap in async IIFE to allow await at top level (mirrors runtime behavior)
 	wrappedCode := "(async function() {\n" + code + "\n})()"
 	fileSet := &file.FileSet{}

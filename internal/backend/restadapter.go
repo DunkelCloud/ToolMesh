@@ -110,8 +110,8 @@ func (a *RESTAdapter) Execute(ctx context.Context, toolName string, params map[s
 		"method", tool.Method,
 	)
 
-	// Build and execute request
-	resp, body, err := a.doRequest(ctx, &tool, params)
+	// Build and execute request (doRequest reads and closes the response body)
+	resp, body, err := a.doRequest(ctx, &tool, params) //nolint:bodyclose // closed inside doRequest
 	if err != nil {
 		return nil, fmt.Errorf("execute REST tool %q: %w", toolName, err)
 	}
@@ -126,8 +126,8 @@ func (a *RESTAdapter) Execute(ctx context.Context, toolName string, params map[s
 				// Retry with backoff
 				if errConfig.RetryStrategy != nil {
 					retryer := dadl.NewRetryer(*errConfig.RetryStrategy, a.logger)
-					retryResp, retryErr := retryer.Do(ctx, func() (*http.Response, error) {
-						r, b, e := a.doRequest(ctx, &tool, params)
+					retryResp, retryErr := retryer.Do(ctx, func() (*http.Response, error) { //nolint:bodyclose // closed inside doRequest
+						r, b, e := a.doRequest(ctx, &tool, params) //nolint:bodyclose // closed inside doRequest
 						if e != nil {
 							return nil, e
 						}
@@ -159,7 +159,7 @@ func (a *RESTAdapter) Execute(ctx context.Context, toolName string, params map[s
 				if resp.StatusCode == 401 {
 					if err := a.auth.HandleUnauthorized(ctx); err == nil {
 						// Retry once after re-auth
-						resp, body, err = a.doRequest(ctx, &tool, params)
+						resp, body, err = a.doRequest(ctx, &tool, params) //nolint:bodyclose // closed inside doRequest
 						if err != nil {
 							return &ToolResult{
 								Content: []any{textContent(fmt.Sprintf("Error after re-auth: %s", err))},
@@ -218,7 +218,7 @@ func (a *RESTAdapter) Execute(ctx context.Context, toolName string, params map[s
 
 // Healthy checks if the backend is reachable.
 func (a *RESTAdapter) Healthy(ctx context.Context) error {
-	req, err := http.NewRequestWithContext(ctx, "HEAD", a.spec.Backend.BaseURL, nil)
+	req, err := http.NewRequestWithContext(ctx, "HEAD", a.spec.Backend.BaseURL, http.NoBody)
 	if err != nil {
 		return fmt.Errorf("create health check request: %w", err)
 	}
@@ -478,7 +478,7 @@ func (a *RESTAdapter) paginateResults(ctx context.Context, tool *dadl.ToolDef, p
 			nextToolParams[k] = v
 		}
 
-		resp, body, err := a.doRequest(ctx, tool, nextToolParams)
+		resp, body, err := a.doRequest(ctx, tool, nextToolParams) //nolint:bodyclose // closed inside doRequest
 		if err != nil {
 			return marshallResults(allResults), fmt.Errorf("pagination page %d: %w", page+1, err)
 		}
@@ -571,7 +571,7 @@ func buildInputSchema(tool dadl.ToolDef) map[string]any {
 	}
 
 	schema := map[string]any{
-		"type":       "object",
+		"type":       schemaTypeObject,
 		"properties": properties,
 	}
 	if len(required) > 0 {
@@ -580,18 +580,16 @@ func buildInputSchema(tool dadl.ToolDef) map[string]any {
 	return schema
 }
 
+// JSON Schema type constants used in buildInputSchema.
+const (
+	schemaTypeInteger = "integer"
+	schemaTypeObject  = "object"
+)
+
 func jsonSchemaType(t string) string {
 	switch t {
-	case "integer":
-		return "integer"
-	case "number":
-		return "number"
-	case "boolean":
-		return "boolean"
-	case "array":
-		return "array"
-	case "object":
-		return "object"
+	case schemaTypeInteger, "number", "boolean", "array", schemaTypeObject:
+		return t
 	default:
 		return "string"
 	}
@@ -714,7 +712,7 @@ func buildCompositeInputSchema(comp dadl.CompositeDef) map[string]any {
 	}
 
 	schema := map[string]any{
-		"type":       "object",
+		"type":       schemaTypeObject,
 		"properties": properties,
 	}
 	if len(required) > 0 {

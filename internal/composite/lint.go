@@ -67,11 +67,11 @@ func FormatLintResults(results []LintResult) string {
 	for _, r := range results {
 		for _, v := range r.Violations {
 			if v.Line > 0 {
-				sb.WriteString(fmt.Sprintf("%s: composite %q line %d col %d: %s\n",
-					r.File, r.Composite, v.Line, v.Column, v.Message))
+				fmt.Fprintf(&sb, "%s: composite %q line %d col %d: %s\n",
+					r.File, r.Composite, v.Line, v.Column, v.Message)
 			} else {
-				sb.WriteString(fmt.Sprintf("%s: composite %q: %s\n",
-					r.File, r.Composite, v.Message))
+				fmt.Fprintf(&sb, "%s: composite %q: %s\n",
+					r.File, r.Composite, v.Message)
 			}
 		}
 	}

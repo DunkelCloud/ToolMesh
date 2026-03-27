@@ -68,7 +68,7 @@ func newRuntime(
 	// Set up console.log
 	consoleObj := rt.NewObject()
 	_ = consoleObj.Set("log", func(call goja.FunctionCall) goja.Value {
-		var parts []string
+		parts := make([]string, 0, len(call.Arguments))
 		for _, arg := range call.Arguments {
 			parts = append(parts, arg.String())
 		}

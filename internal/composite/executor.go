@@ -16,7 +16,7 @@ package composite
 
 import (
 	"context"
-	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -40,11 +40,6 @@ var (
 	timeNow   = time.Now
 	timeSince = time.Since
 )
-
-// jsonDecode is a helper for JSON decoding.
-func jsonDecode(data []byte, v any) error {
-	return json.Unmarshal(data, v)
-}
 
 // Execute runs a composite tool in a sandboxed goja runtime.
 // A fresh runtime is created per call (no reuse for isolation).
@@ -99,7 +94,8 @@ func Execute(
 
 	val, err := rt.RunString(wrappedCode)
 	if err != nil {
-		if interrupt, ok := err.(*goja.InterruptedError); ok {
+		var interrupt *goja.InterruptedError
+		if errors.As(err, &interrupt) {
 			return &Result{
 				ConsoleOutput: consoleOutput,
 				AuditEvents:   auditEvents,

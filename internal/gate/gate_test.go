@@ -497,6 +497,89 @@ func TestPipeline_EvaluatePre(t *testing.T) {
 	}
 }
 
+func TestGate_CallerIDAndCallerClassAvailable(t *testing.T) {
+	dir := t.TempDir()
+	writePolicy(t, dir, "caller_class.js", `
+		// Verify callerId and callerClass are accessible
+		if (ctx.phase === "pre") {
+			if (ctx.user.callerClass === "untrusted" && ctx.tool.match(/_(delete|drop|remove)/i)) {
+				throw new Error("destructive op blocked for " + ctx.user.callerId + " (class: " + ctx.user.callerClass + ")");
+			}
+		}
+	`)
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	g, err := New(dir, logger)
+	if err != nil {
+		t.Fatalf("failed to create gate: %v", err)
+	}
+
+	tests := []struct {
+		name        string
+		callerID    string
+		callerClass string
+		tool        string
+		phase       Phase
+		wantAllowed bool
+	}{
+		{
+			name:        "untrusted caller blocked on destructive tool",
+			callerID:    "anonymous",
+			callerClass: "untrusted",
+			tool:        "db_delete_user",
+			phase:       PhasePre,
+			wantAllowed: false,
+		},
+		{
+			name:        "trusted caller allowed on destructive tool",
+			callerID:    "claude-code",
+			callerClass: "trusted",
+			tool:        "db_delete_user",
+			phase:       PhasePre,
+			wantAllowed: true,
+		},
+		{
+			name:        "untrusted caller allowed on read tool",
+			callerID:    "anonymous",
+			callerClass: "untrusted",
+			tool:        "db_get_user",
+			phase:       PhasePre,
+			wantAllowed: true,
+		},
+		{
+			name:        "post phase not affected",
+			callerID:    "anonymous",
+			callerClass: "untrusted",
+			tool:        "db_delete_user",
+			phase:       PhasePost,
+			wantAllowed: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := g.Evaluate(GateContext{
+				User: userctx.UserContext{
+					UserID:        "u1",
+					Authenticated: true,
+					CallerID:      tt.callerID,
+					CallerClass:   tt.callerClass,
+				},
+				Tool:     tt.tool,
+				Params:   map[string]any{},
+				Phase:    tt.phase,
+				Response: &backend.ToolResult{},
+			})
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if result.Allowed != tt.wantAllowed {
+				t.Errorf("Evaluate() allowed = %v, want %v (reason: %s)", result.Allowed, tt.wantAllowed, result.Reason)
+			}
+		})
+	}
+}
+
 func writePolicy(t *testing.T, dir, name, content string) {
 	t.Helper()
 	path := filepath.Join(dir, name)

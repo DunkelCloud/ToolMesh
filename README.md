@@ -253,13 +253,20 @@ See [docs/architecture.md](docs/architecture.md) for the full architecture docum
 ```mermaid
 graph LR
     Agent[AI Agent] -->|"MCP + CallerID"| TM[ToolMesh]
-    TM -->|AuthN/State| Redis
-    TM -->|AuthZ| FGA[OpenFGA]
-    TM -->|Durable Exec + Search Attrs| Temporal
-    TM -->|Per-Request Injection| CS[Credential Store]
-    TM -->|MCP Client| B1[MCP Server 1]
-    TM -->|MCP Client| B2[MCP Server 2]
-    TM -->|"Gate pre/post (CallerClass)"| Policy[JS Policies]
+
+    subgraph Pipeline
+        TM -->|AuthN/State| Redis
+        TM -->|AuthZ| FGA[OpenFGA]
+        TM -->|Durable Exec| Temporal
+        TM -->|Credentials| CS[Credential Store]
+        TM -->|"Gate pre/post"| Policy[JS Policies]
+    end
+
+    subgraph Backends
+        TM -->|MCP Client| B1[MCP Server 1]
+        TM -->|MCP Client| B2[MCP Server 2]
+        TM -->|"REST via .dadl"| API[REST API]
+    end
 ```
 
 ## Adding an External MCP Server

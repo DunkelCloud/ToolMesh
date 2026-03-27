@@ -17,6 +17,7 @@ package dadl
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -59,6 +60,8 @@ func (a *RestAuth) InjectAuth(ctx context.Context, req *http.Request) error {
 	switch a.config.Type {
 	case "bearer":
 		return a.injectBearer(ctx, req)
+	case "basic":
+		return a.injectBasic(ctx, req)
 	case "apikey":
 		return a.injectAPIKey(ctx, req)
 	case "oauth2":
@@ -106,6 +109,25 @@ func (a *RestAuth) injectBearer(ctx context.Context, req *http.Request) error {
 		prefix = "Bearer "
 	}
 	req.Header.Set(headerName, prefix+token)
+	return nil
+}
+
+func (a *RestAuth) injectBasic(ctx context.Context, req *http.Request) error {
+	username, err := a.creds.Get(ctx, a.config.UsernameCredential, credentials.TenantInfo{})
+	if err != nil {
+		return fmt.Errorf("get basic username credential %q: %w", a.config.UsernameCredential, err)
+	}
+
+	var password string
+	if a.config.PasswordCredential != "" {
+		password, err = a.creds.Get(ctx, a.config.PasswordCredential, credentials.TenantInfo{})
+		if err != nil {
+			return fmt.Errorf("get basic password credential %q: %w", a.config.PasswordCredential, err)
+		}
+	}
+
+	encoded := base64.StdEncoding.EncodeToString([]byte(username + ":" + password))
+	req.Header.Set("Authorization", "Basic "+encoded)
 	return nil
 }
 

@@ -54,6 +54,7 @@ var validAuthTypes = map[string]bool{
 	"oauth2":  true,
 	"session": true,
 	"apikey":  true,
+	"basic":   true,
 }
 
 // validPaginationStrategies lists the supported pagination strategies.
@@ -92,7 +93,7 @@ func Validate(spec *Spec) error {
 	// Validate auth
 	if b.Auth.Type != "" {
 		if !validAuthTypes[b.Auth.Type] {
-			return fmt.Errorf("auth.type must be one of bearer, oauth2, session, apikey; got %q", b.Auth.Type)
+			return fmt.Errorf("auth.type must be one of bearer, oauth2, session, apikey, basic; got %q", b.Auth.Type)
 		}
 	}
 

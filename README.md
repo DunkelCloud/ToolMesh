@@ -1,4 +1,4 @@
-# ToolMesh
+# ToolMesh — Turn any REST API into MCP tools
 
 > The secure, durable execution layer between AI agents and enterprise infrastructure.
 
@@ -9,7 +9,7 @@
 
 ## 30 lines of YAML. No server to build.
 
-MCP servers are structurally always a subset of the REST API they wrap. ToolMesh replaces them with `.dadl` files — a declarative YAML format that describes any REST API as MCP tools. No code, no deployment, no maintenance.
+In practice, MCP servers only expose a fraction of the REST API they wrap — and you'll hit the gaps fast. ToolMesh lets you replace the wrapper layer with `.dadl` files — a declarative YAML format that describes any REST API as MCP tools. No wrapper server to build, deploy, or maintain.
 
 ```
 Current:    Claude → ToolMesh → MCP Server → REST API
@@ -52,13 +52,40 @@ docker compose up -d
 docker compose exec toolmesh /tm-bootstrap
 # Set OPENFGA_MODE=restrict in .env and restart to enforce authz
 
-# Connect from Claude Desktop or any MCP client
+# Verify it's running
+curl http://localhost:8080/health
+
 # MCP endpoint: http://localhost:8080/mcp
+# Note: Most MCP clients require HTTPS — see TLS section below
 ```
+
+### TLS (important)
+
+ToolMesh itself serves plain HTTP. **Most MCP clients — including Claude Desktop — require HTTPS** and will reject `http://` URLs. You need a TLS-terminating reverse proxy in front of ToolMesh:
+
+| Option | When to use |
+|--------|-------------|
+| **Caddy** | Self-hosted with a public domain — automatic Let's Encrypt certs |
+| **Cloudflare Tunnel** | No open ports needed, zero-config TLS |
+| **nginx / Traefik** | Already in your stack |
+
+For **local development only**, you can bypass TLS by editing `claude_desktop_config.json` by hand (the GUI enforces `https://`).
 
 ### Connect to Claude Desktop
 
 Add to your Claude Desktop MCP config:
+
+```json
+{
+  "mcpServers": {
+    "toolmesh": {
+      "url": "https://toolmesh.example.com/mcp"
+    }
+  }
+}
+```
+
+For local development without TLS proxy:
 
 ```json
 {
@@ -72,7 +99,7 @@ Add to your Claude Desktop MCP config:
 
 ### Connect to Claude.ai (Custom Connector)
 
-ToolMesh supports OAuth 2.1 with PKCE S256 for remote access. Configure users in `config/users.yaml` and use the public URL as the MCP endpoint.
+ToolMesh supports OAuth 2.1 with PKCE S256 for remote access. Configure users in `config/users.yaml` and use the public HTTPS URL as the MCP endpoint.
 
 ## Authentication
 
@@ -91,10 +118,14 @@ users:
     roles: [admin]
 ```
 
-Generate password hashes with the bootstrap tool:
+Generate password hashes with the bootstrap tool or any bcrypt-capable utility:
 
 ```bash
+# Using tm-bootstrap (inside the container)
 docker compose exec toolmesh /tm-bootstrap hash-password "my-password"
+
+# Or using htpasswd (on the host)
+htpasswd -nbBC 10 "" "my-password" | cut -d: -f2
 ```
 
 For single-user setups, `TOOLMESH_AUTH_PASSWORD` still works as a fallback. Configure the identity with `TOOLMESH_AUTH_USER`, `TOOLMESH_AUTH_PLAN`, and `TOOLMESH_AUTH_ROLES` (defaults: `owner`, `pro`, `admin`).
@@ -122,7 +153,7 @@ Dynamic Client Registration is rate-limited to 5 registrations per hour per IP t
 
 ## Caller-Origin
 
-ToolMesh tracks which AI client triggers each tool call. No known MCP gateway differentiates by the calling AI model — ToolMesh does.
+ToolMesh tracks which AI client triggers each tool call. This lets operators restrict high-risk tools for low-trust clients, apply different PII filtering per caller, and audit who did what — all without maintaining separate MCP deployments.
 
 **CallerID** is derived automatically from the authentication source:
 - **OAuth clients:** The `client_name` from Dynamic Client Registration (e.g. `"claude-code"`)
@@ -196,7 +227,7 @@ TOOLMESH_ACTIVITY_TIMEOUT=180
 | `DEBUG_BACKENDS` | *(empty)* | Comma-separated backend names for per-backend debug logging |
 | `DEBUG_FILE` | *(empty)* | Path to a separate debug log file (e.g. `debug.log`) |
 
-The default level is `debug` so that MCP communication issues (requests, responses, errors) are fully traceable out of the box. For production, set `LOG_LEVEL=info` to reduce log volume.
+**Development default.** The default level is `debug` so that MCP communication issues are fully traceable out of the box. At this level, ToolMesh logs complete request/response payloads which may include sensitive data. **For production, set `LOG_LEVEL=info` or higher.**
 
 At `debug` level, ToolMesh logs the complete request/response flow between clients and backends:
 - Incoming JSON-RPC method, params, and request ID
@@ -221,16 +252,22 @@ The `./data` directory is typically volume-mounted to the host, so the debug fil
 
 See [docs/architecture.md](docs/architecture.md) for the full architecture documentation.
 
-```mermaid
-graph LR
-    Agent[AI Agent] -->|"MCP + CallerID"| TM[ToolMesh]
-    TM -->|AuthN/State| Redis
-    TM -->|AuthZ| FGA[OpenFGA]
-    TM -->|Durable Exec + Search Attrs| Temporal
-    TM -->|Per-Request Injection| CS[Credential Store]
-    TM -->|MCP Client| B1[MCP Server 1]
-    TM -->|MCP Client| B2[MCP Server 2]
-    TM -->|"Gate pre/post (CallerClass)"| Policy[JS Policies]
+```
+                          ┌─────────────────────────────────┐
+                          │          ToolMesh               │
+                          │                                 │
+                          │  Redis · OpenFGA · Temporal     │
+                          │  Credential Store · JS Gate     │
+                          │                                 │
+AI Agent ──MCP──────────▶ │   AuthZ ▸ Creds ▸ Gate ▸ Exec  │
+                          │                                 │
+                          └──┬──────┬───────┬───────┬───────┘
+                             │      │       │       │
+                          MCP Client  .dadl   .dadl   .dadl
+                             │      │       │       │
+                             ▼      ▼       ▼       ▼
+                          MCP     Stripe  GitHub  Vikunja
+                          Server   API     API     API
 ```
 
 ## Adding an External MCP Server
@@ -243,11 +280,6 @@ backends:
     transport: http
     url: "https://memorizer.example.com/mcp"
     api_key_env: "MEMORIZER_API_KEY"
-
-  - name: local-tools
-    transport: stdio
-    command: "./my-mcp-server"
-    args: ["--port", "0"]
 ```
 
 Set the credential as an environment variable:
@@ -256,11 +288,11 @@ Set the credential as an environment variable:
 CREDENTIAL_MEMORIZER_API_KEY=sk-mem-xxxxx
 ```
 
-Tools from each backend are exposed with a prefix: `memorizer_retrieve_knowledge`, `local-tools_my_tool`. Credentials are injected by the Executor at runtime via the CredentialStore — the LLM never sees API keys.
+Tools from each backend are exposed with a prefix (e.g. `memorizer_retrieve_knowledge`). Credentials are injected by the Executor at runtime via the CredentialStore — the LLM never sees API keys.
 
 ## REST Proxy Mode (DADL)
 
-MCP servers are structurally always a subset of the REST API they wrap. After just a few minutes of productive usage, you will hit endpoints that the MCP server does not expose. The REST Proxy Mode solves this permanently: describe any REST API in a `.dadl` file and ToolMesh calls it directly — no MCP server needed.
+When an MCP server doesn't expose an endpoint you need, describe it in a `.dadl` file and ToolMesh calls the REST API directly — no wrapper server needed.
 
 ```
 Current:    Claude → ToolMesh → MCP Server → REST API
@@ -278,6 +310,24 @@ backends:
 ```
 
 The `url` field is optional — it overrides the `base_url` in the `.dadl` file. This is useful for APIs like Vikunja where each deployment has a different URL, while APIs like Stripe can hardcode their URL in the `.dadl` file.
+
+### A taste of DADL
+
+Want Claude to list GitHub issues? Here's all it takes:
+
+```yaml
+tools:
+  list_issues:
+    method: GET
+    path: /repos/{owner}/{repo}/issues
+    description: "List issues for a repository"
+    params:
+      owner: { type: string, in: path, required: true }
+      repo:  { type: string, in: path, required: true }
+      state: { type: string, in: query }
+```
+
+That's it — ToolMesh handles auth, pagination, retries, and error mapping. The full `.dadl` format below adds these as declarative defaults.
 
 ### Writing a .dadl File
 

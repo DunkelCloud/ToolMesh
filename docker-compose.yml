@@ -118,11 +118,14 @@ services:
       start_period: 30s
 
   redis:
-    image: redis:7-alpine
+    image: eqalpha/keydb:alpine
     ports:
       - "6379:6379"
+    command: keydb-server --appendonly yes
+    volumes:
+      - redisdata:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "keydb-cli", "ping"]
       interval: 5s
       timeout: 3s
       retries: 5
@@ -143,6 +146,7 @@ services:
 volumes:
   pgdata:
   mysqldata:
+  redisdata:
 
   # caddy_data:
   # caddy_config:

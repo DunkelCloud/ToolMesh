@@ -39,10 +39,10 @@ import (
 	"github.com/DunkelCloud/ToolMesh/internal/userctx"
 	"github.com/DunkelCloud/ToolMesh/internal/version"
 	"github.com/redis/go-redis/v9"
-	"gopkg.in/yaml.v3"
 	temporalclient "go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/worker"
 	"go.temporal.io/sdk/workflow"
+	"gopkg.in/yaml.v3"
 )
 
 func main() {
@@ -159,7 +159,7 @@ func main() {
 		logger.Warn("OpenFGA authorization bypassed", "mode", "bypass")
 	}
 
-	// Initialize output gate pipeline via registry
+	// Initialize gate pipeline via registry
 	gateNames := strings.Split(cfg.GateEvaluators, ",")
 	evaluators := make([]gate.Evaluator, 0, len(gateNames))
 	for _, name := range gateNames {

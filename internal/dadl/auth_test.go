@@ -28,7 +28,8 @@ type mockCredStore struct {
 	creds map[string]string
 }
 
-func (m *mockCredStore) Get(_ context.Context, name string, _ interface{ /* TenantInfo */ }) (string, error) {
+func (m *mockCredStore) Get(_ context.Context, name string, _ interface { /* TenantInfo */
+}) (string, error) {
 	if v, ok := m.creds[name]; ok {
 		return v, nil
 	}

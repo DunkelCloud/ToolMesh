@@ -130,7 +130,32 @@ func (e *Executor) ExecuteTool(ctx context.Context, req ExecuteToolRequest) (*ba
 		}
 	}
 
-	// Step 3: Backend execution
+	// Step 3: Pre-execution gate — validate tool + params before calling backend
+	if e.gate != nil {
+		e.logger.DebugContext(ctx, "gate pre-execution start", "tool", req.ToolName)
+		gctx := gate.GateContext{
+			User:   *uc,
+			Tool:   req.ToolName,
+			Params: req.Params,
+		}
+		if err := e.gate.EvaluatePre(gctx); err != nil {
+			e.logger.WarnContext(ctx, "gate pre-execution rejected",
+				"tool", req.ToolName,
+				"user", uc.UserID,
+				"error", err,
+			)
+			return &backend.ToolResult{
+				IsError: true,
+				Content: []any{map[string]any{
+					"type": "text",
+					"text": fmt.Sprintf("Gate rejected (pre-execution): %s", err),
+				}},
+			}, nil
+		}
+		e.logger.DebugContext(ctx, "gate pre-execution passed", "tool", req.ToolName)
+	}
+
+	// Step 4: Backend execution
 	e.logger.DebugContext(ctx, "backend execution start", "tool", req.ToolName)
 	result, err := e.backend.Execute(ctx, req.ToolName, req.Params)
 	if err != nil {
@@ -146,22 +171,30 @@ func (e *Executor) ExecuteTool(ctx context.Context, req ExecuteToolRequest) (*ba
 		)
 	}
 
-	// Step 4: Output Gate evaluation
+	// Step 5: Post-execution gate — filter/mask response
 	if e.gate != nil {
+		e.logger.DebugContext(ctx, "gate post-execution start", "tool", req.ToolName)
 		gctx := gate.GateContext{
 			User:     *uc,
 			Tool:     req.ToolName,
+			Params:   req.Params,
 			Response: result,
 		}
-		if err := e.gate.Evaluate(gctx); err != nil {
+		if err := e.gate.EvaluatePost(gctx); err != nil {
+			e.logger.WarnContext(ctx, "gate post-execution rejected",
+				"tool", req.ToolName,
+				"user", uc.UserID,
+				"error", err,
+			)
 			return &backend.ToolResult{
 				IsError: true,
 				Content: []any{map[string]any{
 					"type": "text",
-					"text": fmt.Sprintf("Output gate rejected: %s", err),
+					"text": fmt.Sprintf("Gate rejected (post-execution): %s", err),
 				}},
 			}, nil
 		}
+		e.logger.DebugContext(ctx, "gate post-execution passed", "tool", req.ToolName)
 	}
 
 	// Record metadata

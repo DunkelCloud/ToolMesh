@@ -27,8 +27,30 @@ func NewPipeline(evaluators []Evaluator) *Pipeline {
 	return &Pipeline{evaluators: evaluators}
 }
 
-// Evaluate runs all evaluators in sequence.
+// EvaluatePre runs all evaluators in the pre-execution phase.
+// Policies receive the tool name and input parameters but no response.
+func (p *Pipeline) EvaluatePre(ctx GateContext) error {
+	ctx.Phase = PhasePre
+	return p.evaluate(ctx)
+}
+
+// EvaluatePost runs all evaluators in the post-execution phase.
+// Policies receive the tool name, input parameters, and the backend response.
+func (p *Pipeline) EvaluatePost(ctx GateContext) error {
+	ctx.Phase = PhasePost
+	return p.evaluate(ctx)
+}
+
+// Evaluate runs all evaluators in sequence. If Phase is not set, it defaults
+// to PhasePost for backward compatibility.
 func (p *Pipeline) Evaluate(ctx GateContext) error {
+	if ctx.Phase == "" {
+		ctx.Phase = PhasePost
+	}
+	return p.evaluate(ctx)
+}
+
+func (p *Pipeline) evaluate(ctx GateContext) error {
 	for _, ev := range p.evaluators {
 		result, err := ev.Evaluate(ctx)
 		if err != nil {

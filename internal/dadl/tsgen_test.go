@@ -41,9 +41,9 @@ func TestGenerateTypeScript(t *testing.T) {
 					Path:        "/items",
 					Description: "List all items with optional filtering",
 					Params: map[string]ParamDef{
-						"page":    {Type: "integer", In: "query"},
+						"page":     {Type: "integer", In: "query"},
 						"per_page": {Type: "integer", In: "query"},
-						"search":  {Type: "string", In: "query"},
+						"search":   {Type: "string", In: "query"},
 					},
 				},
 				"create_item": {

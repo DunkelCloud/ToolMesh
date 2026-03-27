@@ -37,9 +37,9 @@ type RestAuth struct {
 	creds   credentials.CredentialStore
 	logger  *slog.Logger
 
-	mu           sync.Mutex
-	cachedToken  string
-	tokenExpiry  time.Time
+	mu            sync.Mutex
+	cachedToken   string
+	tokenExpiry   time.Time
 	sessionTokens map[string]string // for session auth: token name → value
 }
 

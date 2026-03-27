@@ -12,8 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package gate implements the Output Gate — a goja-based JavaScript policy engine
-// that evaluates tool results before returning them to the caller.
+// Package gate implements the Gate — a goja-based JavaScript policy engine
+// that evaluates tool calls in two phases: pre-execution (input validation)
+// and post-execution (output filtering/masking).
 package gate
 
 import (

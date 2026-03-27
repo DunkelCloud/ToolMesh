@@ -14,6 +14,7 @@ MCP gateways pass tool calls straight through. That creates real risks in produc
 - **Confused Deputy** — an LLM can invoke any tool with any user's privileges
 - **Credential Leakage** — API keys end up in prompts, logs, and model context
 - **No Durability** — if a tool call fails mid-flight, there is no retry or audit trail
+- **No Input Control** — any parameter combination is accepted without validation
 - **No Output Control** — raw backend responses flow directly to the model without filtering
 
 ToolMesh solves this by sitting between the AI agent and your MCP servers, enforcing authorization, injecting credentials securely, providing durable execution, and gating output.
@@ -28,7 +29,7 @@ ToolMesh solves this by sitting between the AI agent and your MCP servers, enfor
 | **MCP Aggregation** | Connect any number of external MCP servers | Go MCP SDK |
 | **REST Proxy Mode** | Declarative YAML describes any REST API — no MCP server needed | DADL (.dadl files) |
 | **Credential Store** | Inject secrets at execution time, never in prompts | Per-request injection via Executor pipeline |
-| **Output Gate** | JavaScript policies filter and validate responses | goja |
+| **Gate** | JavaScript policies validate inputs (pre) and filter outputs (post) | goja |
 
 ## Quickstart
 
@@ -197,7 +198,7 @@ At `debug` level, ToolMesh logs the complete request/response flow between clien
 - Outgoing JSON-RPC results and errors
 - Backend connection lifecycle (connect, discover, disconnect)
 - Tool call parameters sent to MCP backends and their responses
-- Executor pipeline steps (authz, credential injection, execution, output gate)
+- Executor pipeline steps (authz, credential injection, gate pre, execution, gate post)
 
 ## Architecture
 
@@ -212,7 +213,7 @@ graph LR
     TM -->|Per-Request Injection| CS[Credential Store]
     TM -->|MCP Client| B1[MCP Server 1]
     TM -->|MCP Client| B2[MCP Server 2]
-    TM -->|"Output Gate (CallerClass)"| Policy[JS Policies]
+    TM -->|"Gate pre/post (CallerClass)"| Policy[JS Policies]
 ```
 
 ## Adding an External MCP Server
@@ -360,7 +361,7 @@ const result = await toolmesh.memorizer_retrieve_knowledge({
 });
 ```
 
-ToolMesh parses the code, extracts tool calls, and routes them through the full execution pipeline (AuthZ → Credentials → Backend → Output Gate).
+ToolMesh parses the code, extracts tool calls, and routes them through the full execution pipeline (AuthZ → Credentials → Gate pre → Backend → Gate post).
 
 ## Extension Model
 
@@ -370,7 +371,7 @@ ToolMesh uses a registry-based extension model inspired by Go's `database/sql` d
 |-----------|----------|--------|
 | Credential Store | `embedded` | `CREDENTIAL_STORE=<name>` |
 | Tool Backend | `mcp`, `echo` | `config/backends.yaml` |
-| Output Gate Evaluator | `goja` | `GATE_EVALUATORS=<list>` |
+| Gate Evaluator | `goja` | `GATE_EVALUATORS=<list>` |
 
 Enterprise extensions (InfisicalStore, VaultStore, Compliance-LLM, etc.) are available separately and included via Go build tags: `go build -tags enterprise ./cmd/toolmesh`.
 

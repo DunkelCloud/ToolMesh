@@ -21,11 +21,13 @@ import (
 	"github.com/DunkelCloud/ToolMesh/internal/backend"
 )
 
-// Evaluator is a single evaluation step in the output gate pipeline.
+// Evaluator is a single evaluation step in the gate pipeline.
 type Evaluator interface {
 	// Name returns the evaluator name (e.g. "goja", "compliance-llm").
 	Name() string
-	// Evaluate checks a tool result. Can modify the result or reject the request.
+	// Evaluate runs policies against the given context. In the "pre" phase,
+	// policies can inspect tool name and input parameters to block execution.
+	// In the "post" phase, policies can inspect and modify the response.
 	Evaluate(ctx GateContext) (*EvalResult, error)
 }
 

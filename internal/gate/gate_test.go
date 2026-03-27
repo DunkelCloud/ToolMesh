@@ -319,6 +319,184 @@ func stringContains(s, substr string) bool {
 	return false
 }
 
+func TestGate_Evaluate_PrePhase_BlocksWriteOperation(t *testing.T) {
+	dir := t.TempDir()
+	writePolicy(t, dir, "block_writes.js", `
+		if (ctx.phase === "pre") {
+			if (/^shelly_cloud_set_switch$/.test(ctx.tool)) {
+				if (ctx.params && ctx.params.on === false) {
+					throw "Turning off devices is not allowed";
+				}
+			}
+		}
+	`)
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	g, err := New(dir, logger)
+	if err != nil {
+		t.Fatalf("failed to create gate: %v", err)
+	}
+
+	tests := []struct {
+		name    string
+		tool    string
+		params  map[string]any
+		phase   Phase
+		wantErr bool
+	}{
+		{
+			name:    "pre phase blocks turn-off",
+			tool:    "shelly_cloud_set_switch",
+			params:  map[string]any{"on": false, "id": "abc123"},
+			phase:   PhasePre,
+			wantErr: true,
+		},
+		{
+			name:    "pre phase allows turn-on",
+			tool:    "shelly_cloud_set_switch",
+			params:  map[string]any{"on": true, "id": "abc123"},
+			phase:   PhasePre,
+			wantErr: false,
+		},
+		{
+			name:    "post phase ignores params",
+			tool:    "shelly_cloud_set_switch",
+			params:  map[string]any{"on": false},
+			phase:   PhasePost,
+			wantErr: false,
+		},
+		{
+			name:    "pre phase allows unrelated tool",
+			tool:    "shelly_cloud_get_devices_status",
+			params:  map[string]any{},
+			phase:   PhasePre,
+			wantErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := g.Evaluate(GateContext{
+				User:     userctx.UserContext{UserID: "u1", Authenticated: true},
+				Tool:     tt.tool,
+				Params:   tt.params,
+				Phase:    tt.phase,
+				Response: &backend.ToolResult{},
+			})
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if result.Allowed == tt.wantErr {
+				t.Errorf("Evaluate() allowed = %v, wantRejected = %v", result.Allowed, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestGate_Evaluate_PhaseDefaultsToPost(t *testing.T) {
+	dir := t.TempDir()
+	// Policy that only blocks in pre phase
+	writePolicy(t, dir, "pre_only.js", `
+		if (ctx.phase === "pre") {
+			throw "blocked in pre";
+		}
+	`)
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	g, err := New(dir, logger)
+	if err != nil {
+		t.Fatalf("failed to create gate: %v", err)
+	}
+
+	// Without phase set, should default to "post" and pass
+	result, err := g.Evaluate(GateContext{
+		User:     userctx.UserContext{UserID: "u1", Authenticated: true},
+		Tool:     "test_tool",
+		Response: &backend.ToolResult{},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.Allowed {
+		t.Error("expected allowed when phase defaults to post")
+	}
+}
+
+func TestGate_Evaluate_ParamsAvailableInContext(t *testing.T) {
+	dir := t.TempDir()
+	writePolicy(t, dir, "check_params.js", `
+		if (ctx.phase === "pre" && ctx.params && ctx.params.channel === 2) {
+			throw "channel 2 is restricted";
+		}
+	`)
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	g, err := New(dir, logger)
+	if err != nil {
+		t.Fatalf("failed to create gate: %v", err)
+	}
+
+	// Channel 2 should be blocked
+	result, _ := g.Evaluate(GateContext{
+		User:     userctx.UserContext{UserID: "u1", Authenticated: true},
+		Tool:     "shelly_cloud_set_switch",
+		Params:   map[string]any{"channel": 2, "on": true},
+		Phase:    PhasePre,
+		Response: &backend.ToolResult{},
+	})
+	if result.Allowed {
+		t.Error("expected channel 2 to be blocked")
+	}
+
+	// Channel 1 should pass
+	result, _ = g.Evaluate(GateContext{
+		User:     userctx.UserContext{UserID: "u1", Authenticated: true},
+		Tool:     "shelly_cloud_set_switch",
+		Params:   map[string]any{"channel": 1, "on": true},
+		Phase:    PhasePre,
+		Response: &backend.ToolResult{},
+	})
+	if !result.Allowed {
+		t.Error("expected channel 1 to pass")
+	}
+}
+
+func TestPipeline_EvaluatePre(t *testing.T) {
+	dir := t.TempDir()
+	writePolicy(t, dir, "block_pre.js", `
+		if (ctx.phase === "pre" && ctx.tool === "dangerous_tool") {
+			throw "dangerous tool blocked";
+		}
+	`)
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	g, err := New(dir, logger)
+	if err != nil {
+		t.Fatalf("failed to create gate: %v", err)
+	}
+
+	p := NewPipeline([]Evaluator{g})
+
+	err = p.EvaluatePre(GateContext{
+		User:   userctx.UserContext{UserID: "u1", Authenticated: true},
+		Tool:   "dangerous_tool",
+		Params: map[string]any{},
+	})
+	if err == nil {
+		t.Error("expected EvaluatePre to reject dangerous_tool")
+	}
+
+	err = p.EvaluatePost(GateContext{
+		User:     userctx.UserContext{UserID: "u1", Authenticated: true},
+		Tool:     "dangerous_tool",
+		Params:   map[string]any{},
+		Response: &backend.ToolResult{},
+	})
+	if err != nil {
+		t.Errorf("expected EvaluatePost to pass dangerous_tool, got: %v", err)
+	}
+}
+
 func writePolicy(t *testing.T, dir, name, content string) {
 	t.Helper()
 	path := filepath.Join(dir, name)

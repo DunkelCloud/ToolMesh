@@ -22,10 +22,22 @@ import (
 	"github.com/DunkelCloud/ToolMesh/internal/userctx"
 )
 
+// Phase represents the evaluation phase in the gate pipeline.
+type Phase string
+
+const (
+	// PhasePre runs before backend execution to validate input parameters.
+	PhasePre Phase = "pre"
+	// PhasePost runs after backend execution to filter/mask output.
+	PhasePost Phase = "post"
+)
+
 // GateContext is the context passed to gate policies for evaluation.
 type GateContext struct {
 	User     userctx.UserContext `json:"user"`
 	Tool     string              `json:"tool"`
+	Params   map[string]any      `json:"params"`
+	Phase    Phase               `json:"phase"`
 	Response *backend.ToolResult `json:"response"`
 }
 

@@ -192,6 +192,113 @@ func TestExecuteTool_GatePasses(t *testing.T) {
 	}
 }
 
+func TestExecuteTool_PreGateBlocksBeforeBackend(t *testing.T) {
+	backendCalled := false
+	mb := &mockBackend{
+		executeFunc: func(_ context.Context, _ string, _ map[string]any) (*backend.ToolResult, error) {
+			backendCalled = true
+			return &backend.ToolResult{
+				Content: []any{map[string]any{"type": "text", "text": "ok"}},
+			}, nil
+		},
+	}
+	logger := newTestLogger()
+
+	// Policy that blocks set_switch with on=false in pre phase
+	dir := t.TempDir()
+	os.WriteFile(dir+"/block.js", []byte(`
+		if (ctx.phase === "pre" && /set_switch/.test(ctx.tool)) {
+			if (ctx.params && ctx.params.on === false) {
+				throw "turning off devices is not allowed";
+			}
+		}
+	`), 0600)
+
+	g, err := gate.New(dir, logger)
+	if err != nil {
+		t.Fatalf("failed to create gate: %v", err)
+	}
+
+	exec := New(nil, nil, mb, gate.NewPipeline([]gate.Evaluator{g}), logger)
+
+	ctx := userctx.WithUserContext(context.Background(), &userctx.UserContext{
+		UserID:        "user-1",
+		Authenticated: true,
+	})
+
+	// Turn off should be blocked — backend must NOT be called
+	result, err := exec.ExecuteTool(ctx, ExecuteToolRequest{
+		ToolName: "shelly_cloud_set_switch",
+		Params:   map[string]any{"on": false, "id": "device123"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected IsError = true when pre-gate rejects")
+	}
+	if backendCalled {
+		t.Error("backend should NOT be called when pre-gate rejects")
+	}
+
+	// Turn on should pass — backend should be called
+	backendCalled = false
+	result, err = exec.ExecuteTool(ctx, ExecuteToolRequest{
+		ToolName: "shelly_cloud_set_switch",
+		Params:   map[string]any{"on": true, "id": "device123"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Error("expected IsError = false when pre-gate passes")
+	}
+	if !backendCalled {
+		t.Error("backend should be called when pre-gate passes")
+	}
+}
+
+func TestExecuteTool_PostGateFiltersResponse(t *testing.T) {
+	mb := &mockBackend{
+		executeFunc: func(_ context.Context, _ string, _ map[string]any) (*backend.ToolResult, error) {
+			return &backend.ToolResult{
+				Content: []any{map[string]any{"type": "text", "text": "sensitive data here"}},
+			}, nil
+		},
+	}
+	logger := newTestLogger()
+
+	dir := t.TempDir()
+	os.WriteFile(dir+"/post_block.js", []byte(`
+		if (ctx.phase === "post" && ctx.tool === "secret_tool") {
+			throw "response blocked by policy";
+		}
+	`), 0600)
+
+	g, err := gate.New(dir, logger)
+	if err != nil {
+		t.Fatalf("failed to create gate: %v", err)
+	}
+
+	exec := New(nil, nil, mb, gate.NewPipeline([]gate.Evaluator{g}), logger)
+
+	ctx := userctx.WithUserContext(context.Background(), &userctx.UserContext{
+		UserID:        "user-1",
+		Authenticated: true,
+	})
+
+	result, err := exec.ExecuteTool(ctx, ExecuteToolRequest{
+		ToolName: "secret_tool",
+		Params:   map[string]any{},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected IsError = true when post-gate rejects")
+	}
+}
+
 func TestExecuteTool_BackendResultWithExistingMetadata(t *testing.T) {
 	mb := &mockBackend{
 		executeFunc: func(_ context.Context, _ string, _ map[string]any) (*backend.ToolResult, error) {

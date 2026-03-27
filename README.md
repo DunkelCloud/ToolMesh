@@ -56,9 +56,33 @@ docker compose exec toolmesh /tm-bootstrap
 # MCP endpoint: http://localhost:8080/mcp
 ```
 
+### TLS
+
+ToolMesh itself serves plain HTTP. Most MCP clients — including Claude Desktop's connector UI — **require HTTPS**. Put a TLS-terminating reverse proxy in front of ToolMesh:
+
+| Option | When to use |
+|--------|-------------|
+| **Caddy** | Self-hosted with a public domain — automatic Let's Encrypt certs |
+| **Cloudflare Tunnel** | No open ports needed, zero-config TLS |
+| **nginx / Traefik** | Already in your stack |
+
+For **local development only**, you can bypass TLS by editing `claude_desktop_config.json` by hand (the GUI enforces `https://`).
+
 ### Connect to Claude Desktop
 
 Add to your Claude Desktop MCP config:
+
+```json
+{
+  "mcpServers": {
+    "toolmesh": {
+      "url": "https://toolmesh.example.com/mcp"
+    }
+  }
+}
+```
+
+For local development without TLS proxy:
 
 ```json
 {
@@ -72,7 +96,7 @@ Add to your Claude Desktop MCP config:
 
 ### Connect to Claude.ai (Custom Connector)
 
-ToolMesh supports OAuth 2.1 with PKCE S256 for remote access. Configure users in `config/users.yaml` and use the public URL as the MCP endpoint.
+ToolMesh supports OAuth 2.1 with PKCE S256 for remote access. Configure users in `config/users.yaml` and use the public HTTPS URL as the MCP endpoint.
 
 ## Authentication
 

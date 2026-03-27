@@ -71,7 +71,7 @@ func TestRestAuth_Basic(t *testing.T) {
 	creds := &mockCredStore{creds: map[string]string{
 		"bd-api-key": "myapikey123",
 	}}
-	auth := newTestRestAuth(AuthConfig{
+	auth := newTestRestAuth(AuthConfig{ //nolint:gosec // test data, not real credentials
 		Type:               "basic",
 		UsernameCredential: "bd-api-key",
 	}, creds)

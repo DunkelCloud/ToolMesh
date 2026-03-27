@@ -27,6 +27,8 @@ import (
 	"github.com/DunkelCloud/ToolMesh/internal/userctx"
 )
 
+const testUserID = "user-1"
+
 // mockBackend implements backend.ToolBackend for testing.
 type mockBackend struct {
 	executeFunc func(ctx context.Context, toolName string, params map[string]any) (*backend.ToolResult, error)
@@ -61,7 +63,7 @@ func TestExecuteTool_Success(t *testing.T) {
 	exec := New(nil, nil, mb, nil, logger)
 
 	ctx := userctx.WithUserContext(context.Background(), &userctx.UserContext{
-		UserID:        "user-1",
+		UserID:        testUserID,
 		CompanyID:     "acme",
 		Authenticated: true,
 	})
@@ -79,7 +81,7 @@ func TestExecuteTool_Success(t *testing.T) {
 	if result.IsError {
 		t.Error("expected IsError = false")
 	}
-	if result.Metadata["user"] != "user-1" {
+	if result.Metadata["user"] != testUserID {
 		t.Errorf("metadata user = %v, want \"user-1\"", result.Metadata["user"])
 	}
 	if _, ok := result.Metadata["latencyMs"]; !ok {
@@ -112,7 +114,7 @@ func TestExecuteTool_BackendError(t *testing.T) {
 	exec := New(nil, nil, mb, nil, logger)
 
 	ctx := userctx.WithUserContext(context.Background(), &userctx.UserContext{
-		UserID:        "user-1",
+		UserID:        testUserID,
 		Authenticated: true,
 	})
 
@@ -144,7 +146,7 @@ func TestExecuteTool_GateRejects(t *testing.T) {
 	exec := New(nil, nil, mb, gate.NewPipeline([]gate.Evaluator{g}), logger)
 
 	ctx := userctx.WithUserContext(context.Background(), &userctx.UserContext{
-		UserID:        "user-1",
+		UserID:        testUserID,
 		Authenticated: false,
 	})
 
@@ -178,7 +180,7 @@ func TestExecuteTool_GatePasses(t *testing.T) {
 	exec := New(nil, nil, mb, gate.NewPipeline([]gate.Evaluator{g}), logger)
 
 	ctx := userctx.WithUserContext(context.Background(), &userctx.UserContext{
-		UserID:        "user-1",
+		UserID:        testUserID,
 		Authenticated: true,
 	})
 
@@ -223,7 +225,7 @@ func TestExecuteTool_PreGateBlocksBeforeBackend(t *testing.T) {
 	exec := New(nil, nil, mb, gate.NewPipeline([]gate.Evaluator{g}), logger)
 
 	ctx := userctx.WithUserContext(context.Background(), &userctx.UserContext{
-		UserID:        "user-1",
+		UserID:        testUserID,
 		Authenticated: true,
 	})
 
@@ -284,7 +286,7 @@ func TestExecuteTool_PostGateFiltersResponse(t *testing.T) {
 	exec := New(nil, nil, mb, gate.NewPipeline([]gate.Evaluator{g}), logger)
 
 	ctx := userctx.WithUserContext(context.Background(), &userctx.UserContext{
-		UserID:        "user-1",
+		UserID:        testUserID,
 		Authenticated: true,
 	})
 
@@ -314,7 +316,7 @@ func TestExecuteTool_BackendResultWithExistingMetadata(t *testing.T) {
 	exec := New(nil, nil, mb, nil, logger)
 
 	ctx := userctx.WithUserContext(context.Background(), &userctx.UserContext{
-		UserID:        "user-1",
+		UserID:        testUserID,
 		Authenticated: true,
 	})
 
@@ -327,7 +329,7 @@ func TestExecuteTool_BackendResultWithExistingMetadata(t *testing.T) {
 	if result.Metadata["backend"] != "test" {
 		t.Error("expected existing metadata to be preserved")
 	}
-	if result.Metadata["user"] != "user-1" {
+	if result.Metadata["user"] != testUserID {
 		t.Error("expected user to be added to metadata")
 	}
 }
@@ -337,8 +339,8 @@ func TestExecuteTool_BackendResultWithExistingMetadata(t *testing.T) {
 // Pre-Gate (JS policy with callerId/callerClass) → Backend → Post-Gate.
 func TestCallerCredentialDurchstich(t *testing.T) {
 	// Set env-var credentials for the EmbeddedStore
-	t.Setenv("CREDENTIAL_GITHUB_API_KEY", "ghp_test_token_123")
-	t.Setenv("CREDENTIAL_GITHUB_WEBHOOK_SECRET", "whsec_test_456")
+	t.Setenv("CREDENTIAL_GITHUB_API_KEY", "ghp_test_token_123")       //nolint:gosec // G101: intentional test data
+	t.Setenv("CREDENTIAL_GITHUB_WEBHOOK_SECRET", "whsec_test_456") //nolint:gosec // G101: intentional test data
 
 	credStore := credentials.NewEmbeddedStore()
 
@@ -434,7 +436,7 @@ func TestCallerCredentialDurchstich(t *testing.T) {
 			receivedCreds = nil
 
 			ctx := userctx.WithUserContext(context.Background(), &userctx.UserContext{
-				UserID:        "user-1",
+				UserID:        testUserID,
 				CompanyID:     "acme",
 				Authenticated: true,
 				CallerID:      tt.callerID,
@@ -478,7 +480,7 @@ func TestCallerCredentialDurchstich(t *testing.T) {
 			if tt.wantRequestField {
 				// The executor populates req fields internally, so we verify
 				// the metadata reflects the correct user
-				if result.Metadata["user"] != "user-1" {
+				if result.Metadata["user"] != testUserID {
 					t.Errorf("metadata user = %v, want user-1", result.Metadata["user"])
 				}
 			}
@@ -513,7 +515,7 @@ func TestCallerCredentialDurchstich_PostGateWithCallerClass(t *testing.T) {
 
 	// Trusted caller should see the response
 	ctx := userctx.WithUserContext(context.Background(), &userctx.UserContext{
-		UserID:        "user-1",
+		UserID:        testUserID,
 		Authenticated: true,
 		CallerID:      "claude-code",
 		CallerClass:   "trusted",

@@ -58,6 +58,6 @@ func lockdownRuntime(rt *goja.Runtime) {
 
 	// Override Function constructor with an error-returning function
 	_ = rt.Set("Function", func(call goja.FunctionCall) goja.Value {
-		panic(rt.NewGoError(fmt.Errorf("Function constructor is not allowed in composite sandbox")))
+		panic(rt.NewGoError(fmt.Errorf("function constructor is not allowed in composite sandbox")))
 	})
 }

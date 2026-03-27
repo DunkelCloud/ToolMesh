@@ -168,7 +168,13 @@ func (a *RestAuth) getOAuth2Token(ctx context.Context) (string, error) {
 		data.Set("scope", strings.Join(a.config.Scopes, " "))
 	}
 
-	resp, err := http.PostForm(a.config.TokenURL, data) //nolint:gosec // URL from trusted config
+	req, err := http.NewRequestWithContext(ctx, "POST", a.config.TokenURL, strings.NewReader(data.Encode()))
+	if err != nil {
+		return "", fmt.Errorf("create oauth2 token request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	resp, err := http.DefaultClient.Do(req) //nolint:gosec // URL from trusted config
 	if err != nil {
 		return "", fmt.Errorf("oauth2 token request: %w", err)
 	}

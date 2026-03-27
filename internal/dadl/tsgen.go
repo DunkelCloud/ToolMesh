@@ -28,7 +28,7 @@ func GenerateTypeScript(spec *Spec) string {
 
 	b := &spec.Backend
 	if b.Description != "" {
-		sb.WriteString(fmt.Sprintf("  // %s — %s\n\n", b.Name, b.Description))
+		fmt.Fprintf(&sb, "  // %s — %s\n\n", b.Name, b.Description)
 	}
 
 	// Sort tool names for deterministic output
@@ -44,12 +44,12 @@ func GenerateTypeScript(spec *Spec) string {
 
 		// JSDoc comment
 		if tool.Description != "" {
-			sb.WriteString(fmt.Sprintf("  /** %s */\n", tool.Description))
+			fmt.Fprintf(&sb, "  /** %s */\n", tool.Description)
 		}
 
 		// Build parameter type
 		params := buildParamType(tool)
-		sb.WriteString(fmt.Sprintf("  function %s(params: { %s }): Promise<any>;\n\n", fullName, params))
+		fmt.Fprintf(&sb, "  function %s(params: { %s }): Promise<any>;\n\n", fullName, params)
 	}
 
 	// Composites appear identically to primitive tools
@@ -64,11 +64,11 @@ func GenerateTypeScript(spec *Spec) string {
 		fullName := b.Name + "_" + name
 
 		if comp.Description != "" {
-			sb.WriteString(fmt.Sprintf("  /** %s */\n", comp.Description))
+			fmt.Fprintf(&sb, "  /** %s */\n", comp.Description)
 		}
 
 		params := buildCompositeParamType(comp)
-		sb.WriteString(fmt.Sprintf("  function %s(params: { %s }): Promise<any>;\n\n", fullName, params))
+		fmt.Fprintf(&sb, "  function %s(params: { %s }): Promise<any>;\n\n", fullName, params)
 	}
 
 	return sb.String()

@@ -47,7 +47,7 @@ type FileTokenStore struct {
 // NewFileTokenStore creates a new file-backed token store. It creates the
 // data directory if needed and restores any previously persisted state.
 func NewFileTokenStore(dataDir string) (*FileTokenStore, error) {
-	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+	if err := os.MkdirAll(dataDir, 0o750); err != nil {
 		return nil, fmt.Errorf("create data dir: %w", err)
 	}
 

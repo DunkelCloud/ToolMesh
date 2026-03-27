@@ -250,24 +250,22 @@ The `./data` directory is typically volume-mounted to the host, so the debug fil
 
 See [docs/architecture.md](docs/architecture.md) for the full architecture documentation.
 
-```mermaid
-graph LR
-    Agent[AI Agent] -->|"MCP + CallerID"| TM[ToolMesh]
-
-    subgraph Pipeline
-        TM -->|AuthN/State| Redis
-        TM -->|AuthZ| FGA[OpenFGA]
-        TM -->|Durable Exec| Temporal
-        TM -->|Credentials| CS[Credential Store]
-        TM -->|"Gate pre/post"| Policy[JS Policies]
-    end
-
-    subgraph Backends
-        TM -->|MCP Client| B1[MCP Server]
-        TM -->|".dadl"| D1[Stripe API]
-        TM -->|".dadl"| D2[GitHub API]
-        TM -->|".dadl"| D3[Vikunja API]
-    end
+```
+                          ┌─────────────────────────────────┐
+                          │          ToolMesh               │
+                          │                                 │
+                          │  Redis · OpenFGA · Temporal     │
+                          │  Credential Store · JS Gate     │
+                          │                                 │
+AI Agent ──MCP──────────▶ │   AuthZ ▸ Creds ▸ Gate ▸ Exec  │
+                          │                                 │
+                          └──┬──────┬───────┬───────┬───────┘
+                             │      │       │       │
+                          MCP Client  .dadl   .dadl   .dadl
+                             │      │       │       │
+                             ▼      ▼       ▼       ▼
+                          MCP     Stripe  GitHub  Vikunja
+                          Server   API     API     API
 ```
 
 ## Adding an External MCP Server

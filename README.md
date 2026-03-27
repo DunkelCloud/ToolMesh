@@ -116,10 +116,14 @@ users:
     roles: [admin]
 ```
 
-Generate password hashes with the bootstrap tool:
+Generate password hashes with the bootstrap tool or any bcrypt-capable utility:
 
 ```bash
+# Using tm-bootstrap (inside the container)
 docker compose exec toolmesh /tm-bootstrap hash-password "my-password"
+
+# Or using htpasswd (on the host)
+htpasswd -nbBC 10 "" "my-password" | cut -d: -f2
 ```
 
 For single-user setups, `TOOLMESH_AUTH_PASSWORD` still works as a fallback. Configure the identity with `TOOLMESH_AUTH_USER`, `TOOLMESH_AUTH_PLAN`, and `TOOLMESH_AUTH_ROLES` (defaults: `owner`, `pro`, `admin`).

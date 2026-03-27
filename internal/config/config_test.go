@@ -45,6 +45,8 @@ func TestLoad_Defaults(t *testing.T) {
 		{"RedisURL", cfg.RedisURL, "redis://localhost:6379/0"},
 		{"LogLevel", cfg.LogLevel, "debug"},
 		{"LogFormat", cfg.LogFormat, "json"},
+		{"DebugBackends", cfg.DebugBackends, ""},
+		{"DebugFile", cfg.DebugFile, ""},
 	}
 
 	for _, tt := range tests {
@@ -89,6 +91,33 @@ func TestLoad_CustomValues(t *testing.T) {
 	}
 	if cfg.LogFormat != "text" {
 		t.Errorf("LogFormat = %q, want \"text\"", cfg.LogFormat)
+	}
+}
+
+func TestConfig_DebugBackendsList(t *testing.T) {
+	tests := []struct {
+		input string
+		want  []string
+	}{
+		{"", nil},
+		{"github", []string{"github"}},
+		{"github,shellycloud", []string{"github", "shellycloud"}},
+		{"github, shellycloud , vikunja", []string{"github", "shellycloud", "vikunja"}},
+		{",,,", nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			cfg := &Config{DebugBackends: tt.input}
+			got := cfg.DebugBackendsList()
+			if len(got) != len(tt.want) {
+				t.Fatalf("got %v, want %v", got, tt.want)
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Errorf("got[%d] = %q, want %q", i, got[i], tt.want[i])
+				}
+			}
+		})
 	}
 }
 

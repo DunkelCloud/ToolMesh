@@ -6,7 +6,7 @@ backend:
   description: "GitHub REST API — repositories, issues, pull requests, commits, and code search"
 
   coverage:
-    endpoints: 58
+    endpoints: 59
     total_endpoints: 900
     percentage: 7
     focus: "repos, orgs, issues, PRs (full CRUD + merge + reviews), commits, branches, git refs, file management, labels, milestones, search, releases (full CRUD), actions/workflows/jobs, users, tags, topics"
@@ -633,6 +633,16 @@ backend:
       method: GET
       path: /repos/{owner}/{repo}/actions/jobs/{job_id}
       description: "Get a single workflow job by ID, including steps with status and timing."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        job_id: { type: integer, in: path, required: true }
+      pagination: none
+
+    get_job_log:
+      method: GET
+      path: /repos/{owner}/{repo}/actions/jobs/{job_id}/logs
+      description: "Download the log output of a workflow job. Returns plain text with timestamps. The API responds with a 302 redirect to a temporary download URL which is followed automatically."
       params:
         owner: { type: string, in: path, required: true }
         repo: { type: string, in: path, required: true }

@@ -95,12 +95,15 @@ type ResponseConfig struct {
 
 // AuthConfig describes how to authenticate with the REST API.
 type AuthConfig struct {
-	Type       string `yaml:"type"`        // bearer, oauth2, session, apikey
+	Type       string `yaml:"type"`        // bearer, oauth2, session, apikey, basic
 	Credential string `yaml:"credential"`  // logical name for CredentialStore
 	InjectInto string `yaml:"inject_into"` // header, query
 	HeaderName string `yaml:"header_name"` // e.g. "Authorization"
 	Prefix     string `yaml:"prefix"`      // e.g. "Bearer "
 	QueryParam string `yaml:"query_param"` // for apikey in query
+	// Basic
+	UsernameCredential string `yaml:"username_credential"` // credential ref for username
+	PasswordCredential string `yaml:"password_credential"` // credential ref for password (optional, default "")
 	// OAuth2
 	Flow                   string   `yaml:"flow"` // client_credentials
 	TokenURL               string   `yaml:"token_url"`

@@ -186,7 +186,7 @@ setup:
 
 ## 5 Authentication
 
-DADL supports three authentication patterns. Credentials are referenced by logical name and resolved at runtime by ToolMesh's three-tier Credential Store (Embedded → Infisical → Vault/OpenBao). **The LLM never sees credentials.**
+DADL supports five authentication patterns. Credentials are referenced by logical name and resolved at runtime by ToolMesh's three-tier Credential Store (Embedded → Infisical → Vault/OpenBao). **The LLM never sees credentials.**
 
 ### 5.1 Bearer Token
 
@@ -200,7 +200,19 @@ auth:
   prefix: "Bearer "             # default
 ```
 
-### 5.2 OAuth 2.0 Client Credentials
+### 5.2 Basic Authentication
+
+```yaml
+# auth — basic
+auth:
+  type: basic
+  username_credential: vault/bitdefender-api-key
+  password_credential: vault/bitdefender-password  # optional, default: ""
+```
+
+ToolMesh builds the `Authorization: Basic base64(username:password)` header automatically. If `password_credential` is omitted, an empty password is used — this is common for APIs that use an API key as the username (e.g. Bitdefender GravityZone, many JSON-RPC APIs).
+
+### 5.3 OAuth 2.0 Client Credentials
 
 ```yaml
 # auth — oauth2
@@ -215,7 +227,7 @@ auth:
   refresh_before_expiry: 60s
 ```
 
-### 5.3 Session-based (Login → Token → Use)
+### 5.4 Session-based (Login → Token → Use)
 
 ```yaml
 # auth — session
@@ -240,7 +252,7 @@ auth:
     action: re_login
 ```
 
-### 5.4 API Key
+### 5.5 API Key
 
 ```yaml
 # auth — api_key

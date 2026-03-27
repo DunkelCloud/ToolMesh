@@ -16,6 +16,7 @@ package dadl
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -63,6 +64,48 @@ func TestRestAuth_Bearer(t *testing.T) {
 	got := req.Header.Get("Authorization")
 	if got != "Bearer secret123" {
 		t.Errorf("Authorization = %q, want %q", got, "Bearer secret123")
+	}
+}
+
+func TestRestAuth_Basic(t *testing.T) {
+	creds := &mockCredStore{creds: map[string]string{
+		"bd-api-key": "myapikey123",
+	}}
+	auth := newTestRestAuth(AuthConfig{
+		Type:               "basic",
+		UsernameCredential: "bd-api-key",
+	}, creds)
+
+	req, _ := http.NewRequestWithContext(context.Background(), "GET", "https://api.example.com/test", nil)
+	if err := auth.InjectAuth(context.Background(), req); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got := req.Header.Get("Authorization")
+	want := "Basic " + base64.StdEncoding.EncodeToString([]byte("myapikey123:"))
+	if got != want {
+		t.Errorf("Authorization = %q, want %q", got, want)
+	}
+}
+
+func TestRestAuth_Basic_WithPassword(t *testing.T) {
+	creds := &mockCredStore{creds: map[string]string{
+		"my-user": "admin",
+		"my-pass": "secret",
+	}}
+	auth := newTestRestAuth(AuthConfig{
+		Type:               "basic",
+		UsernameCredential: "my-user",
+		PasswordCredential: "my-pass",
+	}, creds)
+
+	req, _ := http.NewRequestWithContext(context.Background(), "GET", "https://api.example.com/test", nil)
+	if err := auth.InjectAuth(context.Background(), req); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got := req.Header.Get("Authorization")
+	want := "Basic " + base64.StdEncoding.EncodeToString([]byte("admin:secret"))
+	if got != want {
+		t.Errorf("Authorization = %q, want %q", got, want)
 	}
 }
 
@@ -188,6 +231,20 @@ func (a *testRestAuth) InjectAuth(ctx context.Context, req *http.Request) error 
 			prefix = bearerPrefix
 		}
 		req.Header.Set(headerName, prefix+token)
+	case "basic":
+		username, err := a.creds.Get(ctx, a.config.UsernameCredential, nil)
+		if err != nil {
+			return err
+		}
+		var password string
+		if a.config.PasswordCredential != "" {
+			password, err = a.creds.Get(ctx, a.config.PasswordCredential, nil)
+			if err != nil {
+				return err
+			}
+		}
+		encoded := base64.StdEncoding.EncodeToString([]byte(username + ":" + password))
+		req.Header.Set("Authorization", "Basic "+encoded)
 	case "apikey":
 		key, err := a.creds.Get(ctx, a.config.Credential, nil)
 		if err != nil {

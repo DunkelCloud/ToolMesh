@@ -54,6 +54,7 @@ docker compose exec toolmesh /tm-bootstrap
 
 # Connect from Claude Desktop or any MCP client
 # MCP endpoint: http://localhost:8080/mcp
+# Note: Most MCP clients require HTTPS — see TLS section below
 ```
 
 ### TLS

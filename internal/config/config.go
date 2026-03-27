@@ -47,6 +47,10 @@ type Config struct {
 	LogLevel  string
 	LogFormat string
 
+	// Debug file logging (per-backend)
+	DebugBackends string // comma-separated backend names for file-level debug
+	DebugFile     string // path to the debug log file
+
 	// Backends config path
 	BackendsConfigPath string
 
@@ -95,6 +99,8 @@ func Load() (*Config, error) {
 		RedisURL:                envStr("REDIS_URL", "redis://localhost:6379/0"),
 		LogLevel:                envStr("LOG_LEVEL", "debug"), // default "debug" for MCP diagnostics; set to "info" in production
 		LogFormat:               envStr("LOG_FORMAT", "json"),
+		DebugBackends:           envStr("DEBUG_BACKENDS", ""),
+		DebugFile:               envStr("DEBUG_FILE", ""),
 		BackendsConfigPath:      envStr("TOOLMESH_BACKENDS_CONFIG", "/app/config/backends.yaml"),
 		DADLDir:                 envStr("TOOLMESH_DADL_DIR", "/app/dadl"),
 		PoliciesDir:             envStr("TOOLMESH_POLICIES_DIR", "/app/policies"),
@@ -124,6 +130,25 @@ func Load() (*Config, error) {
 // AuthRolesList returns the simple-mode auth roles as a string slice.
 func (c *Config) AuthRolesList() []string {
 	return strings.Split(c.AuthRoles, ",")
+}
+
+// DebugBackendsList returns the parsed list of backend names for debug logging.
+// Returns nil if DEBUG_BACKENDS is empty.
+func (c *Config) DebugBackendsList() []string {
+	if c.DebugBackends == "" {
+		return nil
+	}
+	parts := strings.Split(c.DebugBackends, ",")
+	result := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if s := strings.TrimSpace(p); s != "" {
+			result = append(result, s)
+		}
+	}
+	if len(result) == 0 {
+		return nil
+	}
+	return result
 }
 
 func envStr(key, fallback string) string {

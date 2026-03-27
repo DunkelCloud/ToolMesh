@@ -32,6 +32,7 @@ import (
 	"github.com/DunkelCloud/ToolMesh/internal/config"
 	"github.com/DunkelCloud/ToolMesh/internal/credentials"
 	"github.com/DunkelCloud/ToolMesh/internal/dadl"
+	"github.com/DunkelCloud/ToolMesh/internal/debuglog"
 	"github.com/DunkelCloud/ToolMesh/internal/executor"
 	"github.com/DunkelCloud/ToolMesh/internal/gate"
 	"github.com/DunkelCloud/ToolMesh/internal/mcp"
@@ -84,6 +85,41 @@ func main() {
 		"transport", cfg.Transport,
 	)
 
+	// Per-backend debug file logging
+	debugBackends := cfg.DebugBackendsList()
+	var debugFile *os.File
+	var debugSet map[string]bool
+
+	if len(debugBackends) > 0 && cfg.DebugFile != "" {
+		var dfErr error
+		debugFile, dfErr = debuglog.OpenDebugFile(cfg.DebugFile)
+		if dfErr != nil {
+			logger.Error("failed to open debug file, continuing without debug logging",
+				"path", cfg.DebugFile, "error", dfErr)
+		} else {
+			defer debugFile.Close()
+			debugSet = make(map[string]bool, len(debugBackends))
+			for _, name := range debugBackends {
+				debugSet[name] = true
+			}
+			logger.Info("debug file logging enabled",
+				"file", cfg.DebugFile,
+				"backends", debugBackends,
+			)
+
+			// Write startup banner to debug file
+			dfLogger := slog.New(slog.NewJSONHandler(debugFile, &slog.HandlerOptions{Level: slog.LevelDebug}))
+			dfLogger.Info("starting ToolMesh",
+				"version", version.Version,
+				"commit", version.Commit,
+				"buildDate", version.BuildDate,
+				"port", cfg.Port,
+				"transport", cfg.Transport,
+				"debugBackends", debugBackends,
+			)
+		}
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -96,7 +132,12 @@ func main() {
 	logger.Info("credential store initialized", "type", cfg.CredentialStore)
 
 	// Initialize MCPAdapter (external MCP backends)
-	mcpAdapter, err := backend.NewMCPAdapter(cfg.BackendsConfigPath, credStore, logger)
+	mcpLogger := logger
+	if debugFile != nil && debugSet != nil {
+		tee := debuglog.NewTeeHandler(handler, debugFile)
+		mcpLogger = slog.New(tee)
+	}
+	mcpAdapter, err := backend.NewMCPAdapter(cfg.BackendsConfigPath, credStore, mcpLogger)
 	if err != nil {
 		logger.Error("failed to create MCP adapter", "error", err)
 		os.Exit(1)
@@ -140,7 +181,7 @@ func main() {
 	compositeBackend.AddPassthrough(mcpAdapter)
 
 	// Initialize REST Proxy backends from DADL files
-	loadRESTBackends(compositeBackend, cfg.BackendsConfigPath, credStore, logger)
+	loadRESTBackends(compositeBackend, cfg.BackendsConfigPath, credStore, logger, handler, debugFile, debugSet)
 
 	// Initialize OpenFGA authorizer based on OPENFGA_MODE
 	var authorizer *authz.Authorizer
@@ -335,9 +376,19 @@ func (l *temporalLogger) Warn(msg string, keyvals ...any) { l.logger.Warn(msg, k
 // Error implements the Temporal logger interface.
 func (l *temporalLogger) Error(msg string, keyvals ...any) { l.logger.Error(msg, keyvals...) }
 
+// backendLogger returns a tee logger for debug-listed backends,
+// or the global logger for all others.
+func backendLogger(name string, globalLogger *slog.Logger, stdoutHandler slog.Handler, debugFile *os.File, debugSet map[string]bool) *slog.Logger {
+	if debugSet[name] && debugFile != nil {
+		tee := debuglog.NewTeeHandler(stdoutHandler, debugFile)
+		return slog.New(tee).With("backend", name)
+	}
+	return globalLogger
+}
+
 // loadRESTBackends scans the backends config for transport: rest entries,
 // parses their DADL files, and adds them to the composite backend.
-func loadRESTBackends(composite *backend.CompositeBackend, backendsConfigPath string, creds credentials.CredentialStore, logger *slog.Logger) {
+func loadRESTBackends(composite *backend.CompositeBackend, backendsConfigPath string, creds credentials.CredentialStore, logger *slog.Logger, stdoutHandler slog.Handler, debugFile *os.File, debugSet map[string]bool) {
 	data, err := os.ReadFile(backendsConfigPath) //nolint:gosec // path from trusted config
 	if err != nil {
 		return // no config = no REST backends
@@ -379,7 +430,8 @@ func loadRESTBackends(composite *backend.CompositeBackend, backendsConfigPath st
 			logger.Warn("scoping strategy not yet implemented, exposing all tools", "strategy", spec.Backend.Scoping.Strategy)
 		}
 
-		adapter, err := backend.NewRESTAdapter(spec, creds, logger)
+		bl := backendLogger(spec.Backend.Name, logger, stdoutHandler, debugFile, debugSet)
+		adapter, err := backend.NewRESTAdapter(spec, creds, bl)
 		if err != nil {
 			logger.Error("failed to create REST adapter", "name", entry.Name, "error", err)
 			continue

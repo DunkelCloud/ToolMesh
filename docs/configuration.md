@@ -77,6 +77,8 @@ TOOLMESH_ACTIVITY_TIMEOUT=180
 |----------|---------|-------------|
 | `LOG_LEVEL` | `info` | Log level: `debug`, `info`, `warn`, `error` |
 | `LOG_FORMAT` | `json` | Log format: `json` or `text` |
+| `DEBUG_BACKENDS` | *(empty)* | Comma-separated backend names for per-backend debug file logging |
+| `DEBUG_FILE` | *(empty)* | Path to the debug log file (e.g. `debug.log`). Both `DEBUG_BACKENDS` and `DEBUG_FILE` must be set to activate. |
 
 ## Docker Compose Databases
 

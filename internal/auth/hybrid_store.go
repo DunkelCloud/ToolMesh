@@ -16,6 +16,7 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 )
 
@@ -49,6 +50,9 @@ func (h *HybridTokenStore) GetClient(ctx context.Context, clientID string) (*OAu
 	if err == nil {
 		return c, nil
 	}
+	if !errors.Is(err, ErrNotFound) {
+		slog.Warn("primary store: GetClient failed, trying file store", "error", err)
+	}
 	return h.file.GetClient(ctx, clientID)
 }
 
@@ -68,6 +72,9 @@ func (h *HybridTokenStore) ConsumeAuthCode(ctx context.Context, code string) (*A
 		_, _ = h.file.ConsumeAuthCode(ctx, code)
 		return ac, nil
 	}
+	if !errors.Is(err, ErrNotFound) {
+		slog.Warn("primary store: ConsumeAuthCode failed, trying file store", "error", err)
+	}
 	return h.file.ConsumeAuthCode(ctx, code)
 }
 
@@ -84,6 +91,9 @@ func (h *HybridTokenStore) GetToken(ctx context.Context, accessToken string) (*T
 	ti, err := h.primary.GetToken(ctx, accessToken)
 	if err == nil {
 		return ti, nil
+	}
+	if !errors.Is(err, ErrNotFound) {
+		slog.Warn("primary store: GetToken failed, trying file store", "error", err)
 	}
 	return h.file.GetToken(ctx, accessToken)
 }
@@ -111,6 +121,9 @@ func (h *HybridTokenStore) ConsumeRefreshToken(ctx context.Context, refreshToken
 		// Also consume from file store to keep them in sync.
 		_, _ = h.file.ConsumeRefreshToken(ctx, refreshToken)
 		return ti, nil
+	}
+	if !errors.Is(err, ErrNotFound) {
+		slog.Warn("primary store: ConsumeRefreshToken failed, trying file store", "error", err)
 	}
 	return h.file.ConsumeRefreshToken(ctx, refreshToken)
 }

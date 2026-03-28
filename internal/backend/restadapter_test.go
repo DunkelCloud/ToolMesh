@@ -350,7 +350,7 @@ func TestRESTAdapter_MultipartFileUpload(t *testing.T) {
 
 	// Create a temp file inside the allowed upload directory
 	uploadDir := filepath.Join(os.TempDir(), "toolmesh-uploads-test")
-	if err := os.MkdirAll(uploadDir, 0o755); err != nil {
+	if err := os.MkdirAll(uploadDir, 0o750); err != nil {
 		t.Fatalf("create upload dir: %v", err)
 	}
 	defer func() { _ = os.RemoveAll(uploadDir) }()

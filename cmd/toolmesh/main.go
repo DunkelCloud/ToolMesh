@@ -402,6 +402,15 @@ func loadRESTBackends(composite *backend.CompositeBackend, backendsConfigPath st
 		return
 	}
 
+	// Fetch remote spec manifest once (best-effort, non-blocking with 5s timeout)
+	var specManifest *dadl.SpecManifest
+	if m, fetchErr := dadl.FetchSpecManifest(context.Background()); fetchErr != nil {
+		logger.Debug("could not fetch DADL spec manifest", "error", fetchErr)
+	} else {
+		specManifest = m
+		logger.Debug("DADL spec manifest fetched", "latest", m.Latest, "supported", len(m.Supported))
+	}
+
 	for _, entry := range cfg.Backends {
 		if entry.Transport != "rest" {
 			continue
@@ -415,6 +424,15 @@ func loadRESTBackends(composite *backend.CompositeBackend, backendsConfigPath st
 		if err != nil {
 			logger.Error("failed to parse DADL file", "name", entry.Name, "path", entry.DADL, "error", err)
 			continue
+		}
+
+		// Check if a newer DADL spec version is available
+		if specManifest != nil {
+			if warning, checkErr := dadl.CheckSpecVersion(spec.Spec, specManifest); checkErr != nil {
+				logger.Debug("spec version check failed", "name", entry.Name, "error", checkErr)
+			} else if warning != "" {
+				logger.Warn(warning, "name", entry.Name)
+			}
 		}
 
 		// Override base_url from backends.yaml if provided

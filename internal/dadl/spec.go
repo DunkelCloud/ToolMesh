@@ -19,8 +19,12 @@ import "time"
 
 // Spec represents a parsed .dadl file.
 type Spec struct {
-	Spec    string     `yaml:"spec"`
-	Backend BackendDef `yaml:"backend"`
+	Spec       string     `yaml:"spec"`
+	Credits    []string   `yaml:"credits"`
+	SourceName string     `yaml:"source_name"`
+	SourceURL  string     `yaml:"source_url"`
+	Date       string     `yaml:"date"`
+	Backend    BackendDef `yaml:"backend"`
 }
 
 // ContainsCode returns true if the spec has composite tools (inline JavaScript).

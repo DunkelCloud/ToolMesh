@@ -23,6 +23,7 @@ import (
 	"log/slog"
 	"mime/multipart"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -34,13 +35,20 @@ import (
 	"github.com/DunkelCloud/ToolMesh/internal/dadl"
 )
 
+// defaultAllowedUploadDir is the directory under which file uploads must reside.
+const defaultAllowedUploadDir = "/tmp/toolmesh-uploads"
+
+// maxResponseBytes is the maximum number of bytes to read from a backend response.
+const maxResponseBytes = 10 * 1024 * 1024 // 10 MB
+
 // RESTAdapter implements ToolBackend for REST APIs described by DADL files.
 type RESTAdapter struct {
-	spec       *dadl.Spec
-	httpClient *http.Client
-	auth       *dadl.RestAuth
-	creds      credentials.CredentialStore
-	logger     *slog.Logger
+	spec             *dadl.Spec
+	httpClient       *http.Client
+	auth             *dadl.RestAuth
+	creds            credentials.CredentialStore
+	logger           *slog.Logger
+	allowedUploadDir string
 }
 
 // NewRESTAdapter creates a RESTAdapter from a parsed DADL spec.
@@ -52,11 +60,12 @@ func NewRESTAdapter(spec *dadl.Spec, creds credentials.CredentialStore, logger *
 	auth := dadl.NewRestAuth(spec.Backend.Auth, spec.Backend.BaseURL, creds, logger)
 
 	return &RESTAdapter{
-		spec:       spec,
-		httpClient: &http.Client{Timeout: 30 * time.Second},
-		auth:       auth,
-		creds:      creds,
-		logger:     logger,
+		spec:             spec,
+		httpClient:       &http.Client{Timeout: 30 * time.Second},
+		auth:             auth,
+		creds:            creds,
+		logger:           logger,
+		allowedUploadDir: defaultAllowedUploadDir,
 	}, nil
 }
 
@@ -312,9 +321,12 @@ func (a *RESTAdapter) doRequest(ctx context.Context, tool *dadl.ToolDef, params 
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
 	if err != nil {
 		return nil, nil, fmt.Errorf("read response: %w", err)
+	}
+	if int64(len(body)) == maxResponseBytes {
+		a.logger.Warn("response body truncated at max size", "backend", a.spec.Backend.Name, "maxBytes", maxResponseBytes)
 	}
 
 	return resp, body, nil
@@ -325,7 +337,7 @@ func (a *RESTAdapter) buildPath(tool *dadl.ToolDef, params map[string]any) strin
 	for name, def := range tool.Params {
 		if def.In == "path" {
 			if val, ok := params[name]; ok {
-				path = strings.ReplaceAll(path, "{"+name+"}", fmt.Sprintf("%v", val))
+				path = strings.ReplaceAll(path, "{"+name+"}", url.PathEscape(fmt.Sprintf("%v", val)))
 			}
 		}
 	}
@@ -346,7 +358,7 @@ func (a *RESTAdapter) buildQuery(tool *dadl.ToolDef, params map[string]any) stri
 				continue
 			}
 		}
-		parts = append(parts, fmt.Sprintf("%s=%v", name, val))
+		parts = append(parts, url.QueryEscape(name)+"="+url.QueryEscape(fmt.Sprintf("%v", val)))
 	}
 	sort.Strings(parts)
 	return strings.Join(parts, "&")
@@ -400,7 +412,20 @@ func (a *RESTAdapter) buildMultipartBody(tool *dadl.ToolDef, params map[string]a
 			if !ok {
 				return nil, "", fmt.Errorf("file param %q: expected string path, got %T", name, val)
 			}
-			f, err := os.Open(filePath) //nolint:gosec // path from trusted tool params
+			absPath, err := filepath.Abs(filePath)
+			if err != nil {
+				return nil, "", fmt.Errorf("file param %q: resolve path: %w", name, err)
+			}
+			cleanPath := filepath.Clean(absPath)
+			if strings.Contains(cleanPath, "..") {
+				return nil, "", fmt.Errorf("file param %q: path traversal not allowed", name)
+			}
+			allowedAbs, _ := filepath.Abs(a.allowedUploadDir)
+			allowedClean := filepath.Clean(allowedAbs)
+			if !strings.HasPrefix(cleanPath, allowedClean+string(filepath.Separator)) && cleanPath != allowedClean {
+				return nil, "", fmt.Errorf("file param %q: path %q is outside allowed upload directory", name, cleanPath)
+			}
+			f, err := os.Open(cleanPath) //nolint:gosec // validated against allowedUploadDir above
 			if err != nil {
 				return nil, "", fmt.Errorf("open file %q for param %q: %w", filePath, name, err)
 			}

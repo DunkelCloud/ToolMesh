@@ -52,6 +52,9 @@ type Server struct {
 
 // NewServer creates a new MCP server.
 func NewServer(handler *Handler, cfg *config.Config, logger *slog.Logger, tokenStore auth.TokenStore, userStore *auth.UserStore, apiKeys *auth.APIKeyStore, rateLimiter *auth.DCRRateLimiter, callerClasses *config.CallerClasses) *Server {
+	if len(cfg.CORSAllowedOrigins) == 0 {
+		logger.Warn("TOOLMESH_CORS_ORIGINS not set: CORS will reflect any origin (open policy)")
+	}
 	return &Server{
 		handler:       handler,
 		cfg:           cfg,
@@ -75,16 +78,25 @@ func (s *Server) SetupRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/health", s.cors(s.handleHealth))
 }
 
-// cors wraps a handler with CORS headers that reflect the request origin.
-// This is required for Claude.ai compatibility which sends cross-origin requests.
+// cors wraps a handler with CORS headers.
+// If CORSAllowedOrigins is configured, only matching origins are reflected.
+// Otherwise, falls back to reflecting any origin for backwards compatibility.
 func (s *Server) cors(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		origin := r.Header.Get("Origin")
 		if origin != "" {
-			w.Header().Set("Access-Control-Allow-Origin", origin)
+			if len(s.cfg.CORSAllowedOrigins) > 0 {
+				if s.originAllowed(origin) {
+					w.Header().Set("Access-Control-Allow-Origin", origin)
+					w.Header().Set("Access-Control-Allow-Credentials", "true")
+				}
+			} else {
+				// No allowlist configured — reflect any origin (backwards compat)
+				w.Header().Set("Access-Control-Allow-Origin", origin)
+				w.Header().Set("Access-Control-Allow-Credentials", "true")
+			}
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, Mcp-Protocol-Version")
-			w.Header().Set("Access-Control-Allow-Credentials", "true")
 			w.Header().Set("Access-Control-Max-Age", "86400")
 		}
 
@@ -95,6 +107,25 @@ func (s *Server) cors(next http.HandlerFunc) http.HandlerFunc {
 
 		next(w, r)
 	}
+}
+
+// originAllowed checks whether the given origin matches any entry in the
+// configured CORS allowlist. Entries can be exact domains or use a "*."
+// prefix for subdomain matching.
+func (s *Server) originAllowed(origin string) bool {
+	for _, allowed := range s.cfg.CORSAllowedOrigins {
+		if allowed == origin {
+			return true
+		}
+		if strings.HasPrefix(allowed, "*.") {
+			// Wildcard subdomain match: "*.example.com" matches "https://foo.example.com"
+			suffix := allowed[1:] // ".example.com"
+			if strings.HasSuffix(origin, suffix) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // handleMCP processes MCP Streamable HTTP requests.
@@ -458,6 +489,26 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 			companyID = "default"
 			plan = s.cfg.AuthPlan
 			roles = s.cfg.AuthRolesList()
+		}
+
+		// Validate redirect_uri against registered client
+		if s.tokenStore != nil {
+			client, err := s.tokenStore.GetClient(r.Context(), clientID)
+			if err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_redirect_uri", "error_description": "unknown client"})
+				return
+			}
+			uriValid := false
+			for _, uri := range client.RedirectURIs {
+				if uri == redirectURI {
+					uriValid = true
+					break
+				}
+			}
+			if !uriValid {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_redirect_uri"})
+				return
+			}
 		}
 
 		code := generateID()

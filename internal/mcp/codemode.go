@@ -21,6 +21,7 @@ import (
 	"strings"
 
 	"github.com/DunkelCloud/ToolMesh/internal/backend"
+	"github.com/DunkelCloud/ToolMesh/internal/composite"
 	"github.com/dop251/goja"
 )
 
@@ -223,6 +224,7 @@ func parseArgs(argsStr string) (map[string]any, error) { //nolint:unparam // err
 // JS syntax that is not valid JSON.
 func parseJSObject(s string) (map[string]any, error) {
 	vm := goja.New()
+	composite.LockdownRuntime(vm)
 	v, err := vm.RunString("(" + s + ")")
 	if err != nil {
 		return nil, fmt.Errorf("js eval: %w", err)

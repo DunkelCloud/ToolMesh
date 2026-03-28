@@ -77,6 +77,9 @@ type Config struct {
 	// Persistent state directory
 	DataDir string
 
+	// CORS
+	CORSAllowedOrigins []string // TOOLMESH_CORS_ORIGINS, comma-separated allowlist
+
 	// Registry-based provider selection
 	CredentialStore string // registered store name (default: "embedded")
 	GateEvaluators  string // comma-separated evaluator chain (default: "goja")
@@ -114,6 +117,15 @@ func Load() (*Config, error) {
 		DataDir:                 envStr("TOOLMESH_DATA_DIR", "/app/data"),
 		CredentialStore:         envStr("CREDENTIAL_STORE", "embedded"),
 		GateEvaluators:          envStr("GATE_EVALUATORS", "goja"),
+	}
+
+	// Parse CORS origins
+	if raw := envStr("TOOLMESH_CORS_ORIGINS", ""); raw != "" {
+		for _, o := range strings.Split(raw, ",") {
+			if s := strings.TrimSpace(o); s != "" {
+				cfg.CORSAllowedOrigins = append(cfg.CORSAllowedOrigins, s)
+			}
+		}
 	}
 
 	if cfg.Transport != "http" && cfg.Transport != "stdio" {

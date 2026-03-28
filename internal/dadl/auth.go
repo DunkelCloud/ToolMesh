@@ -33,10 +33,11 @@ import (
 
 // RestAuth manages authentication token lifecycle for REST API calls.
 type RestAuth struct {
-	config  AuthConfig
-	baseURL string
-	creds   credentials.CredentialStore
-	logger  *slog.Logger
+	config     AuthConfig
+	baseURL    string
+	creds      credentials.CredentialStore
+	logger     *slog.Logger
+	httpClient *http.Client
 
 	mu            sync.Mutex
 	cachedToken   string
@@ -51,6 +52,7 @@ func NewRestAuth(config AuthConfig, baseURL string, creds credentials.Credential
 		baseURL:       baseURL,
 		creds:         creds,
 		logger:        logger,
+		httpClient:    &http.Client{Timeout: 30 * time.Second},
 		sessionTokens: make(map[string]string),
 	}
 }
@@ -196,7 +198,7 @@ func (a *RestAuth) getOAuth2Token(ctx context.Context) (string, error) {
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-	resp, err := http.DefaultClient.Do(req) //nolint:gosec // URL from trusted config
+	resp, err := a.httpClient.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("oauth2 token request: %w", err)
 	}
@@ -287,7 +289,7 @@ func (a *RestAuth) doSessionLogin(ctx context.Context) error {
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := a.httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("session login request: %w", err)
 	}

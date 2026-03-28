@@ -26,6 +26,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/DunkelCloud/ToolMesh/internal/auth"
 	"github.com/DunkelCloud/ToolMesh/internal/backend"
@@ -40,7 +41,7 @@ func newTestServer(t *testing.T, cfg *config.Config) (*Server, *http.ServeMux) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 
 	mb := &mockTestBackend{}
-	exec := executor.New(nil, nil, mb, nil, nil, "", logger)
+	exec := executor.New(nil, nil, mb, nil, nil, 120*time.Second, logger)
 	handler := NewHandler(exec, mb, nil, "", logger)
 
 	srv := NewServer(handler, cfg, logger, nil, nil, nil, nil, nil)
@@ -62,7 +63,7 @@ func newTestServerWithRedis(t *testing.T, cfg *config.Config) (*Server, *http.Se
 	rateLimiter := auth.NewDCRRateLimiter(rdb)
 
 	mb := &mockTestBackend{}
-	exec := executor.New(nil, nil, mb, nil, nil, "", logger)
+	exec := executor.New(nil, nil, mb, nil, nil, 120*time.Second, logger)
 	handler := NewHandler(exec, mb, nil, "", logger)
 
 	srv := NewServer(handler, cfg, logger, tokenStore, nil, nil, rateLimiter, nil)

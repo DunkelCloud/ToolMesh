@@ -20,6 +20,7 @@ import (
 	"log/slog"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/DunkelCloud/ToolMesh/internal/backend"
 	"github.com/DunkelCloud/ToolMesh/internal/credentials"
@@ -60,7 +61,7 @@ func TestExecuteTool_Success(t *testing.T) {
 	mb := &mockBackend{}
 	logger := newTestLogger()
 
-	exec := New(nil, nil, mb, nil, nil, "", logger)
+	exec := New(nil, nil, mb, nil, nil, 120*time.Second, logger)
 
 	ctx := userctx.WithUserContext(context.Background(), &userctx.UserContext{
 		UserID:        testUserID,
@@ -93,7 +94,7 @@ func TestExecuteTool_NoUserContext(t *testing.T) {
 	mb := &mockBackend{}
 	logger := newTestLogger()
 
-	exec := New(nil, nil, mb, nil, nil, "", logger)
+	exec := New(nil, nil, mb, nil, nil, 120*time.Second, logger)
 
 	_, err := exec.ExecuteTool(context.Background(), ExecuteToolRequest{
 		ToolName: "test:tool",
@@ -111,7 +112,7 @@ func TestExecuteTool_BackendError(t *testing.T) {
 	}
 	logger := newTestLogger()
 
-	exec := New(nil, nil, mb, nil, nil, "", logger)
+	exec := New(nil, nil, mb, nil, nil, 120*time.Second, logger)
 
 	ctx := userctx.WithUserContext(context.Background(), &userctx.UserContext{
 		UserID:        testUserID,
@@ -143,7 +144,7 @@ func TestExecuteTool_GateRejects(t *testing.T) {
 		t.Fatalf("failed to create gate: %v", err)
 	}
 
-	exec := New(nil, nil, mb, gate.NewPipeline([]gate.Evaluator{g}), nil, "", logger)
+	exec := New(nil, nil, mb, gate.NewPipeline([]gate.Evaluator{g}), nil, 120*time.Second, logger)
 
 	ctx := userctx.WithUserContext(context.Background(), &userctx.UserContext{
 		UserID:        testUserID,
@@ -177,7 +178,7 @@ func TestExecuteTool_GatePasses(t *testing.T) {
 		t.Fatalf("failed to create gate: %v", err)
 	}
 
-	exec := New(nil, nil, mb, gate.NewPipeline([]gate.Evaluator{g}), nil, "", logger)
+	exec := New(nil, nil, mb, gate.NewPipeline([]gate.Evaluator{g}), nil, 120*time.Second, logger)
 
 	ctx := userctx.WithUserContext(context.Background(), &userctx.UserContext{
 		UserID:        testUserID,
@@ -222,7 +223,7 @@ func TestExecuteTool_PreGateBlocksBeforeBackend(t *testing.T) {
 		t.Fatalf("failed to create gate: %v", err)
 	}
 
-	exec := New(nil, nil, mb, gate.NewPipeline([]gate.Evaluator{g}), nil, "", logger)
+	exec := New(nil, nil, mb, gate.NewPipeline([]gate.Evaluator{g}), nil, 120*time.Second, logger)
 
 	ctx := userctx.WithUserContext(context.Background(), &userctx.UserContext{
 		UserID:        testUserID,
@@ -283,7 +284,7 @@ func TestExecuteTool_PostGateFiltersResponse(t *testing.T) {
 		t.Fatalf("failed to create gate: %v", err)
 	}
 
-	exec := New(nil, nil, mb, gate.NewPipeline([]gate.Evaluator{g}), nil, "", logger)
+	exec := New(nil, nil, mb, gate.NewPipeline([]gate.Evaluator{g}), nil, 120*time.Second, logger)
 
 	ctx := userctx.WithUserContext(context.Background(), &userctx.UserContext{
 		UserID:        testUserID,
@@ -313,7 +314,7 @@ func TestExecuteTool_BackendResultWithExistingMetadata(t *testing.T) {
 	}
 	logger := newTestLogger()
 
-	exec := New(nil, nil, mb, nil, nil, "", logger)
+	exec := New(nil, nil, mb, nil, nil, 120*time.Second, logger)
 
 	ctx := userctx.WithUserContext(context.Background(), &userctx.UserContext{
 		UserID:        testUserID,
@@ -380,7 +381,7 @@ func TestCallerCredentialDurchstich(t *testing.T) {
 	}
 	pipeline := gate.NewPipeline([]gate.Evaluator{g})
 
-	exec := New(nil, credStore, mb, pipeline, nil, "", newTestLogger())
+	exec := New(nil, credStore, mb, pipeline, nil, 120*time.Second, newTestLogger())
 
 	tests := []struct {
 		name             string
@@ -391,7 +392,7 @@ func TestCallerCredentialDurchstich(t *testing.T) {
 		wantCount        int
 		wantKey          string
 		wantVal          string
-		wantRequestField bool // verify request fields populated for Temporal
+		wantRequestField bool // verify request fields populated for audit
 	}{
 		{
 			name:             "trusted caller executes read tool with multi-credential injection",
@@ -476,7 +477,7 @@ func TestCallerCredentialDurchstich(t *testing.T) {
 				}
 			}
 
-			// Verify request fields are populated for Temporal search attributes
+			// Verify request fields are populated for audit entries
 			if tt.wantRequestField {
 				// The executor populates req fields internally, so we verify
 				// the metadata reflects the correct user
@@ -511,7 +512,7 @@ func TestCallerCredentialDurchstich_PostGateWithCallerClass(t *testing.T) {
 		t.Fatalf("failed to create gate: %v", err)
 	}
 
-	exec := New(nil, nil, mb, gate.NewPipeline([]gate.Evaluator{g}), nil, "", newTestLogger())
+	exec := New(nil, nil, mb, gate.NewPipeline([]gate.Evaluator{g}), nil, 120*time.Second, newTestLogger())
 
 	// Trusted caller should see the response
 	ctx := userctx.WithUserContext(context.Background(), &userctx.UserContext{

@@ -9,7 +9,7 @@ services:
     env_file: .env
     environment:
       - OPENFGA_MODE=${OPENFGA_MODE:-bypass}
-      - TEMPORAL_MODE=${TEMPORAL_MODE:-bypass}
+      - AUDIT_STORE=${AUDIT_STORE:-log}
       - TOOLMESH_DATA_DIR=/app/data
     depends_on:
       redis:
@@ -29,35 +29,6 @@ services:
   #   entrypoint: ["node", "dist/sse.js"]
   #   ports:
   #     - "3001:3001"
-
-  temporal:
-    image: temporalio/auto-setup:latest
-    profiles: ["durable"]
-    ports:
-      - "7233:7233"
-    environment:
-      - DB=postgres12
-      - DB_PORT=5432
-      - POSTGRES_USER=${TEMPORAL_DB_USER:-temporal}
-      - POSTGRES_PWD=${TEMPORAL_DB_PASSWORD:-temporal}
-      - POSTGRES_SEEDS=postgres
-    depends_on:
-      postgres:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "temporal", "operator", "cluster", "health", "--address", "temporal:7233"]
-      interval: 10s
-      timeout: 5s
-      retries: 15
-      start_period: 30s
-
-  temporal-ui:
-    image: temporalio/ui:latest
-    profiles: ["durable"]
-    ports:
-      - "8233:8080"
-    environment:
-      - TEMPORAL_ADDRESS=temporal:7233
 
   openfga-migrate:
     image: openfga/openfga:latest
@@ -83,23 +54,6 @@ services:
         condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "/usr/local/bin/grpc_health_probe", "-addr=:8081"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-
-  postgres:
-    image: postgres:16
-    profiles: ["durable"]
-    environment:
-      POSTGRES_USER: ${POSTGRES_USER:-postgres}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
-      TEMPORAL_DB_USER: ${TEMPORAL_DB_USER:-temporal}
-      TEMPORAL_DB_PASSWORD: ${TEMPORAL_DB_PASSWORD:-temporal}
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-      - ./init-db.sh:/docker-entrypoint-initdb.d/init-db.sh:ro
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}"]
       interval: 5s
       timeout: 3s
       retries: 5
@@ -147,7 +101,6 @@ services:
   #     - toolmesh
 
 volumes:
-  pgdata:
   mysqldata:
   redisdata:
 

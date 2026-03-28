@@ -348,8 +348,14 @@ func TestRESTAdapter_MultipartFileUpload(t *testing.T) {
 		t.Fatalf("create adapter: %v", err)
 	}
 
-	// Create a temp file to upload
-	tmpFile, err := os.CreateTemp("", "test-upload-*.txt")
+	// Create a temp file inside the allowed upload directory
+	uploadDir := filepath.Join(os.TempDir(), "toolmesh-uploads-test")
+	if err := os.MkdirAll(uploadDir, 0o755); err != nil {
+		t.Fatalf("create upload dir: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(uploadDir) }()
+	adapter.allowedUploadDir = uploadDir
+	tmpFile, err := os.CreateTemp(uploadDir, "test-upload-*.txt")
 	if err != nil {
 		t.Fatalf("create temp file: %v", err)
 	}
@@ -391,5 +397,64 @@ func TestRESTAdapter_MultipartFileUpload(t *testing.T) {
 	// Verify form field was received
 	if receivedFormField != "test document" {
 		t.Errorf("description = %q, want %q", receivedFormField, "test document")
+	}
+}
+
+func TestBuildQuery_URLEncoding(t *testing.T) {
+	spec := &dadl.Spec{
+		Backend: dadl.BackendDef{
+			Name:    "testapi",
+			Type:    "rest",
+			BaseURL: "https://api.example.com",
+			Tools:   map[string]dadl.ToolDef{"t": {Method: "GET", Path: "/"}},
+		},
+	}
+	adapter, err := NewRESTAdapter(spec, &testCredStore{}, slog.Default())
+	if err != nil {
+		t.Fatalf("create adapter: %v", err)
+	}
+
+	tool := &dadl.ToolDef{
+		Params: map[string]dadl.ParamDef{
+			"q": {Type: "string", In: "query"},
+		},
+	}
+
+	query := adapter.buildQuery(tool, map[string]any{"q": "foo&bar=baz"})
+	if !strings.Contains(query, "foo%26bar%3Dbaz") {
+		t.Errorf("query not properly encoded: %s", query)
+	}
+	if strings.Contains(query, "foo&bar=baz") {
+		t.Errorf("query contains unencoded special chars: %s", query)
+	}
+}
+
+func TestBuildPath_URLEncoding(t *testing.T) {
+	spec := &dadl.Spec{
+		Backend: dadl.BackendDef{
+			Name:    "testapi",
+			Type:    "rest",
+			BaseURL: "https://api.example.com",
+			Tools:   map[string]dadl.ToolDef{"t": {Method: "GET", Path: "/"}},
+		},
+	}
+	adapter, err := NewRESTAdapter(spec, &testCredStore{}, slog.Default())
+	if err != nil {
+		t.Fatalf("create adapter: %v", err)
+	}
+
+	tool := &dadl.ToolDef{
+		Path: "/users/{id}/items",
+		Params: map[string]dadl.ParamDef{
+			"id": {Type: "string", In: "path"},
+		},
+	}
+
+	path := adapter.buildPath(tool, map[string]any{"id": "../admin"})
+	if strings.Contains(path, "../admin") {
+		t.Errorf("path contains unencoded traversal: %s", path)
+	}
+	if !strings.Contains(path, "..%2Fadmin") {
+		t.Errorf("path not properly encoded: %s", path)
 	}
 }

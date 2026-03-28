@@ -55,7 +55,7 @@ func newRuntime(
 	rt := goja.New()
 
 	// Lock down the sandbox first
-	lockdownRuntime(rt)
+	LockdownRuntime(rt)
 
 	// Set up params object
 	if params == nil {

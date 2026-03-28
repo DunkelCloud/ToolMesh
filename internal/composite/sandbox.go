@@ -43,9 +43,9 @@ var blockedGlobals = []string{
 	"global",
 }
 
-// lockdownRuntime removes all dangerous globals from the goja runtime and
+// LockdownRuntime removes all dangerous globals from the goja runtime and
 // overrides eval/Function with error-returning stubs.
-func lockdownRuntime(rt *goja.Runtime) {
+func LockdownRuntime(rt *goja.Runtime) {
 	// Delete all blocked globals
 	for _, name := range blockedGlobals {
 		_ = rt.GlobalObject().Delete(name)

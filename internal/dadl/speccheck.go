@@ -45,7 +45,7 @@ func FetchSpecManifest(ctx context.Context) (*SpecManifest, error) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, SpecManifestURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, SpecManifestURL, http.NoBody)
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
@@ -55,7 +55,7 @@ func FetchSpecManifest(ctx context.Context) (*SpecManifest, error) {
 	if err != nil {
 		return nil, fmt.Errorf("fetch %s: %w", SpecManifestURL, err)
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck // best-effort close on read-only GET
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("fetch %s: HTTP %d", SpecManifestURL, resp.StatusCode)

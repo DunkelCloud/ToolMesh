@@ -19,7 +19,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-
+	"regexp"
 	"strings"
 
 	"github.com/DunkelCloud/ToolMesh/internal/backend"
@@ -63,7 +63,7 @@ func (h *Handler) HandleToolCall(ctx context.Context, toolName string, params ma
 
 	switch toolName {
 	case "list_tools":
-		return h.handleListTools(ctx)
+		return h.handleListTools(ctx, params)
 	case "execute_code":
 		return h.handleExecuteCode(ctx, params)
 	default:
@@ -99,18 +99,54 @@ func (h *Handler) HandleToolCall(ctx context.Context, toolName string, params ma
 	}
 }
 
-func (h *Handler) handleListTools(ctx context.Context) (*backend.ToolResult, error) {
+func (h *Handler) handleListTools(ctx context.Context, params map[string]any) (*backend.ToolResult, error) {
+	patternStr, _ := params["pattern"].(string)
+	if patternStr == "" {
+		return &backend.ToolResult{
+			IsError: true,
+			Content: []any{map[string]any{
+				"type": "text",
+				"text": "Missing required parameter: pattern (regex to filter tool names, e.g. \"github\" or \".*\" for all)",
+			}},
+		}, nil
+	}
+
+	re, err := regexp.Compile("(?i)" + patternStr)
+	if err != nil {
+		return &backend.ToolResult{
+			IsError: true,
+			Content: []any{map[string]any{
+				"type": "text",
+				"text": fmt.Sprintf("Invalid regex pattern %q: %s", patternStr, err),
+			}},
+		}, nil
+	}
+
 	tools, err := h.backend.ListTools(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("list tools: %w", err)
 	}
 
-	// Serve raw TypeScript for built-in tools + generated TS for external tools
+	// Filter tools by pattern (matched against name and description)
+	filtered := make([]backend.ToolDescriptor, 0, len(tools))
+	for _, t := range tools {
+		if re.MatchString(t.Name) || re.MatchString(t.Description) {
+			filtered = append(filtered, t)
+		}
+	}
+
+	// Include raw TypeScript for built-in tools only when pattern matches their content
 	var definitions string
-	if h.rawTS != "" {
+	if h.rawTS != "" && re.MatchString(h.rawTS) {
 		definitions = h.rawTS + "\n\n"
 	}
-	definitions += GenerateToolDefinitions(tools)
+	definitions += GenerateToolDefinitions(filtered)
+
+	h.logger.InfoContext(ctx, "list_tools",
+		"pattern", patternStr,
+		"matched", len(filtered),
+		"total", len(tools),
+	)
 
 	return &backend.ToolResult{
 		Content: []any{map[string]any{
@@ -232,7 +268,7 @@ func (h *Handler) handleExecuteCode(ctx context.Context, params map[string]any) 
 func (h *Handler) BuildToolList(ctx context.Context) ([]ToolDefinition, error) {
 	backendDesc := h.buildBackendDescription()
 
-	listToolsDesc := "Returns a machine-readable list of all available tools with TypeScript interface definitions. Call this BEFORE execute_code to discover the correct function names and parameter types — without it you will not know the correct API signatures and your calls will fail"
+	listToolsDesc := "Returns a machine-readable list of all available tools with TypeScript interface definitions. Call this BEFORE execute_code to discover the correct function names and parameter types — without it you will not know the correct API signatures and your calls will fail. The pattern parameter is a regex matched against tool names and descriptions (case-insensitive). Use \".*\" for all tools, or a specific pattern like \"github\" or \"pull\" to filter"
 	executeCodeDesc := "Accepts JavaScript code containing tool calls and executes them through the ToolMesh pipeline. IMPORTANT: You MUST call list_tools first to discover available function signatures before using this tool. Do not guess function names or parameters from the hints below"
 	if backendDesc != "" {
 		listToolsDesc += ". " + backendDesc
@@ -244,8 +280,14 @@ func (h *Handler) BuildToolList(ctx context.Context) ([]ToolDefinition, error) {
 			Name:        "list_tools",
 			Description: listToolsDesc,
 			InputSchema: map[string]any{
-				"type":       "object",
-				"properties": map[string]any{},
+				"type": "object",
+				"properties": map[string]any{
+					"pattern": map[string]any{
+						"type":        "string",
+						"description": "Regex pattern to filter tools by name or description (case-insensitive). Use \".*\" for all tools.",
+					},
+				},
+				"required": []string{"pattern"},
 			},
 		},
 		{

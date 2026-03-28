@@ -37,9 +37,9 @@ func TestLoad_Defaults(t *testing.T) {
 		{"AuthPassword", cfg.AuthPassword, ""},
 		{"APIKey", cfg.APIKey, ""},
 		{"Issuer", cfg.Issuer, "https://toolmesh.io/"},
-		{"TemporalAddress", cfg.TemporalAddress, "localhost:7233"},
-		{"TemporalNamespace", cfg.TemporalNamespace, "default"},
-		{"TemporalTaskQueue", cfg.TemporalTaskQueue, "toolmesh"},
+		{"AuditStore", cfg.AuditStore, "log"},
+		{"AuditRetentionDays", cfg.AuditRetentionDays, 90},
+		{"ExecTimeout", cfg.ExecTimeout, 120},
 		{"OpenFGAAPIURL", cfg.OpenFGAAPIURL, "http://localhost:8080"},
 		{"OpenFGAStoreID", cfg.OpenFGAStoreID, ""},
 		{"RedisURL", cfg.RedisURL, "redis://localhost:6379/0"},
@@ -62,7 +62,9 @@ func TestLoad_CustomValues(t *testing.T) {
 	t.Setenv("TOOLMESH_TRANSPORT", "stdio")
 	t.Setenv("TOOLMESH_AUTH_PASSWORD", "secret123")
 	t.Setenv("TOOLMESH_API_KEY", "my-api-key")
-	t.Setenv("TEMPORAL_ADDRESS", "temporal.example.com:7233")
+	t.Setenv("AUDIT_STORE", "sqlite")
+	t.Setenv("AUDIT_RETENTION_DAYS", "30")
+	t.Setenv("TOOLMESH_EXEC_TIMEOUT", "180")
 	t.Setenv("LOG_LEVEL", "debug")
 	t.Setenv("LOG_FORMAT", "text")
 
@@ -83,14 +85,35 @@ func TestLoad_CustomValues(t *testing.T) {
 	if cfg.APIKey != "my-api-key" {
 		t.Errorf("APIKey = %q, want \"my-api-key\"", cfg.APIKey)
 	}
-	if cfg.TemporalAddress != "temporal.example.com:7233" {
-		t.Errorf("TemporalAddress = %q, want \"temporal.example.com:7233\"", cfg.TemporalAddress)
+	if cfg.AuditStore != "sqlite" {
+		t.Errorf("AuditStore = %q, want \"sqlite\"", cfg.AuditStore)
+	}
+	if cfg.AuditRetentionDays != 30 {
+		t.Errorf("AuditRetentionDays = %d, want 30", cfg.AuditRetentionDays)
+	}
+	if cfg.ExecTimeout != 180 {
+		t.Errorf("ExecTimeout = %d, want 180", cfg.ExecTimeout)
 	}
 	if cfg.LogLevel != "debug" {
 		t.Errorf("LogLevel = %q, want \"debug\"", cfg.LogLevel)
 	}
 	if cfg.LogFormat != "text" {
 		t.Errorf("LogFormat = %q, want \"text\"", cfg.LogFormat)
+	}
+}
+
+func TestLoad_ExecTimeout_FallbackToActivityTimeout(t *testing.T) {
+	// TOOLMESH_ACTIVITY_TIMEOUT should be read as fallback
+	t.Setenv("TOOLMESH_EXEC_TIMEOUT", "")
+	t.Setenv("TOOLMESH_ACTIVITY_TIMEOUT", "300")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if cfg.ExecTimeout != 300 {
+		t.Errorf("ExecTimeout = %d, want 300 (from TOOLMESH_ACTIVITY_TIMEOUT fallback)", cfg.ExecTimeout)
 	}
 }
 
@@ -127,6 +150,15 @@ func TestLoad_InvalidTransport(t *testing.T) {
 	_, err := Load()
 	if err == nil {
 		t.Fatal("expected error for invalid transport, got nil")
+	}
+}
+
+func TestLoad_InvalidAuditStore(t *testing.T) {
+	t.Setenv("AUDIT_STORE", "postgres")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected error for invalid audit store, got nil")
 	}
 }
 

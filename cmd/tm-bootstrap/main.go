@@ -25,22 +25,13 @@ import (
 
 	"github.com/DunkelCloud/ToolMesh/internal/authz"
 	"github.com/openfga/go-sdk/client"
-	"go.temporal.io/api/enums/v1"
-	"go.temporal.io/api/operatorservice/v1"
-	temporalclient "go.temporal.io/sdk/client"
 	"golang.org/x/crypto/bcrypt"
 )
 
 func main() {
-	if len(os.Args) > 1 {
-		switch os.Args[1] {
-		case "hash-password":
-			hashPassword()
-			return
-		case "temporal-search-attrs":
-			bootstrapTemporalSearchAttrs()
-			return
-		}
+	if len(os.Args) > 1 && os.Args[1] == "hash-password" {
+		hashPassword()
+		return
 	}
 
 	bootstrapOpenFGA()
@@ -149,50 +140,4 @@ func bootstrapOpenFGA() {
 	fmt.Printf("Model ID: %s\n", modelID)
 	fmt.Printf("\nSet this in your .env:\n")
 	fmt.Printf("OPENFGA_STORE_ID=%s\n", storeID)
-}
-
-func bootstrapTemporalSearchAttrs() {
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
-
-	temporalAddr := os.Getenv("TEMPORAL_ADDRESS")
-	if temporalAddr == "" {
-		temporalAddr = "localhost:7233"
-	}
-	namespace := os.Getenv("TEMPORAL_NAMESPACE")
-	if namespace == "" {
-		namespace = "default"
-	}
-
-	tc, err := temporalclient.Dial(temporalclient.Options{
-		HostPort:  temporalAddr,
-		Namespace: namespace,
-	})
-	if err != nil {
-		logger.Error("failed to connect to Temporal", "error", err)
-		os.Exit(1)
-	}
-	defer tc.Close()
-
-	ctx := context.Background()
-	attrs := map[string]enums.IndexedValueType{
-		"ToolMeshUserID":      enums.INDEXED_VALUE_TYPE_KEYWORD,
-		"ToolMeshCompanyID":   enums.INDEXED_VALUE_TYPE_KEYWORD,
-		"ToolMeshCallerID":    enums.INDEXED_VALUE_TYPE_KEYWORD,
-		"ToolMeshCallerClass": enums.INDEXED_VALUE_TYPE_KEYWORD,
-		"ToolMeshToolName":    enums.INDEXED_VALUE_TYPE_KEYWORD,
-	}
-
-	_, err = tc.OperatorService().AddSearchAttributes(ctx, &operatorservice.AddSearchAttributesRequest{
-		Namespace:        namespace,
-		SearchAttributes: attrs,
-	})
-	if err != nil {
-		logger.Error("failed to add search attributes", "error", err)
-		os.Exit(1) //nolint:gocritic // intentional in main
-	}
-
-	logger.Info("Temporal search attributes registered", "namespace", namespace)
-	for name := range attrs {
-		fmt.Printf("  %s (Keyword)\n", name)
-	}
 }

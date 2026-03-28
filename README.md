@@ -26,7 +26,7 @@ And unlike MCP gateways that just pass tool calls through, ToolMesh adds what pr
 
 - **Authorization** — fine-grained user → plan → tool control (OpenFGA)
 - **Credential Security** — secrets injected at execution time, never in prompts
-- **Durable Execution** — retry, timeout, and full audit trail (Temporal)
+- **Audit Trail** — every tool call recorded with structured logging or queryable SQLite
 - **Input & Output Gating** — JS policies validate parameters and filter responses
 
 ## The Six Pillars
@@ -35,7 +35,7 @@ And unlike MCP gateways that just pass tool calls through, ToolMesh adds what pr
 |--------|-------------|-----------|
 | **Any Backend** | Connect MCP servers or describe REST APIs declaratively via DADL | Go MCP SDK + DADL (.dadl files) |
 | **Code Mode** | LLMs write typed JS instead of error-prone JSON | AST-parsed tool calls |
-| **Temporal** | Durable execution with retry, timeout, audit trail | Temporal.io |
+| **Audit** | Execution trail — every tool call recorded and queryable | slog / SQLite |
 | **OpenFGA** | Fine-grained authorization (user → plan → tool) | OpenFGA |
 | **Credential Store** | Inject secrets at execution time, never in prompts | Per-request injection via Executor pipeline |
 | **Gate** | JavaScript policies validate inputs (pre) and filter outputs (post) | goja |
@@ -49,7 +49,10 @@ cd ToolMesh
 
 # Configure
 cp .env.example .env
-# Edit .env with your settings
+# IMPORTANT: Set a password — without it, all requests are rejected:
+#   TOOLMESH_AUTH_PASSWORD=my-secret-password
+# Or set an API key for programmatic access:
+#   TOOLMESH_API_KEY=my-api-key
 
 # Start all services (runs in bypass mode by default — no authz required)
 docker compose up -d
@@ -58,10 +61,10 @@ docker compose up -d
 docker compose exec toolmesh /tm-bootstrap
 # Set OPENFGA_MODE=restrict in .env and restart to enforce authz
 
-# Verify it's running
-curl http://localhost:8080/health
+# Verify it's running (default port: 8123)
+curl http://localhost:8123/health
 
-# MCP endpoint: http://localhost:8080/mcp
+# MCP endpoint: http://localhost:8123/mcp
 # Note: Most MCP clients require HTTPS — see TLS section below
 ```
 
@@ -97,7 +100,7 @@ For local development without TLS proxy:
 {
   "mcpServers": {
     "toolmesh": {
-      "url": "http://localhost:8080/mcp"
+      "url": "http://localhost:8123/mcp"
     }
   }
 }
@@ -183,17 +186,15 @@ Trust levels affect the execution pipeline:
 
 | CallerClass | PII Filtering | Tool Access | Audit |
 |-------------|--------------|-------------|-------|
-| `trusted` | Credentials only (AWS keys, API tokens) | Full | Temporal search attributes |
-| `standard` | High-risk PII + credentials | Full | Temporal search attributes |
-| `untrusted` | All PII patterns | Sensitive tools blocked | Temporal search attributes |
+| `trusted` | Credentials only (AWS keys, API tokens) | Full | Audit entry with caller context |
+| `standard` | High-risk PII + credentials | Full | Audit entry with caller context |
+| `untrusted` | All PII patterns | Sensitive tools blocked | Audit entry with caller context |
 
-Temporal search attributes (`ToolMeshCallerID`, `ToolMeshCallerClass`, `ToolMeshUserID`, `ToolMeshCompanyID`, `ToolMeshToolName`) enable audit queries like:
+Audit entries include `caller_id`, `caller_class`, `user_id`, `company_id`, and `tool` fields. With the `sqlite` audit store, these are queryable:
 
+```sql
+SELECT * FROM audit_events WHERE caller_class = 'untrusted' AND tool = 'memorizer_retrieve_knowledge';
 ```
-ToolMeshCallerClass = "untrusted" AND ToolMeshToolName = "memorizer:retrieve_knowledge"
-```
-
-Register search attributes with: `docker compose exec toolmesh /tm-bootstrap temporal-search-attrs`
 
 ## Authorization Mode
 
@@ -215,13 +216,13 @@ See [docs/configuration.md](docs/configuration.md) for all environment variables
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `TOOLMESH_MCP_TIMEOUT` | `120` | HTTP client timeout (seconds) for calls to downstream MCP servers |
-| `TOOLMESH_ACTIVITY_TIMEOUT` | `120` | Temporal activity StartToClose timeout (seconds) for tool execution |
+| `TOOLMESH_EXEC_TIMEOUT` | `120` | Tool execution timeout (seconds) — context deadline for backend calls |
 
 Increase these for backends that need more time (e.g. browser-based web fetchers):
 
 ```bash
 TOOLMESH_MCP_TIMEOUT=180
-TOOLMESH_ACTIVITY_TIMEOUT=180
+TOOLMESH_EXEC_TIMEOUT=180
 ```
 
 ### Logging
@@ -262,7 +263,7 @@ See [docs/architecture.md](docs/architecture.md) for the full architecture docum
                           ┌─────────────────────────────────┐
                           │          ToolMesh               │
                           │                                 │
-                          │  Redis · OpenFGA · Temporal     │
+                          │  Redis · OpenFGA · Audit        │
                           │  Credential Store · JS Gate     │
                           │                                 │
 AI Agent ──MCP──────────▶ │   AuthZ ▸ Creds ▸ Gate ▸ Exec  │

@@ -18,6 +18,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -30,10 +31,12 @@ type Config struct {
 	APIKey       string
 	Issuer       string
 
-	// Temporal
-	TemporalAddress   string
-	TemporalNamespace string
-	TemporalTaskQueue string
+	// Audit
+	AuditStore         string // "log" (default) | "sqlite"
+	AuditRetentionDays int    // AUDIT_RETENTION_DAYS, default 90, sqlite only
+
+	// Execution timeout (seconds)
+	ExecTimeout int // TOOLMESH_EXEC_TIMEOUT, default 120
 
 	// OpenFGA
 	OpenFGAAPIURL  string
@@ -93,9 +96,9 @@ func Load() (*Config, error) {
 		AuthPassword:            envStr("TOOLMESH_AUTH_PASSWORD", ""),
 		APIKey:                  envStr("TOOLMESH_API_KEY", ""),
 		Issuer:                  envStr("TOOLMESH_ISSUER", "https://toolmesh.io/"),
-		TemporalAddress:         envStr("TEMPORAL_ADDRESS", "localhost:7233"),
-		TemporalNamespace:       envStr("TEMPORAL_NAMESPACE", "default"),
-		TemporalTaskQueue:       envStr("TEMPORAL_TASK_QUEUE", "toolmesh"),
+		AuditStore:              envStr("AUDIT_STORE", "log"),
+		AuditRetentionDays:      envInt("AUDIT_RETENTION_DAYS", 90),
+		ExecTimeout:             envInt("TOOLMESH_EXEC_TIMEOUT", envInt("TOOLMESH_ACTIVITY_TIMEOUT", 120)),
 		OpenFGAAPIURL:           envStr("OPENFGA_API_URL", "http://localhost:8080"),
 		OpenFGAStoreID:          envStr("OPENFGA_STORE_ID", ""),
 		OpenFGAMode:             envStr("OPENFGA_MODE", "bypass"),
@@ -136,6 +139,10 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("invalid OPENFGA_MODE: %q (must be \"bypass\" or \"restrict\")", cfg.OpenFGAMode)
 	}
 
+	if cfg.AuditStore != "log" && cfg.AuditStore != "sqlite" {
+		return nil, fmt.Errorf("invalid AUDIT_STORE: %q (must be \"log\" or \"sqlite\")", cfg.AuditStore)
+	}
+
 	return cfg, nil
 }
 
@@ -166,6 +173,15 @@ func (c *Config) DebugBackendsList() []string {
 func envStr(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
+	}
+	return fallback
+}
+
+func envInt(key string, fallback int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
 	}
 	return fallback
 }

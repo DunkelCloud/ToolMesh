@@ -13,7 +13,8 @@
 // limitations under the License.
 
 // Package executor implements the core ExecuteTool pipeline that orchestrates
-// authorization, credential injection, backend execution, and output gating.
+// authorization, credential injection, backend execution, output gating,
+// and audit recording.
 package executor
 
 import (
@@ -24,11 +25,20 @@ import (
 	"strings"
 	"time"
 
+	"github.com/DunkelCloud/ToolMesh/internal/audit"
 	"github.com/DunkelCloud/ToolMesh/internal/authz"
 	"github.com/DunkelCloud/ToolMesh/internal/backend"
 	"github.com/DunkelCloud/ToolMesh/internal/credentials"
 	"github.com/DunkelCloud/ToolMesh/internal/gate"
 	"github.com/DunkelCloud/ToolMesh/internal/userctx"
+	"github.com/google/uuid"
+)
+
+// Audit status constants.
+const (
+	statusSuccess = "success"
+	statusError   = "error"
+	statusDenied  = "denied"
 )
 
 // Executor orchestrates the full tool execution pipeline.
@@ -37,6 +47,8 @@ type Executor struct {
 	creds      credentials.CredentialStore
 	backend    backend.ToolBackend
 	gate       *gate.Pipeline
+	audit      audit.AuditStore
+	timeout    time.Duration
 	logger     *slog.Logger
 }
 
@@ -46,6 +58,8 @@ func New(
 	creds credentials.CredentialStore,
 	be backend.ToolBackend,
 	gatePipeline *gate.Pipeline,
+	auditStore audit.AuditStore,
+	timeout time.Duration,
 	logger *slog.Logger,
 ) *Executor {
 	return &Executor{
@@ -53,6 +67,8 @@ func New(
 		creds:      creds,
 		backend:    be,
 		gate:       gatePipeline,
+		audit:      auditStore,
+		timeout:    timeout,
 		logger:     logger,
 	}
 }
@@ -61,30 +77,32 @@ func New(
 type ExecuteToolRequest struct {
 	ToolName string         `json:"toolName"`
 	Params   map[string]any `json:"params"`
-	// Caller context for Temporal search attributes (set by executor, not by caller)
+	// Caller context (set by executor from UserContext).
 	UserID      string `json:"userId,omitempty"`
 	CompanyID   string `json:"companyId,omitempty"`
 	CallerID    string `json:"callerId,omitempty"`
 	CallerClass string `json:"callerClass,omitempty"`
 }
 
-// ExecuteTool runs the full pipeline: AuthZ → Credentials → Backend → Gate.
+// ExecuteTool runs the full pipeline: AuthZ → Credentials → Gate pre → Backend → Gate post → Audit.
 func (e *Executor) ExecuteTool(ctx context.Context, req ExecuteToolRequest) (*backend.ToolResult, error) {
-	start := time.Now()
-
 	uc := userctx.FromContext(ctx)
 	if uc == nil {
 		return nil, fmt.Errorf("no user context found")
 	}
 
-	// Populate caller context on the request for Temporal search attributes.
+	// Populate caller context on the request.
 	req.UserID = uc.UserID
 	req.CompanyID = uc.CompanyID
 	req.CallerID = uc.CallerID
 	req.CallerClass = uc.CallerClass
 
+	traceID := uuid.New().String()
+	start := time.Now()
+
 	e.logger.InfoContext(ctx, "executing tool",
 		"tool", req.ToolName,
+		"traceId", traceID,
 		"user", uc.UserID,
 		"company", uc.CompanyID,
 		"callerId", uc.CallerID,
@@ -96,11 +114,28 @@ func (e *Executor) ExecuteTool(ctx context.Context, req ExecuteToolRequest) (*ba
 		"params", req.Params,
 	)
 
+	// Build the audit entry — populated at each exit point.
+	entry := audit.AuditEntry{
+		TraceID:     traceID,
+		Timestamp:   start,
+		UserID:      uc.UserID,
+		CompanyID:   uc.CompanyID,
+		CallerID:    uc.CallerID,
+		CallerClass: uc.CallerClass,
+		Tool:        req.ToolName,
+		Params:      req.Params,
+		Backend:     splitToolPrefix(req.ToolName)[0],
+	}
+
 	// Step 1: AuthZ check via OpenFGA
 	if e.authorizer != nil {
 		e.logger.DebugContext(ctx, "authz check", "tool", req.ToolName, "user", uc.UserID)
 		allowed, err := e.authorizer.Check(ctx, uc.UserID, req.ToolName)
 		if err != nil {
+			entry.DurationMs = time.Since(start).Milliseconds()
+			entry.Status = statusError
+			entry.Error = fmt.Sprintf("authz check failed: %v", err)
+			e.recordAudit(ctx, entry)
 			return nil, fmt.Errorf("authz check failed: %w", err)
 		}
 		if !allowed {
@@ -108,6 +143,9 @@ func (e *Executor) ExecuteTool(ctx context.Context, req ExecuteToolRequest) (*ba
 				"tool", req.ToolName,
 				"user", uc.UserID,
 			)
+			entry.DurationMs = time.Since(start).Milliseconds()
+			entry.Status = statusDenied
+			e.recordAudit(ctx, entry)
 			return &backend.ToolResult{
 				IsError: true,
 				Content: []any{map[string]any{
@@ -152,6 +190,10 @@ func (e *Executor) ExecuteTool(ctx context.Context, req ExecuteToolRequest) (*ba
 				"user", uc.UserID,
 				"error", err,
 			)
+			entry.DurationMs = time.Since(start).Milliseconds()
+			entry.Status = statusDenied
+			entry.Error = fmt.Sprintf("gate rejected (pre-execution): %v", err)
+			e.recordAudit(ctx, entry)
 			return &backend.ToolResult{
 				IsError: true,
 				Content: []any{map[string]any{
@@ -163,11 +205,19 @@ func (e *Executor) ExecuteTool(ctx context.Context, req ExecuteToolRequest) (*ba
 		e.logger.DebugContext(ctx, "gate pre-execution passed", "tool", req.ToolName)
 	}
 
-	// Step 4: Backend execution
+	// Step 4: Backend execution (with context timeout)
 	e.logger.DebugContext(ctx, "backend execution start", "tool", req.ToolName)
-	result, err := e.backend.Execute(ctx, req.ToolName, req.Params)
+
+	execCtx, execCancel := context.WithTimeout(ctx, e.timeout)
+	defer execCancel()
+
+	result, err := e.backend.Execute(execCtx, req.ToolName, req.Params)
 	if err != nil {
 		e.logger.DebugContext(ctx, "backend execution failed", "tool", req.ToolName, "error", err)
+		entry.DurationMs = time.Since(start).Milliseconds()
+		entry.Status = statusError
+		entry.Error = err.Error()
+		e.recordAudit(ctx, entry)
 		return nil, fmt.Errorf("backend execution failed for %s: %w", req.ToolName, err)
 	}
 	if contentJSON, err := json.Marshal(result.Content); err == nil {
@@ -194,6 +244,10 @@ func (e *Executor) ExecuteTool(ctx context.Context, req ExecuteToolRequest) (*ba
 				"user", uc.UserID,
 				"error", err,
 			)
+			entry.DurationMs = time.Since(start).Milliseconds()
+			entry.Status = statusDenied
+			entry.Error = fmt.Sprintf("gate rejected (post-execution): %v", err)
+			e.recordAudit(ctx, entry)
 			return &backend.ToolResult{
 				IsError: true,
 				Content: []any{map[string]any{
@@ -209,17 +263,43 @@ func (e *Executor) ExecuteTool(ctx context.Context, req ExecuteToolRequest) (*ba
 	if result.Metadata == nil {
 		result.Metadata = make(map[string]any)
 	}
-	result.Metadata["latencyMs"] = time.Since(start).Milliseconds()
+	duration := time.Since(start).Milliseconds()
+	result.Metadata["latencyMs"] = duration
 	result.Metadata["user"] = uc.UserID
+	result.Metadata["traceId"] = traceID
+
+	// Step 6: Record audit entry (success)
+	entry.DurationMs = duration
+	if result.IsError {
+		entry.Status = statusError
+	} else {
+		entry.Status = statusSuccess
+	}
+	e.recordAudit(ctx, entry)
 
 	e.logger.InfoContext(ctx, "tool execution complete",
 		"tool", req.ToolName,
+		"traceId", traceID,
 		"user", uc.UserID,
-		"latencyMs", result.Metadata["latencyMs"],
+		"latencyMs", duration,
 		"isError", result.IsError,
 	)
 
 	return result, nil
+}
+
+// recordAudit persists an audit entry, logging any store errors.
+func (e *Executor) recordAudit(ctx context.Context, entry audit.AuditEntry) {
+	if e.audit == nil {
+		return
+	}
+	if err := e.audit.Record(ctx, entry); err != nil {
+		e.logger.ErrorContext(ctx, "failed to record audit entry",
+			"traceId", entry.TraceID,
+			"tool", entry.Tool,
+			"error", err,
+		)
+	}
 }
 
 // resolveCredentials loads all credentials for a backend. It first tries

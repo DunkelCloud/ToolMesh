@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Command toolmesh starts the ToolMesh MCP server and Temporal worker.
+// Command toolmesh starts the ToolMesh MCP server.
 package main
 
 import (
@@ -22,10 +22,12 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
+	"github.com/DunkelCloud/ToolMesh/internal/audit"
 	"github.com/DunkelCloud/ToolMesh/internal/auth"
 	"github.com/DunkelCloud/ToolMesh/internal/authz"
 	"github.com/DunkelCloud/ToolMesh/internal/backend"
@@ -37,12 +39,8 @@ import (
 	"github.com/DunkelCloud/ToolMesh/internal/gate"
 	"github.com/DunkelCloud/ToolMesh/internal/mcp"
 	"github.com/DunkelCloud/ToolMesh/internal/tsdef"
-	"github.com/DunkelCloud/ToolMesh/internal/userctx"
 	"github.com/DunkelCloud/ToolMesh/internal/version"
 	"github.com/redis/go-redis/v9"
-	temporalclient "go.temporal.io/sdk/client"
-	"go.temporal.io/sdk/worker"
-	"go.temporal.io/sdk/workflow"
 	"gopkg.in/yaml.v3"
 )
 
@@ -221,35 +219,20 @@ func main() {
 	}
 	gatePipeline := gate.NewPipeline(evaluators)
 
-	// Initialize executor
-	exec := executor.New(authorizer, credStore, compositeBackend, gatePipeline, logger)
-
-	// Initialize Temporal client and worker
-	var temporalWorker worker.Worker
-	tc, err := temporalclient.Dial(temporalclient.Options{
-		HostPort:  cfg.TemporalAddress,
-		Namespace: cfg.TemporalNamespace,
-		Logger:    newTemporalLogger(logger),
-		ContextPropagators: []workflow.ContextPropagator{
-			&userctx.HeaderPropagator{},
-		},
+	// Initialize audit store
+	auditStore, err := audit.New(cfg.AuditStore, map[string]string{
+		"data_dir":       cfg.DataDir,
+		"retention_days": strconv.Itoa(cfg.AuditRetentionDays),
 	})
 	if err != nil {
-		logger.Warn("failed to connect to Temporal, running without workflow durability", "error", err)
-	} else {
-		defer tc.Close()
-
-		temporalWorker = worker.New(tc, cfg.TemporalTaskQueue, worker.Options{})
-		temporalWorker.RegisterWorkflow(executor.ToolExecutionWorkflow)
-		temporalWorker.RegisterActivity(exec.ExecuteToolActivity)
-
-		go func() {
-			if err := temporalWorker.Run(worker.InterruptCh()); err != nil {
-				logger.Error("temporal worker failed", "error", err)
-			}
-		}()
-		logger.Info("Temporal worker started", "taskQueue", cfg.TemporalTaskQueue)
+		logger.Error("failed to create audit store", "type", cfg.AuditStore, "error", err)
+		os.Exit(1)
 	}
+	logger.Info("audit store initialized", "type", cfg.AuditStore)
+
+	// Initialize executor
+	execTimeout := time.Duration(cfg.ExecTimeout) * time.Second
+	exec := executor.New(authorizer, credStore, compositeBackend, gatePipeline, auditStore, execTimeout, logger)
 
 	// Initialize token store for auth state.
 	// The file-based store always runs for persistence across restarts.
@@ -342,10 +325,6 @@ func main() {
 		if err := srv.Shutdown(shutdownCtx); err != nil {
 			logger.Error("http server shutdown error", "error", err)
 		}
-
-		if temporalWorker != nil {
-			temporalWorker.Stop()
-		}
 	}()
 
 	logger.Info("ToolMesh MCP server listening", "addr", srv.Addr)
@@ -356,27 +335,6 @@ func main() {
 
 	logger.Info("ToolMesh stopped")
 }
-
-// temporalLogger adapts slog to Temporal's logger interface.
-type temporalLogger struct {
-	logger *slog.Logger
-}
-
-func newTemporalLogger(l *slog.Logger) *temporalLogger {
-	return &temporalLogger{logger: l.With("component", "temporal")}
-}
-
-// Debug implements the Temporal logger interface.
-func (l *temporalLogger) Debug(msg string, keyvals ...any) { l.logger.Debug(msg, keyvals...) }
-
-// Info implements the Temporal logger interface.
-func (l *temporalLogger) Info(msg string, keyvals ...any) { l.logger.Info(msg, keyvals...) }
-
-// Warn implements the Temporal logger interface.
-func (l *temporalLogger) Warn(msg string, keyvals ...any) { l.logger.Warn(msg, keyvals...) }
-
-// Error implements the Temporal logger interface.
-func (l *temporalLogger) Error(msg string, keyvals ...any) { l.logger.Error(msg, keyvals...) }
 
 // backendLogger returns a tee logger for debug-listed backends,
 // or the global logger for all others.

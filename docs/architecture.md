@@ -15,14 +15,14 @@ LLMs can write typed JavaScript instead of error-prone JSON for tool calls. Tool
 
 The JavaScript is parsed (not executed) to extract function names and parameters.
 
-### 2. Temporal (Durable Execution)
+### 2. Audit (Execution Trail)
 
-Every tool execution is a Temporal activity within a workflow. This provides:
+Every tool execution is recorded as an audit entry. The audit store is pluggable:
 
-- **Automatic retries** with configurable backoff
-- **Timeout enforcement** at the activity level
-- **Audit trail** via workflow history
-- **UserContext propagation** through Temporal headers
+- **`log` (default)** — structured slog output, zero dependencies, write-only
+- **`sqlite`** — append-only SQLite database with indexed columns, queryable via SQL
+- **Timeout enforcement** via `context.WithTimeout` on backend calls (`TOOLMESH_EXEC_TIMEOUT`)
+- **Retries** handled by DADL `errors.retry_strategy` for REST backends
 
 ### 3. OpenFGA (Authorization)
 
@@ -44,7 +44,7 @@ The MCPAdapter connects to multiple external MCP servers and aggregates their to
 
 ### 5. Credential Store
 
-Credentials are injected at execution time within the Temporal activity scope. They never appear in prompts, logs, or model context.
+Credentials are injected at execution time within the executor pipeline scope. They never appear in prompts, logs, or model context.
 
 Phase 1 uses an environment-variable-based store (`CREDENTIAL_<NAME>=value`).
 
@@ -91,12 +91,13 @@ sequenceDiagram
 ```
 toolmesh/
 ├── cmd/
-│   ├── toolmesh/       # Main entrypoint (MCP Server + Temporal Worker)
+│   ├── toolmesh/       # Main entrypoint (MCP Server)
 │   └── tm-bootstrap/   # CLI: Load OpenFGA model, write example tuples
 ├── internal/
 │   ├── mcp/            # MCP Server (Streamable HTTP + STDIO)
 │   ├── backend/        # ToolBackend interface + MCPAdapter
-│   ├── executor/       # ExecuteTool pipeline + Temporal activities/workflows
+│   ├── executor/       # ExecuteTool pipeline (AuthZ → Creds → Gate → Exec → Audit)
+│   ├── audit/          # Audit store interface + log/sqlite implementations
 │   ├── authz/          # OpenFGA authorization
 │   ├── credentials/    # Credential store interface + EmbeddedStore
 │   ├── gate/           # Output Gate (goja policy engine)

@@ -15,13 +15,12 @@ All configuration is done via environment variables. Copy `.env.example` to `.en
 | `TOOLMESH_AUTH_ROLES` | `admin` | Comma-separated roles in simple auth mode |
 | `TOOLMESH_ISSUER` | `https://toolmesh.io/` | OAuth issuer URL (must end with `/`) |
 
-## Temporal
+## Audit
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `TEMPORAL_ADDRESS` | `localhost:7233` | Temporal server address |
-| `TEMPORAL_NAMESPACE` | `default` | Temporal namespace |
-| `TEMPORAL_TASK_QUEUE` | `toolmesh` | Temporal task queue name |
+| `AUDIT_STORE` | `log` | Audit store: `log` (structured slog output, write-only) or `sqlite` (append-only SQLite database, queryable) |
+| `AUDIT_RETENTION_DAYS` | `90` | Retention period in days for the sqlite store — entries older than this are automatically deleted |
 
 ## OpenFGA
 
@@ -55,13 +54,13 @@ CREDENTIAL_BRAVE_API_KEY=BSA-xxxxx
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `TOOLMESH_MCP_TIMEOUT` | `120` | HTTP client timeout in seconds for calls to downstream MCP servers |
-| `TOOLMESH_ACTIVITY_TIMEOUT` | `120` | Temporal activity StartToClose timeout in seconds for tool execution |
+| `TOOLMESH_EXEC_TIMEOUT` | `120` | Tool execution timeout in seconds — context deadline for backend calls. Falls back to `TOOLMESH_ACTIVITY_TIMEOUT` if set (backwards compat). |
 
 Increase these for backends that need more time, e.g. browser-based web fetchers processing heavy pages:
 
 ```bash
 TOOLMESH_MCP_TIMEOUT=180
-TOOLMESH_ACTIVITY_TIMEOUT=180
+TOOLMESH_EXEC_TIMEOUT=180
 ```
 
 ## Backend Configuration
@@ -86,10 +85,6 @@ These variables are used by `docker-compose.yml` and do not affect the ToolMesh 
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `POSTGRES_USER` | `postgres` | PostgreSQL superuser (used by Temporal) |
-| `POSTGRES_PASSWORD` | `postgres` | PostgreSQL superuser password |
-| `TEMPORAL_DB_USER` | `temporal` | Temporal database user |
-| `TEMPORAL_DB_PASSWORD` | `temporal` | Temporal database password |
 | `OPENFGA_DB_USER` | `openfga` | OpenFGA MySQL user |
 | `OPENFGA_DB_PASSWORD` | `openfga` | OpenFGA MySQL password |
 | `OPENFGA_DB_NAME` | `openfga` | OpenFGA MySQL database name |

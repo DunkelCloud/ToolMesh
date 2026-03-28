@@ -18,7 +18,7 @@ With DADL:  Claude → ToolMesh → REST API (via .dadl file)
 
 You don't write the YAML by hand. You ask an LLM. Claude, GPT, Gemini — any model that knows the DADL spec generates a working `.dadl` file in seconds. Describe what you need, drop the file into `config/dadl/`, done.
 
-> "Create a DADL for the Hetzner Cloud API — server list, create, delete, and power actions."
+> "Create a DADL for the GitHub API — list repos, open issues, and create pull requests."
 
 10 seconds. Works with any LLM that knows the format.
 

@@ -47,7 +47,7 @@ func (s *testCredStore) Healthy(_ context.Context) error { return nil }
 
 func TestRESTAdapter_ListTools(t *testing.T) {
 	spec := &dadl.Spec{
-		Version: "1.0",
+		Spec: "https://dadl.ai/spec/dadl-spec-v0.1.md",
 		Backend: dadl.BackendDef{
 			Name:    "testapi",
 			Type:    "rest",
@@ -149,7 +149,7 @@ func TestRESTAdapter_Execute(t *testing.T) {
 	defer server.Close()
 
 	spec := &dadl.Spec{
-		Version: "1.0",
+		Spec: "https://dadl.ai/spec/dadl-spec-v0.1.md",
 		Backend: dadl.BackendDef{
 			Name:    "testapi",
 			Type:    "rest",
@@ -322,7 +322,7 @@ func TestRESTAdapter_MultipartFileUpload(t *testing.T) {
 	defer srv.Close()
 
 	spec := &dadl.Spec{
-		Version: "1.0",
+		Spec: "https://dadl.ai/spec/dadl-spec-v0.1.md",
 		Backend: dadl.BackendDef{
 			Name:    "testupload",
 			Type:    "rest",

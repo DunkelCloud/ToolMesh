@@ -16,6 +16,12 @@ Current:    Claude → ToolMesh → MCP Server → REST API
 With DADL:  Claude → ToolMesh → REST API (via .dadl file)
 ```
 
+You don't write the YAML by hand. You ask an LLM. Claude, GPT, Gemini — any model that knows the DADL spec generates a working `.dadl` file in seconds. Describe what you need, drop the file into `config/dadl/`, done.
+
+> "Create a DADL for the Hetzner Cloud API — server list, create, delete, and power actions."
+
+10 seconds. Works with any LLM that knows the format.
+
 And unlike MCP gateways that just pass tool calls through, ToolMesh adds what production deployments actually need:
 
 - **Authorization** — fine-grained user → plan → tool control (OpenFGA)
@@ -334,7 +340,7 @@ That's it — ToolMesh handles auth, pagination, retries, and error mapping. The
 A `.dadl` file describes a REST API declaratively:
 
 ```yaml
-version: "1.0"
+spec: "https://dadl.ai/spec/dadl-spec-v0.1.md"
 backend:
   name: myapi
   type: rest
@@ -412,6 +418,12 @@ await toolmesh.vikunja_set_task_position({ id: 42, position: 1.5, project_view_i
 - **Error Handling**: Configurable retry on transient errors (429, 5xx) with exponential backoff
 - **Response Transformation**: JSONPath extraction (`result_path`) and jq filters (`transform`)
 - **Scoping**: Type definitions ready for large APIs (>100 tools) — implementation progressive
+
+### Creating DADLs
+
+As shown above, the fastest path is asking an LLM. If you use Claude Code with ToolMesh connected, it can create the `.dadl` file, add the backend entry to `config/backends.yaml`, and set the credential — all in one session.
+
+Before submitting a DADL to the registry, validate it locally with `dadl validate myapi.dadl`. To share a DADL with the community, either email it to dadl@dunkel.cloud or open a PR on the [dadl-registry](https://github.com/DunkelCloud/dadl-registry).
 
 ## Code Mode
 

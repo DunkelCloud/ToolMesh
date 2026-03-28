@@ -77,8 +77,8 @@ var validMethods = map[string]bool{
 
 // Validate checks a Spec for structural correctness.
 func Validate(spec *Spec) error {
-	if spec.Version != "1.0" {
-		return fmt.Errorf("unsupported version %q (must be \"1.0\")", spec.Version)
+	if spec.Spec != "https://dadl.ai/spec/dadl-spec-v0.1.md" {
+		return fmt.Errorf("unsupported spec %q (must be \"https://dadl.ai/spec/dadl-spec-v0.1.md\")", spec.Spec)
 	}
 
 	b := &spec.Backend

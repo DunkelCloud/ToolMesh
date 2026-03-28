@@ -50,7 +50,7 @@ A DADL file has the extension `.dadl` and is a YAML document with the following 
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `version` | string | yes | DADL spec version. Currently `"1.0"` |
+| `spec` | string | yes | URL of the DADL specification this file conforms to. Currently `"https://dadl.ai/spec/dadl-spec-v0.1.md"` |
 | `author` | string | no | Author of this DADL file (person or organization) |
 | `source_name` | string | no | Name of the source API being described (e.g. `"GitHub REST API"`) |
 | `source_url` | string | no | URL to the original API specification or documentation |
@@ -61,7 +61,7 @@ A DADL file has the extension `.dadl` and is a YAML document with the following 
 
 ```yaml
 # minimal.dadl
-version: "1.0"
+spec: "https://dadl.ai/spec/dadl-spec-v0.1.md"
 author: "Jane Doe"                          # optional
 source_name: "Example REST API"              # optional
 source_url: https://docs.example.com/api     # optional
@@ -664,7 +664,7 @@ Composite code runs in a **restricted sandbox** with the following constraints:
 
 ```yaml
 # stripe.dadl
-version: "1.0"
+spec: "https://dadl.ai/spec/dadl-spec-v0.1.md"
 
 backend:
   name: stripe

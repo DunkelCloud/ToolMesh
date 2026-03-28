@@ -19,6 +19,7 @@ All configuration is done via environment variables. Copy `.env.example` to `.en
 
 | Variable | Default | Description |
 |----------|---------|-------------|
+| `TEMPORAL_MODE` | `bypass` | Execution mode: `bypass` (direct execution) or `durable` (Temporal workflows with retry, timeout, audit trail) |
 | `TEMPORAL_ADDRESS` | `localhost:7233` | Temporal server address |
 | `TEMPORAL_NAMESPACE` | `default` | Temporal namespace |
 | `TEMPORAL_TASK_QUEUE` | `toolmesh` | Temporal task queue name |

@@ -31,6 +31,7 @@ type Config struct {
 	Issuer       string
 
 	// Temporal
+	TemporalMode      string // "bypass" (default) or "durable"
 	TemporalAddress   string
 	TemporalNamespace string
 	TemporalTaskQueue string
@@ -93,6 +94,7 @@ func Load() (*Config, error) {
 		AuthPassword:            envStr("TOOLMESH_AUTH_PASSWORD", ""),
 		APIKey:                  envStr("TOOLMESH_API_KEY", ""),
 		Issuer:                  envStr("TOOLMESH_ISSUER", "https://toolmesh.io/"),
+		TemporalMode:            envStr("TEMPORAL_MODE", "bypass"),
 		TemporalAddress:         envStr("TEMPORAL_ADDRESS", "localhost:7233"),
 		TemporalNamespace:       envStr("TEMPORAL_NAMESPACE", "default"),
 		TemporalTaskQueue:       envStr("TEMPORAL_TASK_QUEUE", "toolmesh"),
@@ -134,6 +136,10 @@ func Load() (*Config, error) {
 
 	if cfg.OpenFGAMode != "bypass" && cfg.OpenFGAMode != "restrict" {
 		return nil, fmt.Errorf("invalid OPENFGA_MODE: %q (must be \"bypass\" or \"restrict\")", cfg.OpenFGAMode)
+	}
+
+	if cfg.TemporalMode != "bypass" && cfg.TemporalMode != "durable" {
+		return nil, fmt.Errorf("invalid TEMPORAL_MODE: %q (must be \"bypass\" or \"durable\")", cfg.TemporalMode)
 	}
 
 	return cfg, nil

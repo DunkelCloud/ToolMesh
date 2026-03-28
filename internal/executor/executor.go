@@ -29,15 +29,19 @@ import (
 	"github.com/DunkelCloud/ToolMesh/internal/credentials"
 	"github.com/DunkelCloud/ToolMesh/internal/gate"
 	"github.com/DunkelCloud/ToolMesh/internal/userctx"
+	temporalclient "go.temporal.io/sdk/client"
+	"go.temporal.io/sdk/temporal"
 )
 
 // Executor orchestrates the full tool execution pipeline.
 type Executor struct {
-	authorizer *authz.Authorizer
-	creds      credentials.CredentialStore
-	backend    backend.ToolBackend
-	gate       *gate.Pipeline
-	logger     *slog.Logger
+	authorizer     *authz.Authorizer
+	creds          credentials.CredentialStore
+	backend        backend.ToolBackend
+	gate           *gate.Pipeline
+	temporalClient temporalclient.Client // nil = bypass mode
+	taskQueue      string
+	logger         *slog.Logger
 }
 
 // New creates a new Executor with all required dependencies.
@@ -46,14 +50,18 @@ func New(
 	creds credentials.CredentialStore,
 	be backend.ToolBackend,
 	gatePipeline *gate.Pipeline,
+	temporalClient temporalclient.Client,
+	taskQueue string,
 	logger *slog.Logger,
 ) *Executor {
 	return &Executor{
-		authorizer: authorizer,
-		creds:      creds,
-		backend:    be,
-		gate:       gatePipeline,
-		logger:     logger,
+		authorizer:     authorizer,
+		creds:          creds,
+		backend:        be,
+		gate:           gatePipeline,
+		temporalClient: temporalClient,
+		taskQueue:      taskQueue,
+		logger:         logger,
 	}
 }
 
@@ -69,9 +77,9 @@ type ExecuteToolRequest struct {
 }
 
 // ExecuteTool runs the full pipeline: AuthZ → Credentials → Backend → Gate.
+// When a Temporal client is configured (durable mode), the call is routed
+// through a Temporal workflow. Otherwise it executes directly (bypass mode).
 func (e *Executor) ExecuteTool(ctx context.Context, req ExecuteToolRequest) (*backend.ToolResult, error) {
-	start := time.Now()
-
 	uc := userctx.FromContext(ctx)
 	if uc == nil {
 		return nil, fmt.Errorf("no user context found")
@@ -95,6 +103,21 @@ func (e *Executor) ExecuteTool(ctx context.Context, req ExecuteToolRequest) (*ba
 		"tool", req.ToolName,
 		"params", req.Params,
 	)
+
+	// Durable execution via Temporal
+	if e.temporalClient != nil {
+		return e.executeViaTemporal(ctx, req)
+	}
+
+	// Direct execution (bypass mode)
+	return e.executeDirect(ctx, req)
+}
+
+// executeDirect runs the full pipeline locally without Temporal.
+func (e *Executor) executeDirect(ctx context.Context, req ExecuteToolRequest) (*backend.ToolResult, error) {
+	start := time.Now()
+
+	uc := userctx.FromContext(ctx)
 
 	// Step 1: AuthZ check via OpenFGA
 	if e.authorizer != nil {
@@ -220,6 +243,32 @@ func (e *Executor) ExecuteTool(ctx context.Context, req ExecuteToolRequest) (*ba
 	)
 
 	return result, nil
+}
+
+// executeViaTemporal starts a Temporal workflow for the tool call and waits
+// for its result. Search attributes are set for audit queries.
+func (e *Executor) executeViaTemporal(ctx context.Context, req ExecuteToolRequest) (*backend.ToolResult, error) {
+	workflowOpts := temporalclient.StartWorkflowOptions{
+		TaskQueue: e.taskQueue,
+		TypedSearchAttributes: temporal.NewSearchAttributes(
+			SAKeyUserID.ValueSet(req.UserID),
+			SAKeyCompanyID.ValueSet(req.CompanyID),
+			SAKeyCallerID.ValueSet(req.CallerID),
+			SAKeyCallerClass.ValueSet(req.CallerClass),
+			SAKeyToolName.ValueSet(req.ToolName),
+		),
+	}
+
+	run, err := e.temporalClient.ExecuteWorkflow(ctx, workflowOpts, ToolExecutionWorkflow, req)
+	if err != nil {
+		return nil, fmt.Errorf("start temporal workflow: %w", err)
+	}
+
+	var result backend.ToolResult
+	if err := run.Get(ctx, &result); err != nil {
+		return nil, fmt.Errorf("temporal workflow execution: %w", err)
+	}
+	return &result, nil
 }
 
 // resolveCredentials loads all credentials for a backend. It first tries

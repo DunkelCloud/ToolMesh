@@ -21,10 +21,11 @@ import (
 	"github.com/DunkelCloud/ToolMesh/internal/backend"
 )
 
-// ExecuteToolActivity is a Temporal activity that wraps ExecuteTool.
-// The Executor is injected via activity options (struct method).
+// ExecuteToolActivity is a Temporal activity that wraps executeDirect.
+// It calls executeDirect (not ExecuteTool) to avoid infinite recursion:
+// ExecuteTool → executeViaTemporal → workflow → activity → ExecuteTool.
 func (e *Executor) ExecuteToolActivity(ctx context.Context, req ExecuteToolRequest) (*backend.ToolResult, error) {
-	result, err := e.ExecuteTool(ctx, req)
+	result, err := e.executeDirect(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf("execute tool activity: %w", err)
 	}

@@ -1,17 +1,17 @@
 services:
   toolmesh:
-    build: .
+    image: ghcr.io/dunkelcloud/toolmesh:latest
+    # To build locally instead of pulling the image, comment the line above
+    # and uncomment the next line:
+    # build: .
     ports:
       - "${TOOLMESH_PORT:-8123}:8080"
     env_file: .env
     environment:
       - OPENFGA_MODE=${OPENFGA_MODE:-bypass}
+      - TEMPORAL_MODE=${TEMPORAL_MODE:-bypass}
       - TOOLMESH_DATA_DIR=/app/data
     depends_on:
-      temporal:
-        condition: service_healthy
-      openfga:
-        condition: service_healthy
       redis:
         condition: service_healthy
     volumes:
@@ -32,6 +32,7 @@ services:
 
   temporal:
     image: temporalio/auto-setup:latest
+    profiles: ["durable"]
     ports:
       - "7233:7233"
     environment:
@@ -52,6 +53,7 @@ services:
 
   temporal-ui:
     image: temporalio/ui:latest
+    profiles: ["durable"]
     ports:
       - "8233:8080"
     environment:
@@ -87,6 +89,7 @@ services:
 
   postgres:
     image: postgres:16
+    profiles: ["durable"]
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}

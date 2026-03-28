@@ -221,26 +221,40 @@ func main() {
 	}
 	gatePipeline := gate.NewPipeline(evaluators)
 
-	// Initialize executor
-	exec := executor.New(authorizer, credStore, compositeBackend, gatePipeline, logger)
-
-	// Initialize Temporal client and worker
+	// Initialize Temporal client and worker based on TEMPORAL_MODE
+	var temporalClient temporalclient.Client
 	var temporalWorker worker.Worker
-	tc, err := temporalclient.Dial(temporalclient.Options{
-		HostPort:  cfg.TemporalAddress,
-		Namespace: cfg.TemporalNamespace,
-		Logger:    newTemporalLogger(logger),
-		ContextPropagators: []workflow.ContextPropagator{
-			&userctx.HeaderPropagator{},
-		},
-	})
-	if err != nil {
-		logger.Warn("failed to connect to Temporal, running without workflow durability", "error", err)
-	} else {
+
+	if cfg.TemporalMode == "durable" {
+		tc, err := temporalclient.Dial(temporalclient.Options{
+			HostPort:  cfg.TemporalAddress,
+			Namespace: cfg.TemporalNamespace,
+			Logger:    newTemporalLogger(logger),
+			ContextPropagators: []workflow.ContextPropagator{
+				&userctx.HeaderPropagator{},
+			},
+		})
+		if err != nil {
+			logger.Error("TEMPORAL_MODE=durable but failed to connect to Temporal", "error", err)
+			os.Exit(1)
+		}
 		defer tc.Close()
+		temporalClient = tc
 
 		temporalWorker = worker.New(tc, cfg.TemporalTaskQueue, worker.Options{})
 		temporalWorker.RegisterWorkflow(executor.ToolExecutionWorkflow)
+		// Activity is registered after executor creation below.
+
+		logger.Info("Temporal worker started", "mode", "durable", "taskQueue", cfg.TemporalTaskQueue)
+	} else {
+		logger.Warn("Temporal durability bypassed — tool calls execute directly", "mode", "bypass")
+	}
+
+	// Initialize executor
+	exec := executor.New(authorizer, credStore, compositeBackend, gatePipeline, temporalClient, cfg.TemporalTaskQueue, logger)
+
+	// Register activity and start worker after executor is created
+	if temporalWorker != nil {
 		temporalWorker.RegisterActivity(exec.ExecuteToolActivity)
 
 		go func() {
@@ -248,7 +262,6 @@ func main() {
 				logger.Error("temporal worker failed", "error", err)
 			}
 		}()
-		logger.Info("Temporal worker started", "taskQueue", cfg.TemporalTaskQueue)
 	}
 
 	// Initialize token store for auth state.

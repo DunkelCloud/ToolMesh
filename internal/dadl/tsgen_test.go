@@ -21,7 +21,7 @@ import (
 
 func TestGenerateTypeScript(t *testing.T) {
 	spec := &Spec{
-		Version: "1.0",
+		Spec: "https://dadl.ai/spec/dadl-spec-v0.1.md",
 		Backend: BackendDef{
 			Name:        "myapi",
 			Type:        "rest",

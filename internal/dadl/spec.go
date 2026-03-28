@@ -19,7 +19,7 @@ import "time"
 
 // Spec represents a parsed .dadl file.
 type Spec struct {
-	Version string     `yaml:"version"`
+	Spec    string     `yaml:"spec"`
 	Backend BackendDef `yaml:"backend"`
 }
 

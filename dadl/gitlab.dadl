@@ -1,4 +1,4 @@
-version: "1.0"
+spec: "https://dadl.ai/spec/dadl-spec-v0.1.md"
 backend:
   name: gitlab
   type: rest

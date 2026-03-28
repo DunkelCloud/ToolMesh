@@ -21,7 +21,7 @@ import (
 
 func TestParseBytes_ValidMinimal(t *testing.T) {
 	yaml := `
-version: "1.0"
+spec: "https://dadl.ai/spec/dadl-spec-v0.1.md"
 backend:
   name: test-api
   type: rest
@@ -59,9 +59,9 @@ func TestParseBytes_ValidationErrors(t *testing.T) {
 		wantErr string
 	}{
 		{
-			name: "wrong version",
+			name: "wrong spec",
 			yaml: `
-version: "2.0"
+spec: "https://dadl.ai/spec/dadl-spec-v99.md"
 backend:
   name: x
   type: rest
@@ -71,12 +71,12 @@ backend:
       method: GET
       path: /x
 `,
-			wantErr: "unsupported version",
+			wantErr: "unsupported spec",
 		},
 		{
 			name: "wrong type",
 			yaml: `
-version: "1.0"
+spec: "https://dadl.ai/spec/dadl-spec-v0.1.md"
 backend:
   name: x
   type: graphql
@@ -91,7 +91,7 @@ backend:
 		{
 			name: "empty name",
 			yaml: `
-version: "1.0"
+spec: "https://dadl.ai/spec/dadl-spec-v0.1.md"
 backend:
   name: ""
   type: rest
@@ -106,7 +106,7 @@ backend:
 		{
 			name: "no tools",
 			yaml: `
-version: "1.0"
+spec: "https://dadl.ai/spec/dadl-spec-v0.1.md"
 backend:
   name: x
   type: rest
@@ -118,7 +118,7 @@ backend:
 		{
 			name: "tool missing method",
 			yaml: `
-version: "1.0"
+spec: "https://dadl.ai/spec/dadl-spec-v0.1.md"
 backend:
   name: x
   type: rest
@@ -132,7 +132,7 @@ backend:
 		{
 			name: "tool missing path",
 			yaml: `
-version: "1.0"
+spec: "https://dadl.ai/spec/dadl-spec-v0.1.md"
 backend:
   name: x
   type: rest
@@ -146,7 +146,7 @@ backend:
 		{
 			name: "undeclared path param",
 			yaml: `
-version: "1.0"
+spec: "https://dadl.ai/spec/dadl-spec-v0.1.md"
 backend:
   name: x
   type: rest
@@ -161,7 +161,7 @@ backend:
 		{
 			name: "path param wrong in",
 			yaml: `
-version: "1.0"
+spec: "https://dadl.ai/spec/dadl-spec-v0.1.md"
 backend:
   name: x
   type: rest
@@ -178,7 +178,7 @@ backend:
 		{
 			name: "invalid auth type",
 			yaml: `
-version: "1.0"
+spec: "https://dadl.ai/spec/dadl-spec-v0.1.md"
 backend:
   name: x
   type: rest
@@ -195,7 +195,7 @@ backend:
 		{
 			name: "invalid pagination strategy",
 			yaml: `
-version: "1.0"
+spec: "https://dadl.ai/spec/dadl-spec-v0.1.md"
 backend:
   name: x
   type: rest
@@ -227,7 +227,7 @@ backend:
 
 func TestParseBytes_FullSpec(t *testing.T) {
 	yaml := `
-version: "1.0"
+spec: "https://dadl.ai/spec/dadl-spec-v0.1.md"
 backend:
   name: myapi
   type: rest
@@ -322,7 +322,7 @@ backend:
 
 func TestParseBytes_CompositeValid(t *testing.T) {
 	yaml := `
-version: "1.0"
+spec: "https://dadl.ai/spec/dadl-spec-v0.1.md"
 backend:
   name: test-api
   type: rest
@@ -372,7 +372,7 @@ backend:
 
 func TestParseBytes_CompositeValidationErrors(t *testing.T) {
 	base := `
-version: "1.0"
+spec: "https://dadl.ai/spec/dadl-spec-v0.1.md"
 backend:
   name: test-api
   type: rest
@@ -480,7 +480,7 @@ backend:
 
 func TestContainsCode_NoComposites(t *testing.T) {
 	yaml := `
-version: "1.0"
+spec: "https://dadl.ai/spec/dadl-spec-v0.1.md"
 backend:
   name: test-api
   type: rest

@@ -1,4 +1,4 @@
-version: "1.0"
+spec: "https://dadl.ai/spec/dadl-spec-v0.1.md"
 author: "Dunkel Cloud GmbH"
 source_name: "Shelly Cloud Control API"
 source_url: https://shelly-api-docs.shelly.cloud/cloud-control-api/

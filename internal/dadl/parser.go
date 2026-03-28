@@ -27,6 +27,15 @@ import (
 // pathParamRe matches {param} placeholders in URL paths.
 var pathParamRe = regexp.MustCompile(`\{(\w+)\}`)
 
+// supportedSpecs lists spec URLs accepted by this version of ToolMesh.
+// Add new entries when a new DADL spec version is released.
+var supportedSpecs = map[string]bool{
+	"https://dadl.ai/spec/dadl-spec-v0.1.md": true,
+}
+
+// specVersionRe extracts the version from a DADL spec URL.
+var specVersionRe = regexp.MustCompile(`^https://dadl\.ai/spec/dadl-spec-v(\d+\.\d+)\.md$`)
+
 // Parse reads and validates a .dadl file, returning the parsed Spec.
 func Parse(path string) (*Spec, error) {
 	data, err := os.ReadFile(path) //nolint:gosec // path from trusted config
@@ -77,8 +86,12 @@ var validMethods = map[string]bool{
 
 // Validate checks a Spec for structural correctness.
 func Validate(spec *Spec) error {
-	if spec.Spec != "https://dadl.ai/spec/dadl-spec-v0.1.md" {
-		return fmt.Errorf("unsupported spec %q (must be \"https://dadl.ai/spec/dadl-spec-v0.1.md\")", spec.Spec)
+	if !supportedSpecs[spec.Spec] {
+		supported := make([]string, 0, len(supportedSpecs))
+		for s := range supportedSpecs {
+			supported = append(supported, s)
+		}
+		return fmt.Errorf("unsupported spec %q (supported: %s)", spec.Spec, strings.Join(supported, ", "))
 	}
 
 	b := &spec.Backend

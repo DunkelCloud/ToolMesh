@@ -10,7 +10,7 @@ Write a `.dadl` file — ToolMesh handles the rest.
 | Version | 0.1.0-draft |
 | Date | 2026-03-26 |
 | Author | Dunkel Cloud GmbH |
-| License | Apache 2.0 |
+| License | [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/) |
 
 ---
 
@@ -97,10 +97,10 @@ backend:
 | `openapi_source` | string | no | Path or URL to OpenAPI 3.x spec. When provided, schemas and parameters are derived from it. |
 | `arazzo_source` | string | no | Path or URL to Arazzo workflow file. Used as documentation context for Code Mode, not executed. |
 | `auth` | object | yes | Authentication configuration |
-| `defaults` | object | no | Default pagination, error, and response config for all tools |
+| `defaults` | object | no | Default headers, pagination, error, and response config for all tools. Supports `headers` (map of default HTTP headers), `pagination`, `errors`, and `response`. |
 | `types` | object | no | Type definitions (JSON Schema subset). Only needed without `openapi_source`. |
 | `tools` | object | yes | Map of tool definitions |
-| `examples` | array | no | Code examples for multi-step workflows (few-shot prompts for the LLM) |
+| `examples` | array | no | Code examples for multi-step workflows (few-shot prompts for the LLM). See Section 4.4. |
 | `coverage` | object | no | API coverage metadata. Helps LLMs understand scope and users assess fitness. |
 | `hints` | object | no | Per-tool domain knowledge for LLM consumers (structured key-value). Injected into tool descriptions at load time. Subject to security scanning. |
 | `setup` | object | no | Human-readable setup instructions. Describes how to obtain credentials, configure backends.yaml, and required permissions. Powers `toolmesh setup <name>` CLI. |
@@ -180,6 +180,30 @@ setup:
     - read_api
   docs_url: "https://docs.gitlab.com/ee/user/profile/personal_access_tokens.html"
   notes: "For self-hosted GitLab, replace the URL with your instance. The token prefix glpat- is for personal access tokens."
+```
+
+### 4.4 Examples Array
+
+Code examples that serve as few-shot prompts for the LLM in Code Mode. Each example demonstrates a multi-step workflow using `api.*` calls, helping the LLM understand common patterns for this backend.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `name` | string | yes | Short name for the example (e.g. `"Customer onboarding"`) |
+| `description` | string | yes | What the example demonstrates |
+| `code` | string | yes | JavaScript/TypeScript code using `api.*` calls. Same sandbox as composite tools. |
+
+```yaml
+# examples
+examples:
+  - name: "Customer onboarding"
+    description: "Create a customer and retrieve their details"
+    code: |
+      const customer = await api.create_customer({
+        email: "jane@example.com",
+        name: "Jane Doe"
+      });
+      const details = await api.get_customer({ id: customer.id });
+      return details;
 ```
 
 ---
@@ -274,8 +298,7 @@ Each tool maps to one REST API endpoint. In Code Mode, tools become methods on t
 | `method` | string | yes | HTTP method: GET, POST, PUT, PATCH, DELETE |
 | `path` | string | yes | URL path (may contain `{param}` placeholders) |
 | `description` | string | yes | Used as JSDoc comment in TypeScript interface |
-| `params` | object | no | Parameter definitions (path, query, header) |
-| `body` | object | no | Request body schema |
+| `params` | object | no | Parameter definitions (path, query, header, body). See Section 6.1. |
 | `content_type` | string | no | Request content type. Default: `application/json`. Use `multipart/form-data` for file uploads. |
 | `max_body_size` | string | no | Max upload size, e.g. `50MB` |
 | `depends_on` | array | no | Informational: other tools that should be called first. Becomes JSDoc hint. |
@@ -322,6 +345,7 @@ Supported `in:` values:
 |-------|---------|
 | `path` | URL path segment (`/items/{id}`) |
 | `query` | URL query parameter (`?limit=10`) |
+| `header` | HTTP request header (e.g. `X-Custom-Header: value`) |
 | `body` | JSON body field (for `application/json`) or form field (for `application/x-www-form-urlencoded`) |
 
 ### 6.2 File Handling
@@ -451,6 +475,28 @@ errors:
     header: X-RateLimit-Remaining
     retry_after_header: Retry-After
 ```
+
+### 8.1 Rate Limit Behavior
+
+When `rate_limit` is configured, ToolMesh performs **proactive throttling** — it inspects rate-limit headers on every response and acts before the API rejects requests.
+
+**Request flow:**
+
+1. Before each request, ToolMesh checks the cached value of `rate_limit.header` (e.g. `X-RateLimit-Remaining`).
+2. If the remaining count is **0**, ToolMesh **pauses** the request and waits until the reset time.
+3. The wait duration is determined by (in order of precedence):
+   - The `retry_after_header` response header (e.g. `Retry-After: 30`) — seconds or HTTP date.
+   - The `X-RateLimit-Reset` header if present — Unix timestamp.
+   - Fallback: exponential backoff starting at `retry_strategy.initial_delay`.
+4. After waiting, ToolMesh retries the request. This counts toward `retry_strategy.max_retries`.
+5. If a `429` response arrives despite proactive throttling (race condition, shared quota), it is handled by `retry_on` with the same backoff strategy.
+
+**When `rate_limit` is not configured:** ToolMesh relies solely on `retry_on` — a `429` response triggers reactive retries with the configured backoff strategy. No proactive throttling occurs.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `header` | string | Response header containing remaining request quota (e.g. `X-RateLimit-Remaining`) |
+| `retry_after_header` | string | Response header indicating when to retry (e.g. `Retry-After`). Supports seconds and HTTP date formats. |
 
 ---
 
@@ -723,6 +769,10 @@ backend:
       method: POST
       path: /customers
       description: "Create a new customer"
+      params:
+        email: { type: string, in: body, required: true }
+        name: { type: string, in: body }
+        metadata: { type: object, in: body }
       response:
         result_path: "$"
       pagination: none
@@ -741,7 +791,7 @@ backend:
 
 ---
 
-## 13 ToolMesh Integration
+## 14 ToolMesh Integration
 
 DADL files are consumed by **ToolMesh** and integrated into its six-pillar architecture:
 
@@ -758,4 +808,4 @@ DADL files are consumed by **ToolMesh** and integrated into its six-pillar archi
 
 *DADL is created and maintained by [Dunkel Cloud GmbH](https://dunkel.cloud)*
 
-[ToolMesh](https://toolmesh.io) · [GitHub](https://github.com/DunkelCloud) · Apache 2.0
+[ToolMesh](https://toolmesh.io) · [GitHub](https://github.com/DunkelCloud) · This specification is licensed under [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/). ToolMesh source code is licensed under Apache 2.0.

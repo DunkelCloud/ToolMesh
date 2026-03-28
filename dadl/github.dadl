@@ -6,18 +6,18 @@ backend:
   description: "GitHub REST API — repositories, issues, pull requests, commits, and code search"
 
   coverage:
-    endpoints: 59
+    endpoints: 189
     total_endpoints: 900
-    percentage: 7
-    focus: "repos, orgs, issues, PRs (full CRUD + merge + reviews), commits, branches, git refs, file management, labels, milestones, search, releases (full CRUD), actions/workflows/jobs, users, tags, topics"
-    missing: "projects v2, teams, webhooks, deployments, code scanning, packages, gists, notifications, environments, pages"
-    last_reviewed: "2026-03-27"
+    percentage: 21
+    focus: "repos (full CRUD + fork + collaborators + topics), orgs (members + teams), issues (full CRUD + comments + events + reactions), PRs (full CRUD + merge + reviews + review comments + requested reviewers), commits, branches (+ protection), git refs + objects (blobs, trees, commits), file management, labels, milestones, search (code + issues + repos + users + commits), releases (full CRUD), actions (workflows + runs + jobs + logs + secrets + artifacts + dispatch), users, tags, webhooks, deployments (+ statuses), environments, gists (full CRUD), notifications, check runs/suites, commit statuses, starring, watching, pages, code scanning, dependabot, secret scanning"
+    missing: "projects v2, packages, codespaces, copilot, security advisories, rate limit API, git LFS, autolinks, repository rulesets"
+    last_reviewed: "2026-03-28"
 
   setup:
     credential_steps:
       - "Navigate to GitHub → Settings → Developer settings → Personal access tokens → Tokens (classic)"
       - "Click 'Generate new token (classic)'"
-      - "Select scopes: repo (full access), read:org (list organizations)"
+      - "Select scopes: repo (full access), read:org (list organizations), workflow (actions), admin:repo_hook (webhooks), delete_repo (delete repos), gist, notifications, read:packages"
       - "Copy the token (starts with ghp_ or github_pat_)"
     env_var: CREDENTIAL_GITHUB_TOKEN
     backends_yaml: |
@@ -31,6 +31,11 @@ backend:
     optional_scopes:
       - read:user
       - workflow
+      - admin:repo_hook
+      - delete_repo
+      - gist
+      - notifications
+      - read:packages
     docs_url: "https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens"
 
   auth:
@@ -94,11 +99,78 @@ backend:
   # Markdown:
   #   Body fields (issues, PRs, comments) support GitHub-Flavored
   #   Markdown including task lists, code blocks, and @mentions.
+  #
+  # Permissions:
+  #   Some endpoints require specific token scopes (e.g. delete_repo,
+  #   admin:repo_hook). Check setup.optional_scopes for details.
   # ──────────────────────────────────────────────────────────────
 
   tools:
 
     # ── Repositories ──────────────────────────────────────────
+
+    create_repo:
+      method: POST
+      path: /user/repos
+      description: "Create a new repository for the authenticated user. Set private=true for a private repo. auto_init=true creates an initial commit with a README."
+      params:
+        name: { type: string, in: body, required: true }
+        description: { type: string, in: body }
+        homepage: { type: string, in: body }
+        private: { type: boolean, in: body, default: false }
+        has_issues: { type: boolean, in: body, default: true }
+        has_projects: { type: boolean, in: body, default: true }
+        has_wiki: { type: boolean, in: body, default: true }
+        has_discussions: { type: boolean, in: body }
+        auto_init: { type: boolean, in: body }
+        gitignore_template: { type: string, in: body }
+        license_template: { type: string, in: body }
+        allow_squash_merge: { type: boolean, in: body }
+        allow_merge_commit: { type: boolean, in: body }
+        allow_rebase_merge: { type: boolean, in: body }
+        delete_branch_on_merge: { type: boolean, in: body }
+        is_template: { type: boolean, in: body }
+      pagination: none
+
+    create_org_repo:
+      method: POST
+      path: /orgs/{org}/repos
+      description: "Create a new repository in an organization. Requires org admin or repo creation permissions."
+      params:
+        org: { type: string, in: path, required: true }
+        name: { type: string, in: body, required: true }
+        description: { type: string, in: body }
+        homepage: { type: string, in: body }
+        private: { type: boolean, in: body, default: false }
+        visibility: { type: string, in: body }
+        has_issues: { type: boolean, in: body, default: true }
+        has_projects: { type: boolean, in: body, default: true }
+        has_wiki: { type: boolean, in: body, default: true }
+        has_discussions: { type: boolean, in: body }
+        auto_init: { type: boolean, in: body }
+        gitignore_template: { type: string, in: body }
+        license_template: { type: string, in: body }
+        allow_squash_merge: { type: boolean, in: body }
+        allow_merge_commit: { type: boolean, in: body }
+        allow_rebase_merge: { type: boolean, in: body }
+        delete_branch_on_merge: { type: boolean, in: body }
+        is_template: { type: boolean, in: body }
+        team_id: { type: integer, in: body }
+      pagination: none
+
+    create_repo_from_template:
+      method: POST
+      path: /repos/{template_owner}/{template_repo}/generate
+      description: "Create a new repository from a template. The template must have is_template=true."
+      params:
+        template_owner: { type: string, in: path, required: true }
+        template_repo: { type: string, in: path, required: true }
+        owner: { type: string, in: body, required: true }
+        name: { type: string, in: body, required: true }
+        description: { type: string, in: body }
+        include_all_branches: { type: boolean, in: body }
+        private: { type: boolean, in: body }
+      pagination: none
 
     list_user_repos:
       method: GET
@@ -111,23 +183,13 @@ backend:
         page: { type: integer, in: query }
         per_page: { type: integer, in: query, default: 30 }
 
-    # ── Organizations ──────────────────────────────────────
-
-    list_orgs:
+    list_user_repos_by_username:
       method: GET
-      path: /user/orgs
-      description: "List organizations the authenticated user belongs to."
+      path: /users/{username}/repos
+      description: "List public repositories for a specific user."
       params:
-        page: { type: integer, in: query }
-        per_page: { type: integer, in: query, default: 30 }
-
-    list_org_repos:
-      method: GET
-      path: /orgs/{org}/repos
-      description: "List repositories for an organization. Use list_orgs first to find org names."
-      params:
-        org: { type: string, in: path, required: true }
-        type: { type: string, in: query, default: "all" }
+        username: { type: string, in: path, required: true }
+        type: { type: string, in: query, default: "owner" }
         sort: { type: string, in: query, default: "updated" }
         direction: { type: string, in: query, default: "desc" }
         page: { type: integer, in: query }
@@ -164,6 +226,16 @@ backend:
         allow_auto_merge: { type: boolean, in: body }
         allow_update_branch: { type: boolean, in: body }
         archived: { type: boolean, in: body }
+        default_branch: { type: string, in: body }
+      pagination: none
+
+    delete_repo:
+      method: DELETE
+      path: /repos/{owner}/{repo}
+      description: "Delete a repository. Requires delete_repo scope. This action is irreversible."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
       pagination: none
 
     replace_topics:
@@ -174,6 +246,272 @@ backend:
         owner: { type: string, in: path, required: true }
         repo: { type: string, in: path, required: true }
         names: { type: array, in: body, required: true }
+      pagination: none
+
+    list_repo_languages:
+      method: GET
+      path: /repos/{owner}/{repo}/languages
+      description: "List languages for a repository. Returns a map of language name to bytes of code."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+      pagination: none
+
+    list_repo_contributors:
+      method: GET
+      path: /repos/{owner}/{repo}/contributors
+      description: "List contributors to a repository, sorted by number of commits."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        anon: { type: string, in: query }
+        page: { type: integer, in: query }
+        per_page: { type: integer, in: query, default: 30 }
+
+    get_readme:
+      method: GET
+      path: /repos/{owner}/{repo}/readme
+      description: "Get the README file for a repository. Content is base64 encoded."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        ref: { type: string, in: query }
+      pagination: none
+
+    # ── Forks ────────────────────────────────────────────────
+
+    list_forks:
+      method: GET
+      path: /repos/{owner}/{repo}/forks
+      description: "List forks of a repository."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        sort: { type: string, in: query, default: "newest" }
+        page: { type: integer, in: query }
+        per_page: { type: integer, in: query, default: 30 }
+
+    create_fork:
+      method: POST
+      path: /repos/{owner}/{repo}/forks
+      description: "Fork a repository. Optionally specify an organization to fork into. Forking is asynchronous — poll get_repo to check when complete."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        organization: { type: string, in: body }
+        name: { type: string, in: body }
+        default_branch_only: { type: boolean, in: body }
+      pagination: none
+
+    # ── Collaborators ────────────────────────────────────────
+
+    list_collaborators:
+      method: GET
+      path: /repos/{owner}/{repo}/collaborators
+      description: "List collaborators for a repository. Affiliation: outside, direct, all."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        affiliation: { type: string, in: query, default: "all" }
+        permission: { type: string, in: query }
+        page: { type: integer, in: query }
+        per_page: { type: integer, in: query, default: 30 }
+
+    check_collaborator:
+      method: GET
+      path: /repos/{owner}/{repo}/collaborators/{username}
+      description: "Check if a user is a collaborator. Returns 204 if yes, 404 if no."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        username: { type: string, in: path, required: true }
+      pagination: none
+
+    add_collaborator:
+      method: PUT
+      path: /repos/{owner}/{repo}/collaborators/{username}
+      description: "Add a collaborator to a repository. Permission: pull, triage, push, maintain, admin."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        username: { type: string, in: path, required: true }
+        permission: { type: string, in: body, default: "push" }
+      pagination: none
+
+    remove_collaborator:
+      method: DELETE
+      path: /repos/{owner}/{repo}/collaborators/{username}
+      description: "Remove a collaborator from a repository."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        username: { type: string, in: path, required: true }
+      pagination: none
+
+    # ── Organizations ──────────────────────────────────────
+
+    list_orgs:
+      method: GET
+      path: /user/orgs
+      description: "List organizations the authenticated user belongs to."
+      params:
+        page: { type: integer, in: query }
+        per_page: { type: integer, in: query, default: 30 }
+
+    get_org:
+      method: GET
+      path: /orgs/{org}
+      description: "Get an organization by name, including member count, repo count, and billing info."
+      params:
+        org: { type: string, in: path, required: true }
+      pagination: none
+
+    list_org_repos:
+      method: GET
+      path: /orgs/{org}/repos
+      description: "List repositories for an organization. Use list_orgs first to find org names."
+      params:
+        org: { type: string, in: path, required: true }
+        type: { type: string, in: query, default: "all" }
+        sort: { type: string, in: query, default: "updated" }
+        direction: { type: string, in: query, default: "desc" }
+        page: { type: integer, in: query }
+        per_page: { type: integer, in: query, default: 30 }
+
+    list_org_members:
+      method: GET
+      path: /orgs/{org}/members
+      description: "List members of an organization. Filter by role: all, admin, member."
+      params:
+        org: { type: string, in: path, required: true }
+        filter: { type: string, in: query, default: "all" }
+        role: { type: string, in: query, default: "all" }
+        page: { type: integer, in: query }
+        per_page: { type: integer, in: query, default: 30 }
+
+    # ── Teams ────────────────────────────────────────────────
+
+    list_org_teams:
+      method: GET
+      path: /orgs/{org}/teams
+      description: "List teams in an organization."
+      params:
+        org: { type: string, in: path, required: true }
+        page: { type: integer, in: query }
+        per_page: { type: integer, in: query, default: 30 }
+
+    get_team:
+      method: GET
+      path: /orgs/{org}/teams/{team_slug}
+      description: "Get a team by its slug (URL-friendly name)."
+      params:
+        org: { type: string, in: path, required: true }
+        team_slug: { type: string, in: path, required: true }
+      pagination: none
+
+    create_team:
+      method: POST
+      path: /orgs/{org}/teams
+      description: "Create a team in an organization. Privacy: secret (visible to org members) or closed (visible to org members, searchable)."
+      params:
+        org: { type: string, in: path, required: true }
+        name: { type: string, in: body, required: true }
+        description: { type: string, in: body }
+        privacy: { type: string, in: body }
+        notification_setting: { type: string, in: body }
+        permission: { type: string, in: body }
+        parent_team_id: { type: integer, in: body }
+        repo_names: { type: array, in: body }
+        maintainers: { type: array, in: body }
+      pagination: none
+
+    update_team:
+      method: PATCH
+      path: /orgs/{org}/teams/{team_slug}
+      description: "Update a team. Only include fields you want to change."
+      params:
+        org: { type: string, in: path, required: true }
+        team_slug: { type: string, in: path, required: true }
+        name: { type: string, in: body }
+        description: { type: string, in: body }
+        privacy: { type: string, in: body }
+        notification_setting: { type: string, in: body }
+        permission: { type: string, in: body }
+        parent_team_id: { type: integer, in: body }
+      pagination: none
+
+    delete_team:
+      method: DELETE
+      path: /orgs/{org}/teams/{team_slug}
+      description: "Delete a team from an organization."
+      params:
+        org: { type: string, in: path, required: true }
+        team_slug: { type: string, in: path, required: true }
+      pagination: none
+
+    list_team_members:
+      method: GET
+      path: /orgs/{org}/teams/{team_slug}/members
+      description: "List members of a team. Role filter: all, member, maintainer."
+      params:
+        org: { type: string, in: path, required: true }
+        team_slug: { type: string, in: path, required: true }
+        role: { type: string, in: query, default: "all" }
+        page: { type: integer, in: query }
+        per_page: { type: integer, in: query, default: 30 }
+
+    add_team_member:
+      method: PUT
+      path: /orgs/{org}/teams/{team_slug}/memberships/{username}
+      description: "Add or update a team member. Role: member or maintainer."
+      params:
+        org: { type: string, in: path, required: true }
+        team_slug: { type: string, in: path, required: true }
+        username: { type: string, in: path, required: true }
+        role: { type: string, in: body, default: "member" }
+      pagination: none
+
+    remove_team_member:
+      method: DELETE
+      path: /orgs/{org}/teams/{team_slug}/memberships/{username}
+      description: "Remove a member from a team."
+      params:
+        org: { type: string, in: path, required: true }
+        team_slug: { type: string, in: path, required: true }
+        username: { type: string, in: path, required: true }
+      pagination: none
+
+    list_team_repos:
+      method: GET
+      path: /orgs/{org}/teams/{team_slug}/repos
+      description: "List repositories a team has access to."
+      params:
+        org: { type: string, in: path, required: true }
+        team_slug: { type: string, in: path, required: true }
+        page: { type: integer, in: query }
+        per_page: { type: integer, in: query, default: 30 }
+
+    add_team_repo:
+      method: PUT
+      path: /orgs/{org}/teams/{team_slug}/repos/{owner}/{repo}
+      description: "Add a repository to a team. Permission: pull, triage, push, maintain, admin."
+      params:
+        org: { type: string, in: path, required: true }
+        team_slug: { type: string, in: path, required: true }
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        permission: { type: string, in: body }
+      pagination: none
+
+    remove_team_repo:
+      method: DELETE
+      path: /orgs/{org}/teams/{team_slug}/repos/{owner}/{repo}
+      description: "Remove a repository from a team."
+      params:
+        org: { type: string, in: path, required: true }
+        team_slug: { type: string, in: path, required: true }
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
       pagination: none
 
     # ── Issues ────────────────────────────────────────────────
@@ -188,6 +526,8 @@ backend:
         state: { type: string, in: query, default: "open" }
         labels: { type: string, in: query }
         assignee: { type: string, in: query }
+        creator: { type: string, in: query }
+        mentioned: { type: string, in: query }
         sort: { type: string, in: query, default: "created" }
         direction: { type: string, in: query, default: "desc" }
         since: { type: string, in: query }
@@ -229,8 +569,31 @@ backend:
         title: { type: string, in: body }
         body: { type: string, in: body }
         state: { type: string, in: body }
+        state_reason: { type: string, in: body }
         labels: { type: array, in: body }
         assignees: { type: array, in: body }
+        milestone: { type: integer, in: body }
+      pagination: none
+
+    lock_issue:
+      method: PUT
+      path: /repos/{owner}/{repo}/issues/{issue_number}/lock
+      description: "Lock an issue. Lock reason: off-topic, too heated, resolved, spam."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        issue_number: { type: integer, in: path, required: true }
+        lock_reason: { type: string, in: body }
+      pagination: none
+
+    unlock_issue:
+      method: DELETE
+      path: /repos/{owner}/{repo}/issues/{issue_number}/lock
+      description: "Unlock an issue."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        issue_number: { type: integer, in: path, required: true }
       pagination: none
 
     list_issue_comments:
@@ -241,6 +604,7 @@ backend:
         owner: { type: string, in: path, required: true }
         repo: { type: string, in: path, required: true }
         issue_number: { type: integer, in: path, required: true }
+        since: { type: string, in: query }
         page: { type: integer, in: query }
         per_page: { type: integer, in: query, default: 30 }
 
@@ -253,6 +617,84 @@ backend:
         repo: { type: string, in: path, required: true }
         issue_number: { type: integer, in: path, required: true }
         body: { type: string, in: body, required: true }
+      pagination: none
+
+    update_issue_comment:
+      method: PATCH
+      path: /repos/{owner}/{repo}/issues/comments/{comment_id}
+      description: "Update an issue comment."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        comment_id: { type: integer, in: path, required: true }
+        body: { type: string, in: body, required: true }
+      pagination: none
+
+    delete_issue_comment:
+      method: DELETE
+      path: /repos/{owner}/{repo}/issues/comments/{comment_id}
+      description: "Delete an issue comment."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        comment_id: { type: integer, in: path, required: true }
+      pagination: none
+
+    list_issue_events:
+      method: GET
+      path: /repos/{owner}/{repo}/issues/{issue_number}/events
+      description: "List events for an issue (labeled, assigned, closed, reopened, etc.)."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        issue_number: { type: integer, in: path, required: true }
+        page: { type: integer, in: query }
+        per_page: { type: integer, in: query, default: 30 }
+
+    list_issue_assignees:
+      method: GET
+      path: /repos/{owner}/{repo}/assignees
+      description: "List available assignees for issues in a repository (users with push access)."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        page: { type: integer, in: query }
+        per_page: { type: integer, in: query, default: 30 }
+
+    # ── Issue Reactions ──────────────────────────────────────
+
+    list_issue_reactions:
+      method: GET
+      path: /repos/{owner}/{repo}/issues/{issue_number}/reactions
+      description: "List reactions on an issue. Content: +1, -1, laugh, confused, heart, hooray, rocket, eyes."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        issue_number: { type: integer, in: path, required: true }
+        content: { type: string, in: query }
+        page: { type: integer, in: query }
+        per_page: { type: integer, in: query, default: 30 }
+
+    create_issue_reaction:
+      method: POST
+      path: /repos/{owner}/{repo}/issues/{issue_number}/reactions
+      description: "Create a reaction on an issue. Content: +1, -1, laugh, confused, heart, hooray, rocket, eyes."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        issue_number: { type: integer, in: path, required: true }
+        content: { type: string, in: body, required: true }
+      pagination: none
+
+    create_issue_comment_reaction:
+      method: POST
+      path: /repos/{owner}/{repo}/issues/comments/{comment_id}/reactions
+      description: "Create a reaction on an issue comment."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        comment_id: { type: integer, in: path, required: true }
+        content: { type: string, in: body, required: true }
       pagination: none
 
     # ── Pull Requests ─────────────────────────────────────────
@@ -370,6 +812,77 @@ backend:
         body: { type: string, in: body }
         event: { type: string, in: body, required: true }
         comments: { type: array, in: body }
+        commit_id: { type: string, in: body }
+      pagination: none
+
+    # ── PR Review Comments ───────────────────────────────────
+
+    list_pull_review_comments:
+      method: GET
+      path: /repos/{owner}/{repo}/pulls/{pull_number}/comments
+      description: "List review comments on a pull request (inline code comments, not issue comments)."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        pull_number: { type: integer, in: path, required: true }
+        sort: { type: string, in: query, default: "created" }
+        direction: { type: string, in: query, default: "desc" }
+        since: { type: string, in: query }
+        page: { type: integer, in: query }
+        per_page: { type: integer, in: query, default: 30 }
+
+    create_pull_review_comment:
+      method: POST
+      path: /repos/{owner}/{repo}/pulls/{pull_number}/comments
+      description: "Create an inline review comment on a pull request. Specify path and line (or start_line + line for multi-line). side: LEFT or RIGHT for diff side."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        pull_number: { type: integer, in: path, required: true }
+        body: { type: string, in: body, required: true }
+        commit_id: { type: string, in: body, required: true }
+        path: { type: string, in: body, required: true }
+        line: { type: integer, in: body }
+        side: { type: string, in: body }
+        start_line: { type: integer, in: body }
+        start_side: { type: string, in: body }
+        subject_type: { type: string, in: body }
+      pagination: none
+
+    # ── PR Requested Reviewers ───────────────────────────────
+
+    list_requested_reviewers:
+      method: GET
+      path: /repos/{owner}/{repo}/pulls/{pull_number}/requested_reviewers
+      description: "List users and teams requested to review a pull request."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        pull_number: { type: integer, in: path, required: true }
+      pagination: none
+
+    request_reviewers:
+      method: POST
+      path: /repos/{owner}/{repo}/pulls/{pull_number}/requested_reviewers
+      description: "Request review from users or teams on a pull request."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        pull_number: { type: integer, in: path, required: true }
+        reviewers: { type: array, in: body }
+        team_reviewers: { type: array, in: body }
+      pagination: none
+
+    remove_requested_reviewers:
+      method: DELETE
+      path: /repos/{owner}/{repo}/pulls/{pull_number}/requested_reviewers
+      description: "Remove requested reviewers from a pull request."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        pull_number: { type: integer, in: path, required: true }
+        reviewers: { type: array, in: body }
+        team_reviewers: { type: array, in: body }
       pagination: none
 
     # ── Commits & Branches ────────────────────────────────────
@@ -384,6 +897,7 @@ backend:
         sha: { type: string, in: query }
         path: { type: string, in: query }
         author: { type: string, in: query }
+        committer: { type: string, in: query }
         since: { type: string, in: query }
         until: { type: string, in: query }
         page: { type: integer, in: query }
@@ -398,6 +912,17 @@ backend:
         repo: { type: string, in: path, required: true }
         ref: { type: string, in: path, required: true }
       pagination: none
+
+    compare_commits:
+      method: GET
+      path: /repos/{owner}/{repo}/compare/{basehead}
+      description: "Compare two commits. basehead format: 'base...head' (e.g. 'main...feature-branch'). Returns diff stats, commits, and file changes."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        basehead: { type: string, in: path, required: true }
+        page: { type: integer, in: query }
+        per_page: { type: integer, in: query, default: 30 }
 
     list_branches:
       method: GET
@@ -420,6 +945,46 @@ backend:
         branch: { type: string, in: path, required: true }
       pagination: none
 
+    # ── Branch Protection ────────────────────────────────────
+
+    get_branch_protection:
+      method: GET
+      path: /repos/{owner}/{repo}/branches/{branch}/protection
+      description: "Get branch protection rules for a branch."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        branch: { type: string, in: path, required: true }
+      pagination: none
+
+    update_branch_protection:
+      method: PUT
+      path: /repos/{owner}/{repo}/branches/{branch}/protection
+      description: "Update branch protection rules. Set required_status_checks, enforce_admins, required_pull_request_reviews, and restrictions."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        branch: { type: string, in: path, required: true }
+        required_status_checks: { type: object, in: body, required: true }
+        enforce_admins: { type: boolean, in: body, required: true }
+        required_pull_request_reviews: { type: object, in: body, required: true }
+        restrictions: { type: object, in: body, required: true }
+        required_linear_history: { type: boolean, in: body }
+        allow_force_pushes: { type: boolean, in: body }
+        allow_deletions: { type: boolean, in: body }
+        required_conversation_resolution: { type: boolean, in: body }
+      pagination: none
+
+    delete_branch_protection:
+      method: DELETE
+      path: /repos/{owner}/{repo}/branches/{branch}/protection
+      description: "Delete branch protection rules for a branch."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        branch: { type: string, in: path, required: true }
+      pagination: none
+
     # ── Git Refs ─────────────────────────────────────────────
 
     create_ref:
@@ -433,6 +998,18 @@ backend:
         sha: { type: string, in: body, required: true }
       pagination: none
 
+    update_ref:
+      method: PATCH
+      path: /repos/{owner}/{repo}/git/refs/{ref}
+      description: "Update a git reference to point to a new SHA. ref is without 'refs/' prefix (e.g. 'heads/main'). Set force=true to do a non-fast-forward update."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        ref: { type: string, in: path, required: true }
+        sha: { type: string, in: body, required: true }
+        force: { type: boolean, in: body }
+      pagination: none
+
     delete_ref:
       method: DELETE
       path: /repos/{owner}/{repo}/git/refs/{ref}
@@ -441,6 +1018,69 @@ backend:
         owner: { type: string, in: path, required: true }
         repo: { type: string, in: path, required: true }
         ref: { type: string, in: path, required: true }
+      pagination: none
+
+    # ── Git Objects ──────────────────────────────────────────
+
+    get_tree:
+      method: GET
+      path: /repos/{owner}/{repo}/git/trees/{tree_sha}
+      description: "Get a git tree by SHA. Set recursive=true to get the full tree (all nested directories). Returns tree entries with path, mode, type, sha."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        tree_sha: { type: string, in: path, required: true }
+        recursive: { type: string, in: query }
+      pagination: none
+
+    create_tree:
+      method: POST
+      path: /repos/{owner}/{repo}/git/trees
+      description: "Create a git tree. Each tree entry has path, mode (100644=file, 100755=executable, 040000=directory, 160000=submodule, 120000=symlink), type (blob/tree/commit), and sha or content."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        tree: { type: array, in: body, required: true }
+        base_tree: { type: string, in: body }
+      pagination: none
+
+    create_blob:
+      method: POST
+      path: /repos/{owner}/{repo}/git/blobs
+      description: "Create a git blob. Content can be utf-8 or base64 encoded (set encoding accordingly)."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        content: { type: string, in: body, required: true }
+        encoding: { type: string, in: body, default: "utf-8" }
+      pagination: none
+
+    create_git_commit:
+      method: POST
+      path: /repos/{owner}/{repo}/git/commits
+      description: "Create a git commit object. tree is the SHA of the tree, parents is an array of parent commit SHAs. Use with create_tree and update_ref for programmatic commits."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        message: { type: string, in: body, required: true }
+        tree: { type: string, in: body, required: true }
+        parents: { type: array, in: body, required: true }
+        author: { type: object, in: body }
+        committer: { type: object, in: body }
+      pagination: none
+
+    create_tag_object:
+      method: POST
+      path: /repos/{owner}/{repo}/git/tags
+      description: "Create an annotated tag object. object is the SHA to tag. type is the object type (commit, tree, blob). Use create_ref to create the tag ref afterwards."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        tag: { type: string, in: body, required: true }
+        message: { type: string, in: body, required: true }
+        object: { type: string, in: body, required: true }
+        type: { type: string, in: body, required: true }
+        tagger: { type: object, in: body }
       pagination: none
 
     # ── File Contents ─────────────────────────────────────────
@@ -509,6 +1149,48 @@ backend:
         page: { type: integer, in: query }
         per_page: { type: integer, in: query, default: 30 }
 
+    search_repos:
+      method: GET
+      path: /search/repositories
+      description: "Search repositories. Query syntax: 'keyword language:go stars:>100 topic:cli'. Sort: stars, forks, help-wanted-issues, updated."
+      params:
+        q: { type: string, in: query, required: true }
+        sort: { type: string, in: query }
+        order: { type: string, in: query, default: "desc" }
+        page: { type: integer, in: query }
+        per_page: { type: integer, in: query, default: 30 }
+
+    search_users:
+      method: GET
+      path: /search/users
+      description: "Search users. Query syntax: 'username type:user location:germany language:go followers:>100'."
+      params:
+        q: { type: string, in: query, required: true }
+        sort: { type: string, in: query }
+        order: { type: string, in: query, default: "desc" }
+        page: { type: integer, in: query }
+        per_page: { type: integer, in: query, default: 30 }
+
+    search_commits:
+      method: GET
+      path: /search/commits
+      description: "Search commits. Query syntax: 'fix repo:owner/repo author:username committer-date:>2026-01-01'. Sort: author-date, committer-date."
+      params:
+        q: { type: string, in: query, required: true }
+        sort: { type: string, in: query }
+        order: { type: string, in: query, default: "desc" }
+        page: { type: integer, in: query }
+        per_page: { type: integer, in: query, default: 30 }
+
+    search_topics:
+      method: GET
+      path: /search/topics
+      description: "Search topics by name. Returns matching topic names with descriptions and related info."
+      params:
+        q: { type: string, in: query, required: true }
+        page: { type: integer, in: query }
+        per_page: { type: integer, in: query, default: 30 }
+
     # ── Releases ──────────────────────────────────────────────
 
     list_releases:
@@ -538,6 +1220,16 @@ backend:
         owner: { type: string, in: path, required: true }
         repo: { type: string, in: path, required: true }
         release_id: { type: integer, in: path, required: true }
+      pagination: none
+
+    get_release_by_tag:
+      method: GET
+      path: /repos/{owner}/{repo}/releases/tags/{tag}
+      description: "Get a release by tag name (e.g. 'v1.0.0')."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        tag: { type: string, in: path, required: true }
       pagination: none
 
     create_release:
@@ -582,7 +1274,60 @@ backend:
         release_id: { type: integer, in: path, required: true }
       pagination: none
 
+    list_release_assets:
+      method: GET
+      path: /repos/{owner}/{repo}/releases/{release_id}/assets
+      description: "List assets (attached files) for a release."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        release_id: { type: integer, in: path, required: true }
+        page: { type: integer, in: query }
+        per_page: { type: integer, in: query, default: 30 }
+
+    delete_release_asset:
+      method: DELETE
+      path: /repos/{owner}/{repo}/releases/assets/{asset_id}
+      description: "Delete a release asset."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        asset_id: { type: integer, in: path, required: true }
+      pagination: none
+
     # ── Actions (CI/CD) ───────────────────────────────────────
+
+    list_workflows:
+      method: GET
+      path: /repos/{owner}/{repo}/actions/workflows
+      description: "List all workflows in a repository. Returns workflow ID, name, path, and state."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        page: { type: integer, in: query }
+        per_page: { type: integer, in: query, default: 30 }
+
+    get_workflow:
+      method: GET
+      path: /repos/{owner}/{repo}/actions/workflows/{workflow_id}
+      description: "Get a specific workflow by ID or filename (e.g. 'ci.yml')."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        workflow_id: { type: string, in: path, required: true }
+      pagination: none
+
+    dispatch_workflow:
+      method: POST
+      path: /repos/{owner}/{repo}/actions/workflows/{workflow_id}/dispatches
+      description: "Trigger a workflow_dispatch event. ref is the branch/tag to run on. inputs is a map of workflow input values."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        workflow_id: { type: string, in: path, required: true }
+        ref: { type: string, in: body, required: true }
+        inputs: { type: object, in: body }
+      pagination: none
 
     list_workflow_runs:
       method: GET
@@ -594,6 +1339,8 @@ backend:
         branch: { type: string, in: query }
         status: { type: string, in: query }
         event: { type: string, in: query }
+        actor: { type: string, in: query }
+        workflow_id: { type: integer, in: query }
         page: { type: integer, in: query }
         per_page: { type: integer, in: query, default: 30 }
 
@@ -606,16 +1353,6 @@ backend:
         repo: { type: string, in: path, required: true }
         run_id: { type: integer, in: path, required: true }
       pagination: none
-
-    list_workflows:
-      method: GET
-      path: /repos/{owner}/{repo}/actions/workflows
-      description: "List all workflows in a repository. Returns workflow ID, name, path, and state."
-      params:
-        owner: { type: string, in: path, required: true }
-        repo: { type: string, in: path, required: true }
-        page: { type: integer, in: query }
-        per_page: { type: integer, in: query, default: 30 }
 
     list_workflow_run_jobs:
       method: GET
@@ -667,6 +1404,315 @@ backend:
         owner: { type: string, in: path, required: true }
         repo: { type: string, in: path, required: true }
         run_id: { type: integer, in: path, required: true }
+      pagination: none
+
+    rerun_failed_jobs:
+      method: POST
+      path: /repos/{owner}/{repo}/actions/runs/{run_id}/rerun-failed-jobs
+      description: "Re-run only the failed jobs in a workflow run."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        run_id: { type: integer, in: path, required: true }
+      pagination: none
+
+    delete_workflow_run:
+      method: DELETE
+      path: /repos/{owner}/{repo}/actions/runs/{run_id}
+      description: "Delete a workflow run. The run must be completed."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        run_id: { type: integer, in: path, required: true }
+      pagination: none
+
+    list_workflow_run_artifacts:
+      method: GET
+      path: /repos/{owner}/{repo}/actions/runs/{run_id}/artifacts
+      description: "List artifacts for a workflow run. Artifacts are files produced during a run (logs, binaries, test results)."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        run_id: { type: integer, in: path, required: true }
+        page: { type: integer, in: query }
+        per_page: { type: integer, in: query, default: 30 }
+
+    list_repo_secrets:
+      method: GET
+      path: /repos/{owner}/{repo}/actions/secrets
+      description: "List repository secrets for GitHub Actions. Only returns secret names, not values."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        page: { type: integer, in: query }
+        per_page: { type: integer, in: query, default: 30 }
+
+    get_repo_public_key:
+      method: GET
+      path: /repos/{owner}/{repo}/actions/secrets/public-key
+      description: "Get the public key for encrypting secrets. Required before creating or updating a secret."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+      pagination: none
+
+    create_or_update_repo_secret:
+      method: PUT
+      path: /repos/{owner}/{repo}/actions/secrets/{secret_name}
+      description: "Create or update a repository secret. The encrypted_value must be encrypted with the repo's public key (from get_repo_public_key) using libsodium."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        secret_name: { type: string, in: path, required: true }
+        encrypted_value: { type: string, in: body, required: true }
+        key_id: { type: string, in: body, required: true }
+      pagination: none
+
+    delete_repo_secret:
+      method: DELETE
+      path: /repos/{owner}/{repo}/actions/secrets/{secret_name}
+      description: "Delete a repository secret."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        secret_name: { type: string, in: path, required: true }
+      pagination: none
+
+    list_repo_variables:
+      method: GET
+      path: /repos/{owner}/{repo}/actions/variables
+      description: "List repository variables for GitHub Actions."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        page: { type: integer, in: query }
+        per_page: { type: integer, in: query, default: 30 }
+
+    create_repo_variable:
+      method: POST
+      path: /repos/{owner}/{repo}/actions/variables
+      description: "Create a repository variable for GitHub Actions."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        name: { type: string, in: body, required: true }
+        value: { type: string, in: body, required: true }
+      pagination: none
+
+    update_repo_variable:
+      method: PATCH
+      path: /repos/{owner}/{repo}/actions/variables/{name}
+      description: "Update a repository variable."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        name: { type: string, in: path, required: true }
+        value: { type: string, in: body, required: true }
+      pagination: none
+
+    delete_repo_variable:
+      method: DELETE
+      path: /repos/{owner}/{repo}/actions/variables/{name}
+      description: "Delete a repository variable."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        name: { type: string, in: path, required: true }
+      pagination: none
+
+    # ── Webhooks ──────────────────────────────────────────────
+
+    list_repo_webhooks:
+      method: GET
+      path: /repos/{owner}/{repo}/hooks
+      description: "List webhooks for a repository."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        page: { type: integer, in: query }
+        per_page: { type: integer, in: query, default: 30 }
+
+    get_repo_webhook:
+      method: GET
+      path: /repos/{owner}/{repo}/hooks/{hook_id}
+      description: "Get a single webhook by ID."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        hook_id: { type: integer, in: path, required: true }
+      pagination: none
+
+    create_repo_webhook:
+      method: POST
+      path: /repos/{owner}/{repo}/hooks
+      description: "Create a webhook for a repository. config.url is the payload URL. events is an array of event names (e.g. ['push', 'pull_request'])."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        name: { type: string, in: body, default: "web" }
+        config: { type: object, in: body, required: true }
+        events: { type: array, in: body }
+        active: { type: boolean, in: body, default: true }
+      pagination: none
+
+    update_repo_webhook:
+      method: PATCH
+      path: /repos/{owner}/{repo}/hooks/{hook_id}
+      description: "Update a webhook. Only include fields you want to change."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        hook_id: { type: integer, in: path, required: true }
+        config: { type: object, in: body }
+        events: { type: array, in: body }
+        active: { type: boolean, in: body }
+      pagination: none
+
+    delete_repo_webhook:
+      method: DELETE
+      path: /repos/{owner}/{repo}/hooks/{hook_id}
+      description: "Delete a webhook from a repository."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        hook_id: { type: integer, in: path, required: true }
+      pagination: none
+
+    ping_repo_webhook:
+      method: POST
+      path: /repos/{owner}/{repo}/hooks/{hook_id}/pings
+      description: "Send a ping event to a webhook to test its configuration."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        hook_id: { type: integer, in: path, required: true }
+      pagination: none
+
+    # ── Deployments ──────────────────────────────────────────
+
+    list_deployments:
+      method: GET
+      path: /repos/{owner}/{repo}/deployments
+      description: "List deployments for a repository. Filter by sha, ref, task, or environment."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        sha: { type: string, in: query }
+        ref: { type: string, in: query }
+        task: { type: string, in: query }
+        environment: { type: string, in: query }
+        page: { type: integer, in: query }
+        per_page: { type: integer, in: query, default: 30 }
+
+    get_deployment:
+      method: GET
+      path: /repos/{owner}/{repo}/deployments/{deployment_id}
+      description: "Get a single deployment."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        deployment_id: { type: integer, in: path, required: true }
+      pagination: none
+
+    create_deployment:
+      method: POST
+      path: /repos/{owner}/{repo}/deployments
+      description: "Create a deployment. ref is the branch/tag/SHA to deploy. environment defaults to 'production'."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        ref: { type: string, in: body, required: true }
+        task: { type: string, in: body, default: "deploy" }
+        auto_merge: { type: boolean, in: body }
+        required_contexts: { type: array, in: body }
+        payload: { type: object, in: body }
+        environment: { type: string, in: body, default: "production" }
+        description: { type: string, in: body }
+        transient_environment: { type: boolean, in: body }
+        production_environment: { type: boolean, in: body }
+      pagination: none
+
+    delete_deployment:
+      method: DELETE
+      path: /repos/{owner}/{repo}/deployments/{deployment_id}
+      description: "Delete a deployment. Only inactive deployments can be deleted."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        deployment_id: { type: integer, in: path, required: true }
+      pagination: none
+
+    list_deployment_statuses:
+      method: GET
+      path: /repos/{owner}/{repo}/deployments/{deployment_id}/statuses
+      description: "List statuses for a deployment. States: error, failure, inactive, in_progress, queued, pending, success."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        deployment_id: { type: integer, in: path, required: true }
+        page: { type: integer, in: query }
+        per_page: { type: integer, in: query, default: 30 }
+
+    create_deployment_status:
+      method: POST
+      path: /repos/{owner}/{repo}/deployments/{deployment_id}/statuses
+      description: "Create a deployment status. state: error, failure, inactive, in_progress, queued, pending, success."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        deployment_id: { type: integer, in: path, required: true }
+        state: { type: string, in: body, required: true }
+        target_url: { type: string, in: body }
+        log_url: { type: string, in: body }
+        description: { type: string, in: body }
+        environment: { type: string, in: body }
+        environment_url: { type: string, in: body }
+        auto_inactive: { type: boolean, in: body }
+      pagination: none
+
+    # ── Environments ─────────────────────────────────────────
+
+    list_environments:
+      method: GET
+      path: /repos/{owner}/{repo}/environments
+      description: "List deployment environments for a repository."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        page: { type: integer, in: query }
+        per_page: { type: integer, in: query, default: 30 }
+
+    get_environment:
+      method: GET
+      path: /repos/{owner}/{repo}/environments/{environment_name}
+      description: "Get a deployment environment by name."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        environment_name: { type: string, in: path, required: true }
+      pagination: none
+
+    create_or_update_environment:
+      method: PUT
+      path: /repos/{owner}/{repo}/environments/{environment_name}
+      description: "Create or update a deployment environment. Configure wait_timer (minutes), reviewers, and deployment_branch_policy."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        environment_name: { type: string, in: path, required: true }
+        wait_timer: { type: integer, in: body }
+        reviewers: { type: array, in: body }
+        deployment_branch_policy: { type: object, in: body }
+      pagination: none
+
+    delete_environment:
+      method: DELETE
+      path: /repos/{owner}/{repo}/environments/{environment_name}
+      description: "Delete a deployment environment."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        environment_name: { type: string, in: path, required: true }
       pagination: none
 
     # ── Labels ───────────────────────────────────────────────
@@ -805,6 +1851,24 @@ backend:
         username: { type: string, in: path, required: true }
       pagination: none
 
+    list_followers:
+      method: GET
+      path: /users/{username}/followers
+      description: "List followers of a user."
+      params:
+        username: { type: string, in: path, required: true }
+        page: { type: integer, in: query }
+        per_page: { type: integer, in: query, default: 30 }
+
+    list_following:
+      method: GET
+      path: /users/{username}/following
+      description: "List users that a user is following."
+      params:
+        username: { type: string, in: path, required: true }
+        page: { type: integer, in: query }
+        per_page: { type: integer, in: query, default: 30 }
+
     # ── Tags ─────────────────────────────────────────────────
 
     list_tags:
@@ -816,3 +1880,454 @@ backend:
         repo: { type: string, in: path, required: true }
         page: { type: integer, in: query }
         per_page: { type: integer, in: query, default: 30 }
+
+    # ── Starring ─────────────────────────────────────────────
+
+    list_stargazers:
+      method: GET
+      path: /repos/{owner}/{repo}/stargazers
+      description: "List users who have starred a repository."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        page: { type: integer, in: query }
+        per_page: { type: integer, in: query, default: 30 }
+
+    list_starred_repos:
+      method: GET
+      path: /user/starred
+      description: "List repositories starred by the authenticated user."
+      params:
+        sort: { type: string, in: query, default: "created" }
+        direction: { type: string, in: query, default: "desc" }
+        page: { type: integer, in: query }
+        per_page: { type: integer, in: query, default: 30 }
+
+    check_starred:
+      method: GET
+      path: /user/starred/{owner}/{repo}
+      description: "Check if the authenticated user has starred a repo. Returns 204 if yes, 404 if no."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+      pagination: none
+
+    star_repo:
+      method: PUT
+      path: /user/starred/{owner}/{repo}
+      description: "Star a repository for the authenticated user."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+      pagination: none
+
+    unstar_repo:
+      method: DELETE
+      path: /user/starred/{owner}/{repo}
+      description: "Unstar a repository for the authenticated user."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+      pagination: none
+
+    # ── Watching ──────────────────────────────────────────────
+
+    list_watchers:
+      method: GET
+      path: /repos/{owner}/{repo}/subscribers
+      description: "List users watching (subscribed to) a repository."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        page: { type: integer, in: query }
+        per_page: { type: integer, in: query, default: 30 }
+
+    get_repo_subscription:
+      method: GET
+      path: /repos/{owner}/{repo}/subscription
+      description: "Get the authenticated user's subscription (watch status) for a repository."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+      pagination: none
+
+    watch_repo:
+      method: PUT
+      path: /repos/{owner}/{repo}/subscription
+      description: "Watch a repository. Set subscribed=true to receive notifications, ignored=true to mute."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        subscribed: { type: boolean, in: body }
+        ignored: { type: boolean, in: body }
+      pagination: none
+
+    unwatch_repo:
+      method: DELETE
+      path: /repos/{owner}/{repo}/subscription
+      description: "Stop watching a repository."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+      pagination: none
+
+    # ── Gists ────────────────────────────────────────────────
+
+    list_gists:
+      method: GET
+      path: /gists
+      description: "List gists for the authenticated user."
+      params:
+        since: { type: string, in: query }
+        page: { type: integer, in: query }
+        per_page: { type: integer, in: query, default: 30 }
+
+    list_public_gists:
+      method: GET
+      path: /gists/public
+      description: "List public gists, newest first."
+      params:
+        since: { type: string, in: query }
+        page: { type: integer, in: query }
+        per_page: { type: integer, in: query, default: 30 }
+
+    list_starred_gists:
+      method: GET
+      path: /gists/starred
+      description: "List gists starred by the authenticated user."
+      params:
+        since: { type: string, in: query }
+        page: { type: integer, in: query }
+        per_page: { type: integer, in: query, default: 30 }
+
+    get_gist:
+      method: GET
+      path: /gists/{gist_id}
+      description: "Get a single gist by ID, including all files and their content."
+      params:
+        gist_id: { type: string, in: path, required: true }
+      pagination: none
+
+    create_gist:
+      method: POST
+      path: /gists
+      description: "Create a gist. files is a map of filename to {content: string}. Set public=true for a public gist."
+      params:
+        description: { type: string, in: body }
+        files: { type: object, in: body, required: true }
+        public: { type: boolean, in: body, default: false }
+      pagination: none
+
+    update_gist:
+      method: PATCH
+      path: /gists/{gist_id}
+      description: "Update a gist. To delete a file, set its value to null. To rename, delete the old name and create a new one."
+      params:
+        gist_id: { type: string, in: path, required: true }
+        description: { type: string, in: body }
+        files: { type: object, in: body }
+      pagination: none
+
+    delete_gist:
+      method: DELETE
+      path: /gists/{gist_id}
+      description: "Delete a gist."
+      params:
+        gist_id: { type: string, in: path, required: true }
+      pagination: none
+
+    # ── Notifications ────────────────────────────────────────
+
+    list_notifications:
+      method: GET
+      path: /notifications
+      description: "List notifications for the authenticated user. Set all=true to include read notifications."
+      params:
+        all: { type: boolean, in: query, default: false }
+        participating: { type: boolean, in: query }
+        since: { type: string, in: query }
+        before: { type: string, in: query }
+        page: { type: integer, in: query }
+        per_page: { type: integer, in: query, default: 30 }
+
+    mark_notifications_read:
+      method: PUT
+      path: /notifications
+      description: "Mark all notifications as read. Optionally provide last_read_at (ISO 8601) to only mark notifications before that time."
+      params:
+        last_read_at: { type: string, in: body }
+      pagination: none
+
+    list_repo_notifications:
+      method: GET
+      path: /repos/{owner}/{repo}/notifications
+      description: "List notifications for a repository."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        all: { type: boolean, in: query, default: false }
+        participating: { type: boolean, in: query }
+        since: { type: string, in: query }
+        before: { type: string, in: query }
+        page: { type: integer, in: query }
+        per_page: { type: integer, in: query, default: 30 }
+
+    mark_repo_notifications_read:
+      method: PUT
+      path: /repos/{owner}/{repo}/notifications
+      description: "Mark all notifications in a repository as read."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        last_read_at: { type: string, in: body }
+      pagination: none
+
+    get_notification_thread:
+      method: GET
+      path: /notifications/threads/{thread_id}
+      description: "Get a single notification thread."
+      params:
+        thread_id: { type: integer, in: path, required: true }
+      pagination: none
+
+    mark_thread_read:
+      method: PATCH
+      path: /notifications/threads/{thread_id}
+      description: "Mark a notification thread as read."
+      params:
+        thread_id: { type: integer, in: path, required: true }
+      pagination: none
+
+    # ── Check Runs & Commit Status ───────────────────────────
+
+    list_check_runs_for_ref:
+      method: GET
+      path: /repos/{owner}/{repo}/commits/{ref}/check-runs
+      description: "List check runs for a commit SHA, branch name, or tag. Filter by check_name, status, or filter (latest, all)."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        ref: { type: string, in: path, required: true }
+        check_name: { type: string, in: query }
+        status: { type: string, in: query }
+        filter: { type: string, in: query, default: "latest" }
+        page: { type: integer, in: query }
+        per_page: { type: integer, in: query, default: 30 }
+
+    list_check_suites_for_ref:
+      method: GET
+      path: /repos/{owner}/{repo}/commits/{ref}/check-suites
+      description: "List check suites for a commit SHA, branch name, or tag."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        ref: { type: string, in: path, required: true }
+        app_id: { type: integer, in: query }
+        check_name: { type: string, in: query }
+        page: { type: integer, in: query }
+        per_page: { type: integer, in: query, default: 30 }
+
+    get_combined_status:
+      method: GET
+      path: /repos/{owner}/{repo}/commits/{ref}/status
+      description: "Get the combined status for a commit (aggregates all status checks). Returns state: success, failure, pending."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        ref: { type: string, in: path, required: true }
+      pagination: none
+
+    list_commit_statuses:
+      method: GET
+      path: /repos/{owner}/{repo}/commits/{ref}/statuses
+      description: "List individual status checks for a commit ref."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        ref: { type: string, in: path, required: true }
+        page: { type: integer, in: query }
+        per_page: { type: integer, in: query, default: 30 }
+
+    create_commit_status:
+      method: POST
+      path: /repos/{owner}/{repo}/statuses/{sha}
+      description: "Create a commit status. state: error, failure, pending, success. Provide target_url for linking to CI details."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        sha: { type: string, in: path, required: true }
+        state: { type: string, in: body, required: true }
+        target_url: { type: string, in: body }
+        description: { type: string, in: body }
+        context: { type: string, in: body, default: "default" }
+      pagination: none
+
+    # ── Pages ────────────────────────────────────────────────
+
+    get_pages:
+      method: GET
+      path: /repos/{owner}/{repo}/pages
+      description: "Get GitHub Pages configuration for a repository."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+      pagination: none
+
+    create_pages_site:
+      method: POST
+      path: /repos/{owner}/{repo}/pages
+      description: "Enable GitHub Pages for a repository. source.branch is the branch to publish from, source.path is '/' or '/docs'."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        source: { type: object, in: body, required: true }
+        build_type: { type: string, in: body }
+      pagination: none
+
+    update_pages_info:
+      method: PUT
+      path: /repos/{owner}/{repo}/pages
+      description: "Update GitHub Pages configuration."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        source: { type: object, in: body }
+        cname: { type: string, in: body }
+        build_type: { type: string, in: body }
+      pagination: none
+
+    delete_pages_site:
+      method: DELETE
+      path: /repos/{owner}/{repo}/pages
+      description: "Disable GitHub Pages for a repository."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+      pagination: none
+
+    list_pages_builds:
+      method: GET
+      path: /repos/{owner}/{repo}/pages/builds
+      description: "List GitHub Pages builds."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        page: { type: integer, in: query }
+        per_page: { type: integer, in: query, default: 30 }
+
+    # ── Code Scanning & Security ─────────────────────────────
+
+    list_code_scanning_alerts:
+      method: GET
+      path: /repos/{owner}/{repo}/code-scanning/alerts
+      description: "List code scanning alerts for a repository. State: open, closed, dismissed, fixed."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        state: { type: string, in: query }
+        severity: { type: string, in: query }
+        tool_name: { type: string, in: query }
+        ref: { type: string, in: query }
+        page: { type: integer, in: query }
+        per_page: { type: integer, in: query, default: 30 }
+
+    get_code_scanning_alert:
+      method: GET
+      path: /repos/{owner}/{repo}/code-scanning/alerts/{alert_number}
+      description: "Get a single code scanning alert."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        alert_number: { type: integer, in: path, required: true }
+      pagination: none
+
+    update_code_scanning_alert:
+      method: PATCH
+      path: /repos/{owner}/{repo}/code-scanning/alerts/{alert_number}
+      description: "Update a code scanning alert. Set state to 'dismissed' with a dismissed_reason, or 'open' to reopen."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        alert_number: { type: integer, in: path, required: true }
+        state: { type: string, in: body, required: true }
+        dismissed_reason: { type: string, in: body }
+        dismissed_comment: { type: string, in: body }
+      pagination: none
+
+    list_dependabot_alerts:
+      method: GET
+      path: /repos/{owner}/{repo}/dependabot/alerts
+      description: "List Dependabot alerts for a repository. State: auto_dismissed, dismissed, fixed, open."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        state: { type: string, in: query }
+        severity: { type: string, in: query }
+        ecosystem: { type: string, in: query }
+        package: { type: string, in: query }
+        scope: { type: string, in: query }
+        sort: { type: string, in: query, default: "created" }
+        direction: { type: string, in: query, default: "desc" }
+        page: { type: integer, in: query }
+        per_page: { type: integer, in: query, default: 30 }
+
+    get_dependabot_alert:
+      method: GET
+      path: /repos/{owner}/{repo}/dependabot/alerts/{alert_number}
+      description: "Get a single Dependabot alert."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        alert_number: { type: integer, in: path, required: true }
+      pagination: none
+
+    update_dependabot_alert:
+      method: PATCH
+      path: /repos/{owner}/{repo}/dependabot/alerts/{alert_number}
+      description: "Update a Dependabot alert. Set state to 'dismissed' with a dismissed_reason, or 'open' to reopen."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        alert_number: { type: integer, in: path, required: true }
+        state: { type: string, in: body, required: true }
+        dismissed_reason: { type: string, in: body }
+        dismissed_comment: { type: string, in: body }
+      pagination: none
+
+    list_secret_scanning_alerts:
+      method: GET
+      path: /repos/{owner}/{repo}/secret-scanning/alerts
+      description: "List secret scanning alerts for a repository. State: open, resolved."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        state: { type: string, in: query }
+        secret_type: { type: string, in: query }
+        resolution: { type: string, in: query }
+        sort: { type: string, in: query, default: "created" }
+        direction: { type: string, in: query, default: "desc" }
+        page: { type: integer, in: query }
+        per_page: { type: integer, in: query, default: 30 }
+
+    get_secret_scanning_alert:
+      method: GET
+      path: /repos/{owner}/{repo}/secret-scanning/alerts/{alert_number}
+      description: "Get a single secret scanning alert."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        alert_number: { type: integer, in: path, required: true }
+      pagination: none
+
+    update_secret_scanning_alert:
+      method: PATCH
+      path: /repos/{owner}/{repo}/secret-scanning/alerts/{alert_number}
+      description: "Update a secret scanning alert. Set state to 'resolved' with a resolution (false_positive, wont_fix, revoked, used_in_tests, pattern_edited, pattern_deleted)."
+      params:
+        owner: { type: string, in: path, required: true }
+        repo: { type: string, in: path, required: true }
+        alert_number: { type: integer, in: path, required: true }
+        state: { type: string, in: body, required: true }
+        resolution: { type: string, in: body }
+        resolution_comment: { type: string, in: body }
+      pagination: none

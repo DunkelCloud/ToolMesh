@@ -325,7 +325,11 @@ func schemaToTypeScript(schema map[string]any) string {
 		return ""
 	}
 
-	return "params: { " + strings.Join(parts, ", ") + " }"
+	if len(parts) == 1 {
+		return "params: { " + parts[0] + " }"
+	}
+
+	return "params: {\n    " + strings.Join(parts, ",\n    ") + "\n  }"
 }
 
 func sanitizeName(name string) string {

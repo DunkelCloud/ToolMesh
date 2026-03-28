@@ -51,7 +51,7 @@ A DADL file has the extension `.dadl` and is a YAML document with the following 
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `spec` | string | yes | URL of the DADL specification this file conforms to. Currently `"https://dadl.ai/spec/dadl-spec-v0.1.md"` |
-| `author` | string | no | Author of this DADL file (person or organization) |
+| `credits` | array of strings | no | Free-form list of contributors, maintainers, and sponsors. Each entry is a plain string — conventions emerge from usage (e.g. `"Jane Doe (@janedoe)"`, `"Acme Corp — sponsor"`). |
 | `source_name` | string | no | Name of the source API being described (e.g. `"GitHub REST API"`) |
 | `source_url` | string | no | URL to the original API specification or documentation |
 | `date` | string | no | Creation or last-modified date of this file (`YYYY-MM-DD`) |
@@ -62,7 +62,9 @@ A DADL file has the extension `.dadl` and is a YAML document with the following 
 ```yaml
 # minimal.dadl
 spec: "https://dadl.ai/spec/dadl-spec-v0.1.md"
-author: "Jane Doe"                          # optional
+credits:                                      # optional
+  - "Jane Doe (@janedoe)"
+  - "Acme Corp — verifies against production"
 source_name: "Example REST API"              # optional
 source_url: https://docs.example.com/api     # optional
 date: "2026-03-26"                            # optional

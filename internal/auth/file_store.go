@@ -251,6 +251,45 @@ func (s *FileTokenStore) ConsumeRefreshToken(_ context.Context, refreshToken str
 	return ti, nil
 }
 
+// WarmUp copies all current in-memory state to dst. Call this after
+// connecting to a Redis instance that may have just restarted and lost
+// its data, so tokens stored in the file store are immediately available
+// in the primary store without waiting for a read-through fallback.
+func (s *FileTokenStore) WarmUp(ctx context.Context, dst TokenStore) {
+	s.mu.Lock()
+	clients := make([]*OAuthClient, 0, len(s.clients))
+	for _, c := range s.clients {
+		clients = append(clients, c)
+	}
+	tokens := make([]*TokenInfo, 0, len(s.accessTokens))
+	for _, t := range s.accessTokens {
+		tokens = append(tokens, t)
+	}
+	refreshTokens := make([]*TokenInfo, 0, len(s.refreshTokens))
+	for _, t := range s.refreshTokens {
+		refreshTokens = append(refreshTokens, t)
+	}
+	s.mu.Unlock()
+
+	for _, c := range clients {
+		if err := dst.SaveClient(ctx, c); err != nil {
+			slog.Warn("warm-up: failed to copy client to primary store", "clientID", c.ClientID, "error", err)
+		}
+	}
+	for _, t := range tokens {
+		if err := dst.SaveToken(ctx, t); err != nil {
+			slog.Warn("warm-up: failed to copy access token to primary store", "error", err)
+		}
+	}
+	for _, t := range refreshTokens {
+		if err := dst.SaveRefreshToken(ctx, t); err != nil {
+			slog.Warn("warm-up: failed to copy refresh token to primary store", "error", err)
+		}
+	}
+	slog.Info("warm-up: file store state copied to primary store",
+		"clients", len(clients), "access_tokens", len(tokens), "refresh_tokens", len(refreshTokens))
+}
+
 // Cleanup periodically removes expired entries. Run as a goroutine.
 func (s *FileTokenStore) Cleanup(ctx context.Context) {
 	ticker := time.NewTicker(5 * time.Minute)

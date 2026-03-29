@@ -261,8 +261,10 @@ func main() {
 				logger.Warn("Redis not reachable, using file-only token store", "error", err)
 			} else {
 				logger.Info("Redis connected, using hybrid token store")
-				tokenStore = auth.NewHybridTokenStore(auth.NewRedisTokenStore(rdb), fileStore)
+				redisStore := auth.NewRedisTokenStore(rdb)
+				tokenStore = auth.NewHybridTokenStore(redisStore, fileStore)
 				rateLimiter = auth.NewDCRRateLimiter(rdb)
+				fileStore.WarmUp(ctx, redisStore)
 			}
 		}
 	}

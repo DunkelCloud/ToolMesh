@@ -8,6 +8,7 @@ All configuration is done via environment variables. Copy `.env.example` to `.en
 |----------|---------|-------------|
 | `TOOLMESH_PORT` | `8080` | HTTP port for the MCP server |
 | `TOOLMESH_TRANSPORT` | `http` | Transport mode: `http` or `stdio` |
+| `TOOLMESH_CORS_ORIGINS` | *(empty)* | Comma-separated list of allowed CORS origins (e.g. `https://claude.ai,https://app.example.com`). If unset, any origin is reflected — fine for localhost, not for production. |
 | `TOOLMESH_AUTH_PASSWORD` | *(empty)* | Password for OAuth 2.1 single-user authentication |
 | `TOOLMESH_API_KEY` | *(empty)* | Static API key (bypasses OAuth when set) |
 | `TOOLMESH_AUTH_USER` | `owner` | User identity in simple auth mode (password/single API key) |
@@ -33,7 +34,7 @@ All configuration is done via environment variables. Copy `.env.example` to `.en
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `REDIS_URL` | `redis://localhost:6379/0` | Redis connection URL |
+| `REDIS_URL` | `redis://keydb:6379/0` | KeyDB/Redis connection URL (Docker Compose service name: `keydb`) |
 
 ## Credential Store
 

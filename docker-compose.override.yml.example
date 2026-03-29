@@ -1,0 +1,83 @@
+# Local overrides for docker-compose.yml
+#
+# Copy this file to docker-compose.override.yml — Docker Compose picks it up
+# automatically on every `docker compose up`, no flags needed.
+#
+# Only uncomment the sections you actually need.
+
+services:
+
+  # --- Build locally instead of pulling from GHCR ---
+  # Useful during development or before the first release image is published.
+  #
+  # toolmesh:
+  #   image: toolmesh:dev
+  #   build:
+  #     context: .
+  #     dockerfile: Dockerfile
+
+  # --- OpenFGA authorization (OPENFGA_MODE=restrict) ---
+  # Uncomment all three services when you want fine-grained authorization.
+  # See the OpenFGA section in .env for the full enable procedure.
+  #
+  # openfga-migrate:
+  #   image: openfga/openfga:latest
+  #   command: migrate
+  #   environment:
+  #     - OPENFGA_DATASTORE_ENGINE=mysql
+  #     - OPENFGA_DATASTORE_URI=${OPENFGA_DB_USER:-openfga}:${OPENFGA_DB_PASSWORD:-openfga}@tcp(mysql:3306)/${OPENFGA_DB_NAME:-openfga}?parseTime=true
+  #   depends_on:
+  #     mysql:
+  #       condition: service_healthy
+  #
+  # openfga:
+  #   image: openfga/openfga:latest
+  #   ports:
+  #     - "8081:8080"
+  #     - "8082:8081"
+  #   command: run
+  #   environment:
+  #     - OPENFGA_DATASTORE_ENGINE=mysql
+  #     - OPENFGA_DATASTORE_URI=${OPENFGA_DB_USER:-openfga}:${OPENFGA_DB_PASSWORD:-openfga}@tcp(mysql:3306)/${OPENFGA_DB_NAME:-openfga}?parseTime=true
+  #   depends_on:
+  #     openfga-migrate:
+  #       condition: service_completed_successfully
+  #   healthcheck:
+  #     test: ["CMD", "/usr/local/bin/grpc_health_probe", "-addr=:8081"]
+  #     interval: 5s
+  #     timeout: 3s
+  #     retries: 5
+  #
+  # mysql:
+  #   image: mysql:8.0
+  #   environment:
+  #     MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-rootpassword}
+  #     MYSQL_DATABASE: ${OPENFGA_DB_NAME:-openfga}
+  #     MYSQL_USER: ${OPENFGA_DB_USER:-openfga}
+  #     MYSQL_PASSWORD: ${OPENFGA_DB_PASSWORD:-openfga}
+  #   volumes:
+  #     - mysqldata:/var/lib/mysql
+  #   healthcheck:
+  #     test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+  #     interval: 10s
+  #     timeout: 5s
+  #     retries: 10
+  #     start_period: 30s
+
+  # --- Reverse proxy (HTTPS / Claude.ai access) ---
+  # caddy:
+  #   image: caddy:2-alpine
+  #   ports:
+  #     - "443:443"
+  #     - "80:80"
+  #   volumes:
+  #     - ./Caddyfile:/etc/caddy/Caddyfile:ro
+  #     - caddy_data:/data
+  #     - caddy_config:/config
+  #   depends_on:
+  #     - toolmesh
+
+# volumes:
+#   mysqldata:    # uncomment together with the OpenFGA services above
+#   caddy_data:
+#   caddy_config:

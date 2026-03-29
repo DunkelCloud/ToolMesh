@@ -30,49 +30,58 @@ services:
   #   ports:
   #     - "3001:3001"
 
-  openfga-migrate:
-    image: openfga/openfga:latest
-    command: migrate
-    environment:
-      - OPENFGA_DATASTORE_ENGINE=mysql
-      - OPENFGA_DATASTORE_URI=${OPENFGA_DB_USER:-openfga}:${OPENFGA_DB_PASSWORD:-openfga}@tcp(mysql:3306)/${OPENFGA_DB_NAME:-openfga}?parseTime=true
-    depends_on:
-      mysql:
-        condition: service_healthy
-
-  openfga:
-    image: openfga/openfga:latest
-    ports:
-      - "8081:8080"
-      - "8082:8081"
-    command: run
-    environment:
-      - OPENFGA_DATASTORE_ENGINE=mysql
-      - OPENFGA_DATASTORE_URI=${OPENFGA_DB_USER:-openfga}:${OPENFGA_DB_PASSWORD:-openfga}@tcp(mysql:3306)/${OPENFGA_DB_NAME:-openfga}?parseTime=true
-    depends_on:
-      openfga-migrate:
-        condition: service_completed_successfully
-    healthcheck:
-      test: ["CMD", "/usr/local/bin/grpc_health_probe", "-addr=:8081"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-
-  mysql:
-    image: mysql:8.0
-    environment:
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-rootpassword}
-      MYSQL_DATABASE: ${OPENFGA_DB_NAME:-openfga}
-      MYSQL_USER: ${OPENFGA_DB_USER:-openfga}
-      MYSQL_PASSWORD: ${OPENFGA_DB_PASSWORD:-openfga}
-    volumes:
-      - mysqldata:/var/lib/mysql
-    healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-      start_period: 30s
+  # --- OpenFGA authorization (uncomment to enable OPENFGA_MODE=restrict) ---
+  # Required only when OPENFGA_MODE=restrict. In the default bypass mode
+  # these three services are not needed.
+  # To enable:
+  #   1. Uncomment all three services and the mysqldata volume below.
+  #   2. Run: docker compose exec toolmesh /tm-bootstrap
+  #   3. Set OPENFGA_STORE_ID and OPENFGA_MODE=restrict in .env.
+  #   4. docker compose restart toolmesh
+  #
+  # openfga-migrate:
+  #   image: openfga/openfga:latest
+  #   command: migrate
+  #   environment:
+  #     - OPENFGA_DATASTORE_ENGINE=mysql
+  #     - OPENFGA_DATASTORE_URI=${OPENFGA_DB_USER:-openfga}:${OPENFGA_DB_PASSWORD:-openfga}@tcp(mysql:3306)/${OPENFGA_DB_NAME:-openfga}?parseTime=true
+  #   depends_on:
+  #     mysql:
+  #       condition: service_healthy
+  #
+  # openfga:
+  #   image: openfga/openfga:latest
+  #   ports:
+  #     - "8081:8080"
+  #     - "8082:8081"
+  #   command: run
+  #   environment:
+  #     - OPENFGA_DATASTORE_ENGINE=mysql
+  #     - OPENFGA_DATASTORE_URI=${OPENFGA_DB_USER:-openfga}:${OPENFGA_DB_PASSWORD:-openfga}@tcp(mysql:3306)/${OPENFGA_DB_NAME:-openfga}?parseTime=true
+  #   depends_on:
+  #     openfga-migrate:
+  #       condition: service_completed_successfully
+  #   healthcheck:
+  #     test: ["CMD", "/usr/local/bin/grpc_health_probe", "-addr=:8081"]
+  #     interval: 5s
+  #     timeout: 3s
+  #     retries: 5
+  #
+  # mysql:
+  #   image: mysql:8.0
+  #   environment:
+  #     MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-rootpassword}
+  #     MYSQL_DATABASE: ${OPENFGA_DB_NAME:-openfga}
+  #     MYSQL_USER: ${OPENFGA_DB_USER:-openfga}
+  #     MYSQL_PASSWORD: ${OPENFGA_DB_PASSWORD:-openfga}
+  #   volumes:
+  #     - mysqldata:/var/lib/mysql
+  #   healthcheck:
+  #     test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+  #     interval: 10s
+  #     timeout: 5s
+  #     retries: 10
+  #     start_period: 30s
 
   redis:
     image: eqalpha/keydb:alpine
@@ -101,7 +110,7 @@ services:
   #     - toolmesh
 
 volumes:
-  mysqldata:
+  # mysqldata:  # uncomment together with the OpenFGA services above
   redisdata:
 
   # caddy_data:

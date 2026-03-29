@@ -16,7 +16,6 @@ package mcp
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"regexp"
@@ -31,7 +30,8 @@ import (
 type Handler struct {
 	executor   *executor.Executor
 	backend    backend.ToolBackend
-	codeParser *CodeModeParser
+	codeParser *CodeModeParser // kept for GenerateToolDefinitions / list_tools
+	codeRunner *CodeRunner
 	coercer    *tsdef.Coercer
 	rawTS      string // raw TypeScript content for built-in tools
 	logger     *slog.Logger
@@ -46,10 +46,14 @@ func NewHandler(exec *executor.Executor, back backend.ToolBackend, coercer *tsde
 		logger.Debug("codeParser nameMap entry", "sanitized", sanitized, "canonical", canonical)
 	}
 	logger.Info("codeParser initialized", "nameMapSize", len(parser.nameMap), "toolCount", len(tools))
+
+	runner := NewCodeRunner(parser.nameMap, exec, coercer, logger)
+
 	return &Handler{
 		executor:   exec,
 		backend:    back,
 		codeParser: parser,
+		codeRunner: runner,
 		coercer:    coercer,
 		rawTS:      rawTS,
 		logger:     logger,
@@ -181,86 +185,24 @@ func (h *Handler) handleExecuteCode(ctx context.Context, params map[string]any) 
 
 	h.logger.DebugContext(ctx, "execute_code input", "code", code)
 
-	calls, err := h.codeParser.ParseCode(code)
+	result, err := h.codeRunner.Execute(ctx, code)
 	if err != nil {
-		h.logger.WarnContext(ctx, "execute_code parse failed", "error", err, "code", code)
+		h.logger.WarnContext(ctx, "execute_code failed", "error", err)
+		// If we got a partial result (e.g. some calls succeeded before error), return it
+		if result != nil {
+			result.IsError = true
+			return result, nil
+		}
 		return &backend.ToolResult{
 			IsError: true,
 			Content: []any{map[string]any{
 				"type": "text",
-				"text": fmt.Sprintf("Failed to parse code: %s", err),
+				"text": fmt.Sprintf("execute_code failed: %s", err),
 			}},
 		}, nil
 	}
 
-	h.logger.DebugContext(ctx, "execute_code parsed calls", "count", len(calls))
-
-	results := make([]any, 0, len(calls))
-	for _, call := range calls {
-		h.logger.DebugContext(ctx, "execute_code dispatching",
-			"parsedTool", call.ToolName,
-			"params", call.Params,
-			"nameMapHit", h.codeParser.nameMap[call.ToolName] != "",
-		)
-
-		// Apply coercion for each parsed call
-		callParams := call.Params
-		if h.coercer != nil {
-			coerced, err := h.coercer.Coerce(call.ToolName, callParams)
-			if err != nil {
-				results = append(results, map[string]any{
-					"tool":  call.ToolName,
-					"error": fmt.Sprintf("coercion failed: %s", err),
-				})
-				continue
-			}
-			callParams = coerced
-		}
-
-		result, err := h.executor.ExecuteTool(ctx, executor.ExecuteToolRequest{
-			ToolName: call.ToolName,
-			Params:   callParams,
-		})
-		if err != nil {
-			h.logger.DebugContext(ctx, "execute_code tool error",
-				"tool", call.ToolName,
-				"error", err.Error(),
-			)
-			results = append(results, map[string]any{
-				"tool":  call.ToolName,
-				"error": err.Error(),
-			})
-			continue
-		}
-
-		// Log the per-tool result content as JSON for full visibility
-		if contentJSON, merr := json.Marshal(result.Content); merr == nil {
-			h.logger.DebugContext(ctx, "execute_code tool result",
-				"tool", call.ToolName,
-				"isError", result.IsError,
-				"content", string(contentJSON),
-			)
-		}
-
-		results = append(results, map[string]any{
-			"tool":   call.ToolName,
-			"result": result,
-		})
-	}
-
-	resultJSON, err := json.Marshal(results)
-	if err != nil {
-		return nil, fmt.Errorf("marshal execute_code results: %w", err)
-	}
-
-	h.logger.DebugContext(ctx, "execute_code complete", "resultJSON", string(resultJSON))
-
-	return &backend.ToolResult{
-		Content: []any{map[string]any{
-			"type": "text",
-			"text": string(resultJSON),
-		}},
-	}, nil
+	return result, nil
 }
 
 // BuildToolList returns all tools including Code Mode tools.

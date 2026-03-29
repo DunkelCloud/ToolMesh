@@ -26,6 +26,11 @@ import (
 	"github.com/DunkelCloud/ToolMesh/internal/userctx"
 )
 
+const (
+	testToolFoo = "test:foo"
+	testToolBar = "test:bar"
+)
+
 // codeRunnerTestBackend captures calls and returns configurable results.
 type codeRunnerTestBackend struct {
 	calls   []capturedCall
@@ -49,8 +54,8 @@ func (b *codeRunnerTestBackend) Execute(_ context.Context, toolName string, para
 
 func (b *codeRunnerTestBackend) ListTools(_ context.Context) ([]backend.ToolDescriptor, error) {
 	return []backend.ToolDescriptor{
-		{Name: "test:foo", Description: "A test tool"},
-		{Name: "test:bar", Description: "Another test tool"},
+		{Name: testToolFoo, Description: "A test tool"},
+		{Name: testToolBar, Description: "Another test tool"},
 	}, nil
 }
 
@@ -61,8 +66,8 @@ func newTestCodeRunner(t *testing.T, mb *codeRunnerTestBackend) *CodeRunner {
 	logger := handlerTestLogger()
 	exec := executor.New(nil, nil, mb, nil, nil, 120*time.Second, logger)
 	nameMap := map[string]string{
-		"test_foo": "test:foo",
-		"test_bar": "test:bar",
+		"test_foo": testToolFoo,
+		"test_bar": testToolBar,
 	}
 	return NewCodeRunner(nameMap, exec, nil, logger)
 }
@@ -88,7 +93,7 @@ func TestCodeRunner_SimpleInlineCall(t *testing.T) {
 	if len(mb.calls) != 1 {
 		t.Fatalf("expected 1 call, got %d", len(mb.calls))
 	}
-	if mb.calls[0].ToolName != "test:foo" {
+	if mb.calls[0].ToolName != testToolFoo {
 		t.Errorf("tool = %q, want \"test:foo\"", mb.calls[0].ToolName)
 	}
 	if mb.calls[0].Params["key"] != "value" {
@@ -232,7 +237,7 @@ func TestCodeRunner_ReturnValue(t *testing.T) {
 	if len(results) != 1 {
 		t.Fatalf("expected 1 result entry, got %d", len(results))
 	}
-	if results[0]["tool"] != "test:foo" {
+	if results[0]["tool"] != testToolFoo {
 		t.Errorf("tool = %v, want \"test:foo\"", results[0]["tool"])
 	}
 }
@@ -381,10 +386,10 @@ func TestCodeRunner_MultipleCallsResultFormat(t *testing.T) {
 	if len(results) != 2 {
 		t.Fatalf("expected 2 result entries, got %d", len(results))
 	}
-	if results[0]["tool"] != "test:foo" {
+	if results[0]["tool"] != testToolFoo {
 		t.Errorf("first tool = %v, want \"test:foo\"", results[0]["tool"])
 	}
-	if results[1]["tool"] != "test:bar" {
+	if results[1]["tool"] != testToolBar {
 		t.Errorf("second tool = %v, want \"test:bar\"", results[1]["tool"])
 	}
 }

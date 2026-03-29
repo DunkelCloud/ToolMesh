@@ -72,6 +72,7 @@ date: "2026-03-26"                            # optional
 backend:
   name: my-api
   type: rest
+  version: "1.0"
   base_url: https://api.example.com/v1
   description: "My REST API"
 
@@ -95,6 +96,7 @@ backend:
 |---|---|---|---|
 | `name` | string | yes | Unique backend identifier (slug format: lowercase, hyphens) |
 | `type` | string | yes | Always `rest` for DADL backends |
+| `version` | string | no | Semantic version of this DADL file (e.g. `"1.0"`, `"1.2.1"`). Used by ToolMesh to detect available upgrades from the registry. See Section 4.5. |
 | `base_url` | string | yes | Base URL for all API requests |
 | `description` | string | yes | Human-readable description (used in Code Mode prompt) |
 | `openapi_source` | string | no | Path or URL to OpenAPI 3.x spec. When provided, schemas and parameters are derived from it. |
@@ -208,6 +210,31 @@ examples:
       const details = await api.get_customer({ id: customer.id });
       return details;
 ```
+
+### 4.5 Version
+
+Optional semantic version string for the DADL file. Enables ToolMesh to detect when a newer version is available in the registry.
+
+```yaml
+backend:
+  name: github
+  version: "1.2"
+  # ...
+```
+
+**Format:** Any string that follows [Semantic Versioning](https://semver.org/) conventions. Both `"1.2"` (major.minor) and `"1.2.1"` (major.minor.patch) are valid.
+
+**Semantics:**
+
+| Change | Version bump | Example |
+|--------|-------------|---------|
+| New tools added | Minor | `1.1` → `1.2` |
+| Bug fix in transform/pagination | Patch | `1.2.0` → `1.2.1` |
+| Tool renamed or removed, breaking param change | Major | `1.2` → `2.0` |
+
+**Registry integration:** The DADL registry (`dadl.ai`) publishes a manifest with the latest version and checksum for each DADL file. ToolMesh compares the local `version` against the manifest at startup and logs a notice when an upgrade is available. No automatic updates — the operator decides when to upgrade.
+
+**When `version` is omitted:** ToolMesh skips the upgrade check for this backend. This is expected for private/local DADL files that are not published to the registry.
 
 ---
 
@@ -789,6 +816,7 @@ spec: "https://dadl.ai/spec/dadl-spec-v0.1.md"
 backend:
   name: stripe
   type: rest
+  version: "1.0"
   base_url: https://api.stripe.com/v1
   description: "Stripe payment processing API"
   openapi_source: https://raw.githubusercontent.com/stripe/openapi/master/openapi/spec3.yaml

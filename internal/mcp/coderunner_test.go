@@ -182,7 +182,41 @@ func TestCodeRunner_LoopBuildingData(t *testing.T) {
 func TestCodeRunner_SequentialCallsWithDataFlow(t *testing.T) {
 	mb := &codeRunnerTestBackend{
 		handler: func(toolName string, _ map[string]any) (*backend.ToolResult, error) {
-			// Return a result with an "id" field that can be used in subsequent calls
+			// Return a JSON result — extractJSValue will parse it for JS
+			return &backend.ToolResult{
+				Content: []any{map[string]any{
+					"type": "text",
+					"text": `{"source": "` + toolName + `", "id": 42}`,
+				}},
+			}, nil
+		},
+	}
+	runner := newTestCodeRunner(t, mb)
+
+	// JS code accesses parsed JSON fields directly (e.g. r1.source, r1.id)
+	code := `
+		const r1 = await toolmesh.test_foo({ key: "first" });
+		await toolmesh.test_bar({ key: "second", prev: r1.source });
+	`
+	result, err := runner.Execute(testCtx(), code)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected tool error: %v", result.Content)
+	}
+	if len(mb.calls) != 2 {
+		t.Fatalf("expected 2 calls, got %d", len(mb.calls))
+	}
+	if mb.calls[1].Params["prev"] != "test:foo" {
+		t.Errorf("params[prev] = %v, want \"test:foo\"", mb.calls[1].Params["prev"])
+	}
+}
+
+func TestCodeRunner_SequentialCallsWithDataFlow_PlainText(t *testing.T) {
+	mb := &codeRunnerTestBackend{
+		handler: func(toolName string, _ map[string]any) (*backend.ToolResult, error) {
+			// Return a non-JSON result — extractJSValue returns raw string
 			return &backend.ToolResult{
 				Content: []any{map[string]any{
 					"type": "text",
@@ -193,9 +227,10 @@ func TestCodeRunner_SequentialCallsWithDataFlow(t *testing.T) {
 	}
 	runner := newTestCodeRunner(t, mb)
 
+	// When content is plain text, the return value is the string itself
 	code := `
 		const r1 = await toolmesh.test_foo({ key: "first" });
-		await toolmesh.test_bar({ key: "second", prev: r1.Content[0].text });
+		await toolmesh.test_bar({ key: "second", prev: r1 });
 	`
 	result, err := runner.Execute(testCtx(), code)
 	if err != nil {
@@ -213,12 +248,22 @@ func TestCodeRunner_SequentialCallsWithDataFlow(t *testing.T) {
 }
 
 func TestCodeRunner_ReturnValue(t *testing.T) {
-	mb := &codeRunnerTestBackend{}
+	mb := &codeRunnerTestBackend{
+		handler: func(_ string, _ map[string]any) (*backend.ToolResult, error) {
+			return &backend.ToolResult{
+				Content: []any{map[string]any{
+					"type": "text",
+					"text": `{"id": 123, "name": "test"}`,
+				}},
+			}, nil
+		},
+	}
 	runner := newTestCodeRunner(t, mb)
 
+	// extractJSValue parses the JSON, so r.id works directly
 	code := `
 		const r = await toolmesh.test_foo({ key: "val" });
-		return r.Content[0].text;
+		return r.id;
 	`
 	result, err := runner.Execute(testCtx(), code)
 	if err != nil {
@@ -228,17 +273,27 @@ func TestCodeRunner_ReturnValue(t *testing.T) {
 		t.Fatalf("unexpected tool error: %v", result.Content)
 	}
 
-	// Should have tool call results (the primary output)
+	// Should have tool call result + return value
 	text := extractText(t, result)
 	var results []map[string]any
 	if err := json.Unmarshal([]byte(text), &results); err != nil {
 		t.Fatalf("failed to unmarshal results: %v", err)
 	}
-	if len(results) != 1 {
-		t.Fatalf("expected 1 result entry, got %d", len(results))
+	// 1 tool call result + 1 return value entry
+	if len(results) != 2 {
+		t.Fatalf("expected 2 result entries, got %d: %s", len(results), text)
 	}
 	if results[0]["tool"] != testToolFoo {
 		t.Errorf("tool = %v, want \"test:foo\"", results[0]["tool"])
+	}
+	// The return value entry should have "return" key with value 123
+	retVal, ok := results[1]["return"]
+	if !ok {
+		t.Fatalf("expected 'return' key in last result entry, got: %v", results[1])
+	}
+	// JSON numbers unmarshal as float64
+	if retVal != 123.0 {
+		t.Errorf("return value = %v (%T), want 123", retVal, retVal)
 	}
 }
 
@@ -391,6 +446,85 @@ func TestCodeRunner_MultipleCallsResultFormat(t *testing.T) {
 	}
 	if results[1]["tool"] != testToolBar {
 		t.Errorf("second tool = %v, want \"test:bar\"", results[1]["tool"])
+	}
+}
+
+func TestCodeRunner_ToolIsError_Catchable(t *testing.T) {
+	mb := &codeRunnerTestBackend{
+		handler: func(_ string, _ map[string]any) (*backend.ToolResult, error) {
+			// Tool returns a result with IsError=true but no Go error.
+			// This represents a tool-level error (e.g. 404, validation failure).
+			return &backend.ToolResult{
+				IsError: true,
+				Content: []any{map[string]any{
+					"type": "text",
+					"text": `{"error": "page not found"}`,
+				}},
+			}, nil
+		},
+	}
+	runner := newTestCodeRunner(t, mb)
+
+	// JS code should be able to inspect the error result without panic
+	code := `
+		const r = await toolmesh.test_foo({ page: "nonexistent" });
+		return { caught: false, errorMsg: r.error };
+	`
+	result, err := runner.Execute(testCtx(), code)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected tool error: %v", result.Content)
+	}
+
+	text := extractText(t, result)
+	var results []map[string]any
+	if err := json.Unmarshal([]byte(text), &results); err != nil {
+		t.Fatalf("failed to unmarshal results: %v", err)
+	}
+	// Last entry should be the return value
+	last := results[len(results)-1]
+	retVal, ok := last["return"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected return map, got: %v", last)
+	}
+	if retVal["errorMsg"] != "page not found" {
+		t.Errorf("errorMsg = %v, want \"page not found\"", retVal["errorMsg"])
+	}
+}
+
+func TestCodeRunner_ReturnValueFromJSON(t *testing.T) {
+	mb := &codeRunnerTestBackend{
+		handler: func(_ string, _ map[string]any) (*backend.ToolResult, error) {
+			return &backend.ToolResult{
+				Content: []any{map[string]any{
+					"type": "text",
+					"text": `{"items": [{"name": "a"}, {"name": "b"}], "total": 2}`,
+				}},
+			}, nil
+		},
+	}
+	runner := newTestCodeRunner(t, mb)
+
+	// Verify JS can traverse parsed JSON deeply
+	code := `
+		const r = await toolmesh.test_foo({});
+		return r.items[1].name;
+	`
+	result, err := runner.Execute(testCtx(), code)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	text := extractText(t, result)
+	var results []map[string]any
+	if err := json.Unmarshal([]byte(text), &results); err != nil {
+		t.Fatalf("failed to unmarshal results: %v", err)
+	}
+	last := results[len(results)-1]
+	if last["return"] != "b" {
+		t.Errorf("return = %v, want \"b\"", last["return"])
 	}
 }
 

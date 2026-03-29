@@ -176,7 +176,7 @@ func (r *CodeRunner) Execute(ctx context.Context, code string) (*backend.ToolRes
 				)
 			}
 
-			// Collect result
+			// Collect result for the wire-format output
 			mu.Lock()
 			results = append(results, map[string]any{
 				"tool":   cn,
@@ -184,7 +184,10 @@ func (r *CodeRunner) Execute(ctx context.Context, code string) (*backend.ToolRes
 			})
 			mu.Unlock()
 
-			return rt.ToValue(result)
+			// Return the actual API response content for JS consumption,
+			// not the ToolMesh wrapper. This lets JS code use result.field
+			// directly instead of result.Content[0].text.
+			return extractJSValue(rt, result)
 		})
 	}
 	if err := rt.Set("toolmesh", tmObj); err != nil {
@@ -223,8 +226,14 @@ func (r *CodeRunner) Execute(ctx context.Context, code string) (*backend.ToolRes
 			fmt.Errorf("execute_code: %w", err)
 	}
 
-	// If we have tool call results, return them in the standard format
+	// If we have tool call results, return them in the standard format.
+	// Include the JS return value if present.
 	if len(results) > 0 {
+		if retVal != nil {
+			results = append(results, map[string]any{
+				"return": retVal,
+			})
+		}
 		return r.buildResult(results, console), nil
 	}
 
@@ -286,4 +295,42 @@ func (r *CodeRunner) buildResult(results []any, console []string) *backend.ToolR
 			"text": string(resultJSON),
 		}},
 	}
+}
+
+// extractJSValue extracts the actual API response content from a ToolResult
+// for use inside JavaScript. It finds the first text content block, attempts
+// to parse it as JSON, and returns the parsed value. If parsing fails, it
+// returns the raw string. This lets JS code access response fields directly
+// (e.g. result.id) instead of navigating the ToolMesh envelope.
+func extractJSValue(rt *goja.Runtime, result *backend.ToolResult) goja.Value {
+	if result == nil || len(result.Content) == 0 {
+		return goja.Undefined()
+	}
+
+	// Find the first text content block
+	for _, item := range result.Content {
+		m, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		if m["type"] != "text" {
+			continue
+		}
+		text, ok := m["text"].(string)
+		if !ok {
+			continue
+		}
+
+		// Try to parse as JSON — most API responses are JSON
+		var parsed any
+		if err := json.Unmarshal([]byte(text), &parsed); err == nil {
+			return rt.ToValue(parsed)
+		}
+
+		// Not JSON — return the raw string
+		return rt.ToValue(text)
+	}
+
+	// No text content found — return the raw result
+	return rt.ToValue(result)
 }

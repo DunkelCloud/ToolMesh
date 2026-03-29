@@ -83,6 +83,7 @@ backend:
     list_items:
       method: GET
       path: /items
+      access: read
       description: "List all items"
 ```
 
@@ -300,6 +301,7 @@ Each tool maps to one REST API endpoint. In Code Mode, tools become methods on t
 | `method` | string | yes | HTTP method: GET, POST, PUT, PATCH, DELETE |
 | `path` | string | yes | URL path (may contain `{param}` placeholders) |
 | `description` | string | yes | Used as JSDoc comment in TypeScript interface |
+| `access` | string | no | Access classification for authorization and policy mapping. See Section 6.5. |
 | `params` | object | no | Parameter definitions (path, query, header, body). See Section 6.1. |
 | `content_type` | string | no | Request content type. Default: `application/json`. Use `multipart/form-data` for file uploads. |
 | `max_body_size` | string | no | Max upload size, e.g. `50MB` |
@@ -426,6 +428,76 @@ event_stream:
     max_duration: 30s
     max_items: 100
 ```
+
+### 6.4 Access Classification
+
+The optional `access` field classifies each tool by its risk level. This metadata enables policy files and authorization layers (OpenFGA) to group tools into roles without hard-coding tool names.
+
+**DADL defines access per tool. Policy files define roles from access levels. OpenFGA assigns roles to users.** This three-layer separation keeps DADL portable while enabling fine-grained authorization at deployment time.
+
+```yaml
+# access classification
+tools:
+  list_repos:
+    method: GET
+    path: /repos
+    access: read
+    description: "List repositories"
+
+  create_repo:
+    method: POST
+    path: /user/repos
+    access: write
+    description: "Create a repository"
+
+  update_branch_protection:
+    method: PUT
+    path: /repos/{owner}/{repo}/branches/{branch}/protection
+    access: admin
+    description: "Update branch protection rules"
+
+  delete_repo:
+    method: DELETE
+    path: /repos/{owner}/{repo}
+    access: dangerous
+    description: "Delete a repository"
+```
+
+#### Well-Known Values
+
+The following values are well-known and understood by ToolMesh's built-in policy engine:
+
+| Value | Typical Use | HTTP Methods |
+|-------|-------------|--------------|
+| `read` | Read-only operations, listing, searching | GET, HEAD |
+| `write` | Create or update resources | POST, PUT, PATCH |
+| `admin` | Privileged operations (permissions, settings, configuration) | Any |
+| `dangerous` | Destructive or irreversible operations | DELETE, but also POST/PUT that are irreversible |
+
+#### Custom Values
+
+The `access` field is **not restricted** to the well-known values above. DADL authors can use domain-specific values that make sense for their API:
+
+```yaml
+# custom access values
+tools:
+  list_invoices:
+    access: billing
+  export_user_data:
+    access: pii
+  trigger_deploy:
+    access: ops
+  send_notification:
+    access: messaging
+```
+
+Custom values are passed through to policy files and OpenFGA unchanged. ToolMesh does not validate or reject unknown access values — they are treated as opaque strings.
+
+#### Defaults
+
+When `access` is omitted, ToolMesh does **not** infer a default. Tools without an `access` field are unrestricted by access-based policies (they can still be restricted by explicit per-tool OpenFGA rules). This is intentional: inferring `read` from `GET` would be wrong for endpoints like `POST /search` or `GET /admin/reset-cache`.
+
+> **Best practice:** Always set `access` explicitly. It costs one line per tool and makes the DADL file self-documenting for authorization purposes.
 
 ---
 
@@ -752,6 +824,7 @@ backend:
     list_customers:
       method: GET
       path: /customers
+      access: read
       description: "List all customers"
       params:
         email: { type: string, in: query, required: false }
@@ -760,6 +833,7 @@ backend:
     get_customer:
       method: GET
       path: /customers/{id}
+      access: read
       description: "Retrieve a single customer by ID"
       params:
         id: { type: string, in: path, required: true }
@@ -770,6 +844,7 @@ backend:
     create_customer:
       method: POST
       path: /customers
+      access: write
       description: "Create a new customer"
       params:
         email: { type: string, in: body, required: true }
@@ -801,7 +876,7 @@ DADL files are consumed by **ToolMesh** and integrated into its six-pillar archi
 |---|---|
 | **Code Mode** | TypeScript interfaces are auto-generated from DADL tools and types. The LLM writes code against `api.*` methods. |
 | **Temporal** | Each `execute()` call runs as a Temporal Activity — retry, timeout, and full audit trail. |
-| **OpenFGA** | Per-tool authorization. Policies can restrict access by user, plan, or caller origin. |
+| **OpenFGA** | Per-tool authorization. The `access` field on each tool enables role-based policy mapping (e.g. `read` → reader role). Policies can further restrict by user, plan, or caller origin. |
 | **MCP Aggregation** | DADL backends mix seamlessly with native MCP backends in the same ToolMesh instance. |
 | **Credential Store** | `credential: vault/xxx` references are resolved through the three-tier store (Embedded → Infisical → Vault/OpenBao). |
 | **Output Gate** | Responses pass through goja-based policies (PII redaction, rate limiting, caller-dependent filtering). |

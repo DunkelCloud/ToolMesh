@@ -112,6 +112,7 @@ backend:
     create_repo:
       method: POST
       path: /user/repos
+      access: write
       description: "Create a new repository for the authenticated user. Set private=true for a private repo. auto_init=true creates an initial commit with a README."
       params:
         name: { type: string, in: body, required: true }
@@ -135,6 +136,7 @@ backend:
     create_org_repo:
       method: POST
       path: /orgs/{org}/repos
+      access: write
       description: "Create a new repository in an organization. Requires org admin or repo creation permissions."
       params:
         org: { type: string, in: path, required: true }
@@ -161,6 +163,7 @@ backend:
     create_repo_from_template:
       method: POST
       path: /repos/{template_owner}/{template_repo}/generate
+      access: write
       description: "Create a new repository from a template. The template must have is_template=true."
       params:
         template_owner: { type: string, in: path, required: true }
@@ -175,6 +178,7 @@ backend:
     list_user_repos:
       method: GET
       path: /user/repos
+      access: read
       description: "List repositories for the authenticated user. Use type to filter (owner, member, all)."
       params:
         type: { type: string, in: query, default: "owner" }
@@ -186,6 +190,7 @@ backend:
     list_user_repos_by_username:
       method: GET
       path: /users/{username}/repos
+      access: read
       description: "List public repositories for a specific user."
       params:
         username: { type: string, in: path, required: true }
@@ -198,6 +203,7 @@ backend:
     get_repo:
       method: GET
       path: /repos/{owner}/{repo}
+      access: read
       description: "Get a single repository by owner and name."
       params:
         owner: { type: string, in: path, required: true }
@@ -207,6 +213,7 @@ backend:
     update_repo:
       method: PATCH
       path: /repos/{owner}/{repo}
+      access: write
       description: "Update repository settings. Only include fields you want to change. Use for description, homepage, visibility, merge settings, etc."
       params:
         owner: { type: string, in: path, required: true }
@@ -232,6 +239,7 @@ backend:
     delete_repo:
       method: DELETE
       path: /repos/{owner}/{repo}
+      access: dangerous
       description: "Delete a repository. Requires delete_repo scope. This action is irreversible."
       params:
         owner: { type: string, in: path, required: true }
@@ -241,6 +249,7 @@ backend:
     replace_topics:
       method: PUT
       path: /repos/{owner}/{repo}/topics
+      access: write
       description: "Replace all repository topics. Provide the full list of desired topics."
       params:
         owner: { type: string, in: path, required: true }
@@ -251,6 +260,7 @@ backend:
     list_repo_languages:
       method: GET
       path: /repos/{owner}/{repo}/languages
+      access: read
       description: "List languages for a repository. Returns a map of language name to bytes of code."
       params:
         owner: { type: string, in: path, required: true }
@@ -260,6 +270,7 @@ backend:
     list_repo_contributors:
       method: GET
       path: /repos/{owner}/{repo}/contributors
+      access: read
       description: "List contributors to a repository, sorted by number of commits."
       params:
         owner: { type: string, in: path, required: true }
@@ -271,6 +282,7 @@ backend:
     get_readme:
       method: GET
       path: /repos/{owner}/{repo}/readme
+      access: read
       description: "Get the README file for a repository. Content is base64 encoded."
       params:
         owner: { type: string, in: path, required: true }
@@ -283,6 +295,7 @@ backend:
     list_forks:
       method: GET
       path: /repos/{owner}/{repo}/forks
+      access: read
       description: "List forks of a repository."
       params:
         owner: { type: string, in: path, required: true }
@@ -294,6 +307,7 @@ backend:
     create_fork:
       method: POST
       path: /repos/{owner}/{repo}/forks
+      access: write
       description: "Fork a repository. Optionally specify an organization to fork into. Forking is asynchronous — poll get_repo to check when complete."
       params:
         owner: { type: string, in: path, required: true }
@@ -308,6 +322,7 @@ backend:
     list_collaborators:
       method: GET
       path: /repos/{owner}/{repo}/collaborators
+      access: read
       description: "List collaborators for a repository. Affiliation: outside, direct, all."
       params:
         owner: { type: string, in: path, required: true }
@@ -320,6 +335,7 @@ backend:
     check_collaborator:
       method: GET
       path: /repos/{owner}/{repo}/collaborators/{username}
+      access: read
       description: "Check if a user is a collaborator. Returns 204 if yes, 404 if no."
       params:
         owner: { type: string, in: path, required: true }
@@ -330,6 +346,7 @@ backend:
     add_collaborator:
       method: PUT
       path: /repos/{owner}/{repo}/collaborators/{username}
+      access: admin
       description: "Add a collaborator to a repository. Permission: pull, triage, push, maintain, admin."
       params:
         owner: { type: string, in: path, required: true }
@@ -341,6 +358,7 @@ backend:
     remove_collaborator:
       method: DELETE
       path: /repos/{owner}/{repo}/collaborators/{username}
+      access: dangerous
       description: "Remove a collaborator from a repository."
       params:
         owner: { type: string, in: path, required: true }
@@ -353,6 +371,7 @@ backend:
     list_orgs:
       method: GET
       path: /user/orgs
+      access: read
       description: "List organizations the authenticated user belongs to."
       params:
         page: { type: integer, in: query }
@@ -361,6 +380,7 @@ backend:
     get_org:
       method: GET
       path: /orgs/{org}
+      access: read
       description: "Get an organization by name, including member count, repo count, and billing info."
       params:
         org: { type: string, in: path, required: true }
@@ -369,6 +389,7 @@ backend:
     list_org_repos:
       method: GET
       path: /orgs/{org}/repos
+      access: read
       description: "List repositories for an organization. Use list_orgs first to find org names."
       params:
         org: { type: string, in: path, required: true }
@@ -381,6 +402,7 @@ backend:
     list_org_members:
       method: GET
       path: /orgs/{org}/members
+      access: read
       description: "List members of an organization. Filter by role: all, admin, member."
       params:
         org: { type: string, in: path, required: true }
@@ -394,6 +416,7 @@ backend:
     list_org_teams:
       method: GET
       path: /orgs/{org}/teams
+      access: read
       description: "List teams in an organization."
       params:
         org: { type: string, in: path, required: true }
@@ -403,6 +426,7 @@ backend:
     get_team:
       method: GET
       path: /orgs/{org}/teams/{team_slug}
+      access: read
       description: "Get a team by its slug (URL-friendly name)."
       params:
         org: { type: string, in: path, required: true }
@@ -412,6 +436,7 @@ backend:
     create_team:
       method: POST
       path: /orgs/{org}/teams
+      access: write
       description: "Create a team in an organization. Privacy: secret (visible to org members) or closed (visible to org members, searchable)."
       params:
         org: { type: string, in: path, required: true }
@@ -428,6 +453,7 @@ backend:
     update_team:
       method: PATCH
       path: /orgs/{org}/teams/{team_slug}
+      access: write
       description: "Update a team. Only include fields you want to change."
       params:
         org: { type: string, in: path, required: true }
@@ -443,6 +469,7 @@ backend:
     delete_team:
       method: DELETE
       path: /orgs/{org}/teams/{team_slug}
+      access: dangerous
       description: "Delete a team from an organization."
       params:
         org: { type: string, in: path, required: true }
@@ -452,6 +479,7 @@ backend:
     list_team_members:
       method: GET
       path: /orgs/{org}/teams/{team_slug}/members
+      access: read
       description: "List members of a team. Role filter: all, member, maintainer."
       params:
         org: { type: string, in: path, required: true }
@@ -463,6 +491,7 @@ backend:
     add_team_member:
       method: PUT
       path: /orgs/{org}/teams/{team_slug}/memberships/{username}
+      access: admin
       description: "Add or update a team member. Role: member or maintainer."
       params:
         org: { type: string, in: path, required: true }
@@ -474,6 +503,7 @@ backend:
     remove_team_member:
       method: DELETE
       path: /orgs/{org}/teams/{team_slug}/memberships/{username}
+      access: dangerous
       description: "Remove a member from a team."
       params:
         org: { type: string, in: path, required: true }
@@ -484,6 +514,7 @@ backend:
     list_team_repos:
       method: GET
       path: /orgs/{org}/teams/{team_slug}/repos
+      access: read
       description: "List repositories a team has access to."
       params:
         org: { type: string, in: path, required: true }
@@ -494,6 +525,7 @@ backend:
     add_team_repo:
       method: PUT
       path: /orgs/{org}/teams/{team_slug}/repos/{owner}/{repo}
+      access: admin
       description: "Add a repository to a team. Permission: pull, triage, push, maintain, admin."
       params:
         org: { type: string, in: path, required: true }
@@ -506,6 +538,7 @@ backend:
     remove_team_repo:
       method: DELETE
       path: /orgs/{org}/teams/{team_slug}/repos/{owner}/{repo}
+      access: dangerous
       description: "Remove a repository from a team."
       params:
         org: { type: string, in: path, required: true }
@@ -519,6 +552,7 @@ backend:
     list_issues:
       method: GET
       path: /repos/{owner}/{repo}/issues
+      access: read
       description: "List issues for a repository. Also returns PRs unless filtered. State: open, closed, all. Note: GitHub treats PRs as issues — check for pull_request field to distinguish."
       params:
         owner: { type: string, in: path, required: true }
@@ -537,6 +571,7 @@ backend:
     get_issue:
       method: GET
       path: /repos/{owner}/{repo}/issues/{issue_number}
+      access: read
       description: "Get a single issue by number, including body, labels, assignees, and milestone."
       params:
         owner: { type: string, in: path, required: true }
@@ -547,6 +582,7 @@ backend:
     create_issue:
       method: POST
       path: /repos/{owner}/{repo}/issues
+      access: write
       description: "Create a new issue. Labels are an array of label name strings."
       params:
         owner: { type: string, in: path, required: true }
@@ -561,6 +597,7 @@ backend:
     update_issue:
       method: PATCH
       path: /repos/{owner}/{repo}/issues/{issue_number}
+      access: write
       description: "Update an issue. Set state to 'closed' to close it. Only include fields you want to change."
       params:
         owner: { type: string, in: path, required: true }
@@ -578,6 +615,7 @@ backend:
     lock_issue:
       method: PUT
       path: /repos/{owner}/{repo}/issues/{issue_number}/lock
+      access: admin
       description: "Lock an issue. Lock reason: off-topic, too heated, resolved, spam."
       params:
         owner: { type: string, in: path, required: true }
@@ -589,6 +627,7 @@ backend:
     unlock_issue:
       method: DELETE
       path: /repos/{owner}/{repo}/issues/{issue_number}/lock
+      access: admin
       description: "Unlock an issue."
       params:
         owner: { type: string, in: path, required: true }
@@ -599,6 +638,7 @@ backend:
     list_issue_comments:
       method: GET
       path: /repos/{owner}/{repo}/issues/{issue_number}/comments
+      access: read
       description: "List comments on an issue or pull request."
       params:
         owner: { type: string, in: path, required: true }
@@ -611,6 +651,7 @@ backend:
     create_issue_comment:
       method: POST
       path: /repos/{owner}/{repo}/issues/{issue_number}/comments
+      access: write
       description: "Add a comment to an issue or pull request. Body supports GitHub-Flavored Markdown."
       params:
         owner: { type: string, in: path, required: true }
@@ -622,6 +663,7 @@ backend:
     update_issue_comment:
       method: PATCH
       path: /repos/{owner}/{repo}/issues/comments/{comment_id}
+      access: write
       description: "Update an issue comment."
       params:
         owner: { type: string, in: path, required: true }
@@ -633,6 +675,7 @@ backend:
     delete_issue_comment:
       method: DELETE
       path: /repos/{owner}/{repo}/issues/comments/{comment_id}
+      access: dangerous
       description: "Delete an issue comment."
       params:
         owner: { type: string, in: path, required: true }
@@ -643,6 +686,7 @@ backend:
     list_issue_events:
       method: GET
       path: /repos/{owner}/{repo}/issues/{issue_number}/events
+      access: read
       description: "List events for an issue (labeled, assigned, closed, reopened, etc.)."
       params:
         owner: { type: string, in: path, required: true }
@@ -654,6 +698,7 @@ backend:
     list_issue_assignees:
       method: GET
       path: /repos/{owner}/{repo}/assignees
+      access: read
       description: "List available assignees for issues in a repository (users with push access)."
       params:
         owner: { type: string, in: path, required: true }
@@ -666,6 +711,7 @@ backend:
     list_issue_reactions:
       method: GET
       path: /repos/{owner}/{repo}/issues/{issue_number}/reactions
+      access: read
       description: "List reactions on an issue. Content: +1, -1, laugh, confused, heart, hooray, rocket, eyes."
       params:
         owner: { type: string, in: path, required: true }
@@ -678,6 +724,7 @@ backend:
     create_issue_reaction:
       method: POST
       path: /repos/{owner}/{repo}/issues/{issue_number}/reactions
+      access: write
       description: "Create a reaction on an issue. Content: +1, -1, laugh, confused, heart, hooray, rocket, eyes."
       params:
         owner: { type: string, in: path, required: true }
@@ -689,6 +736,7 @@ backend:
     create_issue_comment_reaction:
       method: POST
       path: /repos/{owner}/{repo}/issues/comments/{comment_id}/reactions
+      access: write
       description: "Create a reaction on an issue comment."
       params:
         owner: { type: string, in: path, required: true }
@@ -702,6 +750,7 @@ backend:
     list_pulls:
       method: GET
       path: /repos/{owner}/{repo}/pulls
+      access: read
       description: "List pull requests for a repository. State: open, closed, all."
       params:
         owner: { type: string, in: path, required: true }
@@ -717,6 +766,7 @@ backend:
     get_pull:
       method: GET
       path: /repos/{owner}/{repo}/pulls/{pull_number}
+      access: read
       description: "Get a single pull request including diff stats, mergeable state, and review status."
       params:
         owner: { type: string, in: path, required: true }
@@ -727,6 +777,7 @@ backend:
     list_pull_files:
       method: GET
       path: /repos/{owner}/{repo}/pulls/{pull_number}/files
+      access: read
       description: "List files changed in a pull request with patch diffs and stats."
       params:
         owner: { type: string, in: path, required: true }
@@ -738,6 +789,7 @@ backend:
     list_pull_reviews:
       method: GET
       path: /repos/{owner}/{repo}/pulls/{pull_number}/reviews
+      access: read
       description: "List reviews on a pull request (approved, changes_requested, commented)."
       params:
         owner: { type: string, in: path, required: true }
@@ -749,6 +801,7 @@ backend:
     create_pull:
       method: POST
       path: /repos/{owner}/{repo}/pulls
+      access: write
       description: "Create a new pull request. head is the branch with changes, base is the target branch (e.g. main). Set draft=true to create a draft PR."
       params:
         owner: { type: string, in: path, required: true }
@@ -764,6 +817,7 @@ backend:
     update_pull:
       method: PATCH
       path: /repos/{owner}/{repo}/pulls/{pull_number}
+      access: write
       description: "Update a pull request. Set state to 'closed' to close it. Only include fields you want to change."
       params:
         owner: { type: string, in: path, required: true }
@@ -779,6 +833,7 @@ backend:
     merge_pull:
       method: PUT
       path: /repos/{owner}/{repo}/pulls/{pull_number}/merge
+      access: write
       description: "Merge a pull request. merge_method: merge, squash, or rebase. Optionally provide sha to ensure merging the expected head commit."
       params:
         owner: { type: string, in: path, required: true }
@@ -793,6 +848,7 @@ backend:
     list_pull_commits:
       method: GET
       path: /repos/{owner}/{repo}/pulls/{pull_number}/commits
+      access: read
       description: "List commits on a pull request, ordered chronologically."
       params:
         owner: { type: string, in: path, required: true }
@@ -804,6 +860,7 @@ backend:
     create_pull_review:
       method: POST
       path: /repos/{owner}/{repo}/pulls/{pull_number}/reviews
+      access: write
       description: "Create a review on a pull request. event: APPROVE, REQUEST_CHANGES, or COMMENT. Body is the review summary."
       params:
         owner: { type: string, in: path, required: true }
@@ -820,6 +877,7 @@ backend:
     list_pull_review_comments:
       method: GET
       path: /repos/{owner}/{repo}/pulls/{pull_number}/comments
+      access: read
       description: "List review comments on a pull request (inline code comments, not issue comments)."
       params:
         owner: { type: string, in: path, required: true }
@@ -834,6 +892,7 @@ backend:
     create_pull_review_comment:
       method: POST
       path: /repos/{owner}/{repo}/pulls/{pull_number}/comments
+      access: write
       description: "Create an inline review comment on a pull request. Specify path and line (or start_line + line for multi-line). side: LEFT or RIGHT for diff side."
       params:
         owner: { type: string, in: path, required: true }
@@ -854,6 +913,7 @@ backend:
     list_requested_reviewers:
       method: GET
       path: /repos/{owner}/{repo}/pulls/{pull_number}/requested_reviewers
+      access: read
       description: "List users and teams requested to review a pull request."
       params:
         owner: { type: string, in: path, required: true }
@@ -864,6 +924,7 @@ backend:
     request_reviewers:
       method: POST
       path: /repos/{owner}/{repo}/pulls/{pull_number}/requested_reviewers
+      access: write
       description: "Request review from users or teams on a pull request."
       params:
         owner: { type: string, in: path, required: true }
@@ -876,6 +937,7 @@ backend:
     remove_requested_reviewers:
       method: DELETE
       path: /repos/{owner}/{repo}/pulls/{pull_number}/requested_reviewers
+      access: dangerous
       description: "Remove requested reviewers from a pull request."
       params:
         owner: { type: string, in: path, required: true }
@@ -890,6 +952,7 @@ backend:
     list_commits:
       method: GET
       path: /repos/{owner}/{repo}/commits
+      access: read
       description: "List commits on a repository. Filter by sha (branch), path, author, or date range."
       params:
         owner: { type: string, in: path, required: true }
@@ -906,6 +969,7 @@ backend:
     get_commit:
       method: GET
       path: /repos/{owner}/{repo}/commits/{ref}
+      access: read
       description: "Get a single commit by SHA or ref, including full diff stats and file changes."
       params:
         owner: { type: string, in: path, required: true }
@@ -916,6 +980,7 @@ backend:
     compare_commits:
       method: GET
       path: /repos/{owner}/{repo}/compare/{basehead}
+      access: read
       description: "Compare two commits. basehead format: 'base...head' (e.g. 'main...feature-branch'). Returns diff stats, commits, and file changes."
       params:
         owner: { type: string, in: path, required: true }
@@ -927,6 +992,7 @@ backend:
     list_branches:
       method: GET
       path: /repos/{owner}/{repo}/branches
+      access: read
       description: "List branches for a repository."
       params:
         owner: { type: string, in: path, required: true }
@@ -938,6 +1004,7 @@ backend:
     get_branch:
       method: GET
       path: /repos/{owner}/{repo}/branches/{branch}
+      access: read
       description: "Get a single branch including its latest commit SHA and protection status."
       params:
         owner: { type: string, in: path, required: true }
@@ -950,6 +1017,7 @@ backend:
     get_branch_protection:
       method: GET
       path: /repos/{owner}/{repo}/branches/{branch}/protection
+      access: read
       description: "Get branch protection rules for a branch."
       params:
         owner: { type: string, in: path, required: true }
@@ -960,6 +1028,7 @@ backend:
     update_branch_protection:
       method: PUT
       path: /repos/{owner}/{repo}/branches/{branch}/protection
+      access: admin
       description: "Update branch protection rules. Set required_status_checks, enforce_admins, required_pull_request_reviews, and restrictions."
       params:
         owner: { type: string, in: path, required: true }
@@ -978,6 +1047,7 @@ backend:
     delete_branch_protection:
       method: DELETE
       path: /repos/{owner}/{repo}/branches/{branch}/protection
+      access: dangerous
       description: "Delete branch protection rules for a branch."
       params:
         owner: { type: string, in: path, required: true }
@@ -990,6 +1060,7 @@ backend:
     create_ref:
       method: POST
       path: /repos/{owner}/{repo}/git/refs
+      access: write
       description: "Create a git reference (branch or tag). For branches use ref='refs/heads/branch-name'. sha is the commit to point to."
       params:
         owner: { type: string, in: path, required: true }
@@ -1001,6 +1072,7 @@ backend:
     update_ref:
       method: PATCH
       path: /repos/{owner}/{repo}/git/refs/{ref}
+      access: write
       description: "Update a git reference to point to a new SHA. ref is without 'refs/' prefix (e.g. 'heads/main'). Set force=true to do a non-fast-forward update."
       params:
         owner: { type: string, in: path, required: true }
@@ -1013,6 +1085,7 @@ backend:
     delete_ref:
       method: DELETE
       path: /repos/{owner}/{repo}/git/refs/{ref}
+      access: dangerous
       description: "Delete a git reference. For branches use ref='heads/branch-name' (without refs/ prefix). For tags use ref='tags/tag-name'."
       params:
         owner: { type: string, in: path, required: true }
@@ -1025,6 +1098,7 @@ backend:
     get_tree:
       method: GET
       path: /repos/{owner}/{repo}/git/trees/{tree_sha}
+      access: read
       description: "Get a git tree by SHA. Set recursive=true to get the full tree (all nested directories). Returns tree entries with path, mode, type, sha."
       params:
         owner: { type: string, in: path, required: true }
@@ -1036,6 +1110,7 @@ backend:
     create_tree:
       method: POST
       path: /repos/{owner}/{repo}/git/trees
+      access: write
       description: "Create a git tree. Each tree entry has path, mode (100644=file, 100755=executable, 040000=directory, 160000=submodule, 120000=symlink), type (blob/tree/commit), and sha or content."
       params:
         owner: { type: string, in: path, required: true }
@@ -1047,6 +1122,7 @@ backend:
     create_blob:
       method: POST
       path: /repos/{owner}/{repo}/git/blobs
+      access: write
       description: "Create a git blob. Content can be utf-8 or base64 encoded (set encoding accordingly)."
       params:
         owner: { type: string, in: path, required: true }
@@ -1058,6 +1134,7 @@ backend:
     create_git_commit:
       method: POST
       path: /repos/{owner}/{repo}/git/commits
+      access: write
       description: "Create a git commit object. tree is the SHA of the tree, parents is an array of parent commit SHAs. Use with create_tree and update_ref for programmatic commits."
       params:
         owner: { type: string, in: path, required: true }
@@ -1072,6 +1149,7 @@ backend:
     create_tag_object:
       method: POST
       path: /repos/{owner}/{repo}/git/tags
+      access: write
       description: "Create an annotated tag object. object is the SHA to tag. type is the object type (commit, tree, blob). Use create_ref to create the tag ref afterwards."
       params:
         owner: { type: string, in: path, required: true }
@@ -1088,6 +1166,7 @@ backend:
     get_content:
       method: GET
       path: /repos/{owner}/{repo}/contents/{path}
+      access: read
       description: "Get file or directory contents. Files are base64 encoded. Directories return a listing. Use ref for a specific branch/tag/SHA."
       params:
         owner: { type: string, in: path, required: true }
@@ -1099,6 +1178,7 @@ backend:
     create_or_update_file:
       method: PUT
       path: /repos/{owner}/{repo}/contents/{path}
+      access: write
       description: "Create or update a file. Content must be base64 encoded. To update an existing file, provide the current blob sha (from get_content). Creates a commit."
       params:
         owner: { type: string, in: path, required: true }
@@ -1115,6 +1195,7 @@ backend:
     delete_file:
       method: DELETE
       path: /repos/{owner}/{repo}/contents/{path}
+      access: dangerous
       description: "Delete a file from the repository. Requires the current blob sha (from get_content). Creates a commit."
       params:
         owner: { type: string, in: path, required: true }
@@ -1130,6 +1211,7 @@ backend:
     search_code:
       method: GET
       path: /search/code
+      access: read
       description: "Search for code across repositories. Query syntax: 'keyword repo:owner/repo language:go path:internal'. Results include file path, repo, and text matches."
       params:
         q: { type: string, in: query, required: true }
@@ -1141,6 +1223,7 @@ backend:
     search_issues:
       method: GET
       path: /search/issues
+      access: read
       description: "Search issues and PRs across repositories. Query syntax: 'bug repo:owner/repo is:open label:bug'. Use is:pr or is:issue to filter."
       params:
         q: { type: string, in: query, required: true }
@@ -1152,6 +1235,7 @@ backend:
     search_repos:
       method: GET
       path: /search/repositories
+      access: read
       description: "Search repositories. Query syntax: 'keyword language:go stars:>100 topic:cli'. Sort: stars, forks, help-wanted-issues, updated."
       params:
         q: { type: string, in: query, required: true }
@@ -1163,6 +1247,7 @@ backend:
     search_users:
       method: GET
       path: /search/users
+      access: read
       description: "Search users. Query syntax: 'username type:user location:germany language:go followers:>100'."
       params:
         q: { type: string, in: query, required: true }
@@ -1174,6 +1259,7 @@ backend:
     search_commits:
       method: GET
       path: /search/commits
+      access: read
       description: "Search commits. Query syntax: 'fix repo:owner/repo author:username committer-date:>2026-01-01'. Sort: author-date, committer-date."
       params:
         q: { type: string, in: query, required: true }
@@ -1185,6 +1271,7 @@ backend:
     search_topics:
       method: GET
       path: /search/topics
+      access: read
       description: "Search topics by name. Returns matching topic names with descriptions and related info."
       params:
         q: { type: string, in: query, required: true }
@@ -1196,6 +1283,7 @@ backend:
     list_releases:
       method: GET
       path: /repos/{owner}/{repo}/releases
+      access: read
       description: "List releases for a repository, newest first."
       params:
         owner: { type: string, in: path, required: true }
@@ -1206,6 +1294,7 @@ backend:
     get_latest_release:
       method: GET
       path: /repos/{owner}/{repo}/releases/latest
+      access: read
       description: "Get the latest published release (not draft/prerelease)."
       params:
         owner: { type: string, in: path, required: true }
@@ -1215,6 +1304,7 @@ backend:
     get_release:
       method: GET
       path: /repos/{owner}/{repo}/releases/{release_id}
+      access: read
       description: "Get a single release by its numeric ID."
       params:
         owner: { type: string, in: path, required: true }
@@ -1225,6 +1315,7 @@ backend:
     get_release_by_tag:
       method: GET
       path: /repos/{owner}/{repo}/releases/tags/{tag}
+      access: read
       description: "Get a release by tag name (e.g. 'v1.0.0')."
       params:
         owner: { type: string, in: path, required: true }
@@ -1235,6 +1326,7 @@ backend:
     create_release:
       method: POST
       path: /repos/{owner}/{repo}/releases
+      access: write
       description: "Create a release. tag_name is required. If the tag does not exist, target_commitish (branch or SHA) is used to create it. Set draft=true for unpublished releases."
       params:
         owner: { type: string, in: path, required: true }
@@ -1251,6 +1343,7 @@ backend:
     update_release:
       method: PATCH
       path: /repos/{owner}/{repo}/releases/{release_id}
+      access: write
       description: "Update a release. Only include fields you want to change."
       params:
         owner: { type: string, in: path, required: true }
@@ -1267,6 +1360,7 @@ backend:
     delete_release:
       method: DELETE
       path: /repos/{owner}/{repo}/releases/{release_id}
+      access: dangerous
       description: "Delete a release. Does not delete the associated git tag."
       params:
         owner: { type: string, in: path, required: true }
@@ -1277,6 +1371,7 @@ backend:
     list_release_assets:
       method: GET
       path: /repos/{owner}/{repo}/releases/{release_id}/assets
+      access: read
       description: "List assets (attached files) for a release."
       params:
         owner: { type: string, in: path, required: true }
@@ -1288,6 +1383,7 @@ backend:
     delete_release_asset:
       method: DELETE
       path: /repos/{owner}/{repo}/releases/assets/{asset_id}
+      access: dangerous
       description: "Delete a release asset."
       params:
         owner: { type: string, in: path, required: true }
@@ -1300,6 +1396,7 @@ backend:
     list_workflows:
       method: GET
       path: /repos/{owner}/{repo}/actions/workflows
+      access: read
       description: "List all workflows in a repository. Returns workflow ID, name, path, and state."
       params:
         owner: { type: string, in: path, required: true }
@@ -1310,6 +1407,7 @@ backend:
     get_workflow:
       method: GET
       path: /repos/{owner}/{repo}/actions/workflows/{workflow_id}
+      access: read
       description: "Get a specific workflow by ID or filename (e.g. 'ci.yml')."
       params:
         owner: { type: string, in: path, required: true }
@@ -1320,6 +1418,7 @@ backend:
     dispatch_workflow:
       method: POST
       path: /repos/{owner}/{repo}/actions/workflows/{workflow_id}/dispatches
+      access: write
       description: "Trigger a workflow_dispatch event. ref is the branch/tag to run on. inputs is a map of workflow input values."
       params:
         owner: { type: string, in: path, required: true }
@@ -1332,6 +1431,7 @@ backend:
     list_workflow_runs:
       method: GET
       path: /repos/{owner}/{repo}/actions/runs
+      access: read
       description: "List workflow runs for a repository. Filter by branch, status (queued, in_progress, completed), or event (push, pull_request)."
       params:
         owner: { type: string, in: path, required: true }
@@ -1347,6 +1447,7 @@ backend:
     get_workflow_run:
       method: GET
       path: /repos/{owner}/{repo}/actions/runs/{run_id}
+      access: read
       description: "Get a single workflow run including status, conclusion, and timing."
       params:
         owner: { type: string, in: path, required: true }
@@ -1357,6 +1458,7 @@ backend:
     list_workflow_run_jobs:
       method: GET
       path: /repos/{owner}/{repo}/actions/runs/{run_id}/jobs
+      access: read
       description: "List jobs for a workflow run. Filter by latest attempt or all attempts."
       params:
         owner: { type: string, in: path, required: true }
@@ -1369,6 +1471,7 @@ backend:
     get_job:
       method: GET
       path: /repos/{owner}/{repo}/actions/jobs/{job_id}
+      access: read
       description: "Get a single workflow job by ID, including steps with status and timing."
       params:
         owner: { type: string, in: path, required: true }
@@ -1379,6 +1482,7 @@ backend:
     get_job_log:
       method: GET
       path: /repos/{owner}/{repo}/actions/jobs/{job_id}/logs
+      access: read
       description: "Download the log output of a workflow job. Returns plain text with timestamps. The API responds with a 302 redirect to a temporary download URL which is followed automatically."
       params:
         owner: { type: string, in: path, required: true }
@@ -1389,6 +1493,7 @@ backend:
     cancel_workflow_run:
       method: POST
       path: /repos/{owner}/{repo}/actions/runs/{run_id}/cancel
+      access: write
       description: "Cancel a workflow run that is in progress or queued."
       params:
         owner: { type: string, in: path, required: true }
@@ -1399,6 +1504,7 @@ backend:
     rerun_workflow:
       method: POST
       path: /repos/{owner}/{repo}/actions/runs/{run_id}/rerun
+      access: write
       description: "Re-run an entire workflow run. Only works for completed runs."
       params:
         owner: { type: string, in: path, required: true }
@@ -1409,6 +1515,7 @@ backend:
     rerun_failed_jobs:
       method: POST
       path: /repos/{owner}/{repo}/actions/runs/{run_id}/rerun-failed-jobs
+      access: write
       description: "Re-run only the failed jobs in a workflow run."
       params:
         owner: { type: string, in: path, required: true }
@@ -1419,6 +1526,7 @@ backend:
     delete_workflow_run:
       method: DELETE
       path: /repos/{owner}/{repo}/actions/runs/{run_id}
+      access: dangerous
       description: "Delete a workflow run. The run must be completed."
       params:
         owner: { type: string, in: path, required: true }
@@ -1429,6 +1537,7 @@ backend:
     list_workflow_run_artifacts:
       method: GET
       path: /repos/{owner}/{repo}/actions/runs/{run_id}/artifacts
+      access: read
       description: "List artifacts for a workflow run. Artifacts are files produced during a run (logs, binaries, test results)."
       params:
         owner: { type: string, in: path, required: true }
@@ -1440,6 +1549,7 @@ backend:
     list_repo_secrets:
       method: GET
       path: /repos/{owner}/{repo}/actions/secrets
+      access: read
       description: "List repository secrets for GitHub Actions. Only returns secret names, not values."
       params:
         owner: { type: string, in: path, required: true }
@@ -1450,6 +1560,7 @@ backend:
     get_repo_public_key:
       method: GET
       path: /repos/{owner}/{repo}/actions/secrets/public-key
+      access: read
       description: "Get the public key for encrypting secrets. Required before creating or updating a secret."
       params:
         owner: { type: string, in: path, required: true }
@@ -1459,6 +1570,7 @@ backend:
     create_or_update_repo_secret:
       method: PUT
       path: /repos/{owner}/{repo}/actions/secrets/{secret_name}
+      access: admin
       description: "Create or update a repository secret. The encrypted_value must be encrypted with the repo's public key (from get_repo_public_key) using libsodium."
       params:
         owner: { type: string, in: path, required: true }
@@ -1471,6 +1583,7 @@ backend:
     delete_repo_secret:
       method: DELETE
       path: /repos/{owner}/{repo}/actions/secrets/{secret_name}
+      access: dangerous
       description: "Delete a repository secret."
       params:
         owner: { type: string, in: path, required: true }
@@ -1481,6 +1594,7 @@ backend:
     list_repo_variables:
       method: GET
       path: /repos/{owner}/{repo}/actions/variables
+      access: read
       description: "List repository variables for GitHub Actions."
       params:
         owner: { type: string, in: path, required: true }
@@ -1491,6 +1605,7 @@ backend:
     create_repo_variable:
       method: POST
       path: /repos/{owner}/{repo}/actions/variables
+      access: write
       description: "Create a repository variable for GitHub Actions."
       params:
         owner: { type: string, in: path, required: true }
@@ -1502,6 +1617,7 @@ backend:
     update_repo_variable:
       method: PATCH
       path: /repos/{owner}/{repo}/actions/variables/{name}
+      access: write
       description: "Update a repository variable."
       params:
         owner: { type: string, in: path, required: true }
@@ -1513,6 +1629,7 @@ backend:
     delete_repo_variable:
       method: DELETE
       path: /repos/{owner}/{repo}/actions/variables/{name}
+      access: dangerous
       description: "Delete a repository variable."
       params:
         owner: { type: string, in: path, required: true }
@@ -1525,6 +1642,7 @@ backend:
     list_repo_webhooks:
       method: GET
       path: /repos/{owner}/{repo}/hooks
+      access: read
       description: "List webhooks for a repository."
       params:
         owner: { type: string, in: path, required: true }
@@ -1535,6 +1653,7 @@ backend:
     get_repo_webhook:
       method: GET
       path: /repos/{owner}/{repo}/hooks/{hook_id}
+      access: read
       description: "Get a single webhook by ID."
       params:
         owner: { type: string, in: path, required: true }
@@ -1545,6 +1664,7 @@ backend:
     create_repo_webhook:
       method: POST
       path: /repos/{owner}/{repo}/hooks
+      access: admin
       description: "Create a webhook for a repository. config.url is the payload URL. events is an array of event names (e.g. ['push', 'pull_request'])."
       params:
         owner: { type: string, in: path, required: true }
@@ -1558,6 +1678,7 @@ backend:
     update_repo_webhook:
       method: PATCH
       path: /repos/{owner}/{repo}/hooks/{hook_id}
+      access: admin
       description: "Update a webhook. Only include fields you want to change."
       params:
         owner: { type: string, in: path, required: true }
@@ -1571,6 +1692,7 @@ backend:
     delete_repo_webhook:
       method: DELETE
       path: /repos/{owner}/{repo}/hooks/{hook_id}
+      access: dangerous
       description: "Delete a webhook from a repository."
       params:
         owner: { type: string, in: path, required: true }
@@ -1581,6 +1703,7 @@ backend:
     ping_repo_webhook:
       method: POST
       path: /repos/{owner}/{repo}/hooks/{hook_id}/pings
+      access: write
       description: "Send a ping event to a webhook to test its configuration."
       params:
         owner: { type: string, in: path, required: true }
@@ -1593,6 +1716,7 @@ backend:
     list_deployments:
       method: GET
       path: /repos/{owner}/{repo}/deployments
+      access: read
       description: "List deployments for a repository. Filter by sha, ref, task, or environment."
       params:
         owner: { type: string, in: path, required: true }
@@ -1607,6 +1731,7 @@ backend:
     get_deployment:
       method: GET
       path: /repos/{owner}/{repo}/deployments/{deployment_id}
+      access: read
       description: "Get a single deployment."
       params:
         owner: { type: string, in: path, required: true }
@@ -1617,6 +1742,7 @@ backend:
     create_deployment:
       method: POST
       path: /repos/{owner}/{repo}/deployments
+      access: write
       description: "Create a deployment. ref is the branch/tag/SHA to deploy. environment defaults to 'production'."
       params:
         owner: { type: string, in: path, required: true }
@@ -1635,6 +1761,7 @@ backend:
     delete_deployment:
       method: DELETE
       path: /repos/{owner}/{repo}/deployments/{deployment_id}
+      access: dangerous
       description: "Delete a deployment. Only inactive deployments can be deleted."
       params:
         owner: { type: string, in: path, required: true }
@@ -1645,6 +1772,7 @@ backend:
     list_deployment_statuses:
       method: GET
       path: /repos/{owner}/{repo}/deployments/{deployment_id}/statuses
+      access: read
       description: "List statuses for a deployment. States: error, failure, inactive, in_progress, queued, pending, success."
       params:
         owner: { type: string, in: path, required: true }
@@ -1656,6 +1784,7 @@ backend:
     create_deployment_status:
       method: POST
       path: /repos/{owner}/{repo}/deployments/{deployment_id}/statuses
+      access: write
       description: "Create a deployment status. state: error, failure, inactive, in_progress, queued, pending, success."
       params:
         owner: { type: string, in: path, required: true }
@@ -1675,6 +1804,7 @@ backend:
     list_environments:
       method: GET
       path: /repos/{owner}/{repo}/environments
+      access: read
       description: "List deployment environments for a repository."
       params:
         owner: { type: string, in: path, required: true }
@@ -1685,6 +1815,7 @@ backend:
     get_environment:
       method: GET
       path: /repos/{owner}/{repo}/environments/{environment_name}
+      access: read
       description: "Get a deployment environment by name."
       params:
         owner: { type: string, in: path, required: true }
@@ -1695,6 +1826,7 @@ backend:
     create_or_update_environment:
       method: PUT
       path: /repos/{owner}/{repo}/environments/{environment_name}
+      access: admin
       description: "Create or update a deployment environment. Configure wait_timer (minutes), reviewers, and deployment_branch_policy."
       params:
         owner: { type: string, in: path, required: true }
@@ -1708,6 +1840,7 @@ backend:
     delete_environment:
       method: DELETE
       path: /repos/{owner}/{repo}/environments/{environment_name}
+      access: dangerous
       description: "Delete a deployment environment."
       params:
         owner: { type: string, in: path, required: true }
@@ -1720,6 +1853,7 @@ backend:
     list_labels:
       method: GET
       path: /repos/{owner}/{repo}/labels
+      access: read
       description: "List all labels for a repository."
       params:
         owner: { type: string, in: path, required: true }
@@ -1730,6 +1864,7 @@ backend:
     get_label:
       method: GET
       path: /repos/{owner}/{repo}/labels/{name}
+      access: read
       description: "Get a single label by name."
       params:
         owner: { type: string, in: path, required: true }
@@ -1740,6 +1875,7 @@ backend:
     create_label:
       method: POST
       path: /repos/{owner}/{repo}/labels
+      access: write
       description: "Create a label. Color is a 6-character hex code without '#' prefix (e.g. 'ff0000' for red)."
       params:
         owner: { type: string, in: path, required: true }
@@ -1752,6 +1888,7 @@ backend:
     update_label:
       method: PATCH
       path: /repos/{owner}/{repo}/labels/{name}
+      access: write
       description: "Update a label. Only include fields you want to change. Use new_name to rename."
       params:
         owner: { type: string, in: path, required: true }
@@ -1765,6 +1902,7 @@ backend:
     delete_label:
       method: DELETE
       path: /repos/{owner}/{repo}/labels/{name}
+      access: dangerous
       description: "Delete a label from the repository."
       params:
         owner: { type: string, in: path, required: true }
@@ -1777,6 +1915,7 @@ backend:
     list_milestones:
       method: GET
       path: /repos/{owner}/{repo}/milestones
+      access: read
       description: "List milestones for a repository. State: open, closed, all."
       params:
         owner: { type: string, in: path, required: true }
@@ -1790,6 +1929,7 @@ backend:
     get_milestone:
       method: GET
       path: /repos/{owner}/{repo}/milestones/{milestone_number}
+      access: read
       description: "Get a single milestone by its number, including open/closed issue counts."
       params:
         owner: { type: string, in: path, required: true }
@@ -1800,6 +1940,7 @@ backend:
     create_milestone:
       method: POST
       path: /repos/{owner}/{repo}/milestones
+      access: write
       description: "Create a milestone. due_on is an ISO 8601 timestamp (e.g. '2026-04-01T00:00:00Z')."
       params:
         owner: { type: string, in: path, required: true }
@@ -1813,6 +1954,7 @@ backend:
     update_milestone:
       method: PATCH
       path: /repos/{owner}/{repo}/milestones/{milestone_number}
+      access: write
       description: "Update a milestone. Set state to 'closed' to close it. Only include fields you want to change."
       params:
         owner: { type: string, in: path, required: true }
@@ -1827,6 +1969,7 @@ backend:
     delete_milestone:
       method: DELETE
       path: /repos/{owner}/{repo}/milestones/{milestone_number}
+      access: dangerous
       description: "Delete a milestone."
       params:
         owner: { type: string, in: path, required: true }
@@ -1839,6 +1982,7 @@ backend:
     get_authenticated_user:
       method: GET
       path: /user
+      access: read
       description: "Get the currently authenticated user's profile including login, name, email, and bio."
       params: {}
       pagination: none
@@ -1846,6 +1990,7 @@ backend:
     get_user:
       method: GET
       path: /users/{username}
+      access: read
       description: "Get a public user profile by username."
       params:
         username: { type: string, in: path, required: true }
@@ -1854,6 +1999,7 @@ backend:
     list_followers:
       method: GET
       path: /users/{username}/followers
+      access: read
       description: "List followers of a user."
       params:
         username: { type: string, in: path, required: true }
@@ -1863,6 +2009,7 @@ backend:
     list_following:
       method: GET
       path: /users/{username}/following
+      access: read
       description: "List users that a user is following."
       params:
         username: { type: string, in: path, required: true }
@@ -1874,6 +2021,7 @@ backend:
     list_tags:
       method: GET
       path: /repos/{owner}/{repo}/tags
+      access: read
       description: "List tags for a repository, newest first. Each tag includes name and commit SHA."
       params:
         owner: { type: string, in: path, required: true }
@@ -1886,6 +2034,7 @@ backend:
     list_stargazers:
       method: GET
       path: /repos/{owner}/{repo}/stargazers
+      access: read
       description: "List users who have starred a repository."
       params:
         owner: { type: string, in: path, required: true }
@@ -1896,6 +2045,7 @@ backend:
     list_starred_repos:
       method: GET
       path: /user/starred
+      access: read
       description: "List repositories starred by the authenticated user."
       params:
         sort: { type: string, in: query, default: "created" }
@@ -1906,6 +2056,7 @@ backend:
     check_starred:
       method: GET
       path: /user/starred/{owner}/{repo}
+      access: read
       description: "Check if the authenticated user has starred a repo. Returns 204 if yes, 404 if no."
       params:
         owner: { type: string, in: path, required: true }
@@ -1915,6 +2066,7 @@ backend:
     star_repo:
       method: PUT
       path: /user/starred/{owner}/{repo}
+      access: write
       description: "Star a repository for the authenticated user."
       params:
         owner: { type: string, in: path, required: true }
@@ -1924,6 +2076,7 @@ backend:
     unstar_repo:
       method: DELETE
       path: /user/starred/{owner}/{repo}
+      access: dangerous
       description: "Unstar a repository for the authenticated user."
       params:
         owner: { type: string, in: path, required: true }
@@ -1935,6 +2088,7 @@ backend:
     list_watchers:
       method: GET
       path: /repos/{owner}/{repo}/subscribers
+      access: read
       description: "List users watching (subscribed to) a repository."
       params:
         owner: { type: string, in: path, required: true }
@@ -1945,6 +2099,7 @@ backend:
     get_repo_subscription:
       method: GET
       path: /repos/{owner}/{repo}/subscription
+      access: read
       description: "Get the authenticated user's subscription (watch status) for a repository."
       params:
         owner: { type: string, in: path, required: true }
@@ -1954,6 +2109,7 @@ backend:
     watch_repo:
       method: PUT
       path: /repos/{owner}/{repo}/subscription
+      access: write
       description: "Watch a repository. Set subscribed=true to receive notifications, ignored=true to mute."
       params:
         owner: { type: string, in: path, required: true }
@@ -1965,6 +2121,7 @@ backend:
     unwatch_repo:
       method: DELETE
       path: /repos/{owner}/{repo}/subscription
+      access: dangerous
       description: "Stop watching a repository."
       params:
         owner: { type: string, in: path, required: true }
@@ -1976,6 +2133,7 @@ backend:
     list_gists:
       method: GET
       path: /gists
+      access: read
       description: "List gists for the authenticated user."
       params:
         since: { type: string, in: query }
@@ -1985,6 +2143,7 @@ backend:
     list_public_gists:
       method: GET
       path: /gists/public
+      access: read
       description: "List public gists, newest first."
       params:
         since: { type: string, in: query }
@@ -1994,6 +2153,7 @@ backend:
     list_starred_gists:
       method: GET
       path: /gists/starred
+      access: read
       description: "List gists starred by the authenticated user."
       params:
         since: { type: string, in: query }
@@ -2003,6 +2163,7 @@ backend:
     get_gist:
       method: GET
       path: /gists/{gist_id}
+      access: read
       description: "Get a single gist by ID, including all files and their content."
       params:
         gist_id: { type: string, in: path, required: true }
@@ -2011,6 +2172,7 @@ backend:
     create_gist:
       method: POST
       path: /gists
+      access: write
       description: "Create a gist. files is a map of filename to {content: string}. Set public=true for a public gist."
       params:
         description: { type: string, in: body }
@@ -2021,6 +2183,7 @@ backend:
     update_gist:
       method: PATCH
       path: /gists/{gist_id}
+      access: write
       description: "Update a gist. To delete a file, set its value to null. To rename, delete the old name and create a new one."
       params:
         gist_id: { type: string, in: path, required: true }
@@ -2031,6 +2194,7 @@ backend:
     delete_gist:
       method: DELETE
       path: /gists/{gist_id}
+      access: dangerous
       description: "Delete a gist."
       params:
         gist_id: { type: string, in: path, required: true }
@@ -2041,6 +2205,7 @@ backend:
     list_notifications:
       method: GET
       path: /notifications
+      access: read
       description: "List notifications for the authenticated user. Set all=true to include read notifications."
       params:
         all: { type: boolean, in: query, default: false }
@@ -2053,6 +2218,7 @@ backend:
     mark_notifications_read:
       method: PUT
       path: /notifications
+      access: write
       description: "Mark all notifications as read. Optionally provide last_read_at (ISO 8601) to only mark notifications before that time."
       params:
         last_read_at: { type: string, in: body }
@@ -2061,6 +2227,7 @@ backend:
     list_repo_notifications:
       method: GET
       path: /repos/{owner}/{repo}/notifications
+      access: read
       description: "List notifications for a repository."
       params:
         owner: { type: string, in: path, required: true }
@@ -2075,6 +2242,7 @@ backend:
     mark_repo_notifications_read:
       method: PUT
       path: /repos/{owner}/{repo}/notifications
+      access: write
       description: "Mark all notifications in a repository as read."
       params:
         owner: { type: string, in: path, required: true }
@@ -2085,6 +2253,7 @@ backend:
     get_notification_thread:
       method: GET
       path: /notifications/threads/{thread_id}
+      access: read
       description: "Get a single notification thread."
       params:
         thread_id: { type: integer, in: path, required: true }
@@ -2093,6 +2262,7 @@ backend:
     mark_thread_read:
       method: PATCH
       path: /notifications/threads/{thread_id}
+      access: write
       description: "Mark a notification thread as read."
       params:
         thread_id: { type: integer, in: path, required: true }
@@ -2103,6 +2273,7 @@ backend:
     list_check_runs_for_ref:
       method: GET
       path: /repos/{owner}/{repo}/commits/{ref}/check-runs
+      access: read
       description: "List check runs for a commit SHA, branch name, or tag. Filter by check_name, status, or filter (latest, all)."
       params:
         owner: { type: string, in: path, required: true }
@@ -2117,6 +2288,7 @@ backend:
     list_check_suites_for_ref:
       method: GET
       path: /repos/{owner}/{repo}/commits/{ref}/check-suites
+      access: read
       description: "List check suites for a commit SHA, branch name, or tag."
       params:
         owner: { type: string, in: path, required: true }
@@ -2130,6 +2302,7 @@ backend:
     get_combined_status:
       method: GET
       path: /repos/{owner}/{repo}/commits/{ref}/status
+      access: read
       description: "Get the combined status for a commit (aggregates all status checks). Returns state: success, failure, pending."
       params:
         owner: { type: string, in: path, required: true }
@@ -2140,6 +2313,7 @@ backend:
     list_commit_statuses:
       method: GET
       path: /repos/{owner}/{repo}/commits/{ref}/statuses
+      access: read
       description: "List individual status checks for a commit ref."
       params:
         owner: { type: string, in: path, required: true }
@@ -2151,6 +2325,7 @@ backend:
     create_commit_status:
       method: POST
       path: /repos/{owner}/{repo}/statuses/{sha}
+      access: write
       description: "Create a commit status. state: error, failure, pending, success. Provide target_url for linking to CI details."
       params:
         owner: { type: string, in: path, required: true }
@@ -2167,6 +2342,7 @@ backend:
     get_pages:
       method: GET
       path: /repos/{owner}/{repo}/pages
+      access: read
       description: "Get GitHub Pages configuration for a repository."
       params:
         owner: { type: string, in: path, required: true }
@@ -2176,6 +2352,7 @@ backend:
     create_pages_site:
       method: POST
       path: /repos/{owner}/{repo}/pages
+      access: admin
       description: "Enable GitHub Pages for a repository. source.branch is the branch to publish from, source.path is '/' or '/docs'."
       params:
         owner: { type: string, in: path, required: true }
@@ -2187,6 +2364,7 @@ backend:
     update_pages_info:
       method: PUT
       path: /repos/{owner}/{repo}/pages
+      access: admin
       description: "Update GitHub Pages configuration."
       params:
         owner: { type: string, in: path, required: true }
@@ -2199,6 +2377,7 @@ backend:
     delete_pages_site:
       method: DELETE
       path: /repos/{owner}/{repo}/pages
+      access: dangerous
       description: "Disable GitHub Pages for a repository."
       params:
         owner: { type: string, in: path, required: true }
@@ -2208,6 +2387,7 @@ backend:
     list_pages_builds:
       method: GET
       path: /repos/{owner}/{repo}/pages/builds
+      access: read
       description: "List GitHub Pages builds."
       params:
         owner: { type: string, in: path, required: true }
@@ -2220,6 +2400,7 @@ backend:
     list_code_scanning_alerts:
       method: GET
       path: /repos/{owner}/{repo}/code-scanning/alerts
+      access: read
       description: "List code scanning alerts for a repository. State: open, closed, dismissed, fixed."
       params:
         owner: { type: string, in: path, required: true }
@@ -2234,6 +2415,7 @@ backend:
     get_code_scanning_alert:
       method: GET
       path: /repos/{owner}/{repo}/code-scanning/alerts/{alert_number}
+      access: read
       description: "Get a single code scanning alert."
       params:
         owner: { type: string, in: path, required: true }
@@ -2244,6 +2426,7 @@ backend:
     update_code_scanning_alert:
       method: PATCH
       path: /repos/{owner}/{repo}/code-scanning/alerts/{alert_number}
+      access: write
       description: "Update a code scanning alert. Set state to 'dismissed' with a dismissed_reason, or 'open' to reopen."
       params:
         owner: { type: string, in: path, required: true }
@@ -2257,6 +2440,7 @@ backend:
     list_dependabot_alerts:
       method: GET
       path: /repos/{owner}/{repo}/dependabot/alerts
+      access: read
       description: "List Dependabot alerts for a repository. State: auto_dismissed, dismissed, fixed, open."
       params:
         owner: { type: string, in: path, required: true }
@@ -2274,6 +2458,7 @@ backend:
     get_dependabot_alert:
       method: GET
       path: /repos/{owner}/{repo}/dependabot/alerts/{alert_number}
+      access: read
       description: "Get a single Dependabot alert."
       params:
         owner: { type: string, in: path, required: true }
@@ -2284,6 +2469,7 @@ backend:
     update_dependabot_alert:
       method: PATCH
       path: /repos/{owner}/{repo}/dependabot/alerts/{alert_number}
+      access: write
       description: "Update a Dependabot alert. Set state to 'dismissed' with a dismissed_reason, or 'open' to reopen."
       params:
         owner: { type: string, in: path, required: true }
@@ -2297,6 +2483,7 @@ backend:
     list_secret_scanning_alerts:
       method: GET
       path: /repos/{owner}/{repo}/secret-scanning/alerts
+      access: read
       description: "List secret scanning alerts for a repository. State: open, resolved."
       params:
         owner: { type: string, in: path, required: true }
@@ -2312,6 +2499,7 @@ backend:
     get_secret_scanning_alert:
       method: GET
       path: /repos/{owner}/{repo}/secret-scanning/alerts/{alert_number}
+      access: read
       description: "Get a single secret scanning alert."
       params:
         owner: { type: string, in: path, required: true }
@@ -2322,6 +2510,7 @@ backend:
     update_secret_scanning_alert:
       method: PATCH
       path: /repos/{owner}/{repo}/secret-scanning/alerts/{alert_number}
+      access: write
       description: "Update a secret scanning alert. Set state to 'resolved' with a resolution (false_positive, wont_fix, revoked, used_in_tests, pattern_edited, pattern_deleted)."
       params:
         owner: { type: string, in: path, required: true }

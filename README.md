@@ -424,7 +424,7 @@ await toolmesh.vikunja_set_task_position({ id: 42, position: 1.5, project_view_i
 
 As shown above, the fastest path is asking an LLM. If you use Claude Code with ToolMesh connected, it can create the `.dadl` file, add the backend entry to `config/backends.yaml`, and set the credential — all in one session.
 
-Before submitting a DADL to the registry, validate it locally with `dadl validate myapi.dadl`. To share a DADL with the community, either email it to dadl@dunkel.cloud or open a PR on the [dadl-registry](https://github.com/DunkelCloud/dadl-registry).
+To share a DADL with the community, either email it to dadl@dunkel.cloud or open a PR on the [dadl-registry](https://github.com/DunkelCloud/dadl-registry).
 
 ## Code Mode
 
@@ -463,4 +463,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
-Apache 2.0 — Copyright 2025 [Dunkel Cloud GmbH](https://dunkel.cloud)
+Apache 2.0 — Copyright 2025–2026 [Dunkel Cloud GmbH](https://dunkel.cloud)

@@ -145,6 +145,7 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 	// Authenticate
 	uc := s.authenticate(r)
 	if !uc.Authenticated && s.authRequired() {
+		s.logger.Debug("mcp request rejected: unauthorized", "remote", clientIP(r))
 		s.writeJSONRPCError(w, nil, -32001, "Unauthorized")
 		return
 	}

@@ -615,17 +615,19 @@ func (s *Server) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Req
 	accessToken := generateID()
 	refreshToken := generateID()
 
+	now := time.Now()
 	ti := &auth.TokenInfo{
-		AccessToken:  accessToken,
-		RefreshToken: refreshToken,
-		ClientID:     ac.ClientID,
-		UserID:       ac.UserID,
-		CompanyID:    ac.CompanyID,
-		Plan:         ac.Plan,
-		Roles:        ac.Roles,
-		CallerID:     callerID,
-		Scope:        ac.Scope,
-		ExpiresAt:    time.Now().Add(time.Hour),
+		AccessToken:      accessToken,
+		RefreshToken:     refreshToken,
+		ClientID:         ac.ClientID,
+		UserID:           ac.UserID,
+		CompanyID:        ac.CompanyID,
+		Plan:             ac.Plan,
+		Roles:            ac.Roles,
+		CallerID:         callerID,
+		Scope:            ac.Scope,
+		ExpiresAt:        now.Add(time.Hour),
+		RefreshExpiresAt: now.Add(7 * 24 * time.Hour),
 	}
 
 	if err := s.tokenStore.SaveToken(ctx, ti); err != nil {
@@ -669,17 +671,19 @@ func (s *Server) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request)
 	newAccessToken := generateID()
 	newRefreshToken := generateID()
 
+	now := time.Now()
 	ti := &auth.TokenInfo{
-		AccessToken:  newAccessToken,
-		RefreshToken: newRefreshToken,
-		ClientID:     oldTI.ClientID,
-		UserID:       oldTI.UserID,
-		CompanyID:    oldTI.CompanyID,
-		Plan:         oldTI.Plan,
-		Roles:        oldTI.Roles,
-		CallerID:     oldTI.CallerID,
-		Scope:        oldTI.Scope,
-		ExpiresAt:    time.Now().Add(time.Hour),
+		AccessToken:      newAccessToken,
+		RefreshToken:     newRefreshToken,
+		ClientID:         oldTI.ClientID,
+		UserID:           oldTI.UserID,
+		CompanyID:        oldTI.CompanyID,
+		Plan:             oldTI.Plan,
+		Roles:            oldTI.Roles,
+		CallerID:         oldTI.CallerID,
+		Scope:            oldTI.Scope,
+		ExpiresAt:        now.Add(time.Hour),
+		RefreshExpiresAt: now.Add(7 * 24 * time.Hour),
 	}
 
 	if err := s.tokenStore.SaveToken(ctx, ti); err != nil {

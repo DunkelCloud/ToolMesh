@@ -50,16 +50,27 @@ type AuthCode struct {
 
 // TokenInfo represents an access or refresh token with associated user data.
 type TokenInfo struct {
-	AccessToken  string    `json:"access_token"`
-	RefreshToken string    `json:"refresh_token"`
-	ClientID     string    `json:"client_id"`
-	UserID       string    `json:"user_id"`
-	CompanyID    string    `json:"company_id"`
-	Plan         string    `json:"plan"`
-	Roles        []string  `json:"roles"`
-	CallerID     string    `json:"caller_id,omitempty"`
-	Scope        string    `json:"scope"`
-	ExpiresAt    time.Time `json:"expires_at"`
+	AccessToken      string    `json:"access_token"`
+	RefreshToken     string    `json:"refresh_token"`
+	ClientID         string    `json:"client_id"`
+	UserID           string    `json:"user_id"`
+	CompanyID        string    `json:"company_id"`
+	Plan             string    `json:"plan"`
+	Roles            []string  `json:"roles"`
+	CallerID         string    `json:"caller_id,omitempty"`
+	Scope            string    `json:"scope"`
+	ExpiresAt        time.Time `json:"expires_at"`
+	RefreshExpiresAt time.Time `json:"refresh_expires_at,omitempty"`
+}
+
+// RefreshExpiry returns the effective expiry time for the refresh token.
+// Falls back to ExpiresAt for backward compatibility with tokens that
+// were created before RefreshExpiresAt was introduced.
+func (ti *TokenInfo) RefreshExpiry() time.Time {
+	if !ti.RefreshExpiresAt.IsZero() {
+		return ti.RefreshExpiresAt
+	}
+	return ti.ExpiresAt
 }
 
 // ErrNotFound is returned when a key does not exist in the store.

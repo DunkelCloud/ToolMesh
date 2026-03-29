@@ -113,7 +113,7 @@ func (s *FileTokenStore) loadState() error {
 	if state.RefreshTokens != nil {
 		restored := 0
 		for k, v := range state.RefreshTokens {
-			if v.ExpiresAt.After(now) {
+			if v.RefreshExpiry().After(now) {
 				s.refreshTokens[k] = v
 				restored++
 			}
@@ -316,7 +316,7 @@ func (s *FileTokenStore) Cleanup(ctx context.Context) {
 				}
 			}
 			for k, v := range s.refreshTokens {
-				if v.ExpiresAt.Before(now) {
+				if v.RefreshExpiry().Before(now) {
 					delete(s.refreshTokens, k)
 					dirty = true
 				}

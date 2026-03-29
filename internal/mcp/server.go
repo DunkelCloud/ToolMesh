@@ -130,10 +130,12 @@ func (s *Server) originAllowed(origin string) bool {
 
 // handleMCP processes MCP Streamable HTTP requests.
 func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
 	if r.Method == http.MethodGet {
 		// MCP clients may attempt GET for SSE streaming.
 		// We don't support server-initiated events; return 405.
-		s.logger.Debug("mcp GET request rejected (SSE not supported)")
+		s.logger.DebugContext(ctx, "mcp GET request rejected (SSE not supported)")
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
@@ -145,12 +147,12 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 	// Authenticate
 	uc := s.authenticate(r)
 	if !uc.Authenticated && s.authRequired() {
-		s.logger.Debug("mcp request rejected: unauthorized", "remote", clientIP(r))
+		s.logger.DebugContext(ctx, "mcp request rejected: unauthorized", "remote", clientIP(r))
 		s.writeJSONRPCError(w, nil, -32001, "Unauthorized")
 		return
 	}
 
-	ctx := userctx.WithUserContext(r.Context(), uc)
+	ctx = userctx.WithUserContext(ctx, uc)
 
 	// Parse JSON-RPC request
 	var req jsonRPCRequest
@@ -159,13 +161,13 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.logger.Info("mcp request", "method", req.Method, "id", req.ID)
-	s.logger.Debug("mcp request payload", "method", req.Method, "id", req.ID, "params", req.Params)
+	s.logger.InfoContext(ctx, "mcp request", "method", req.Method, "id", req.ID)
+	s.logger.DebugContext(ctx, "mcp request payload", "method", req.Method, "id", req.ID, "params", req.Params)
 
 	// JSON-RPC notifications have no "id" field.
 	// Per MCP Streamable HTTP spec, respond with 202 Accepted (no body).
 	if req.ID == nil {
-		s.logger.Debug("mcp notification (no id)", "method", req.Method)
+		s.logger.DebugContext(ctx, "mcp notification (no id)", "method", req.Method)
 		w.WriteHeader(http.StatusAccepted)
 		return
 	}
@@ -383,6 +385,8 @@ func (s *Server) handleProtectedResource(w http.ResponseWriter, _ *http.Request)
 }
 
 func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -391,9 +395,9 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	// DCR Rate Limiting
 	if s.rateLimiter != nil {
 		ip := clientIP(r)
-		allowed, err := s.rateLimiter.Allow(r.Context(), ip)
+		allowed, err := s.rateLimiter.Allow(ctx, ip)
 		if err != nil {
-			s.logger.Error("dcr rate limit check failed", "error", err)
+			s.logger.ErrorContext(ctx, "dcr rate limit check failed", "error", err)
 		} else if !allowed {
 			writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "too_many_requests"})
 			return
@@ -421,14 +425,14 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if s.tokenStore != nil {
-		if err := s.tokenStore.SaveClient(r.Context(), client); err != nil {
-			s.logger.Error("failed to save client", "error", err)
+		if err := s.tokenStore.SaveClient(ctx, client); err != nil {
+			s.logger.ErrorContext(ctx, "failed to save client", "error", err)
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
 			return
 		}
 	}
 
-	s.logger.Info("registered oauth client", "clientId", clientID)
+	s.logger.InfoContext(ctx, "registered oauth client", "clientId", clientID)
 
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"client_id":                  clientID,
@@ -528,7 +532,7 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 
 		if s.tokenStore != nil {
 			if err := s.tokenStore.SaveAuthCode(r.Context(), ac); err != nil {
-				s.logger.Error("failed to save auth code", "error", err)
+				s.logger.ErrorContext(r.Context(), "failed to save auth code", "error", err)
 				http.Error(w, "Internal server error", http.StatusInternalServerError)
 				return
 			}
@@ -568,6 +572,7 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
 	code := r.FormValue("code")                  //nolint:gosec // G120: body size limited in handleToken
 	codeVerifier := r.FormValue("code_verifier") //nolint:gosec // G120: body size limited in handleToken
 
@@ -576,7 +581,7 @@ func (s *Server) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	ac, err := s.tokenStore.ConsumeAuthCode(r.Context(), code)
+	ac, err := s.tokenStore.ConsumeAuthCode(ctx, code)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_grant"})
 		return
@@ -603,7 +608,7 @@ func (s *Server) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Req
 
 	// Derive CallerID from registered client's name
 	callerID := ac.ClientID // fallback to ClientID
-	if client, err := s.tokenStore.GetClient(r.Context(), ac.ClientID); err == nil && client.ClientName != "" {
+	if client, err := s.tokenStore.GetClient(ctx, ac.ClientID); err == nil && client.ClientName != "" {
 		callerID = client.ClientName
 	}
 
@@ -623,13 +628,13 @@ func (s *Server) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Req
 		ExpiresAt:    time.Now().Add(time.Hour),
 	}
 
-	if err := s.tokenStore.SaveToken(r.Context(), ti); err != nil {
-		s.logger.Error("failed to save token", "error", err)
+	if err := s.tokenStore.SaveToken(ctx, ti); err != nil {
+		s.logger.ErrorContext(ctx, "failed to save token", "error", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
 		return
 	}
-	if err := s.tokenStore.SaveRefreshToken(r.Context(), ti); err != nil {
-		s.logger.Error("failed to save refresh token", "error", err)
+	if err := s.tokenStore.SaveRefreshToken(ctx, ti); err != nil {
+		s.logger.ErrorContext(ctx, "failed to save refresh token", "error", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
 		return
 	}
@@ -644,6 +649,7 @@ func (s *Server) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Req
 }
 
 func (s *Server) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
 	refreshToken := r.FormValue("refresh_token") //nolint:gosec // G120: body size limited in handleToken
 
 	if s.tokenStore == nil {
@@ -651,14 +657,14 @@ func (s *Server) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	oldTI, err := s.tokenStore.ConsumeRefreshToken(r.Context(), refreshToken)
+	oldTI, err := s.tokenStore.ConsumeRefreshToken(ctx, refreshToken)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_grant"})
 		return
 	}
 
 	// Delete old access token
-	_ = s.tokenStore.DeleteToken(r.Context(), oldTI.AccessToken)
+	_ = s.tokenStore.DeleteToken(ctx, oldTI.AccessToken)
 
 	newAccessToken := generateID()
 	newRefreshToken := generateID()
@@ -676,13 +682,13 @@ func (s *Server) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request)
 		ExpiresAt:    time.Now().Add(time.Hour),
 	}
 
-	if err := s.tokenStore.SaveToken(r.Context(), ti); err != nil {
-		s.logger.Error("failed to save token", "error", err)
+	if err := s.tokenStore.SaveToken(ctx, ti); err != nil {
+		s.logger.ErrorContext(ctx, "failed to save token", "error", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
 		return
 	}
-	if err := s.tokenStore.SaveRefreshToken(r.Context(), ti); err != nil {
-		s.logger.Error("failed to save refresh token", "error", err)
+	if err := s.tokenStore.SaveRefreshToken(ctx, ti); err != nil {
+		s.logger.ErrorContext(ctx, "failed to save refresh token", "error", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
 		return
 	}

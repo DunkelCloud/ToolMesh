@@ -65,13 +65,16 @@ func main() {
 		logLevel = slog.LevelInfo
 	}
 
-	var handler slog.Handler
+	var baseHandler slog.Handler
 	opts := &slog.HandlerOptions{Level: logLevel}
 	if cfg.LogFormat == "json" {
-		handler = slog.NewJSONHandler(os.Stdout, opts)
+		baseHandler = slog.NewJSONHandler(os.Stdout, opts)
 	} else {
-		handler = slog.NewTextHandler(os.Stdout, opts)
+		baseHandler = slog.NewTextHandler(os.Stdout, opts)
 	}
+	// Wrap with ContextHandler so *Context log calls automatically
+	// include trace_id from the request context.
+	handler := mcp.NewContextHandler(baseHandler)
 	logger := slog.New(handler)
 	slog.SetDefault(logger)
 
@@ -134,8 +137,8 @@ func main() {
 	// attribute are written to the debug file.
 	mcpLogger := logger
 	if debugFile != nil && debugSet != nil {
-		filtered := debuglog.NewFilteredTeeHandler(handler, debugFile, debugSet)
-		mcpLogger = slog.New(filtered)
+		filtered := debuglog.NewFilteredTeeHandler(baseHandler, debugFile, debugSet)
+		mcpLogger = slog.New(mcp.NewContextHandler(filtered))
 	}
 	mcpAdapter, err := backend.NewMCPAdapter(cfg.BackendsConfigPath, credStore, mcpLogger)
 	if err != nil {
@@ -181,7 +184,7 @@ func main() {
 	compositeBackend.AddPassthrough(mcpAdapter)
 
 	// Initialize REST Proxy backends from DADL files
-	loadRESTBackends(compositeBackend, cfg.BackendsConfigPath, credStore, logger, handler, debugFile, debugSet)
+	loadRESTBackends(compositeBackend, cfg.BackendsConfigPath, credStore, logger, baseHandler, debugFile, debugSet)
 
 	// Initialize OpenFGA authorizer based on OPENFGA_MODE
 	var authorizer *authz.Authorizer
@@ -304,9 +307,12 @@ func main() {
 	httpMux := http.NewServeMux()
 	mcpServer.SetupRoutes(httpMux)
 
+	// Wrap with request logging middleware (trace ID + access log).
+	httpHandler := mcp.RequestLogging(logger)(httpMux)
+
 	srv := &http.Server{
 		Addr:         fmt.Sprintf(":%d", cfg.Port),
-		Handler:      httpMux,
+		Handler:      httpHandler,
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 60 * time.Second,
 		IdleTimeout:  120 * time.Second,
@@ -343,7 +349,7 @@ func main() {
 func backendLogger(name string, globalLogger *slog.Logger, stdoutHandler slog.Handler, debugFile *os.File, debugSet map[string]bool) *slog.Logger {
 	if debugSet[name] && debugFile != nil {
 		tee := debuglog.NewTeeHandler(stdoutHandler, debugFile)
-		return slog.New(tee)
+		return slog.New(mcp.NewContextHandler(tee))
 	}
 	return globalLogger
 }

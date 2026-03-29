@@ -108,7 +108,7 @@ func Execute(
 	}
 
 	// Resolve promise — goja's leave() already drained the microtask queue
-	result, err := resolvePromise(val)
+	result, err := ResolvePromise(val)
 	if err != nil {
 		return &Result{
 			ConsoleOutput: consoleOutput,
@@ -123,10 +123,10 @@ func Execute(
 	}, nil
 }
 
-// resolvePromise extracts the resolved value from a goja Promise.
+// ResolvePromise extracts the resolved value from a goja Promise.
 // goja processes its microtask queue before returning from RunString,
 // so the Promise should already be fulfilled or rejected.
-func resolvePromise(val goja.Value) (any, error) {
+func ResolvePromise(val goja.Value) (any, error) {
 	if val == nil || goja.IsUndefined(val) || goja.IsNull(val) {
 		return nil, nil
 	}

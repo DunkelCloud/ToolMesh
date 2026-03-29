@@ -54,12 +54,12 @@ cp .env.example .env
 # Or set an API key for programmatic access:
 #   TOOLMESH_API_KEY=my-api-key
 
-# Start all services (runs in bypass mode by default — no authz required)
-docker compose up -d
+# Optional: local overrides (build locally, enable OpenFGA, HTTPS proxy, ...)
+# cp docker-compose.override.yml.example docker-compose.override.yml
+# # then edit docker-compose.override.yml — picked up automatically by Docker Compose
 
-# Optional: Bootstrap OpenFGA and enable authorization
-docker compose exec toolmesh /tm-bootstrap
-# Set OPENFGA_MODE=restrict in .env and restart to enforce authz
+# Start (runs in bypass mode by default — no authz required)
+docker compose up -d
 
 # Verify it's running (default port: 8123)
 curl http://localhost:8123/health

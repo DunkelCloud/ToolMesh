@@ -97,6 +97,7 @@ backend:
     set_task_position:
       method: POST
       path: /tasks/{id}/position
+      access: write
       description: "Set task position (sort order) within a project view. The position is a float64 value — use values between existing tasks to insert."
       params:
         id: { type: integer, in: path, required: true }
@@ -107,6 +108,7 @@ backend:
     list_project_tasks:
       method: GET
       path: /projects/{project_id}/views/{view_id}/tasks
+      access: read
       description: "List all tasks in a project view. Use view_id from list_views. Supports sorting by position, due_date, created, etc. Kanban views return buckets with nested tasks, not a flat list."
       params:
         project_id: { type: integer, in: path, required: true }
@@ -121,6 +123,7 @@ backend:
     get_task:
       method: GET
       path: /tasks/{id}
+      access: read
       description: "Get a single task by its ID, including all details, assignees, labels, and relations."
       params:
         id: { type: integer, in: path, required: true }
@@ -129,6 +132,7 @@ backend:
     create_task:
       method: PUT
       path: /projects/{project_id}/tasks
+      access: write
       description: "Create a new task in a project. Priority: 0=unset, 1=low, 2=medium, 3=high, 4=urgent, 5=critical."
       params:
         project_id: { type: integer, in: path, required: true }
@@ -146,6 +150,7 @@ backend:
     update_task:
       method: POST
       path: /tasks/{id}
+      access: write
       description: "Update an existing task. Only include fields you want to change. Set bucket_id to move between kanban columns."
       params:
         id: { type: integer, in: path, required: true }
@@ -161,6 +166,7 @@ backend:
     delete_task:
       method: DELETE
       path: /tasks/{id}
+      access: dangerous
       description: "Permanently delete a task."
       params:
         id: { type: integer, in: path, required: true }
@@ -169,6 +175,7 @@ backend:
     list_projects:
       method: GET
       path: /projects
+      access: read
       description: "List all projects accessible to the authenticated user."
       params:
         page: { type: integer, in: query }
@@ -179,6 +186,7 @@ backend:
     get_project:
       method: GET
       path: /projects/{id}
+      access: read
       description: "Get a single project by ID."
       params:
         id: { type: integer, in: path, required: true }
@@ -187,6 +195,7 @@ backend:
     list_views:
       method: GET
       path: /projects/{project_id}/views
+      access: read
       description: "List all views (list, kanban, gantt, table) for a project. Each view has its own task positions. Call this first to get view_id for list_project_tasks."
       params:
         project_id: { type: integer, in: path, required: true }
@@ -195,6 +204,7 @@ backend:
     list_buckets:
       method: GET
       path: /projects/{project_id}/views/{view_id}/buckets
+      access: read
       description: "List all kanban buckets for a project view. Returns bucket id, title, and task count. Use bucket_id in update_task to move tasks between columns."
       params:
         project_id: { type: integer, in: path, required: true }
@@ -204,6 +214,7 @@ backend:
     create_bucket:
       method: PUT
       path: /projects/{project_id}/views/{view_id}/buckets
+      access: write
       description: "Create a new kanban bucket in a project view."
       params:
         project_id: { type: integer, in: path, required: true }
@@ -214,6 +225,7 @@ backend:
     list_labels:
       method: GET
       path: /labels
+      access: read
       description: "List all labels."
       params:
         page: { type: integer, in: query }
@@ -223,6 +235,7 @@ backend:
     add_label_to_task:
       method: PUT
       path: /tasks/{task_id}/labels
+      access: write
       description: "Add a label to a task."
       params:
         task_id: { type: integer, in: path, required: true }
@@ -232,6 +245,7 @@ backend:
     list_task_comments:
       method: GET
       path: /tasks/{task_id}/comments
+      access: read
       description: "List all comments on a task."
       params:
         task_id: { type: integer, in: path, required: true }
@@ -239,6 +253,7 @@ backend:
     create_task_comment:
       method: PUT
       path: /tasks/{task_id}/comments
+      access: write
       description: "Add a comment to a task."
       params:
         task_id: { type: integer, in: path, required: true }

@@ -145,6 +145,7 @@ backend:
     get_devices_status:
       method: POST
       path: /v2/devices/api/get
+      access: read
       description: >
         Get state of up to 10 Shelly devices. Returns online status,
         settings, and/or live sensor/relay data per device.
@@ -162,6 +163,7 @@ backend:
     set_switch:
       method: POST
       path: /v2/devices/api/set/switch
+      access: write
       description: >
         Turn a Shelly relay/switch on or off. Supports auto-off timer
         via toggle_after.
@@ -178,6 +180,7 @@ backend:
     set_cover:
       method: POST
       path: /v2/devices/api/set/cover
+      access: write
       description: >
         Control a Shelly cover/roller. Supports open/close/stop commands,
         absolute position (0-100), relative movement, and slat control.
@@ -199,6 +202,7 @@ backend:
     set_light:
       method: POST
       path: /v2/devices/api/set/light
+      access: write
       description: >
         Control a Shelly light or dimmer. Supports on/off, brightness,
         color temperature, RGBW color, and effects.
@@ -224,6 +228,7 @@ backend:
     set_groups:
       method: POST
       path: /v2/devices/api/set/groups
+      access: write
       description: >
         Batch-control multiple devices at once by type. Send commands to
         groups of switches, covers, and/or lights in a single request.
@@ -241,6 +246,7 @@ backend:
     v1_device_status:
       method: POST
       path: /device/status
+      access: read
       description: >
         [DEPRECATED — use get_devices_status] Get device online status
         and state. Returns relay states, power readings, sensor data.
@@ -256,6 +262,7 @@ backend:
     v1_relay_control:
       method: POST
       path: /device/relay/control
+      access: write
       description: >
         [DEPRECATED — use set_switch] Control a relay on/off.
       content_type: application/x-www-form-urlencoded
@@ -272,6 +279,7 @@ backend:
     v1_roller_control:
       method: POST
       path: /device/relay/roller/control
+      access: write
       description: >
         [DEPRECATED — use set_cover] Control a roller/cover shutter.
       content_type: application/x-www-form-urlencoded
@@ -289,6 +297,7 @@ backend:
     v1_light_control:
       method: POST
       path: /device/light/control
+      access: write
       description: >
         [DEPRECATED — use set_light] Control a light (RGBW or white mode).
       content_type: application/x-www-form-urlencoded
@@ -313,6 +322,7 @@ backend:
     v1_relay_bulk_control:
       method: POST
       path: /device/relay/bulk_control
+      access: write
       description: >
         [DEPRECATED — use set_groups] Bulk-control multiple relays at once.
       content_type: application/x-www-form-urlencoded
@@ -328,6 +338,7 @@ backend:
     v1_light_bulk_control:
       method: POST
       path: /device/light/bulk_control
+      access: write
       description: >
         [DEPRECATED — use set_groups] Bulk-control multiple lights at once.
       content_type: application/x-www-form-urlencoded
@@ -344,6 +355,7 @@ backend:
     v1_roller_bulk_control:
       method: POST
       path: /device/roller/bulk_control
+      access: write
       description: >
         [DEPRECATED — use set_groups] Bulk-control multiple rollers at once.
       content_type: application/x-www-form-urlencoded
@@ -360,6 +372,7 @@ backend:
     list_devices:
       method: POST
       path: /interface/device/list
+      access: read
       description: >
         List all devices on the account with names, types, and IDs.
         Unofficial endpoint used by the Shelly app — not in the
@@ -383,6 +396,7 @@ backend:
     get_all_device_status:
       method: POST
       path: /device/all_status
+      access: read
       description: >
         Get status of all devices on the account in a single call.
         Returns online state, relay/sensor data for every device.

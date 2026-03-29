@@ -122,6 +122,7 @@ backend:
     list_projects:
       method: GET
       path: /projects
+      access: read
       description: "List all visible projects. Use membership=true to limit to projects the user is a member of, owned=true for owned projects."
       params:
         search: { type: string, in: query }
@@ -141,6 +142,7 @@ backend:
     get_project:
       method: GET
       path: /projects/{id}
+      access: read
       description: "Get a single project by ID or URL-encoded path (e.g., 'my-group%2Fmy-project')."
       params:
         id: { type: string, in: path, required: true }
@@ -152,6 +154,7 @@ backend:
     create_project:
       method: POST
       path: /projects
+      access: write
       description: "Create a new project. Requires name or path."
       params:
         name: { type: string, in: body, required: true }
@@ -170,6 +173,7 @@ backend:
     update_project:
       method: PUT
       path: /projects/{id}
+      access: admin
       description: "Update a project. Only include fields you want to change."
       params:
         id: { type: string, in: path, required: true }
@@ -187,6 +191,7 @@ backend:
     delete_project:
       method: DELETE
       path: /projects/{id}
+      access: dangerous
       description: "Delete a project. Requires owner or admin access."
       params:
         id: { type: string, in: path, required: true }
@@ -195,6 +200,7 @@ backend:
     list_group_projects:
       method: GET
       path: /groups/{id}/projects
+      access: read
       description: "List projects in a group. Use include_subgroups to include nested group projects."
       params:
         id: { type: string, in: path, required: true }
@@ -211,6 +217,7 @@ backend:
     list_issues:
       method: GET
       path: /issues
+      access: read
       description: "List all issues visible to the authenticated user. Use scope to filter by created_by_me, assigned_to_me, or all."
       params:
         state: { type: string, in: query, default: "opened" }
@@ -233,6 +240,7 @@ backend:
     list_project_issues:
       method: GET
       path: /projects/{id}/issues
+      access: read
       description: "List issues for a specific project."
       params:
         id: { type: string, in: path, required: true }
@@ -251,6 +259,7 @@ backend:
     list_group_issues:
       method: GET
       path: /groups/{id}/issues
+      access: read
       description: "List issues for a group."
       params:
         id: { type: string, in: path, required: true }
@@ -266,6 +275,7 @@ backend:
     get_project_issue:
       method: GET
       path: /projects/{id}/issues/{issue_iid}
+      access: read
       description: "Get a single project issue by its internal ID (iid)."
       params:
         id: { type: string, in: path, required: true }
@@ -275,6 +285,7 @@ backend:
     create_issue:
       method: POST
       path: /projects/{id}/issues
+      access: write
       description: "Create a new issue in a project."
       params:
         id: { type: string, in: path, required: true }
@@ -292,6 +303,7 @@ backend:
     update_issue:
       method: PUT
       path: /projects/{id}/issues/{issue_iid}
+      access: write
       description: "Update an issue. Use state_event 'close' or 'reopen' to change state. At least one field required."
       params:
         id: { type: string, in: path, required: true }
@@ -313,6 +325,7 @@ backend:
     delete_issue:
       method: DELETE
       path: /projects/{id}/issues/{issue_iid}
+      access: dangerous
       description: "Delete a project issue. Requires Planner/Owner role or issue author (GitLab 18.10+)."
       params:
         id: { type: string, in: path, required: true }
@@ -324,6 +337,7 @@ backend:
     list_merge_requests:
       method: GET
       path: /merge_requests
+      access: read
       description: "List all merge requests visible to the authenticated user."
       params:
         state: { type: string, in: query, default: "opened" }
@@ -346,6 +360,7 @@ backend:
     list_project_merge_requests:
       method: GET
       path: /projects/{id}/merge_requests
+      access: read
       description: "List merge requests for a specific project."
       params:
         id: { type: string, in: path, required: true }
@@ -365,6 +380,7 @@ backend:
     list_group_merge_requests:
       method: GET
       path: /groups/{id}/merge_requests
+      access: read
       description: "List merge requests for a group."
       params:
         id: { type: string, in: path, required: true }
@@ -380,6 +396,7 @@ backend:
     get_merge_request:
       method: GET
       path: /projects/{id}/merge_requests/{merge_request_iid}
+      access: read
       description: "Get a single merge request by its internal ID."
       params:
         id: { type: string, in: path, required: true }
@@ -392,6 +409,7 @@ backend:
     create_merge_request:
       method: POST
       path: /projects/{id}/merge_requests
+      access: write
       description: "Create a new merge request. source_branch and target_branch must be different. Duplicate source/target pairs are rejected."
       params:
         id: { type: string, in: path, required: true }
@@ -412,6 +430,7 @@ backend:
     update_merge_request:
       method: PUT
       path: /projects/{id}/merge_requests/{merge_request_iid}
+      access: write
       description: "Update a merge request. Use state_event 'close' or 'reopen' to change state."
       params:
         id: { type: string, in: path, required: true }
@@ -435,6 +454,7 @@ backend:
     merge_merge_request:
       method: PUT
       path: /projects/{id}/merge_requests/{merge_request_iid}/merge
+      access: write
       description: "Accept and merge a merge request. Optionally squash commits or set a custom merge commit message."
       params:
         id: { type: string, in: path, required: true }
@@ -450,6 +470,7 @@ backend:
     approve_merge_request:
       method: POST
       path: /projects/{id}/merge_requests/{merge_request_iid}/approve
+      access: write
       description: "Approve a merge request. Optionally verify HEAD SHA to ensure reviewing the correct version."
       params:
         id: { type: string, in: path, required: true }
@@ -461,6 +482,7 @@ backend:
     rebase_merge_request:
       method: PUT
       path: /projects/{id}/merge_requests/{merge_request_iid}/rebase
+      access: write
       description: "Rebase a merge request's source branch onto the target branch."
       params:
         id: { type: string, in: path, required: true }
@@ -472,6 +494,7 @@ backend:
     list_branches:
       method: GET
       path: /projects/{id}/repository/branches
+      access: read
       description: "List repository branches. Use search for substring matching or regex for pattern matching."
       params:
         id: { type: string, in: path, required: true }
@@ -483,6 +506,7 @@ backend:
     get_branch:
       method: GET
       path: /projects/{id}/repository/branches/{branch}
+      access: read
       description: "Get a single branch including its latest commit and protection status."
       params:
         id: { type: string, in: path, required: true }
@@ -492,6 +516,7 @@ backend:
     create_branch:
       method: POST
       path: /projects/{id}/repository/branches
+      access: write
       description: "Create a new branch from a ref (branch name, tag, or commit SHA)."
       params:
         id: { type: string, in: path, required: true }
@@ -502,6 +527,7 @@ backend:
     delete_branch:
       method: DELETE
       path: /projects/{id}/repository/branches/{branch}
+      access: dangerous
       description: "Delete a branch. Cannot delete the default or protected branches."
       params:
         id: { type: string, in: path, required: true }
@@ -511,6 +537,7 @@ backend:
     delete_merged_branches:
       method: DELETE
       path: /projects/{id}/repository/merged_branches
+      access: dangerous
       description: "Delete all branches that have been merged into the default branch. Returns 202 Accepted."
       params:
         id: { type: string, in: path, required: true }
@@ -521,6 +548,7 @@ backend:
     list_commits:
       method: GET
       path: /projects/{id}/repository/commits
+      access: read
       description: "List commits in a repository. Filter by branch/tag (ref_name), file path, author, or date range."
       params:
         id: { type: string, in: path, required: true }
@@ -538,6 +566,7 @@ backend:
     get_commit:
       method: GET
       path: /projects/{id}/repository/commits/{sha}
+      access: read
       description: "Get a single commit by SHA, branch name, or tag name. Includes author info, message, and parent SHAs."
       params:
         id: { type: string, in: path, required: true }
@@ -548,6 +577,7 @@ backend:
     get_commit_diff:
       method: GET
       path: /projects/{id}/repository/commits/{sha}/diff
+      access: read
       description: "Get the diff of a commit showing file changes with unified diff content."
       params:
         id: { type: string, in: path, required: true }
@@ -560,6 +590,7 @@ backend:
     list_pipelines:
       method: GET
       path: /projects/{id}/pipelines
+      access: read
       description: "List pipelines for a project. Child pipelines are not included by default."
       params:
         id: { type: string, in: path, required: true }
@@ -581,6 +612,7 @@ backend:
     get_pipeline:
       method: GET
       path: /projects/{id}/pipelines/{pipeline_id}
+      access: read
       description: "Get a single pipeline by ID."
       params:
         id: { type: string, in: path, required: true }
@@ -590,6 +622,7 @@ backend:
     get_latest_pipeline:
       method: GET
       path: /projects/{id}/pipelines/latest
+      access: read
       description: "Get the latest pipeline for a ref. Defaults to the default branch."
       params:
         id: { type: string, in: path, required: true }
@@ -599,6 +632,7 @@ backend:
     create_pipeline:
       method: POST
       path: /projects/{id}/pipeline
+      access: write
       description: "Trigger a new pipeline on a branch or tag. Note: singular 'pipeline' in path, not 'pipelines'."
       params:
         id: { type: string, in: path, required: true }
@@ -609,6 +643,7 @@ backend:
     retry_pipeline:
       method: POST
       path: /projects/{id}/pipelines/{pipeline_id}/retry
+      access: write
       description: "Retry all failed jobs in a pipeline."
       params:
         id: { type: string, in: path, required: true }
@@ -618,6 +653,7 @@ backend:
     cancel_pipeline:
       method: POST
       path: /projects/{id}/pipelines/{pipeline_id}/cancel
+      access: write
       description: "Cancel a running pipeline and all its running jobs."
       params:
         id: { type: string, in: path, required: true }
@@ -627,6 +663,7 @@ backend:
     delete_pipeline:
       method: DELETE
       path: /projects/{id}/pipelines/{pipeline_id}
+      access: dangerous
       description: "Delete a pipeline. Deletes builds, logs, artifacts, and triggers. Cannot be undone."
       params:
         id: { type: string, in: path, required: true }
@@ -636,6 +673,7 @@ backend:
     get_pipeline_variables:
       method: GET
       path: /projects/{id}/pipelines/{pipeline_id}/variables
+      access: read
       description: "Get variables for a pipeline."
       params:
         id: { type: string, in: path, required: true }
@@ -645,6 +683,7 @@ backend:
     get_pipeline_test_report:
       method: GET
       path: /projects/{id}/pipelines/{pipeline_id}/test_report
+      access: read
       description: "Get the test report for a pipeline."
       params:
         id: { type: string, in: path, required: true }
@@ -656,6 +695,7 @@ backend:
     list_project_jobs:
       method: GET
       path: /projects/{id}/jobs
+      access: read
       description: "List jobs for a project. Supports both offset and keyset pagination."
       params:
         id: { type: string, in: path, required: true }
@@ -668,6 +708,7 @@ backend:
     list_pipeline_jobs:
       method: GET
       path: /projects/{id}/pipelines/{pipeline_id}/jobs
+      access: read
       description: "List jobs for a pipeline. Retried jobs are excluded by default; use include_retried=true to include them."
       params:
         id: { type: string, in: path, required: true }
@@ -680,6 +721,7 @@ backend:
     get_job:
       method: GET
       path: /projects/{id}/jobs/{job_id}
+      access: read
       description: "Get a single job by ID."
       params:
         id: { type: string, in: path, required: true }
@@ -689,6 +731,7 @@ backend:
     get_job_log:
       method: GET
       path: /projects/{id}/jobs/{job_id}/trace
+      access: read
       description: "Get the log (trace) output of a job. Returns plain text, not JSON."
       params:
         id: { type: string, in: path, required: true }
@@ -698,6 +741,7 @@ backend:
     retry_job:
       method: POST
       path: /projects/{id}/jobs/{job_id}/retry
+      access: write
       description: "Retry a single job."
       params:
         id: { type: string, in: path, required: true }
@@ -707,6 +751,7 @@ backend:
     cancel_job:
       method: POST
       path: /projects/{id}/jobs/{job_id}/cancel
+      access: write
       description: "Cancel a running or pending job."
       params:
         id: { type: string, in: path, required: true }
@@ -717,6 +762,7 @@ backend:
     play_job:
       method: POST
       path: /projects/{id}/jobs/{job_id}/play
+      access: write
       description: "Trigger a manual job."
       params:
         id: { type: string, in: path, required: true }
@@ -729,6 +775,7 @@ backend:
     list_releases:
       method: GET
       path: /projects/{id}/releases
+      access: read
       description: "List releases for a project, sorted by released_at descending."
       params:
         id: { type: string, in: path, required: true }
@@ -741,6 +788,7 @@ backend:
     get_release:
       method: GET
       path: /projects/{id}/releases/{tag_name}
+      access: read
       description: "Get a single release by its associated tag name."
       params:
         id: { type: string, in: path, required: true }
@@ -751,6 +799,7 @@ backend:
     create_release:
       method: POST
       path: /projects/{id}/releases
+      access: write
       description: "Create a release. If the tag does not exist, ref is required to create it."
       params:
         id: { type: string, in: path, required: true }
@@ -767,6 +816,7 @@ backend:
     update_release:
       method: PUT
       path: /projects/{id}/releases/{tag_name}
+      access: write
       description: "Update a release. Only name, description, milestones, and released_at can be changed."
       params:
         id: { type: string, in: path, required: true }
@@ -780,6 +830,7 @@ backend:
     delete_release:
       method: DELETE
       path: /projects/{id}/releases/{tag_name}
+      access: dangerous
       description: "Delete a release. The associated Git tag is preserved. Requires Maintainer access."
       params:
         id: { type: string, in: path, required: true }
@@ -791,6 +842,7 @@ backend:
     list_groups:
       method: GET
       path: /groups
+      access: read
       description: "List visible groups. Without authentication, only public groups are returned."
       params:
         search: { type: string, in: query }
@@ -805,6 +857,7 @@ backend:
     get_group:
       method: GET
       path: /groups/{id}
+      access: read
       description: "Get details of a group by ID or URL-encoded path."
       params:
         id: { type: string, in: path, required: true }
@@ -815,6 +868,7 @@ backend:
     list_subgroups:
       method: GET
       path: /groups/{id}/subgroups
+      access: read
       description: "List direct subgroups of a group."
       params:
         id: { type: string, in: path, required: true }
@@ -829,6 +883,7 @@ backend:
     create_group:
       method: POST
       path: /groups
+      access: write
       description: "Create a new group. Requires name and path."
       params:
         name: { type: string, in: body, required: true }
@@ -844,6 +899,7 @@ backend:
     get_current_user:
       method: GET
       path: /user
+      access: read
       description: "Get the currently authenticated user's profile."
       params: {}
       pagination: none
@@ -851,6 +907,7 @@ backend:
     list_users:
       method: GET
       path: /users
+      access: read
       description: "List all users. Admins see extended fields. Use search to find by name, username, or email."
       params:
         search: { type: string, in: query }
@@ -866,6 +923,7 @@ backend:
     get_user:
       method: GET
       path: /users/{user_id}
+      access: read
       description: "Get a single user by ID. Admins see extended fields including sign-in history."
       params:
         user_id: { type: integer, in: path, required: true }
@@ -876,6 +934,7 @@ backend:
     get_file:
       method: GET
       path: /projects/{id}/repository/files/{file_path}
+      access: read
       description: "Get file metadata and base64-encoded content. The file_path must be URL-encoded (slashes as %2F)."
       params:
         id: { type: string, in: path, required: true }
@@ -886,6 +945,7 @@ backend:
     get_file_raw:
       method: GET
       path: /projects/{id}/repository/files/{file_path}/raw
+      access: read
       description: "Get raw (unencoded) file content. Returns the file directly, not JSON."
       params:
         id: { type: string, in: path, required: true }
@@ -897,6 +957,7 @@ backend:
     create_file:
       method: POST
       path: /projects/{id}/repository/files/{file_path}
+      access: write
       description: "Create a new file in the repository. Creates a commit."
       params:
         id: { type: string, in: path, required: true }
@@ -913,6 +974,7 @@ backend:
     update_file:
       method: PUT
       path: /projects/{id}/repository/files/{file_path}
+      access: write
       description: "Update an existing file in the repository. Creates a commit."
       params:
         id: { type: string, in: path, required: true }
@@ -930,6 +992,7 @@ backend:
     delete_file:
       method: DELETE
       path: /projects/{id}/repository/files/{file_path}
+      access: dangerous
       description: "Delete a file from the repository. Creates a commit."
       params:
         id: { type: string, in: path, required: true }
@@ -947,6 +1010,7 @@ backend:
     list_labels:
       method: GET
       path: /projects/{id}/labels
+      access: read
       description: "List all labels for a project."
       params:
         id: { type: string, in: path, required: true }
@@ -959,6 +1023,7 @@ backend:
     get_label:
       method: GET
       path: /projects/{id}/labels/{label_id}
+      access: read
       description: "Get a single label by ID or title."
       params:
         id: { type: string, in: path, required: true }
@@ -969,6 +1034,7 @@ backend:
     create_label:
       method: POST
       path: /projects/{id}/labels
+      access: write
       description: "Create a new label. Color must be a 6-digit hex with '#' prefix (e.g., '#FF0000') or a CSS color name."
       params:
         id: { type: string, in: path, required: true }
@@ -981,6 +1047,7 @@ backend:
     update_label:
       method: PUT
       path: /projects/{id}/labels/{label_id}
+      access: write
       description: "Update a label. At least new_name or color is required."
       params:
         id: { type: string, in: path, required: true }
@@ -994,6 +1061,7 @@ backend:
     delete_label:
       method: DELETE
       path: /projects/{id}/labels/{label_id}
+      access: dangerous
       description: "Delete a label from the project."
       params:
         id: { type: string, in: path, required: true }
@@ -1005,6 +1073,7 @@ backend:
     list_milestones:
       method: GET
       path: /projects/{id}/milestones
+      access: read
       description: "List all milestones for a project."
       params:
         id: { type: string, in: path, required: true }
@@ -1019,6 +1088,7 @@ backend:
     get_milestone:
       method: GET
       path: /projects/{id}/milestones/{milestone_id}
+      access: read
       description: "Get a single milestone by ID."
       params:
         id: { type: string, in: path, required: true }
@@ -1028,6 +1098,7 @@ backend:
     create_milestone:
       method: POST
       path: /projects/{id}/milestones
+      access: write
       description: "Create a new milestone. Dates use YYYY-MM-DD format."
       params:
         id: { type: string, in: path, required: true }
@@ -1040,6 +1111,7 @@ backend:
     update_milestone:
       method: PUT
       path: /projects/{id}/milestones/{milestone_id}
+      access: write
       description: "Update a milestone. Use state_event 'close' or 'activate' to change state."
       params:
         id: { type: string, in: path, required: true }
@@ -1056,6 +1128,7 @@ backend:
     search_global:
       method: GET
       path: /search
+      access: read
       description: "Search across the entire GitLab instance. Scope determines what to search: projects, issues, merge_requests, milestones, snippet_titles, users, wiki_blobs, commits, blobs, notes."
       params:
         scope: { type: string, in: query, required: true }
@@ -1070,6 +1143,7 @@ backend:
     search_group:
       method: GET
       path: /groups/{id}/search
+      access: read
       description: "Search within a group. Same scopes as global search."
       params:
         id: { type: string, in: path, required: true }
@@ -1085,6 +1159,7 @@ backend:
     search_project:
       method: GET
       path: /projects/{id}/search
+      access: read
       description: "Search within a project. Scopes: issues, merge_requests, milestones, users, wiki_blobs, commits, blobs, notes. Use ref to search a specific branch/tag."
       params:
         id: { type: string, in: path, required: true }

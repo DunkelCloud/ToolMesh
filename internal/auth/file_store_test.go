@@ -36,7 +36,7 @@ func TestFileTokenStore_RefreshTokenSurvivesAccessExpiry(t *testing.T) {
 
 	// Simulate a token where the access token has expired but the refresh
 	// token should still be valid (RefreshExpiresAt is 7 days out).
-	ti := &TokenInfo{
+	ti := &TokenInfo{ //nolint:gosec // test data, not real credentials
 		AccessToken:      "at-expired",
 		RefreshToken:     "rt-still-valid",
 		ClientID:         "c1",

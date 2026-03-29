@@ -36,7 +36,7 @@ func TestRequestLogging_SetsTraceID(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
-	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/health", nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -70,7 +70,7 @@ func TestRequestLogging_CapturesStatusCode(t *testing.T) {
 		w.WriteHeader(http.StatusNotFound)
 	}))
 
-	req := httptest.NewRequest(http.MethodGet, "/missing", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/missing", nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 

@@ -34,7 +34,7 @@ All configuration is done via environment variables. Copy `.env.example` to `.en
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `REDIS_URL` | `redis://localhost:6379/0` | Redis connection URL |
+| `REDIS_URL` | `redis://keydb:6379/0` | KeyDB/Redis connection URL (Docker Compose service name: `keydb`) |
 
 ## Credential Store
 

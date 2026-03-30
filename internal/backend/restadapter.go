@@ -30,6 +30,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/DunkelCloud/ToolMesh/internal/blob"
 	"github.com/DunkelCloud/ToolMesh/internal/composite"
 	"github.com/DunkelCloud/ToolMesh/internal/credentials"
 	"github.com/DunkelCloud/ToolMesh/internal/dadl"
@@ -49,6 +50,9 @@ type RESTAdapter struct {
 	creds            credentials.CredentialStore
 	logger           *slog.Logger
 	allowedUploadDir string
+	fileBroker       *FileBrokerClient // nil = use blob store or error
+	blobStore        *blob.Store       // embedded blob store for binary responses
+	blobTTL          time.Duration     // TTL for blob URLs (from backends.yaml options.blob_ttl)
 }
 
 // NewRESTAdapter creates a RESTAdapter from a parsed DADL spec.
@@ -66,7 +70,23 @@ func NewRESTAdapter(spec *dadl.Spec, creds credentials.CredentialStore, logger *
 		creds:            creds,
 		logger:           logger,
 		allowedUploadDir: defaultAllowedUploadDir,
+		blobTTL:          time.Hour,
 	}, nil
+}
+
+// SetFileBroker configures an external file broker client for binary response uploads.
+func (a *RESTAdapter) SetFileBroker(fb *FileBrokerClient) {
+	a.fileBroker = fb
+}
+
+// SetBlobStore configures the embedded blob store for binary responses.
+func (a *RESTAdapter) SetBlobStore(bs *blob.Store) {
+	a.blobStore = bs
+}
+
+// SetBlobTTL overrides the default blob TTL (1h).
+func (a *RESTAdapter) SetBlobTTL(ttl time.Duration) {
+	a.blobTTL = ttl
 }
 
 // ListTools returns all tools available from this REST backend,
@@ -119,6 +139,12 @@ func (a *RESTAdapter) Execute(ctx context.Context, toolName string, params map[s
 		"method", tool.Method,
 		"params", params,
 	)
+
+	// Streaming binary path: stream directly to file broker without buffering
+	rc := a.effectiveResponseConfig(&tool)
+	if rc != nil && rc.Binary && rc.Streaming && rc.StreamHandling == "collect" && a.fileBroker != nil {
+		return a.executeStreamingBinary(ctx, &tool, params, rc)
+	}
 
 	// Build and execute request (doRequest reads and closes the response body)
 	resp, body, err := a.doRequest(ctx, &tool, params) //nolint:bodyclose // closed inside doRequest
@@ -192,6 +218,12 @@ func (a *RESTAdapter) Execute(ctx context.Context, toolName string, params map[s
 			Content: []any{textContent(fmt.Sprintf("HTTP %d: %s", resp.StatusCode, string(body)))},
 			IsError: true,
 		}, nil
+	}
+
+	// Check for binary response — skip pagination/transform, route through binary handler
+	respConfig := a.effectiveResponseConfig(&tool)
+	if respConfig != nil && respConfig.Binary {
+		return a.handleBinaryResponse(ctx, &tool, resp, body, respConfig)
 	}
 
 	// Handle pagination
@@ -468,6 +500,241 @@ func (a *RESTAdapter) effectivePaginationConfig(tool *dadl.ToolDef) *dadl.Pagina
 		}
 	}
 	return a.spec.Backend.Defaults.Pagination
+}
+
+func (a *RESTAdapter) effectiveResponseConfig(tool *dadl.ToolDef) *dadl.ResponseConfig {
+	if tool.Response != nil {
+		return tool.Response
+	}
+	return a.spec.Backend.Defaults.Response
+}
+
+// handleBinaryResponse processes a binary backend response by either uploading
+// to the file broker (if configured) or encoding as a base64 data URL.
+func (a *RESTAdapter) handleBinaryResponse(ctx context.Context, _ *dadl.ToolDef, resp *http.Response, body []byte, respConfig *dadl.ResponseConfig) (*ToolResult, error) {
+	// Determine content type: HTTP response header takes precedence, DADL config as fallback
+	contentType := resp.Header.Get("Content-Type")
+	if contentType == "" {
+		contentType = respConfig.ContentType
+	}
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+
+	sizeBytes := int64(len(body))
+
+	a.logger.InfoContext(ctx, "binary response detected",
+		"content_type", contentType,
+		"size_bytes", sizeBytes,
+	)
+
+	metadata := map[string]any{
+		"backend":    a.spec.Backend.Name,
+		"transport":  "rest",
+		"statusCode": resp.StatusCode,
+		"binary":     true,
+	}
+
+	// Try file broker first
+	if a.fileBroker != nil {
+		filename := filenameFromHeaders(resp, contentType)
+		ttl := a.blobTTL
+
+		result, err := a.fileBroker.Upload(ctx, filename, contentType, bytes.NewReader(body), ttl)
+		if err != nil {
+			a.logger.WarnContext(ctx, "file broker upload failed, falling back to disk",
+				"error", err,
+			)
+			// Fall through to base64
+		} else {
+			resultJSON, _ := json.Marshal(map[string]any{
+				"file_id":      result.FileID,
+				"url":          result.URL,
+				"expires":      result.Expires.Format(time.RFC3339),
+				"content_type": contentType,
+				"size_bytes":   sizeBytes,
+			})
+			return &ToolResult{
+				Content:  []any{textContent(string(resultJSON))},
+				Metadata: metadata,
+			}, nil
+		}
+	}
+
+	// Fallback: embedded blob store
+	if a.blobStore != nil {
+		ttl := a.blobTTL
+		blobID, _, err := a.blobStore.Put(bytes.NewReader(body), contentType, ttl)
+		if err != nil {
+			return &ToolResult{
+				Content: []any{textContent(fmt.Sprintf("Error: failed to store binary response: %s", err))},
+				IsError: true,
+			}, nil
+		}
+
+		blobURL := a.blobStore.URL(blobID)
+		a.logger.InfoContext(ctx, "binary response stored as blob",
+			"blob_id", blobID,
+			"url", blobURL,
+			"size_bytes", sizeBytes,
+		)
+
+		expires := time.Now().Add(ttl)
+		resultJSON, _ := json.Marshal(map[string]any{
+			"url":          blobURL,
+			"content_type": contentType,
+			"size_bytes":   sizeBytes,
+			"expires":      expires.Format(time.RFC3339),
+		})
+		return &ToolResult{
+			Content:  []any{textContent(string(resultJSON))},
+			Metadata: metadata,
+		}, nil
+	}
+
+	return &ToolResult{
+		Content: []any{textContent(fmt.Sprintf("Error: binary response (%d bytes, %s) cannot be returned inline. Configure a blob store or file broker.", sizeBytes, contentType))},
+		IsError: true,
+	}, nil
+}
+
+// executeStreamingBinary handles streaming binary responses by piping the HTTP
+// response body directly to the file broker without buffering in memory.
+func (a *RESTAdapter) executeStreamingBinary(ctx context.Context, tool *dadl.ToolDef, params map[string]any, respConfig *dadl.ResponseConfig) (*ToolResult, error) {
+	resp, err := a.doRequestRaw(ctx, tool, params)
+	if err != nil {
+		return nil, fmt.Errorf("streaming binary request: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode >= 400 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return &ToolResult{
+			Content: []any{textContent(fmt.Sprintf("HTTP %d: %s", resp.StatusCode, string(body)))},
+			IsError: true,
+		}, nil
+	}
+
+	contentType := resp.Header.Get("Content-Type")
+	if contentType == "" {
+		contentType = respConfig.ContentType
+	}
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+
+	filename := filenameFromHeaders(resp, contentType)
+	ttl := a.blobTTL
+
+	// Count bytes while streaming through to file broker
+	counter := &byteCounter{Reader: resp.Body}
+
+	a.logger.InfoContext(ctx, "streaming binary response to file broker",
+		"content_type", contentType,
+	)
+
+	result, err := a.fileBroker.Upload(ctx, filename, contentType, counter, ttl)
+	if err != nil {
+		return nil, fmt.Errorf("file broker streaming upload: %w", err)
+	}
+
+	a.logger.InfoContext(ctx, "binary response detected",
+		"content_type", contentType,
+		"size_bytes", counter.N,
+	)
+
+	resultJSON, _ := json.Marshal(map[string]any{
+		"file_id":      result.FileID,
+		"url":          result.URL,
+		"expires":      result.Expires.Format(time.RFC3339),
+		"content_type": contentType,
+		"size_bytes":   counter.N,
+	})
+	return &ToolResult{
+		Content: []any{textContent(string(resultJSON))},
+		Metadata: map[string]any{
+			"backend":    a.spec.Backend.Name,
+			"transport":  "rest",
+			"statusCode": resp.StatusCode,
+			"binary":     true,
+			"streaming":  true,
+		},
+	}, nil
+}
+
+// doRequestRaw performs the HTTP request but returns the raw response without
+// reading the body. The caller is responsible for closing resp.Body.
+func (a *RESTAdapter) doRequestRaw(ctx context.Context, tool *dadl.ToolDef, params map[string]any) (*http.Response, error) {
+	urlStr := a.spec.Backend.BaseURL + a.buildPath(tool, params)
+
+	query := a.buildQuery(tool, params)
+	if query != "" {
+		urlStr += "?" + query
+	}
+
+	var bodyReader io.Reader
+	var contentTypeOverride string
+
+	if a.hasFileParams(tool) {
+		mr, ct, err := a.buildMultipartBody(tool, params)
+		if err != nil {
+			return nil, fmt.Errorf("build multipart body: %w", err)
+		}
+		bodyReader = mr
+		contentTypeOverride = ct
+	} else {
+		bodyData := a.buildBody(tool, params)
+		if bodyData != nil {
+			bodyJSON, err := json.Marshal(bodyData)
+			if err != nil {
+				return nil, fmt.Errorf("marshal body: %w", err)
+			}
+			bodyReader = bytes.NewReader(bodyJSON)
+		}
+	}
+
+	req, err := http.NewRequestWithContext(ctx, strings.ToUpper(tool.Method), urlStr, bodyReader)
+	if err != nil {
+		return nil, fmt.Errorf("create request: %w", err)
+	}
+
+	for k, v := range a.spec.Backend.Defaults.Headers {
+		req.Header.Set(k, v)
+	}
+
+	if contentTypeOverride != "" {
+		req.Header.Set("Content-Type", contentTypeOverride)
+	} else if tool.ContentType != "" {
+		req.Header.Set("Content-Type", tool.ContentType)
+	}
+
+	if err := a.auth.InjectAuth(ctx, req); err != nil {
+		return nil, fmt.Errorf("inject auth: %w", err)
+	}
+
+	a.logger.DebugContext(ctx, "REST streaming request",
+		"backend", a.spec.Backend.Name,
+		"method", req.Method,
+		"url", urlStr,
+	)
+
+	resp, err := a.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("http request: %w", err)
+	}
+	return resp, nil
+}
+
+// byteCounter wraps an io.Reader and counts bytes read through it.
+type byteCounter struct {
+	Reader io.Reader
+	N      int64
+}
+
+func (c *byteCounter) Read(p []byte) (int, error) {
+	n, err := c.Reader.Read(p)
+	c.N += int64(n)
+	return n, err
 }
 
 func (a *RESTAdapter) paginateResults(ctx context.Context, tool *dadl.ToolDef, params map[string]any, firstResp *http.Response, firstBody []byte, config *dadl.PaginationConfig) ([]byte, error) {

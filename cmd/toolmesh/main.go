@@ -442,6 +442,13 @@ func loadRESTBackends(composite *backend.CompositeBackend, backendsConfigPath, d
 			continue
 		}
 		adapter.SetBlobStore(blobStore)
+		if ttlStr, ok := entry.Options["blob_ttl"]; ok {
+			if d, parseErr := time.ParseDuration(ttlStr); parseErr == nil {
+				adapter.SetBlobTTL(d)
+			} else {
+				logger.Warn("invalid blob_ttl option, using default 1h", "name", entry.Name, "value", ttlStr)
+			}
+		}
 
 		composite.AddNamed(spec.Backend.Name, adapter)
 		logger.Info("REST proxy backend loaded",

@@ -103,8 +103,6 @@ func TestBinaryResponseHandling(t *testing.T) {
 					Response: &dadl.ResponseConfig{
 						Binary:      true,
 						ContentType: "audio/mpeg",
-						Type:        "file_url",
-						TTL:         "1h",
 					},
 				},
 			},
@@ -221,7 +219,7 @@ func TestBinaryResponseFallbackBlobStore(t *testing.T) {
 	blobID := strings.TrimPrefix(blobURL, "http://localhost:8080/blobs/")
 	// Serve the blob via HTTP to verify it works
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/blobs/"+blobID, nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/blobs/"+blobID, nil)
 	bs.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Errorf("blob serve status = %d", rec.Code)
@@ -340,7 +338,7 @@ func TestBinaryResponseLargePayload(t *testing.T) {
 	blobURL := parsed["url"].(string)
 	blobID := strings.TrimPrefix(blobURL, "http://localhost:8080/blobs/")
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/blobs/"+blobID, nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/blobs/"+blobID, nil)
 	adapter.blobStore.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Errorf("blob serve status = %d", rec.Code)
@@ -507,8 +505,6 @@ func TestBinaryStreamingCollect(t *testing.T) {
 						Streaming:      true,
 						StreamHandling: "collect",
 						ContentType:    "audio/mpeg",
-						Type:           "file_url",
-						TTL:            "1h",
 					},
 				},
 			},

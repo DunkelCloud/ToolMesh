@@ -17,3 +17,5 @@ backends:
   #   transport: rest
   #   dadl: vikunja.dadl  # relative to TOOLMESH_DADL_DIR (default: /app/dadl), absolute paths also work
   #   url: "https://vikunja.example.com/api/v1"  # overrides base_url in .dadl (optional)
+  #   options:
+  #     blob_ttl: "1h"  # how long binary response URLs stay valid (default: 1h)

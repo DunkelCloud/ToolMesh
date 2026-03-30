@@ -95,20 +95,6 @@ type ResponseConfig struct {
 	MaxDuration     string `yaml:"max_duration"`
 	MaxStreamItems  int    `yaml:"max_stream_items"`
 	ContentType     string `yaml:"content_type"`
-	Type            string `yaml:"type"` // file_url, inline; controls how binary responses are returned
-	TTL             string `yaml:"ttl"`  // e.g. "1h", "30m"; expiry for file broker URLs
-}
-
-// ParseTTL returns the TTL as a time.Duration, defaulting to 1 hour if unset or invalid.
-func (r *ResponseConfig) ParseTTL() time.Duration {
-	if r.TTL == "" {
-		return time.Hour
-	}
-	d, err := time.ParseDuration(r.TTL)
-	if err != nil {
-		return time.Hour
-	}
-	return d
 }
 
 // AuthConfig describes how to authenticate with the REST API.

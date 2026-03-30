@@ -52,6 +52,7 @@ type RESTAdapter struct {
 	allowedUploadDir string
 	fileBroker       *FileBrokerClient // nil = use blob store or error
 	blobStore        *blob.Store       // embedded blob store for binary responses
+	blobTTL          time.Duration     // TTL for blob URLs (from backends.yaml options.blob_ttl)
 }
 
 // NewRESTAdapter creates a RESTAdapter from a parsed DADL spec.
@@ -69,6 +70,7 @@ func NewRESTAdapter(spec *dadl.Spec, creds credentials.CredentialStore, logger *
 		creds:            creds,
 		logger:           logger,
 		allowedUploadDir: defaultAllowedUploadDir,
+		blobTTL:          time.Hour,
 	}, nil
 }
 
@@ -80,6 +82,11 @@ func (a *RESTAdapter) SetFileBroker(fb *FileBrokerClient) {
 // SetBlobStore configures the embedded blob store for binary responses.
 func (a *RESTAdapter) SetBlobStore(bs *blob.Store) {
 	a.blobStore = bs
+}
+
+// SetBlobTTL overrides the default blob TTL (1h).
+func (a *RESTAdapter) SetBlobTTL(ttl time.Duration) {
+	a.blobTTL = ttl
 }
 
 // ListTools returns all tools available from this REST backend,
@@ -531,7 +538,7 @@ func (a *RESTAdapter) handleBinaryResponse(ctx context.Context, _ *dadl.ToolDef,
 	// Try file broker first
 	if a.fileBroker != nil {
 		filename := filenameFromHeaders(resp, contentType)
-		ttl := respConfig.ParseTTL()
+		ttl := a.blobTTL
 
 		result, err := a.fileBroker.Upload(ctx, filename, contentType, bytes.NewReader(body), ttl)
 		if err != nil {
@@ -556,7 +563,7 @@ func (a *RESTAdapter) handleBinaryResponse(ctx context.Context, _ *dadl.ToolDef,
 
 	// Fallback: embedded blob store
 	if a.blobStore != nil {
-		ttl := respConfig.ParseTTL()
+		ttl := a.blobTTL
 		blobID, _, err := a.blobStore.Put(bytes.NewReader(body), contentType, ttl)
 		if err != nil {
 			return &ToolResult{
@@ -617,7 +624,7 @@ func (a *RESTAdapter) executeStreamingBinary(ctx context.Context, tool *dadl.Too
 	}
 
 	filename := filenameFromHeaders(resp, contentType)
-	ttl := respConfig.ParseTTL()
+	ttl := a.blobTTL
 
 	// Count bytes while streaming through to file broker
 	counter := &byteCounter{Reader: resp.Body}

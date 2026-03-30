@@ -24,6 +24,8 @@ import (
 	"github.com/DunkelCloud/ToolMesh/internal/userctx"
 )
 
+const gojaEvaluatorName = "goja"
+
 func TestGate_Evaluate_Authenticated(t *testing.T) {
 	dir := t.TempDir()
 	writePolicy(t, dir, "auth.js", `
@@ -577,6 +579,352 @@ func TestGate_CallerIDAndCallerClassAvailable(t *testing.T) {
 				t.Errorf("Evaluate() allowed = %v, want %v (reason: %s)", result.Allowed, tt.wantAllowed, result.Reason)
 			}
 		})
+	}
+}
+
+func TestGate_evalPolicy_EmptyPolicy(t *testing.T) {
+	dir := t.TempDir()
+	writePolicy(t, dir, "empty.js", "")
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	g, err := New(dir, logger)
+	if err != nil {
+		t.Fatalf("failed to create gate: %v", err)
+	}
+
+	result, err := g.Evaluate(GateContext{
+		User:     userctx.UserContext{UserID: "u1", Authenticated: true},
+		Tool:     "test_tool",
+		Response: &backend.ToolResult{},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.Allowed {
+		t.Error("empty policy should allow all requests")
+	}
+}
+
+func TestGate_evalPolicy_SyntaxError(t *testing.T) {
+	dir := t.TempDir()
+	writePolicy(t, dir, "bad_syntax.js", `
+		function( { broken syntax here !!!
+	`)
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	g, err := New(dir, logger)
+	if err != nil {
+		t.Fatalf("failed to create gate: %v", err)
+	}
+
+	result, err := g.Evaluate(GateContext{
+		User:     userctx.UserContext{UserID: "u1", Authenticated: true},
+		Tool:     "test_tool",
+		Response: &backend.ToolResult{},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Syntax errors in goja become JS exceptions, policy should reject
+	if result.Allowed {
+		t.Error("policy with syntax error should reject request")
+	}
+}
+
+func TestGate_evalPolicy_PolicyThrowsString(t *testing.T) {
+	dir := t.TempDir()
+	writePolicy(t, dir, "throw_string.js", `throw "blocked by string throw";`)
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	g, err := New(dir, logger)
+	if err != nil {
+		t.Fatalf("failed to create gate: %v", err)
+	}
+
+	result, err := g.Evaluate(GateContext{
+		User:     userctx.UserContext{UserID: "u1", Authenticated: true},
+		Tool:     "test_tool",
+		Response: &backend.ToolResult{},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Allowed {
+		t.Error("policy throwing string should reject")
+	}
+	if !contains(result.Reason, "blocked by string throw") {
+		t.Errorf("reason should contain thrown string, got: %s", result.Reason)
+	}
+}
+
+func TestGate_evalPolicy_PolicyThrowsError(t *testing.T) {
+	dir := t.TempDir()
+	writePolicy(t, dir, "throw_error.js", `throw new Error("blocked by Error object");`)
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	g, err := New(dir, logger)
+	if err != nil {
+		t.Fatalf("failed to create gate: %v", err)
+	}
+
+	result, err := g.Evaluate(GateContext{
+		User:     userctx.UserContext{UserID: "u1", Authenticated: true},
+		Tool:     "test_tool",
+		Response: &backend.ToolResult{},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Allowed {
+		t.Error("policy throwing Error should reject")
+	}
+	if !contains(result.Reason, "blocked by Error object") {
+		t.Errorf("reason should contain Error message, got: %s", result.Reason)
+	}
+}
+
+func TestGate_evalPolicy_PolicyReturnsWithoutThrowing(t *testing.T) {
+	dir := t.TempDir()
+	// Policy that does something but does not throw — should allow
+	writePolicy(t, dir, "no_throw.js", `
+		var x = ctx.tool;
+		var y = x.toUpperCase();
+	`)
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	g, err := New(dir, logger)
+	if err != nil {
+		t.Fatalf("failed to create gate: %v", err)
+	}
+
+	result, err := g.Evaluate(GateContext{
+		User:     userctx.UserContext{UserID: "u1", Authenticated: true},
+		Tool:     "my_tool",
+		Response: &backend.ToolResult{},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.Allowed {
+		t.Error("policy that does not throw should allow")
+	}
+}
+
+func TestGate_evalPolicy_PolicyModifiesResponseContent(t *testing.T) {
+	dir := t.TempDir()
+	// Policy that modifies the response content
+	writePolicy(t, dir, "modify.js", `
+		if (ctx.response && ctx.response.content) {
+			for (var i = 0; i < ctx.response.content.length; i++) {
+				if (ctx.response.content[i].type === "text") {
+					ctx.response.content[i].text = "REDACTED";
+				}
+			}
+		}
+	`)
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	g, err := New(dir, logger)
+	if err != nil {
+		t.Fatalf("failed to create gate: %v", err)
+	}
+
+	result := &backend.ToolResult{
+		Content: []any{map[string]any{
+			"type": "text",
+			"text": "sensitive data",
+		}},
+	}
+
+	evalResult, err := g.Evaluate(GateContext{
+		User:     userctx.UserContext{UserID: "u1", Authenticated: true},
+		Tool:     "test_tool",
+		Response: result,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !evalResult.Allowed {
+		t.Error("policy that modifies content should still allow")
+	}
+
+	text := result.Content[0].(map[string]any)["text"].(string)
+	if text != "REDACTED" {
+		t.Errorf("expected modified content 'REDACTED', got %q", text)
+	}
+}
+
+func TestGate_evalPolicy_NilResponse(t *testing.T) {
+	dir := t.TempDir()
+	writePolicy(t, dir, "check_nil.js", `
+		// Policy that accesses ctx but does not require response
+		if (ctx.tool === "") {
+			throw "empty tool name";
+		}
+	`)
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	g, err := New(dir, logger)
+	if err != nil {
+		t.Fatalf("failed to create gate: %v", err)
+	}
+
+	result, err := g.Evaluate(GateContext{
+		User:     userctx.UserContext{UserID: "u1", Authenticated: true},
+		Tool:     "test_tool",
+		Response: nil,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.Allowed {
+		t.Error("expected allowed with nil response and non-empty tool")
+	}
+}
+
+func TestGate_evalPolicy_RateLimitFunction(t *testing.T) {
+	dir := t.TempDir()
+	writePolicy(t, dir, "rate_limit.js", `
+		if (ctx.rateLimitExceeded(2)) {
+			throw "rate limit exceeded";
+		}
+	`)
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	g, err := New(dir, logger)
+	if err != nil {
+		t.Fatalf("failed to create gate: %v", err)
+	}
+
+	ctx := GateContext{
+		User:     userctx.UserContext{UserID: "rate-test-user", Authenticated: true},
+		Tool:     "test_tool",
+		Response: &backend.ToolResult{},
+	}
+
+	// First two calls should pass (limit is 2)
+	for i := 0; i < 2; i++ {
+		result, err := g.Evaluate(ctx)
+		if err != nil {
+			t.Fatalf("unexpected error on call %d: %v", i+1, err)
+		}
+		if !result.Allowed {
+			t.Errorf("call %d should be allowed", i+1)
+		}
+	}
+
+	// Third call should be rate limited
+	result, err := g.Evaluate(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Allowed {
+		t.Error("third call should be rate limited")
+	}
+}
+
+func TestGate_evalPolicy_MultiplePoliciesShortCircuit(t *testing.T) {
+	dir := t.TempDir()
+	// First policy allows, second policy blocks
+	writePolicy(t, dir, "01_allow.js", `// allows all`)
+	writePolicy(t, dir, "02_block.js", `throw "blocked by second policy";`)
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	g, err := New(dir, logger)
+	if err != nil {
+		t.Fatalf("failed to create gate: %v", err)
+	}
+
+	result, err := g.Evaluate(GateContext{
+		User:     userctx.UserContext{UserID: "u1", Authenticated: true},
+		Tool:     "test_tool",
+		Response: &backend.ToolResult{},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Allowed {
+		t.Error("should be blocked by second policy")
+	}
+}
+
+func TestGate_Name(t *testing.T) {
+	dir := t.TempDir()
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	g, err := New(dir, logger)
+	if err != nil {
+		t.Fatalf("failed to create gate: %v", err)
+	}
+	if g.Name() != gojaEvaluatorName {
+		t.Errorf("expected name 'goja', got %q", g.Name())
+	}
+}
+
+func TestGate_New_SkipsDirectoriesAndNonJSFiles(t *testing.T) {
+	dir := t.TempDir()
+	// Create a subdirectory
+	subDir := filepath.Join(dir, "subdir")
+	if err := os.Mkdir(subDir, 0750); err != nil {
+		t.Fatalf("failed to create subdir: %v", err)
+	}
+	// Create a non-JS file
+	if err := os.WriteFile(filepath.Join(dir, "readme.txt"), []byte("not a policy"), 0600); err != nil {
+		t.Fatalf("failed to write txt file: %v", err)
+	}
+	// Create a JS file
+	writePolicy(t, dir, "valid.js", `// valid policy`)
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	g, err := New(dir, logger)
+	if err != nil {
+		t.Fatalf("failed to create gate: %v", err)
+	}
+	if len(g.policies) != 1 {
+		t.Errorf("expected 1 policy, got %d", len(g.policies))
+	}
+}
+
+func TestGate_Init_RegistersGojaEvaluator(t *testing.T) {
+	// The init() function in gate.go registers "goja" — verify it exists
+	names := EvaluatorNames()
+	found := false
+	for _, n := range names {
+		if n == gojaEvaluatorName {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("init() should register 'goja' evaluator")
+	}
+}
+
+func TestGate_Init_GojaFactory_DefaultDir(t *testing.T) {
+	// NewEvaluator with "goja" and no policies_dir config should use default
+	// The default dir "/app/policies" likely does not exist in test, but the
+	// factory should still succeed (missing dir is not an error)
+	eval, err := NewEvaluator(gojaEvaluatorName, map[string]string{})
+	if err != nil {
+		t.Fatalf("unexpected error creating goja evaluator with default dir: %v", err)
+	}
+	if eval == nil {
+		t.Fatal("expected non-nil evaluator")
+	}
+	if eval.Name() != gojaEvaluatorName {
+		t.Errorf("expected name 'goja', got %q", eval.Name())
+	}
+}
+
+func TestGate_Init_GojaFactory_CustomDir(t *testing.T) {
+	dir := t.TempDir()
+	writePolicy(t, dir, "simple.js", `// passes all`)
+
+	eval, err := NewEvaluator(gojaEvaluatorName, map[string]string{"policies_dir": dir})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if eval == nil {
+		t.Fatal("expected non-nil evaluator")
 	}
 }
 

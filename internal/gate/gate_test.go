@@ -24,6 +24,8 @@ import (
 	"github.com/DunkelCloud/ToolMesh/internal/userctx"
 )
 
+const gojaEvaluatorName = "goja"
+
 func TestGate_Evaluate_Authenticated(t *testing.T) {
 	dir := t.TempDir()
 	writePolicy(t, dir, "auth.js", `
@@ -853,7 +855,7 @@ func TestGate_Name(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create gate: %v", err)
 	}
-	if g.Name() != "goja" {
+	if g.Name() != gojaEvaluatorName {
 		t.Errorf("expected name 'goja', got %q", g.Name())
 	}
 }
@@ -862,7 +864,7 @@ func TestGate_New_SkipsDirectoriesAndNonJSFiles(t *testing.T) {
 	dir := t.TempDir()
 	// Create a subdirectory
 	subDir := filepath.Join(dir, "subdir")
-	if err := os.Mkdir(subDir, 0755); err != nil {
+	if err := os.Mkdir(subDir, 0750); err != nil {
 		t.Fatalf("failed to create subdir: %v", err)
 	}
 	// Create a non-JS file
@@ -887,7 +889,7 @@ func TestGate_Init_RegistersGojaEvaluator(t *testing.T) {
 	names := EvaluatorNames()
 	found := false
 	for _, n := range names {
-		if n == "goja" {
+		if n == gojaEvaluatorName {
 			found = true
 			break
 		}
@@ -901,14 +903,14 @@ func TestGate_Init_GojaFactory_DefaultDir(t *testing.T) {
 	// NewEvaluator with "goja" and no policies_dir config should use default
 	// The default dir "/app/policies" likely does not exist in test, but the
 	// factory should still succeed (missing dir is not an error)
-	eval, err := NewEvaluator("goja", map[string]string{})
+	eval, err := NewEvaluator(gojaEvaluatorName, map[string]string{})
 	if err != nil {
 		t.Fatalf("unexpected error creating goja evaluator with default dir: %v", err)
 	}
 	if eval == nil {
 		t.Fatal("expected non-nil evaluator")
 	}
-	if eval.Name() != "goja" {
+	if eval.Name() != gojaEvaluatorName {
 		t.Errorf("expected name 'goja', got %q", eval.Name())
 	}
 }
@@ -917,7 +919,7 @@ func TestGate_Init_GojaFactory_CustomDir(t *testing.T) {
 	dir := t.TempDir()
 	writePolicy(t, dir, "simple.js", `// passes all`)
 
-	eval, err := NewEvaluator("goja", map[string]string{"policies_dir": dir})
+	eval, err := NewEvaluator(gojaEvaluatorName, map[string]string{"policies_dir": dir})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

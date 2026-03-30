@@ -1,6 +1,6 @@
-# ToolMesh — Turn any REST API into MCP tools
+# ToolMesh — Let AI agents touch real systems. Safely.
 
-> The secure, durable execution layer between AI agents and enterprise infrastructure.
+> One Go binary between your agents and your infrastructure — with authorization, credential security, audit logging, and output policies on every tool call.
 
 [![Go](https://img.shields.io/badge/Go-1.25+-00ADD8?style=flat&logo=go)](https://go.dev)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
@@ -297,7 +297,7 @@ CREDENTIAL_MEMORIZER_API_KEY=sk-mem-xxxxx
 
 Tools from each backend are exposed with a prefix (e.g. `memorizer_retrieve_knowledge`). Credentials are injected by the Executor at runtime via the CredentialStore — the LLM never sees API keys.
 
-## REST Proxy Mode (DADL)
+## REST Proxy Mode ([DADL](https://dadl.ai))
 
 When an MCP server doesn't expose an endpoint you need, describe it in a `.dadl` file and ToolMesh calls the REST API directly — no wrapper server needed.
 
@@ -418,13 +418,17 @@ await toolmesh.vikunja_set_task_position({ id: 42, position: 1.5, project_view_i
 - **Pagination**: Automatic multi-page fetching (cursor, offset, page number, Link header)
 - **Error Handling**: Configurable retry on transient errors (429, 5xx) with exponential backoff
 - **Response Transformation**: JSONPath extraction (`result_path`) and jq filters (`transform`)
-- **Scoping**: Type definitions ready for large APIs (>100 tools) — implementation progressive
+- **Access Classification**: Per-tool access levels (`read`/`write`/`admin`/`dangerous` + custom) for role-based authorization policies
+- **Composite Tools**: Server-side multi-endpoint orchestration in TypeScript — sandboxed, audited, max 50 API calls per execution
+- **Hints & Examples**: Per-tool domain knowledge and few-shot prompts for better LLM accuracy
+- **Type Definitions**: Reusable type schemas for large APIs (100+ tools)
+- **File Handling**: Built-in file broker — upload, download, and reference files by URL (never inline)
 
 ### Creating DADLs
 
 As shown above, the fastest path is asking an LLM. If you use Claude Code with ToolMesh connected, it can create the `.dadl` file, add the backend entry to `config/backends.yaml`, and set the credential — all in one session.
 
-To share a DADL with the community, either email it to dadl@dunkel.cloud or open a PR on the [dadl-registry](https://github.com/DunkelCloud/dadl-registry).
+To share a DADL with the community, browse and contribute at [dadl.ai](https://dadl.ai), email it to dadl@dunkel.cloud, or open a PR on the [dadl-registry](https://github.com/DunkelCloud/dadl-registry).
 
 ## Code Mode
 
@@ -450,7 +454,7 @@ ToolMesh uses a registry-based extension model inspired by Go's `database/sql` d
 | Component | Built-in | Config |
 |-----------|----------|--------|
 | Credential Store | `embedded` | `CREDENTIAL_STORE=<name>` |
-| Tool Backend | `mcp`, `echo` | `config/backends.yaml` |
+| Tool Backend | `mcp`, `rest` (DADL), `echo` | `config/backends.yaml` |
 | Gate Evaluator | `goja` | `GATE_EVALUATORS=<list>` |
 
 Enterprise extensions (InfisicalStore, VaultStore, Compliance-LLM, etc.) are available separately and included via Go build tags: `go build -tags enterprise ./cmd/toolmesh`.

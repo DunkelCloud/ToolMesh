@@ -30,6 +30,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/DunkelCloud/ToolMesh/internal/blob"
 	"github.com/DunkelCloud/ToolMesh/internal/composite"
 	"github.com/DunkelCloud/ToolMesh/internal/credentials"
 	"github.com/DunkelCloud/ToolMesh/internal/dadl"
@@ -49,7 +50,8 @@ type RESTAdapter struct {
 	creds            credentials.CredentialStore
 	logger           *slog.Logger
 	allowedUploadDir string
-	fileBroker       *FileBrokerClient // nil = base64 fallback
+	fileBroker       *FileBrokerClient // nil = use blob store or error
+	blobStore        *blob.Store       // embedded blob store for binary responses
 }
 
 // NewRESTAdapter creates a RESTAdapter from a parsed DADL spec.
@@ -70,10 +72,14 @@ func NewRESTAdapter(spec *dadl.Spec, creds credentials.CredentialStore, logger *
 	}, nil
 }
 
-// SetFileBroker configures the file broker client for binary response uploads.
-// If not set, binary responses fall back to inline base64 data URLs.
+// SetFileBroker configures an external file broker client for binary response uploads.
 func (a *RESTAdapter) SetFileBroker(fb *FileBrokerClient) {
 	a.fileBroker = fb
+}
+
+// SetBlobStore configures the embedded blob store for binary responses.
+func (a *RESTAdapter) SetBlobStore(bs *blob.Store) {
+	a.blobStore = bs
 }
 
 // ListTools returns all tools available from this REST backend,
@@ -529,7 +535,7 @@ func (a *RESTAdapter) handleBinaryResponse(ctx context.Context, _ *dadl.ToolDef,
 
 		result, err := a.fileBroker.Upload(ctx, filename, contentType, bytes.NewReader(body), ttl)
 		if err != nil {
-			a.logger.WarnContext(ctx, "file broker upload failed, falling back to base64",
+			a.logger.WarnContext(ctx, "file broker upload failed, falling back to disk",
 				"error", err,
 			)
 			// Fall through to base64
@@ -548,23 +554,40 @@ func (a *RESTAdapter) handleBinaryResponse(ctx context.Context, _ *dadl.ToolDef,
 		}
 	}
 
-	// Fallback: base64 data URL
-	dataURL, _, err := encodeBinaryAsDataURL(bytes.NewReader(body), contentType, maxBase64Bytes)
-	if err != nil {
+	// Fallback: embedded blob store
+	if a.blobStore != nil {
+		ttl := respConfig.ParseTTL()
+		blobID, _, err := a.blobStore.Put(bytes.NewReader(body), contentType, ttl)
+		if err != nil {
+			return &ToolResult{
+				Content: []any{textContent(fmt.Sprintf("Error: failed to store binary response: %s", err))},
+				IsError: true,
+			}, nil
+		}
+
+		blobURL := a.blobStore.URL(blobID)
+		a.logger.InfoContext(ctx, "binary response stored as blob",
+			"blob_id", blobID,
+			"url", blobURL,
+			"size_bytes", sizeBytes,
+		)
+
+		expires := time.Now().Add(ttl)
+		resultJSON, _ := json.Marshal(map[string]any{
+			"url":          blobURL,
+			"content_type": contentType,
+			"size_bytes":   sizeBytes,
+			"expires":      expires.Format(time.RFC3339),
+		})
 		return &ToolResult{
-			Content: []any{textContent(fmt.Sprintf("Error: binary response too large for inline encoding (%d bytes). Configure a file broker for large binary responses.", sizeBytes))},
-			IsError: true,
+			Content:  []any{textContent(string(resultJSON))},
+			Metadata: metadata,
 		}, nil
 	}
 
-	resultJSON, _ := json.Marshal(map[string]any{
-		"data_url":     dataURL,
-		"content_type": contentType,
-		"size_bytes":   sizeBytes,
-	})
 	return &ToolResult{
-		Content:  []any{textContent(string(resultJSON))},
-		Metadata: metadata,
+		Content: []any{textContent(fmt.Sprintf("Error: binary response (%d bytes, %s) cannot be returned inline. Configure a blob store or file broker.", sizeBytes, contentType))},
+		IsError: true,
 	}, nil
 }
 

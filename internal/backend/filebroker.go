@@ -16,7 +16,6 @@ package backend
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -26,9 +25,6 @@ import (
 	"net/textproto"
 	"time"
 )
-
-// maxBase64Bytes is the maximum response size for inline base64 encoding (5 MB).
-const maxBase64Bytes = 5 * 1024 * 1024
 
 // FileBrokerClient uploads binary content and returns a download URL.
 type FileBrokerClient struct {
@@ -116,20 +112,4 @@ func filenameFromHeaders(resp *http.Response, contentType string) string {
 		ext = ".bin"
 	}
 	return "output" + ext
-}
-
-// encodeBinaryAsDataURL reads up to maxBase64Bytes from body and returns a data URL.
-// Returns an error if the body exceeds the limit.
-func encodeBinaryAsDataURL(body io.Reader, contentType string, limit int64) (dataURL string, size int64, err error) {
-	lr := io.LimitReader(body, limit+1)
-	data, err := io.ReadAll(lr)
-	if err != nil {
-		return "", 0, fmt.Errorf("read binary body: %w", err)
-	}
-	if int64(len(data)) > limit {
-		return "", int64(len(data)), fmt.Errorf("binary response too large for base64 encoding (%d bytes > %d byte limit)", len(data), limit)
-	}
-	encoded := base64.StdEncoding.EncodeToString(data)
-	dataURL = fmt.Sprintf("data:%s;base64,%s", contentType, encoded)
-	return dataURL, int64(len(data)), nil
 }

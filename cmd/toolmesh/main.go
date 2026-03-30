@@ -32,6 +32,7 @@ import (
 	"github.com/DunkelCloud/ToolMesh/internal/auth"
 	"github.com/DunkelCloud/ToolMesh/internal/authz"
 	"github.com/DunkelCloud/ToolMesh/internal/backend"
+	"github.com/DunkelCloud/ToolMesh/internal/blob"
 	"github.com/DunkelCloud/ToolMesh/internal/config"
 	"github.com/DunkelCloud/ToolMesh/internal/credentials"
 	"github.com/DunkelCloud/ToolMesh/internal/dadl"
@@ -184,8 +185,18 @@ func main() {
 	})
 	compositeBackend.AddPassthrough(mcpAdapter)
 
+	// Initialize blob store for binary API responses
+	blobBaseURL := strings.TrimRight(cfg.Issuer, "/")
+	blobDir := filepath.Join(cfg.DataDir, "blobs")
+	blobStore, err := blob.NewStore(blobDir, blobBaseURL, logger)
+	if err != nil {
+		logger.Error("failed to create blob store", "error", err)
+		os.Exit(1)
+	}
+	logger.Info("blob store initialized", "dir", blobDir, "base_url", blobBaseURL)
+
 	// Initialize REST Proxy backends from DADL files
-	loadRESTBackends(compositeBackend, cfg.BackendsConfigPath, cfg.DADLDir, credStore, logger, baseHandler, debugFile, debugSet)
+	loadRESTBackends(compositeBackend, cfg.BackendsConfigPath, cfg.DADLDir, blobStore, credStore, logger, baseHandler, debugFile, debugSet)
 
 	// Initialize OpenFGA authorizer based on OPENFGA_MODE
 	var authorizer *authz.Authorizer
@@ -307,6 +318,7 @@ func main() {
 
 	httpMux := http.NewServeMux()
 	mcpServer.SetupRoutes(httpMux)
+	httpMux.Handle("/blobs/", blobStore)
 
 	// Wrap with request logging middleware (trace ID + access log).
 	httpHandler := mcp.RequestLogging(logger)(httpMux)
@@ -357,7 +369,7 @@ func backendLogger(name string, globalLogger *slog.Logger, stdoutHandler slog.Ha
 
 // loadRESTBackends scans the backends config for transport: rest entries,
 // parses their DADL files, and adds them to the composite backend.
-func loadRESTBackends(composite *backend.CompositeBackend, backendsConfigPath, dadlDir string, creds credentials.CredentialStore, logger *slog.Logger, stdoutHandler slog.Handler, debugFile *os.File, debugSet map[string]bool) {
+func loadRESTBackends(composite *backend.CompositeBackend, backendsConfigPath, dadlDir string, blobStore *blob.Store, creds credentials.CredentialStore, logger *slog.Logger, stdoutHandler slog.Handler, debugFile *os.File, debugSet map[string]bool) {
 	data, err := os.ReadFile(backendsConfigPath) //nolint:gosec // path from trusted config
 	if err != nil {
 		return // no config = no REST backends
@@ -429,6 +441,7 @@ func loadRESTBackends(composite *backend.CompositeBackend, backendsConfigPath, d
 			logger.Error("failed to create REST adapter", "name", entry.Name, "error", err)
 			continue
 		}
+		adapter.SetBlobStore(blobStore)
 
 		composite.AddNamed(spec.Backend.Name, adapter)
 		logger.Info("REST proxy backend loaded",

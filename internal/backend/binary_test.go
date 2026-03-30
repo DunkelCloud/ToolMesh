@@ -27,8 +27,19 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/DunkelCloud/ToolMesh/internal/blob"
 	"github.com/DunkelCloud/ToolMesh/internal/dadl"
 )
+
+func testBlobStore(t *testing.T) *blob.Store {
+	t.Helper()
+	dir := t.TempDir()
+	bs, err := blob.NewStore(dir, "http://localhost:8080", slog.Default())
+	if err != nil {
+		t.Fatalf("create blob store: %v", err)
+	}
+	return bs
+}
 
 func TestBinaryResponseHandling(t *testing.T) {
 	// Mock backend returns audio/mpeg
@@ -146,7 +157,7 @@ func TestBinaryResponseHandling(t *testing.T) {
 	}
 }
 
-func TestBinaryResponseFallbackBase64(t *testing.T) {
+func TestBinaryResponseFallbackBlobStore(t *testing.T) {
 	audioData := []byte("fake-audio-bytes")
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "audio/mpeg")
@@ -176,7 +187,7 @@ func TestBinaryResponseFallbackBase64(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create adapter: %v", err)
 	}
-	// No file broker configured — should fall back to base64
+	adapter.SetBlobStore(testBlobStore(t))
 
 	result, err := adapter.Execute(context.Background(), "get_audio", nil)
 	if err != nil {
@@ -192,15 +203,31 @@ func TestBinaryResponseFallbackBase64(t *testing.T) {
 		t.Fatalf("parse result: %v (raw: %s)", err, text)
 	}
 
-	dataURL, ok := parsed["data_url"].(string)
+	blobURL, ok := parsed["url"].(string)
 	if !ok {
-		t.Fatal("missing data_url in result")
+		t.Fatal("missing url in result")
 	}
-	if !strings.HasPrefix(dataURL, "data:audio/mpeg;base64,") {
-		t.Errorf("data_url prefix = %s", dataURL[:40])
+	if !strings.HasPrefix(blobURL, "http://localhost:8080/blobs/") {
+		t.Errorf("unexpected blob URL: %s", blobURL)
 	}
 	if parsed["content_type"] != "audio/mpeg" {
 		t.Errorf("content_type = %v", parsed["content_type"])
+	}
+	if parsed["expires"] == nil {
+		t.Error("missing expires field")
+	}
+	// Verify the blob file exists on disk
+	bs := adapter.blobStore
+	blobID := strings.TrimPrefix(blobURL, "http://localhost:8080/blobs/")
+	// Serve the blob via HTTP to verify it works
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/blobs/"+blobID, nil)
+	bs.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Errorf("blob serve status = %d", rec.Code)
+	}
+	if rec.Body.Len() != len(audioData) {
+		t.Errorf("blob body size = %d, want %d", rec.Body.Len(), len(audioData))
 	}
 }
 
@@ -253,9 +280,9 @@ func TestJSONResponseUnchanged(t *testing.T) {
 }
 
 func TestBinaryResponseLargePayload(t *testing.T) {
-	// Generate 11 MB of random data — larger than maxResponseBytes (10 MB)
-	// but we test base64 fallback rejects it (>5 MB limit), ensuring no OOM
-	largeData := make([]byte, 6*1024*1024) // 6 MB — exceeds base64 limit
+	// Generate 6 MB of random data — larger than old base64 limit
+	// With blob store, this should succeed and be written to disk
+	largeData := make([]byte, 6*1024*1024)
 	_, _ = rand.Read(largeData)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -286,18 +313,85 @@ func TestBinaryResponseLargePayload(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create adapter: %v", err)
 	}
-	// No file broker — base64 fallback should reject large payload gracefully
+	adapter.SetBlobStore(testBlobStore(t))
 
 	result, err := adapter.Execute(context.Background(), "get_pdf", nil)
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}
+	if result.IsError {
+		t.Fatalf("unexpected error: %v", result.Content)
+	}
+
+	text := extractText(t, result)
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(text), &parsed); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if parsed["url"] == nil {
+		t.Fatal("missing url in result")
+	}
+	sizeBytes, _ := parsed["size_bytes"].(float64)
+	if int(sizeBytes) != len(largeData) {
+		t.Errorf("size_bytes = %v, want %d", sizeBytes, len(largeData))
+	}
+
+	// Verify blob file on disk matches
+	blobURL := parsed["url"].(string)
+	blobID := strings.TrimPrefix(blobURL, "http://localhost:8080/blobs/")
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/blobs/"+blobID, nil)
+	adapter.blobStore.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Errorf("blob serve status = %d", rec.Code)
+	}
+	servedData, _ := io.ReadAll(rec.Body)
+	if !bytes.Equal(servedData, largeData) {
+		t.Errorf("served blob size = %d, want %d", len(servedData), len(largeData))
+	}
+}
+
+func TestBinaryResponseNoBlobStoreError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "audio/mpeg")
+		_, _ = w.Write([]byte("audio-data"))
+	}))
+	defer srv.Close()
+
+	spec := &dadl.Spec{
+		Backend: dadl.BackendDef{
+			Name:    "testapi",
+			Type:    "rest",
+			BaseURL: srv.URL,
+			Tools: map[string]dadl.ToolDef{
+				"get_audio": {
+					Method: "GET",
+					Path:   "/audio",
+					Response: &dadl.ResponseConfig{
+						Binary:      true,
+						ContentType: "audio/mpeg",
+					},
+				},
+			},
+		},
+	}
+
+	adapter, err := NewRESTAdapter(spec, &testCredStore{creds: map[string]string{}}, slog.Default())
+	if err != nil {
+		t.Fatalf("create adapter: %v", err)
+	}
+	// No blob store, no file broker — should return clear error
+
+	result, err := adapter.Execute(context.Background(), "get_audio", nil)
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
 	if !result.IsError {
-		t.Fatal("expected error for oversized base64 payload")
+		t.Fatal("expected error when no blob store configured")
 	}
 	text := extractText(t, result)
-	if !strings.Contains(text, "too large") {
-		t.Errorf("expected 'too large' error, got: %s", text)
+	if !strings.Contains(text, "blob store") {
+		t.Errorf("error should mention blob store: %s", text)
 	}
 }
 
@@ -331,6 +425,7 @@ func TestBinaryContentTypeDetection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create adapter: %v", err)
 	}
+	adapter.SetBlobStore(testBlobStore(t))
 
 	result, err := adapter.Execute(context.Background(), "get_audio", nil)
 	if err != nil {

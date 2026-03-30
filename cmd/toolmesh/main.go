@@ -22,6 +22,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -184,7 +185,7 @@ func main() {
 	compositeBackend.AddPassthrough(mcpAdapter)
 
 	// Initialize REST Proxy backends from DADL files
-	loadRESTBackends(compositeBackend, cfg.BackendsConfigPath, credStore, logger, baseHandler, debugFile, debugSet)
+	loadRESTBackends(compositeBackend, cfg.BackendsConfigPath, cfg.DADLDir, credStore, logger, baseHandler, debugFile, debugSet)
 
 	// Initialize OpenFGA authorizer based on OPENFGA_MODE
 	var authorizer *authz.Authorizer
@@ -356,7 +357,7 @@ func backendLogger(name string, globalLogger *slog.Logger, stdoutHandler slog.Ha
 
 // loadRESTBackends scans the backends config for transport: rest entries,
 // parses their DADL files, and adds them to the composite backend.
-func loadRESTBackends(composite *backend.CompositeBackend, backendsConfigPath string, creds credentials.CredentialStore, logger *slog.Logger, stdoutHandler slog.Handler, debugFile *os.File, debugSet map[string]bool) {
+func loadRESTBackends(composite *backend.CompositeBackend, backendsConfigPath, dadlDir string, creds credentials.CredentialStore, logger *slog.Logger, stdoutHandler slog.Handler, debugFile *os.File, debugSet map[string]bool) {
 	data, err := os.ReadFile(backendsConfigPath) //nolint:gosec // path from trusted config
 	if err != nil {
 		return // no config = no REST backends
@@ -386,9 +387,15 @@ func loadRESTBackends(composite *backend.CompositeBackend, backendsConfigPath st
 			continue
 		}
 
-		spec, err := dadl.Parse(entry.DADL)
+		// Resolve relative DADL paths against TOOLMESH_DADL_DIR
+		dadlPath := entry.DADL
+		if !filepath.IsAbs(dadlPath) {
+			dadlPath = filepath.Join(dadlDir, dadlPath)
+		}
+
+		spec, err := dadl.Parse(dadlPath)
 		if err != nil {
-			logger.Error("failed to parse DADL file", "name", entry.Name, "path", entry.DADL, "error", err)
+			logger.Error("failed to parse DADL file", "name", entry.Name, "path", dadlPath, "error", err)
 			continue
 		}
 

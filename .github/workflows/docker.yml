@@ -70,6 +70,6 @@ jobs:
           package-name: toolmesh
           package-type: container
           min-versions-to-keep: 0
-          delete-only-untagged-versions: false
+          delete-only-untagged-versions: true
           token: ${{ secrets.GITHUB_TOKEN }}
         continue-on-error: true

@@ -1,0 +1,446 @@
+spec: "https://dadl.ai/spec/dadl-spec-v0.1.md"
+credits:
+  - "Dunkel Cloud GmbH"
+source_name: "DokuWiki Remote API"
+source_url: "https://www.dokuwiki.org/devel:jsonrpc"
+date: "2026-03-29"
+
+backend:
+  name: dokuwiki
+  type: rest
+  version: "1.0"
+  # base_url is intentionally omitted — must be provided via backends.yaml url field,
+  # because each deployment has its own DokuWiki instance URL.
+  # The url should point to: https://your-wiki.example.com/lib/exe/jsonrpc.php
+  description: "DokuWiki JSON-RPC API — wiki pages, media files, search, ACL management, and user administration"
+
+  coverage:
+    endpoints: 31
+    total_endpoints: 33
+    percentage: 94
+    focus: "pages, media, search, ACL, user management, wiki metadata"
+    missing: "plugin-specific methods beyond acl and usermanager"
+    last_reviewed: "2026-03-29"
+
+  setup:
+    credential_steps:
+      - "Ensure the Remote API is enabled in DokuWiki: Admin → Configuration → Authentication → enable 'remote' option"
+      - "Optionally restrict remote access: set 'remoteuser' to limit which users/groups can use the API"
+      - "Use an existing DokuWiki user account with appropriate permissions"
+      - "The API uses HTTP Basic Authentication with your DokuWiki username and password"
+    env_var: CREDENTIAL_DOKUWIKI_USERNAME and CREDENTIAL_DOKUWIKI_PASSWORD
+    backends_yaml: |
+      - name: dokuwiki
+        transport: rest
+        dadl: /app/dadl/dokuwiki.dadl
+        url: "https://your-wiki.example.com/lib/exe/jsonrpc.php"
+        credentials:
+          dokuwiki_username: "${CREDENTIAL_DOKUWIKI_USERNAME}"
+          dokuwiki_password: "${CREDENTIAL_DOKUWIKI_PASSWORD}"
+    required_scopes:
+      - "remote access enabled in DokuWiki config"
+      - "user account with read/write permissions"
+    optional_scopes:
+      - "admin permissions (for ACL and user management)"
+    docs_url: "https://www.dokuwiki.org/devel:jsonrpc"
+    notes: >
+      DokuWiki is self-hosted. Replace the URL with your instance address.
+      The JSON-RPC endpoint is at /lib/exe/jsonrpc.php.
+      All API methods use POST. Page IDs use colon-separated namespaces (e.g. 'wiki:syntax', 'namespace:page').
+
+  auth:
+    type: basic
+    username_credential: dokuwiki_username
+    password_credential: dokuwiki_password
+
+  defaults:
+    headers:
+      Content-Type: application/json
+      Accept: application/json
+    errors: &standard-errors
+      format: json
+      message_path: "$.error.message"
+      code_path: "$.error.code"
+      retry_on: [502, 503, 504]
+      terminal: [400, 401, 403, 404]
+      retry_strategy:
+        max_retries: 3
+        backoff: exponential
+        initial_delay: 1s
+
+  # ──────────────────────────────────────────────────────────────
+  # Domain notes (for LLM consumers of these tools)
+  #
+  # Page IDs:
+  #   DokuWiki uses colon-separated namespaces for page IDs.
+  #   Example: "wiki:syntax", "projects:my-project:readme"
+  #   The start page is usually "start" or "wiki:start".
+  #
+  # Namespaces:
+  #   Namespaces are like folders. Use colons to separate levels.
+  #   listPages with namespace="" returns root-level pages.
+  #   listPages with namespace="projects" returns pages under projects:.
+  #
+  # Media IDs:
+  #   Media follows the same namespace convention as pages.
+  #   Example: "wiki:logo.png", "projects:diagram.svg"
+  #
+  # Permissions (ACL levels):
+  #   0 = none, 1 = read, 2 = edit, 4 = create, 8 = upload,
+  #   16 = delete, 255 = admin
+  #
+  # Typical workflow:
+  #   1. searchPages or listPages → find page IDs
+  #   2. getPage(page) → read raw wiki syntax
+  #   3. savePage(page, text, summary) → update content
+  #   4. getPageHistory(page) → review revision history
+  # ──────────────────────────────────────────────────────────────
+
+  hints:
+    save_page:
+      page_id_format: "colon-separated namespace, e.g. 'wiki:syntax'"
+      minor_edit: "set isminor=true for small fixes to suppress change notifications"
+    list_pages:
+      depth: "0 = all levels, 1 = only direct children, 2 = two levels deep"
+    acl_check:
+      permission_levels: "0=none, 1=read, 2=edit, 4=create, 8=upload, 16=delete, 255=admin"
+
+  tools:
+    # ── Wiki metadata ──────────────────────────────────────────
+
+    get_api_version:
+      method: POST
+      path: /core.getAPIVersion
+      access: read
+      description: "Get the DokuWiki JSON-RPC API version number"
+      pagination: none
+
+    get_wiki_version:
+      method: POST
+      path: /core.getWikiVersion
+      access: read
+      description: "Get the DokuWiki software version string"
+      pagination: none
+
+    get_wiki_title:
+      method: POST
+      path: /core.getWikiTitle
+      access: read
+      description: "Get the wiki title"
+      pagination: none
+
+    get_wiki_time:
+      method: POST
+      path: /core.getWikiTime
+      access: read
+      description: "Get the current server Unix timestamp"
+      pagination: none
+
+    # ── Authentication & user info ─────────────────────────────
+
+    who_am_i:
+      method: POST
+      path: /core.whoAmI
+      access: read
+      description: "Get details about the currently authenticated user (login, name, email, groups, admin/manager status)"
+      pagination: none
+
+    acl_check:
+      method: POST
+      path: /core.aclCheck
+      access: read
+      description: "Check ACL permissions for a page or media file. Returns permission level (0=none, 1=read, 2=edit, 4=create, 8=upload, 16=delete, 255=admin)"
+      params:
+        page: { type: string, in: body, required: true, description: "Page or media ID to check" }
+        user: { type: string, in: body, description: "User to check permissions for (default: current user)" }
+        groups: { type: array, in: body, description: "Groups to check permissions for" }
+      pagination: none
+
+    # ── Page operations ────────────────────────────────────────
+
+    list_pages:
+      method: POST
+      path: /core.listPages
+      access: read
+      description: "List all pages in a namespace. Returns page ID, revision, modification time, and size for each page."
+      params:
+        namespace: { type: string, in: body, description: "Namespace to list (empty string for root). Example: 'projects'" }
+        depth: { type: integer, in: body, description: "Recursion depth (0 = unlimited, 1 = direct children only)" }
+        hash: { type: boolean, in: body, description: "Include content hash in results" }
+      pagination: none
+
+    search_pages:
+      method: POST
+      path: /core.searchPages
+      access: read
+      description: "Full-text search across all wiki pages. Returns matching pages with snippets."
+      params:
+        query: { type: string, in: body, required: true, description: "Search query string" }
+      pagination: none
+
+    get_recent_page_changes:
+      method: POST
+      path: /core.getRecentPageChanges
+      access: read
+      description: "Get recently changed pages. Returns page ID, revision timestamp, author, and summary for each change."
+      params:
+        timestamp: { type: integer, in: body, description: "Only return changes since this Unix timestamp" }
+      pagination: none
+
+    get_page:
+      method: POST
+      path: /core.getPage
+      access: read
+      description: "Get the raw wiki syntax content of a page. Use getPageHTML for rendered HTML instead."
+      params:
+        page: { type: string, in: body, required: true, description: "Page ID (e.g. 'wiki:syntax')" }
+        rev: { type: integer, in: body, description: "Revision timestamp to retrieve a specific version" }
+      pagination: none
+
+    get_page_html:
+      method: POST
+      path: /core.getPageHTML
+      access: read
+      description: "Get the rendered HTML of a page"
+      params:
+        page: { type: string, in: body, required: true, description: "Page ID (e.g. 'wiki:syntax')" }
+        rev: { type: integer, in: body, description: "Revision timestamp to retrieve a specific version" }
+      pagination: none
+
+    get_page_info:
+      method: POST
+      path: /core.getPageInfo
+      access: read
+      description: "Get metadata about a page (last modified, author, locked status)"
+      params:
+        page: { type: string, in: body, required: true, description: "Page ID" }
+        rev: { type: integer, in: body, description: "Revision timestamp" }
+        author: { type: boolean, in: body, description: "Include author information" }
+        hash: { type: boolean, in: body, description: "Include content hash" }
+      pagination: none
+
+    get_page_history:
+      method: POST
+      path: /core.getPageHistory
+      access: read
+      description: "Get the revision history of a page. Returns list of revisions with timestamp, author, summary, and size."
+      params:
+        page: { type: string, in: body, required: true, description: "Page ID" }
+        first: { type: integer, in: body, description: "Offset for pagination (skip first N revisions)" }
+      pagination: none
+
+    get_page_links:
+      method: POST
+      path: /core.getPageLinks
+      access: read
+      description: "Get all links contained in a page (internal and external)"
+      params:
+        page: { type: string, in: body, required: true, description: "Page ID" }
+      pagination: none
+
+    get_page_backlinks:
+      method: POST
+      path: /core.getPageBackLinks
+      access: read
+      description: "Get all pages that link to the specified page"
+      params:
+        page: { type: string, in: body, required: true, description: "Page ID" }
+      pagination: none
+
+    save_page:
+      method: POST
+      path: /core.savePage
+      access: write
+      description: "Create or update a page. Replaces the entire page content with the provided text."
+      params:
+        page: { type: string, in: body, required: true, description: "Page ID (e.g. 'wiki:syntax')" }
+        text: { type: string, in: body, required: true, description: "Full page content in DokuWiki syntax" }
+        summary: { type: string, in: body, description: "Edit summary for the revision log" }
+        isminor: { type: boolean, in: body, description: "Mark as minor edit (suppresses change notifications)" }
+      pagination: none
+
+    append_page:
+      method: POST
+      path: /core.appendPage
+      access: write
+      description: "Append text to an existing page without replacing existing content"
+      params:
+        page: { type: string, in: body, required: true, description: "Page ID" }
+        text: { type: string, in: body, required: true, description: "Text to append (DokuWiki syntax)" }
+        summary: { type: string, in: body, description: "Edit summary" }
+        isminor: { type: boolean, in: body, description: "Mark as minor edit" }
+      pagination: none
+
+    lock_pages:
+      method: POST
+      path: /core.lockPages
+      access: write
+      description: "Lock pages to prevent concurrent editing"
+      params:
+        pages: { type: array, in: body, required: true, description: "Array of page IDs to lock" }
+      pagination: none
+
+    unlock_pages:
+      method: POST
+      path: /core.unlockPages
+      access: write
+      description: "Unlock previously locked pages"
+      params:
+        pages: { type: array, in: body, required: true, description: "Array of page IDs to unlock" }
+      pagination: none
+
+    # ── Media operations ───────────────────────────────────────
+
+    list_media:
+      method: POST
+      path: /core.listMedia
+      access: read
+      description: "List media files in a namespace. Returns file ID, size, modification time, and permissions."
+      params:
+        namespace: { type: string, in: body, description: "Namespace to list (empty for root)" }
+        pattern: { type: string, in: body, description: "Regex pattern to filter filenames" }
+        depth: { type: integer, in: body, description: "Recursion depth (0 = unlimited)" }
+        hash: { type: boolean, in: body, description: "Include content hash" }
+      pagination: none
+
+    get_recent_media_changes:
+      method: POST
+      path: /core.getRecentMediaChanges
+      access: read
+      description: "Get recently changed media files"
+      params:
+        timestamp: { type: integer, in: body, description: "Only return changes since this Unix timestamp" }
+      pagination: none
+
+    get_media:
+      method: POST
+      path: /core.getMedia
+      access: read
+      description: "Download a media file as base64-encoded content"
+      params:
+        media: { type: string, in: body, required: true, description: "Media ID (e.g. 'wiki:logo.png')" }
+        rev: { type: integer, in: body, description: "Revision timestamp" }
+      pagination: none
+
+    get_media_info:
+      method: POST
+      path: /core.getMediaInfo
+      access: read
+      description: "Get metadata about a media file (size, modification time, permissions)"
+      params:
+        media: { type: string, in: body, required: true, description: "Media ID" }
+        rev: { type: integer, in: body, description: "Revision timestamp" }
+        author: { type: boolean, in: body, description: "Include author information" }
+        hash: { type: boolean, in: body, description: "Include content hash" }
+      pagination: none
+
+    save_media:
+      method: POST
+      path: /core.saveMedia
+      access: write
+      description: "Upload a media file (base64-encoded)"
+      params:
+        media: { type: string, in: body, required: true, description: "Media ID (target path, e.g. 'wiki:image.png')" }
+        content: { type: string, in: body, required: true, description: "Base64-encoded file content" }
+        overwrite: { type: boolean, in: body, description: "Overwrite existing file (default: false)" }
+      pagination: none
+
+    delete_media:
+      method: POST
+      path: /core.deleteMedia
+      access: dangerous
+      description: "Permanently delete a media file"
+      params:
+        media: { type: string, in: body, required: true, description: "Media ID to delete" }
+      pagination: none
+
+    # ── ACL management (plugin.acl) ────────────────────────────
+
+    list_acls:
+      method: POST
+      path: /plugin.acl.listAcls
+      access: admin
+      description: "List all ACL rules. Requires admin permissions."
+      pagination: none
+
+    add_acl:
+      method: POST
+      path: /plugin.acl.addAcl
+      access: admin
+      description: "Add an ACL rule. Permission levels: 0=none, 1=read, 2=edit, 4=create, 8=upload, 16=delete, 255=admin"
+      params:
+        scope: { type: string, in: body, required: true, description: "Page or namespace pattern (e.g. 'wiki:*' for all pages in wiki namespace)" }
+        user: { type: string, in: body, required: true, description: "Username or @groupname" }
+        permission: { type: integer, in: body, required: true, description: "Permission level (0, 1, 2, 4, 8, 16, or 255)" }
+      pagination: none
+
+    delete_acl:
+      method: POST
+      path: /plugin.acl.delAcl
+      access: admin
+      description: "Remove an ACL rule"
+      params:
+        scope: { type: string, in: body, required: true, description: "Page or namespace pattern" }
+        user: { type: string, in: body, required: true, description: "Username or @groupname" }
+      pagination: none
+
+    # ── User management (plugin.usermanager) ───────────────────
+
+    create_user:
+      method: POST
+      path: /plugin.usermanager.createUser
+      access: admin
+      description: "Create a new DokuWiki user account. Requires admin permissions."
+      params:
+        login: { type: string, in: body, required: true, description: "Username for the new account" }
+        name: { type: string, in: body, required: true, description: "Full display name" }
+        email: { type: string, in: body, required: true, description: "Email address" }
+        groups: { type: array, in: body, required: true, description: "List of group names" }
+        password: { type: string, in: body, description: "Password (auto-generated if omitted)" }
+        notify: { type: boolean, in: body, description: "Send notification email to new user" }
+      pagination: none
+
+    delete_user:
+      method: POST
+      path: /plugin.usermanager.deleteUser
+      access: dangerous
+      description: "Permanently delete user accounts. Requires admin permissions."
+      params:
+        users: { type: array, in: body, required: true, description: "Array of usernames to delete" }
+      pagination: none
+
+  examples:
+    - name: "Find and read a page"
+      description: "Search for a page by keyword and read its content"
+      code: |
+        const results = await api.search_pages({ query: "installation guide" });
+        if (results.length > 0) {
+          const page = await api.get_page({ page: results[0].id });
+          return { id: results[0].id, content: page };
+        }
+        return { error: "No pages found" };
+
+    - name: "Create a new page"
+      description: "Create a new wiki page with DokuWiki syntax"
+      code: |
+        await api.save_page({
+          page: "projects:my-project:readme",
+          text: "====== My Project ======\n\nThis is the project description.\n\n===== Getting Started =====\n\n  - Step 1\n  - Step 2",
+          summary: "Initial page creation"
+        });
+        const info = await api.get_page_info({ page: "projects:my-project:readme" });
+        return info;
+
+    - name: "List recent changes"
+      description: "Get all page changes from the last 24 hours"
+      code: |
+        const oneDayAgo = Math.floor(Date.now() / 1000) - 86400;
+        const changes = await api.get_recent_page_changes({ timestamp: oneDayAgo });
+        return changes;
+
+    - name: "Browse namespace"
+      description: "List all pages and media in a namespace"
+      code: |
+        const pages = await api.list_pages({ namespace: "projects", depth: 1 });
+        const media = await api.list_media({ namespace: "projects", depth: 1 });
+        return { pages, media };

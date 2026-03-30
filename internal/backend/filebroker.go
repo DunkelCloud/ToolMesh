@@ -44,13 +44,13 @@ type FileBrokerUploadResult struct {
 }
 
 // Upload streams content to the file broker and returns a download URL.
-func (c *FileBrokerClient) Upload(ctx context.Context, filename string, contentType string, body io.Reader, ttl time.Duration) (*FileBrokerUploadResult, error) {
+func (c *FileBrokerClient) Upload(ctx context.Context, filename, contentType string, body io.Reader, ttl time.Duration) (*FileBrokerUploadResult, error) {
 	pr, pw := io.Pipe()
 	writer := multipart.NewWriter(pw)
 
 	go func() {
-		defer pw.Close()
-		defer writer.Close()
+		defer func() { _ = pw.Close() }()
+		defer func() { _ = writer.Close() }()
 
 		h := make(textproto.MIMEHeader)
 		h.Set("Content-Disposition", fmt.Sprintf(`form-data; name="file"; filename=%q`, filename))
@@ -120,7 +120,7 @@ func filenameFromHeaders(resp *http.Response, contentType string) string {
 
 // encodeBinaryAsDataURL reads up to maxBase64Bytes from body and returns a data URL.
 // Returns an error if the body exceeds the limit.
-func encodeBinaryAsDataURL(body io.Reader, contentType string, limit int64) (string, int64, error) {
+func encodeBinaryAsDataURL(body io.Reader, contentType string, limit int64) (dataURL string, size int64, err error) {
 	lr := io.LimitReader(body, limit+1)
 	data, err := io.ReadAll(lr)
 	if err != nil {
@@ -130,6 +130,6 @@ func encodeBinaryAsDataURL(body io.Reader, contentType string, limit int64) (str
 		return "", int64(len(data)), fmt.Errorf("binary response too large for base64 encoding (%d bytes > %d byte limit)", len(data), limit)
 	}
 	encoded := base64.StdEncoding.EncodeToString(data)
-	dataURL := fmt.Sprintf("data:%s;base64,%s", contentType, encoded)
+	dataURL = fmt.Sprintf("data:%s;base64,%s", contentType, encoded)
 	return dataURL, int64(len(data)), nil
 }

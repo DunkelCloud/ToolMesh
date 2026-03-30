@@ -498,7 +498,7 @@ func (a *RESTAdapter) effectiveResponseConfig(tool *dadl.ToolDef) *dadl.Response
 
 // handleBinaryResponse processes a binary backend response by either uploading
 // to the file broker (if configured) or encoding as a base64 data URL.
-func (a *RESTAdapter) handleBinaryResponse(ctx context.Context, tool *dadl.ToolDef, resp *http.Response, body []byte, respConfig *dadl.ResponseConfig) (*ToolResult, error) {
+func (a *RESTAdapter) handleBinaryResponse(ctx context.Context, _ *dadl.ToolDef, resp *http.Response, body []byte, respConfig *dadl.ResponseConfig) (*ToolResult, error) {
 	// Determine content type: HTTP response header takes precedence, DADL config as fallback
 	contentType := resp.Header.Get("Content-Type")
 	if contentType == "" {

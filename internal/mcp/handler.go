@@ -273,7 +273,7 @@ func (h *Handler) buildBackendDescription() string {
 	for _, info := range infos {
 		names = append(names, info.Name)
 	}
-	desc := "Available backends: " + strings.Join(names, ", ")
+	desc := "Available backends: " + strings.Join(names, ", ") + ", and more — call list_tools to discover all current backends and their tool signatures"
 
 	// Collect hints from backends that have them
 	var hints []string

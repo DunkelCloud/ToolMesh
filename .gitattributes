@@ -1,0 +1,7 @@
+# Keep Go source files with LF line endings on all platforms.
+# Prevents false positives from gofmt on Windows (CRLF vs LF).
+*.go text eol=lf
+go.mod text eol=lf
+go.sum text eol=lf
+Makefile text eol=lf
+.gitattributes text eol=lf

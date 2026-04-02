@@ -27,6 +27,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -296,7 +297,7 @@ func (a *RESTAdapter) doRequest(ctx context.Context, tool *dadl.ToolDef, params 
 		urlStr += "?" + query
 	}
 
-	// Build body — multipart/form-data for file uploads, JSON otherwise
+	// Build body — multipart/form-data for file uploads, form-encoded or JSON otherwise
 	var bodyReader io.Reader
 	var contentTypeOverride string
 
@@ -307,6 +308,11 @@ func (a *RESTAdapter) doRequest(ctx context.Context, tool *dadl.ToolDef, params 
 		}
 		bodyReader = mr
 		contentTypeOverride = ct
+	} else if tool.ContentType == "application/x-www-form-urlencoded" {
+		bodyData := a.buildBody(tool, params)
+		if bodyData != nil {
+			bodyReader = strings.NewReader(a.buildFormEncoded(bodyData))
+		}
 	} else {
 		bodyData := a.buildBody(tool, params)
 		if bodyData != nil {
@@ -410,6 +416,54 @@ func (a *RESTAdapter) buildBody(tool *dadl.ToolDef, params map[string]any) map[s
 		return nil
 	}
 	return body
+}
+
+// buildFormEncoded encodes body params as application/x-www-form-urlencoded.
+// Nested objects are flattened using bracket notation (e.g. recurring[interval]=month),
+// which is required by APIs like Stripe that use PHP-style form encoding.
+// Arrays are encoded as key[0]=val&key[1]=val.
+func (a *RESTAdapter) buildFormEncoded(body map[string]any) string {
+	vals := url.Values{}
+	flattenFormValues(vals, "", body)
+	return vals.Encode()
+}
+
+// flattenFormValues recursively flattens a nested map into url.Values using bracket notation.
+func flattenFormValues(vals url.Values, prefix string, v any) {
+	switch val := v.(type) {
+	case map[string]any:
+		for k, child := range val {
+			key := k
+			if prefix != "" {
+				key = prefix + "[" + k + "]"
+			}
+			flattenFormValues(vals, key, child)
+		}
+	case []any:
+		for i, child := range val {
+			key := fmt.Sprintf("%s[%d]", prefix, i)
+			flattenFormValues(vals, key, child)
+		}
+	case string:
+		vals.Set(prefix, val)
+	case bool:
+		if val {
+			vals.Set(prefix, "true")
+		} else {
+			vals.Set(prefix, "false")
+		}
+	case float64:
+		vals.Set(prefix, strconv.FormatFloat(val, 'f', -1, 64))
+	case int:
+		vals.Set(prefix, strconv.Itoa(val))
+	case int64:
+		vals.Set(prefix, strconv.FormatInt(val, 10))
+	case nil:
+		// skip nil values
+	default:
+		// fallback: fmt
+		vals.Set(prefix, fmt.Sprintf("%v", val))
+	}
 }
 
 // hasFileParams returns true if the tool has any parameters with type "file".
@@ -682,6 +736,11 @@ func (a *RESTAdapter) doRequestRaw(ctx context.Context, tool *dadl.ToolDef, para
 		}
 		bodyReader = mr
 		contentTypeOverride = ct
+	} else if tool.ContentType == "application/x-www-form-urlencoded" {
+		bodyData := a.buildBody(tool, params)
+		if bodyData != nil {
+			bodyReader = strings.NewReader(a.buildFormEncoded(bodyData))
+		}
 	} else {
 		bodyData := a.buildBody(tool, params)
 		if bodyData != nil {

@@ -42,6 +42,7 @@ func (s *LogStore) Record(_ context.Context, entry AuditEntry) error {
 		"user_id", entry.UserID,
 		"company_id", entry.CompanyID,
 		"caller_id", entry.CallerID,
+		"caller_name", entry.CallerName,
 		"caller_class", entry.CallerClass,
 		"tool", entry.Tool,
 		"duration_ms", entry.DurationMs,

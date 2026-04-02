@@ -160,23 +160,26 @@ Dynamic Client Registration is rate-limited to 5 registrations per hour per IP t
 
 ToolMesh tracks which AI client triggers each tool call. This lets operators restrict high-risk tools for low-trust clients, apply different PII filtering per caller, and audit who did what — all without maintaining separate MCP deployments.
 
-**CallerID** is derived automatically from the authentication source:
-- **OAuth clients:** The `client_name` from Dynamic Client Registration (e.g. `"claude-code"`)
-- **API keys:** The `caller_id` field in `config/apikeys.yaml`
+**CallerID** is a verified identifier derived from the authentication source:
+- **API keys:** The `caller_id` field in `config/apikeys.yaml` (admin-configured, trusted)
+- **OAuth clients:** The opaque `client_id` UUID from Dynamic Client Registration
 - **Anonymous:** Falls back to `"anonymous"`
+
+**CallerName** is the self-reported display name (like a browser User-Agent). For OAuth clients this is the `client_name` from DCR (e.g. `"claude-desktop"`). It appears in audit logs for debugging but is **never used for security decisions**.
 
 **CallerClass** maps CallerIDs to trust levels via `config/caller-classes.yaml`:
 
 ```yaml
 classes:
   trusted:
-    - claude-code
-    - claude-desktop
-    - local-llm
+    - claude-code        # matches API key caller_id
+    # - "uuid-here"      # to trust a specific OAuth client, add its client_id UUID
   standard:
     - partner-*
   # Everything else defaults to "untrusted"
 ```
+
+> **Security note:** OAuth CallerIDs are opaque UUIDs and default to `untrusted`. Only API key CallerIDs are admin-controlled and can be reliably mapped to elevated trust levels. To elevate an OAuth client, add its `client_id` UUID to the config after registration.
 
 Trust levels affect the execution pipeline:
 
@@ -186,7 +189,7 @@ Trust levels affect the execution pipeline:
 | `standard` | High-risk PII + credentials | Full | Audit entry with caller context |
 | `untrusted` | All PII patterns | Sensitive tools blocked | Audit entry with caller context |
 
-Audit entries include `caller_id`, `caller_class`, `user_id`, `company_id`, and `tool` fields. With the `sqlite` audit store, these are queryable:
+Audit entries include `caller_id`, `caller_name`, `caller_class`, `user_id`, `company_id`, and `tool` fields. With the `sqlite` audit store, these are queryable:
 
 ```sql
 SELECT * FROM audit_events WHERE caller_class = 'untrusted' AND tool = 'memorizer_retrieve_knowledge';

@@ -1,0 +1,24 @@
+# Caller class definitions for ToolMesh.
+# Maps CallerID patterns to trust classes used by gate policies.
+# Supports exact match and suffix-wildcard (e.g. "partner-*" matches "partner-acme").
+# CallerIDs that don't match any pattern default to "untrusted".
+#
+# CallerID sources:
+#   API keys:  admin-configured caller_id in apikeys.yaml (human-readable, trusted)
+#   OAuth/DCR: opaque client_id UUID (not the self-reported client_name)
+#
+# OAuth clients default to "untrusted" because their CallerID is a UUID that
+# won't match patterns below. To elevate an OAuth client, add its client_id
+# UUID here after registration. The self-reported client_name is stored
+# separately as CallerName for audit/display only.
+classes:
+  trusted:
+    - "claude-code"
+    - "toolmesh-internal"
+    # To trust a specific OAuth client, add its client_id UUID:
+    # - "01234567-abcd-efgh-ijkl-0123456789ab"
+  standard:
+    - "partner-*"
+    - "api-key-*"
+  restricted:
+    - "anonymous"

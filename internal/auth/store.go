@@ -58,6 +58,7 @@ type TokenInfo struct {
 	Plan             string    `json:"plan"`
 	Roles            []string  `json:"roles"`
 	CallerID         string    `json:"caller_id,omitempty"`
+	CallerName       string    `json:"caller_name,omitempty"`
 	Scope            string    `json:"scope"`
 	ExpiresAt        time.Time `json:"expires_at"`
 	RefreshExpiresAt time.Time `json:"refresh_expires_at,omitempty"`

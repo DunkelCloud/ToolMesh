@@ -7,6 +7,10 @@
 // - untrusted callers: ALL PII patterns masked
 // - standard callers: only high-risk patterns (SSN, credit cards, AWS keys, API tokens)
 // - trusted callers: only credential patterns (AWS keys, API tokens)
+//
+// Note: callerClass is resolved from the verified callerId (API key: admin-set,
+// OAuth: opaque client_id UUID). The self-reported callerName (ctx.user.callerName)
+// is informational only and must not be used for security decisions.
 
 var piiPatterns = [
     // Credit card numbers (must be before phone — more specific pattern)

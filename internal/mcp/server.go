@@ -277,6 +277,7 @@ func (s *Server) authenticate(r *http.Request) *userctx.UserContext {
 				Plan:          entry.Plan,
 				Authenticated: true,
 				CallerID:      callerID,
+				CallerName:    callerID, // API key CallerID is admin-configured, use as display name
 				CallerClass:   s.callerClasses.Resolve(callerID),
 			}
 		}
@@ -312,6 +313,7 @@ func (s *Server) authenticate(r *http.Request) *userctx.UserContext {
 				Plan:          ti.Plan,
 				Authenticated: true,
 				CallerID:      callerID,
+				CallerName:    ti.CallerName,
 				CallerClass:   s.callerClasses.Resolve(callerID),
 			}
 		}
@@ -606,10 +608,13 @@ func (s *Server) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Req
 		}
 	}
 
-	// Derive CallerID from registered client's name
-	callerID := ac.ClientID // fallback to ClientID
+	// CallerID is always the opaque client_id (UUID) — never the self-reported
+	// client_name, which is untrusted (like a browser User-Agent). The client_name
+	// is stored separately as CallerName for audit/display purposes only.
+	callerID := ac.ClientID
+	var callerName string
 	if client, err := s.tokenStore.GetClient(ctx, ac.ClientID); err == nil && client.ClientName != "" {
-		callerID = client.ClientName
+		callerName = client.ClientName
 	}
 
 	accessToken := generateID()
@@ -625,6 +630,7 @@ func (s *Server) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Req
 		Plan:             ac.Plan,
 		Roles:            ac.Roles,
 		CallerID:         callerID,
+		CallerName:       callerName,
 		Scope:            ac.Scope,
 		ExpiresAt:        now.Add(time.Hour),
 		RefreshExpiresAt: now.Add(7 * 24 * time.Hour),
@@ -681,6 +687,7 @@ func (s *Server) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request)
 		Plan:             oldTI.Plan,
 		Roles:            oldTI.Roles,
 		CallerID:         oldTI.CallerID,
+		CallerName:       oldTI.CallerName,
 		Scope:            oldTI.Scope,
 		ExpiresAt:        now.Add(time.Hour),
 		RefreshExpiresAt: now.Add(7 * 24 * time.Hour),

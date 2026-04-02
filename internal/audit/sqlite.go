@@ -94,6 +94,7 @@ func createSchema(db *sql.DB) error {
 			user_id       TEXT NOT NULL DEFAULT '',
 			company_id    TEXT NOT NULL DEFAULT '',
 			caller_id     TEXT NOT NULL DEFAULT '',
+			caller_name   TEXT NOT NULL DEFAULT '',
 			caller_class  TEXT NOT NULL DEFAULT '',
 			tool          TEXT NOT NULL,
 			params        TEXT,
@@ -142,12 +143,12 @@ func (s *SQLiteStore) Record(ctx context.Context, entry AuditEntry) error {
 
 	_, err = s.db.ExecContext(ctx, `
 		INSERT INTO audit_events (
-			trace_id, timestamp, user_id, company_id, caller_id, caller_class,
+			trace_id, timestamp, user_id, company_id, caller_id, caller_name, caller_class,
 			tool, params, duration_ms, status, error, backend,
 			is_composite, child_events, metadata
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		entry.TraceID, entry.Timestamp.UTC().Format(time.RFC3339Nano), entry.UserID, entry.CompanyID,
-		entry.CallerID, entry.CallerClass, entry.Tool,
+		entry.CallerID, entry.CallerName, entry.CallerClass, entry.Tool,
 		nullableBytes(paramsJSON), entry.DurationMs, entry.Status,
 		nullableString(entry.Error), entry.Backend,
 		boolToInt(entry.IsComposite), nullableBytes(childJSON), nullableBytes(metaJSON),
@@ -196,7 +197,7 @@ func (s *SQLiteStore) Query(ctx context.Context, filter AuditFilter) ([]AuditEnt
 		args = append(args, filter.Status)
 	}
 
-	query := "SELECT trace_id, timestamp, user_id, company_id, caller_id, caller_class, tool, params, duration_ms, status, error, backend, is_composite, child_events, metadata FROM audit_events"
+	query := "SELECT trace_id, timestamp, user_id, company_id, caller_id, caller_name, caller_class, tool, params, duration_ms, status, error, backend, is_composite, child_events, metadata FROM audit_events"
 	if len(conditions) > 0 {
 		query += " WHERE " + strings.Join(conditions, " AND ")
 	}
@@ -224,7 +225,7 @@ func (s *SQLiteStore) Query(ctx context.Context, filter AuditFilter) ([]AuditEnt
 
 		if err := rows.Scan(
 			&e.TraceID, &ts, &e.UserID, &e.CompanyID,
-			&e.CallerID, &e.CallerClass, &e.Tool,
+			&e.CallerID, &e.CallerName, &e.CallerClass, &e.Tool,
 			&paramsJSON, &e.DurationMs, &e.Status,
 			&errStr, &e.Backend, &isComposite,
 			&childJSON, &metaJSON,

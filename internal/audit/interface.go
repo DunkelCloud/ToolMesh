@@ -28,6 +28,7 @@ type AuditEntry struct {
 	UserID      string            `json:"user_id"`
 	CompanyID   string            `json:"company_id"`
 	CallerID    string            `json:"caller_id"`
+	CallerName  string            `json:"caller_name,omitempty"`
 	CallerClass string            `json:"caller_class"`
 	Tool        string            `json:"tool"`
 	Params      map[string]any    `json:"params,omitempty"`

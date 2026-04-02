@@ -1,6 +1,10 @@
 // Caller Block Policy
 // Blocks untrusted callers from accessing tools that return sensitive data.
 // Tools matching certain patterns are restricted to trusted/standard callers only.
+//
+// Note: callerClass is resolved from the verified callerId — for API keys this
+// is admin-configured, for OAuth clients it is the opaque client_id (UUID).
+// The self-reported callerName is available for logging but not used here.
 
 var callerClass = (ctx.user && ctx.user.callerClass) || "untrusted";
 var callerId = (ctx.user && ctx.user.callerId) || "unknown";

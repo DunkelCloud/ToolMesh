@@ -81,6 +81,7 @@ type ExecuteToolRequest struct {
 	UserID      string `json:"userId,omitempty"`
 	CompanyID   string `json:"companyId,omitempty"`
 	CallerID    string `json:"callerId,omitempty"`
+	CallerName  string `json:"callerName,omitempty"`
 	CallerClass string `json:"callerClass,omitempty"`
 }
 
@@ -95,6 +96,7 @@ func (e *Executor) ExecuteTool(ctx context.Context, req ExecuteToolRequest) (*ba
 	req.UserID = uc.UserID
 	req.CompanyID = uc.CompanyID
 	req.CallerID = uc.CallerID
+	req.CallerName = uc.CallerName
 	req.CallerClass = uc.CallerClass
 
 	traceID := uuid.New().String()
@@ -106,6 +108,7 @@ func (e *Executor) ExecuteTool(ctx context.Context, req ExecuteToolRequest) (*ba
 		"user", uc.UserID,
 		"company", uc.CompanyID,
 		"callerId", uc.CallerID,
+		"callerName", uc.CallerName,
 		"callerClass", uc.CallerClass,
 	)
 
@@ -121,6 +124,7 @@ func (e *Executor) ExecuteTool(ctx context.Context, req ExecuteToolRequest) (*ba
 		UserID:      uc.UserID,
 		CompanyID:   uc.CompanyID,
 		CallerID:    uc.CallerID,
+		CallerName:  uc.CallerName,
 		CallerClass: uc.CallerClass,
 		Tool:        req.ToolName,
 		Params:      req.Params,

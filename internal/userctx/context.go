@@ -26,7 +26,8 @@ type UserContext struct {
 	Roles         []string `json:"roles"`
 	Plan          string   `json:"plan"` // "free" | "pro"
 	Authenticated bool     `json:"authenticated"`
-	CallerID      string   `json:"callerId"`    // e.g. "claude-code", "expertcouncil"
+	CallerID      string   `json:"callerId"`    // verified identifier (API key: admin-set, OAuth: client_id UUID)
+	CallerName    string   `json:"callerName"`  // self-reported display name (informational, not for policy decisions)
 	CallerClass   string   `json:"callerClass"` // "trusted" | "standard" | "untrusted"
 }
 

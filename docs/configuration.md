@@ -27,7 +27,7 @@ All configuration is done via environment variables. Copy `.env.example` to `.en
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `OPENFGA_API_URL` | `http://localhost:8080` | OpenFGA API endpoint |
+| `OPENFGA_API_URL` | `http://localhost:8080` | OpenFGA API endpoint. In Docker Compose use `http://openfga:8080` (set in `.env`). |
 | `OPENFGA_STORE_ID` | *(empty)* | OpenFGA store ID (set by `tm-bootstrap`) |
 
 ## Redis

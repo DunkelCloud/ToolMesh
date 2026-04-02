@@ -52,8 +52,8 @@ services:
   # openfga:
   #   image: openfga/openfga:latest
   #   ports:
-  #     - "8081:8080"
-  #     - "8082:8081"
+  #     - "8081:8080"    # API — expose only if you need host access
+  #   # gRPC port (8081) not exposed — only needed within the Docker network
   #   command: run
   #   environment:
   #     - OPENFGA_DATASTORE_ENGINE=mysql
@@ -85,8 +85,7 @@ services:
 
   keydb:
     image: eqalpha/keydb:alpine
-    ports:
-      - "6379:6379"
+    # No ports exposed — only accessible from within the Docker network.
     command: keydb-server --appendonly yes
     volumes:
       - keydbdata:/data

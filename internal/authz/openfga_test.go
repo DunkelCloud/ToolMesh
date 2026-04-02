@@ -18,25 +18,6 @@ import (
 	"testing"
 )
 
-func TestPtr(t *testing.T) {
-	s := "test"
-	p := ptr(s)
-	if *p != "test" {
-		t.Errorf("ptr(%q) = %q, want %q", s, *p, "test")
-	}
-}
-
-func TestPtrMap(t *testing.T) {
-	m := map[string]any{"key": "value"}
-	p := ptrMap(m)
-	if (*p)["key"] != "value" {
-		t.Errorf("ptrMap result missing key")
-	}
-}
-
-// Integration tests for NewAuthorizer and Check require a running OpenFGA server.
-// They are skipped in unit test mode.
-
 func TestNewAuthorizer_InvalidURL(t *testing.T) {
 	// NewAuthorizer should still succeed with an invalid URL (the error
 	// surfaces on first Check call, not at construction time).

@@ -1,6 +1,5 @@
 # Binaries (only in build output, not source dirs)
 /toolmesh
-/tm-bootstrap
 *.exe
 *.exe~
 *.dll

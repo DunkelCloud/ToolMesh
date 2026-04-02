@@ -37,4 +37,3 @@ jobs:
       - name: Build
         run: |
           CGO_ENABLED=0 go build -o toolmesh ./cmd/toolmesh
-          CGO_ENABLED=0 go build -o tm-bootstrap ./cmd/tm-bootstrap

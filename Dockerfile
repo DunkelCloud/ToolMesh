@@ -18,13 +18,10 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build \
       -X github.com/DunkelCloud/ToolMesh/internal/version.BuildDate=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     -o /toolmesh ./cmd/toolmesh
 
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build -ldflags="-s -w" -o /tm-bootstrap ./cmd/tm-bootstrap
-
 FROM scratch
 
 COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 COPY --from=builder /toolmesh /toolmesh
-COPY --from=builder /tm-bootstrap /tm-bootstrap
 
 EXPOSE 8080
 

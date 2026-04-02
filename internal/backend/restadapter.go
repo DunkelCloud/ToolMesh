@@ -25,6 +25,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -418,28 +419,51 @@ func (a *RESTAdapter) buildBody(tool *dadl.ToolDef, params map[string]any) map[s
 }
 
 // buildFormEncoded encodes body params as application/x-www-form-urlencoded.
-// Objects and arrays are JSON-encoded as their field value (Stripe-compatible).
+// Nested objects are flattened using bracket notation (e.g. recurring[interval]=month),
+// which is required by APIs like Stripe that use PHP-style form encoding.
+// Arrays are encoded as key[0]=val&key[1]=val.
 func (a *RESTAdapter) buildFormEncoded(body map[string]any) string {
 	vals := url.Values{}
-	for k, v := range body {
-		switch val := v.(type) {
-		case string:
-			vals.Set(k, val)
-		case bool:
-			if val {
-				vals.Set(k, "true")
-			} else {
-				vals.Set(k, "false")
-			}
-		default:
-			// For objects, arrays, and numbers: JSON-encode the value
-			b, err := json.Marshal(v)
-			if err == nil {
-				vals.Set(k, string(b))
-			}
-		}
-	}
+	flattenFormValues(vals, "", body)
 	return vals.Encode()
+}
+
+// flattenFormValues recursively flattens a nested map into url.Values using bracket notation.
+func flattenFormValues(vals url.Values, prefix string, v any) {
+	switch val := v.(type) {
+	case map[string]any:
+		for k, child := range val {
+			key := k
+			if prefix != "" {
+				key = prefix + "[" + k + "]"
+			}
+			flattenFormValues(vals, key, child)
+		}
+	case []any:
+		for i, child := range val {
+			key := fmt.Sprintf("%s[%d]", prefix, i)
+			flattenFormValues(vals, key, child)
+		}
+	case string:
+		vals.Set(prefix, val)
+	case bool:
+		if val {
+			vals.Set(prefix, "true")
+		} else {
+			vals.Set(prefix, "false")
+		}
+	case float64:
+		vals.Set(prefix, strconv.FormatFloat(val, 'f', -1, 64))
+	case int:
+		vals.Set(prefix, strconv.Itoa(val))
+	case int64:
+		vals.Set(prefix, strconv.FormatInt(val, 10))
+	case nil:
+		// skip nil values
+	default:
+		// fallback: fmt
+		vals.Set(prefix, fmt.Sprintf("%v", val))
+	}
 }
 
 // hasFileParams returns true if the tool has any parameters with type "file".

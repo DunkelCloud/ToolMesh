@@ -291,6 +291,64 @@ func TestRESTAdapter_FormEncodedBody(t *testing.T) {
 	}
 }
 
+func TestRESTAdapter_FormEncodedNestedObject(t *testing.T) {
+	var receivedBody string
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		receivedBody = string(body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id": "price_123"}`))
+	}))
+	defer srv.Close()
+
+	spec := &dadl.Spec{
+		Spec: "https://dadl.ai/spec/dadl-spec-v0.1.md",
+		Backend: dadl.BackendDef{
+			Name:    "testapi",
+			Type:    "rest",
+			BaseURL: srv.URL,
+			Auth:    dadl.AuthConfig{Type: "bearer", Credential: "tok"},
+			Tools: map[string]dadl.ToolDef{
+				"create_price": {
+					Method:      "POST",
+					Path:        "/prices",
+					ContentType: "application/x-www-form-urlencoded",
+					Params: map[string]dadl.ParamDef{
+						"unit_amount": {Type: "integer", In: "body"},
+						"currency":    {Type: "string", In: "body"},
+						"recurring":   {Type: "object", In: "body"},
+					},
+				},
+			},
+		},
+	}
+
+	adapter, _ := NewRESTAdapter(spec, &testCredStore{creds: map[string]string{"tok": "sk_test_123"}}, slog.Default())
+
+	_, err := adapter.Execute(context.Background(), "create_price", map[string]any{
+		"unit_amount": 1999,
+		"currency":    "eur",
+		"recurring":   map[string]any{"interval": "month", "interval_count": float64(1)},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	parsed, _ := url.ParseQuery(receivedBody)
+
+	// Nested object must use bracket notation
+	if parsed.Get("recurring[interval]") != "month" {
+		t.Errorf("recurring[interval] = %q, want month (body: %s)", parsed.Get("recurring[interval]"), receivedBody)
+	}
+	if parsed.Get("recurring[interval_count]") != "1" {
+		t.Errorf("recurring[interval_count] = %q, want 1", parsed.Get("recurring[interval_count]"))
+	}
+	if parsed.Get("currency") != "eur" {
+		t.Errorf("currency = %q, want eur", parsed.Get("currency"))
+	}
+}
+
 func TestRESTAdapter_BackendSummaries(t *testing.T) {
 	spec := &dadl.Spec{
 		Backend: dadl.BackendDef{

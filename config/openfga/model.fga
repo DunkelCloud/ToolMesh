@@ -9,7 +9,7 @@ type company
 
 type plan
   relations
-    define subscriber: [user, company#member]
+    define subscriber: [user, user:*, company#member]
 
 type tool
   relations

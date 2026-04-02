@@ -1,5 +1,5 @@
 keys:
-  - key_hash: "$2a$10$..."  # generate with: tm-bootstrap hash-password "tk_live_..."
+  - key_hash: "$2a$10$..."  # generate with: htpasswd -nbBC 10 "" "tk_live_..." | cut -d: -f2
     user_id: my-agent
     company_id: my-company
     plan: pro

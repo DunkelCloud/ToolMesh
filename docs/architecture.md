@@ -92,7 +92,7 @@ sequenceDiagram
 toolmesh/
 ├── cmd/
 │   ├── toolmesh/       # Main entrypoint (MCP Server)
-│   └── tm-bootstrap/   # CLI: Load OpenFGA model, write example tuples
+│   └── lint-dadl/      # CLI: Validate DADL composite files
 ├── internal/
 │   ├── mcp/            # MCP Server (Streamable HTTP + STDIO)
 │   ├── backend/        # ToolBackend interface + MCPAdapter

@@ -1,6 +1,6 @@
 users:
   - username: admin
-    password_hash: "$2a$10$..."  # generate with: tm-bootstrap hash-password "my-password"
+    password_hash: "$2a$10$..."  # generate with: htpasswd -nbBC 10 "" "my-password" | cut -d: -f2
     company: my-company
     plan: pro
     roles: [admin]

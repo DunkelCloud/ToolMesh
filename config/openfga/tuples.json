@@ -1,0 +1,16 @@
+[
+  { "user": "user:*",              "relation": "subscriber",      "object": "plan:free" },
+  { "user": "company:acme#member", "relation": "subscriber",      "object": "plan:pro"  },
+
+  { "user": "plan:pro", "relation": "associated_plan", "object": "tool:echo_echo" },
+  { "user": "plan:pro", "relation": "associated_plan", "object": "tool:echo_add"  },
+  { "user": "plan:pro", "relation": "associated_plan", "object": "tool:echo_time" },
+  { "user": "plan:pro", "relation": "associated_plan", "object": "tool:memorizer_retrieve_knowledge" },
+  { "user": "plan:pro", "relation": "associated_plan", "object": "tool:memorizer_memorize" },
+  { "user": "plan:pro", "relation": "associated_plan", "object": "tool:memorizer_list_documents" },
+  { "user": "plan:pro", "relation": "associated_plan", "object": "tool:memorizer_get_document" },
+  { "user": "plan:pro", "relation": "associated_plan", "object": "tool:memorizer_knowledge_status" },
+
+  { "user": "plan:free", "relation": "associated_plan", "object": "tool:echo_echo" },
+  { "user": "plan:free", "relation": "associated_plan", "object": "tool:echo_time" }
+]

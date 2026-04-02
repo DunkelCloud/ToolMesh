@@ -225,6 +225,8 @@ func TestRESTAdapter_Execute(t *testing.T) {
 	})
 }
 
+const contentTypeFormEncoded = "application/x-www-form-urlencoded"
+
 func TestRESTAdapter_FormEncodedBody(t *testing.T) {
 	var receivedContentType string
 	var receivedBody string
@@ -249,7 +251,7 @@ func TestRESTAdapter_FormEncodedBody(t *testing.T) {
 				"create_customer": {
 					Method:      "POST",
 					Path:        "/customers",
-					ContentType: "application/x-www-form-urlencoded",
+					ContentType: contentTypeFormEncoded,
 					Params: map[string]dadl.ParamDef{
 						"email": {Type: "string", In: "body"},
 						"name":  {Type: "string", In: "body"},
@@ -275,7 +277,7 @@ func TestRESTAdapter_FormEncodedBody(t *testing.T) {
 		t.Fatalf("unexpected error result: %s", extractText(t, result))
 	}
 
-	if receivedContentType != "application/x-www-form-urlencoded" {
+	if receivedContentType != contentTypeFormEncoded {
 		t.Errorf("Content-Type = %q, want application/x-www-form-urlencoded", receivedContentType)
 	}
 
@@ -313,7 +315,7 @@ func TestRESTAdapter_FormEncodedNestedObject(t *testing.T) {
 				"create_price": {
 					Method:      "POST",
 					Path:        "/prices",
-					ContentType: "application/x-www-form-urlencoded",
+					ContentType: contentTypeFormEncoded,
 					Params: map[string]dadl.ParamDef{
 						"unit_amount": {Type: "integer", In: "body"},
 						"currency":    {Type: "string", In: "body"},

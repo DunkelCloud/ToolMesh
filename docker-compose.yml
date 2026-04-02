@@ -40,59 +40,59 @@ services:
   #   4. Copy OPENFGA_STORE_ID from the output into .env and set OPENFGA_MODE=restrict.
   #   5. docker compose restart toolmesh
   #
-  fga-setup:
-    image: openfga/cli:latest
-    depends_on:
-      openfga:
-        condition: service_healthy
-    volumes:
-      - ./config/openfga:/config:ro
-    entrypoint: ["sh", "/config/setup.sh"]
-    profiles:
-      - setup
+  # fga-setup:
+  #   image: openfga/cli:latest
+  #   depends_on:
+  #     openfga:
+  #       condition: service_healthy
+  #   volumes:
+  #     - ./config/openfga:/config:ro
+  #   entrypoint: ["sh", "/config/setup.sh"]
+  #   profiles:
+  #     - setup
   #
-  openfga-migrate:
-    image: openfga/openfga:latest
-    command: migrate
-    environment:
-      - OPENFGA_DATASTORE_ENGINE=mysql
-      - OPENFGA_DATASTORE_URI=${OPENFGA_DB_USER:-openfga}:${OPENFGA_DB_PASSWORD:-openfga}@tcp(mysql:3306)/${OPENFGA_DB_NAME:-openfga}?parseTime=true
-    depends_on:
-      mysql:
-        condition: service_healthy
+  # openfga-migrate:
+  #   image: openfga/openfga:latest
+  #   command: migrate
+  #   environment:
+  #     - OPENFGA_DATASTORE_ENGINE=mysql
+  #     - OPENFGA_DATASTORE_URI=${OPENFGA_DB_USER:-openfga}:${OPENFGA_DB_PASSWORD:-openfga}@tcp(mysql:3306)/${OPENFGA_DB_NAME:-openfga}?parseTime=true
+  #   depends_on:
+  #     mysql:
+  #       condition: service_healthy
   #
-  openfga:
-    image: openfga/openfga:latest
-    ports:
-      - "8081:8080"    # API — expose only if you need host access
-    command: run
-    environment:
-      - OPENFGA_DATASTORE_ENGINE=mysql
-      - OPENFGA_DATASTORE_URI=${OPENFGA_DB_USER:-openfga}:${OPENFGA_DB_PASSWORD:-openfga}@tcp(mysql:3306)/${OPENFGA_DB_NAME:-openfga}?parseTime=true
-    depends_on:
-      openfga-migrate:
-        condition: service_completed_successfully
-    healthcheck:
-      test: ["CMD", "/usr/local/bin/grpc_health_probe", "-addr=:8081"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
+  # openfga:
+  #   image: openfga/openfga:latest
+  #   ports:
+  #     - "8081:8080"    # API — expose only if you need host access
+  #   command: run
+  #   environment:
+  #     - OPENFGA_DATASTORE_ENGINE=mysql
+  #     - OPENFGA_DATASTORE_URI=${OPENFGA_DB_USER:-openfga}:${OPENFGA_DB_PASSWORD:-openfga}@tcp(mysql:3306)/${OPENFGA_DB_NAME:-openfga}?parseTime=true
+  #   depends_on:
+  #     openfga-migrate:
+  #       condition: service_completed_successfully
+  #   healthcheck:
+  #     test: ["CMD", "/usr/local/bin/grpc_health_probe", "-addr=:8081"]
+  #     interval: 5s
+  #     timeout: 3s
+  #     retries: 5
   #
-  mysql:
-    image: mysql:8.0
-    environment:
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-rootpassword}
-      MYSQL_DATABASE: ${OPENFGA_DB_NAME:-openfga}
-      MYSQL_USER: ${OPENFGA_DB_USER:-openfga}
-      MYSQL_PASSWORD: ${OPENFGA_DB_PASSWORD:-openfga}
-    volumes:
-      - mysqldata:/var/lib/mysql
-    healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-      start_period: 30s
+  # mysql:
+  #   image: mysql:8.0
+  #   environment:
+  #     MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-rootpassword}
+  #     MYSQL_DATABASE: ${OPENFGA_DB_NAME:-openfga}
+  #     MYSQL_USER: ${OPENFGA_DB_USER:-openfga}
+  #     MYSQL_PASSWORD: ${OPENFGA_DB_PASSWORD:-openfga}
+  #   volumes:
+  #     - mysqldata:/var/lib/mysql
+  #   healthcheck:
+  #     test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+  #     interval: 10s
+  #     timeout: 5s
+  #     retries: 10
+  #     start_period: 30s
 
   keydb:
     image: eqalpha/keydb:alpine
@@ -120,7 +120,7 @@ services:
   #     - toolmesh
 
 volumes:
-  mysqldata:  # uncomment together with the OpenFGA services above
+  # mysqldata:  # uncomment together with the OpenFGA services above
   keydbdata:
 
   # caddy_data:

@@ -127,13 +127,9 @@ users:
     roles: [admin]
 ```
 
-Generate password hashes with the bootstrap tool or any bcrypt-capable utility:
+Generate password hashes with any bcrypt-capable utility:
 
 ```bash
-# Using tm-bootstrap (inside the container)
-docker compose exec toolmesh /tm-bootstrap hash-password "my-password"
-
-# Or using htpasswd (on the host)
 htpasswd -nbBC 10 "" "my-password" | cut -d: -f2
 ```
 

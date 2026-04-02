@@ -22,6 +22,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -222,6 +223,72 @@ func TestRESTAdapter_Execute(t *testing.T) {
 			t.Fatal("expected error")
 		}
 	})
+}
+
+func TestRESTAdapter_FormEncodedBody(t *testing.T) {
+	var receivedContentType string
+	var receivedBody string
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedContentType = r.Header.Get("Content-Type")
+		body, _ := io.ReadAll(r.Body)
+		receivedBody = string(body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id": "cus_123", "email": "jane@example.com", "name": "Jane"}`))
+	}))
+	defer srv.Close()
+
+	spec := &dadl.Spec{
+		Spec: "https://dadl.ai/spec/dadl-spec-v0.1.md",
+		Backend: dadl.BackendDef{
+			Name:    "testapi",
+			Type:    "rest",
+			BaseURL: srv.URL,
+			Auth:    dadl.AuthConfig{Type: "bearer", Credential: "tok"},
+			Tools: map[string]dadl.ToolDef{
+				"create_customer": {
+					Method:      "POST",
+					Path:        "/customers",
+					ContentType: "application/x-www-form-urlencoded",
+					Params: map[string]dadl.ParamDef{
+						"email": {Type: "string", In: "body"},
+						"name":  {Type: "string", In: "body"},
+					},
+				},
+			},
+		},
+	}
+
+	adapter, err := NewRESTAdapter(spec, &testCredStore{creds: map[string]string{"tok": "sk_test_123"}}, slog.Default())
+	if err != nil {
+		t.Fatalf("create adapter: %v", err)
+	}
+
+	result, err := adapter.Execute(context.Background(), "create_customer", map[string]any{
+		"email": "jane@example.com",
+		"name":  "Jane",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected error result: %s", extractText(t, result))
+	}
+
+	if receivedContentType != "application/x-www-form-urlencoded" {
+		t.Errorf("Content-Type = %q, want application/x-www-form-urlencoded", receivedContentType)
+	}
+
+	parsed, err := url.ParseQuery(receivedBody)
+	if err != nil {
+		t.Fatalf("parse form body: %v", err)
+	}
+	if parsed.Get("email") != "jane@example.com" {
+		t.Errorf("email = %q, want jane@example.com", parsed.Get("email"))
+	}
+	if parsed.Get("name") != "Jane" {
+		t.Errorf("name = %q, want Jane", parsed.Get("name"))
+	}
 }
 
 func TestRESTAdapter_BackendSummaries(t *testing.T) {

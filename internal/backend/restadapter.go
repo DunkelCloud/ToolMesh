@@ -296,7 +296,7 @@ func (a *RESTAdapter) doRequest(ctx context.Context, tool *dadl.ToolDef, params 
 		urlStr += "?" + query
 	}
 
-	// Build body — multipart/form-data for file uploads, JSON otherwise
+	// Build body — multipart/form-data for file uploads, form-encoded or JSON otherwise
 	var bodyReader io.Reader
 	var contentTypeOverride string
 
@@ -307,6 +307,11 @@ func (a *RESTAdapter) doRequest(ctx context.Context, tool *dadl.ToolDef, params 
 		}
 		bodyReader = mr
 		contentTypeOverride = ct
+	} else if tool.ContentType == "application/x-www-form-urlencoded" {
+		bodyData := a.buildBody(tool, params)
+		if bodyData != nil {
+			bodyReader = strings.NewReader(a.buildFormEncoded(bodyData))
+		}
 	} else {
 		bodyData := a.buildBody(tool, params)
 		if bodyData != nil {
@@ -410,6 +415,31 @@ func (a *RESTAdapter) buildBody(tool *dadl.ToolDef, params map[string]any) map[s
 		return nil
 	}
 	return body
+}
+
+// buildFormEncoded encodes body params as application/x-www-form-urlencoded.
+// Objects and arrays are JSON-encoded as their field value (Stripe-compatible).
+func (a *RESTAdapter) buildFormEncoded(body map[string]any) string {
+	vals := url.Values{}
+	for k, v := range body {
+		switch val := v.(type) {
+		case string:
+			vals.Set(k, val)
+		case bool:
+			if val {
+				vals.Set(k, "true")
+			} else {
+				vals.Set(k, "false")
+			}
+		default:
+			// For objects, arrays, and numbers: JSON-encode the value
+			b, err := json.Marshal(v)
+			if err == nil {
+				vals.Set(k, string(b))
+			}
+		}
+	}
+	return vals.Encode()
 }
 
 // hasFileParams returns true if the tool has any parameters with type "file".
@@ -682,6 +712,11 @@ func (a *RESTAdapter) doRequestRaw(ctx context.Context, tool *dadl.ToolDef, para
 		}
 		bodyReader = mr
 		contentTypeOverride = ct
+	} else if tool.ContentType == "application/x-www-form-urlencoded" {
+		bodyData := a.buildBody(tool, params)
+		if bodyData != nil {
+			bodyReader = strings.NewReader(a.buildFormEncoded(bodyData))
+		}
 	} else {
 		bodyData := a.buildBody(tool, params)
 		if bodyData != nil {

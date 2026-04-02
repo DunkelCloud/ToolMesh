@@ -32,7 +32,7 @@ Initial release.
 - **Echo adapter** — built-in test backend
 - **Composite tool engine** — server-side multi-endpoint orchestration with TypeScript, max 50 API calls per execution
 
-#### DADL (Declarative API Definition Language)
+#### DADL (Dunkel API Definition Language)
 
 - YAML-based API descriptions with per-tool definitions
 - Authentication strategies: Bearer, OAuth2, Session, API key

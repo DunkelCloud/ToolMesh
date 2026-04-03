@@ -66,13 +66,21 @@ jobs:
   cleanup:
     if: github.event_name == 'pull_request' && github.event.action == 'closed'
     runs-on: ubuntu-latest
+    permissions:
+      packages: write
     steps:
       - name: Delete PR image
-        uses: actions/delete-package-versions@v5
-        with:
-          package-name: toolmesh
-          package-type: container
-          min-versions-to-keep: 0
-          delete-only-untagged-versions: true
-          token: ${{ secrets.GITHUB_TOKEN }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          TAG="pr-${PR_NUMBER}"
+          VERSION_ID=$(gh api "orgs/DunkelCloud/packages/container/toolmesh/versions?per_page=100" \
+            | jq -r --arg tag "${TAG}" '.[] | select(.metadata.container.tags[] == $tag) | .id')
+          if [ -n "${VERSION_ID}" ]; then
+            gh api --method DELETE "orgs/DunkelCloud/packages/container/toolmesh/versions/${VERSION_ID}"
+            echo "Deleted version ${VERSION_ID} (tag: ${TAG})"
+          else
+            echo "No version found for tag ${TAG}"
+          fi
         continue-on-error: true

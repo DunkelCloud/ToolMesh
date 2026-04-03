@@ -156,45 +156,6 @@ For single-key setups, `TOOLMESH_API_KEY` still works as a fallback. The same `T
 
 Dynamic Client Registration is rate-limited to 5 registrations per hour per IP to prevent abuse.
 
-## Caller-Origin
-
-ToolMesh tracks which AI client triggers each tool call. This lets operators restrict high-risk tools for low-trust clients, apply different PII filtering per caller, and audit who did what — all without maintaining separate MCP deployments.
-
-**CallerID** is a verified identifier derived from the authentication source:
-- **API keys:** The `caller_id` field in `config/apikeys.yaml` (admin-configured, trusted)
-- **OAuth clients:** The opaque `client_id` UUID from Dynamic Client Registration
-- **Anonymous:** Falls back to `"anonymous"`
-
-**CallerName** is the self-reported display name (like a browser User-Agent). For OAuth clients this is the `client_name` from DCR (e.g. `"claude-desktop"`). It appears in audit logs for debugging but is **never used for security decisions**.
-
-**CallerClass** maps CallerIDs to trust levels via `config/caller-classes.yaml`:
-
-```yaml
-classes:
-  trusted:
-    - claude-code        # matches API key caller_id
-    # - "uuid-here"      # to trust a specific OAuth client, add its client_id UUID
-  standard:
-    - partner-*
-  # Everything else defaults to "untrusted"
-```
-
-> **Security note:** OAuth CallerIDs are opaque UUIDs and default to `untrusted`. Only API key CallerIDs are admin-controlled and can be reliably mapped to elevated trust levels. To elevate an OAuth client, add its `client_id` UUID to the config after registration.
-
-Trust levels affect the execution pipeline:
-
-| CallerClass | PII Filtering | Tool Access | Audit |
-|-------------|--------------|-------------|-------|
-| `trusted` | Credentials only (AWS keys, API tokens) | Full | Audit entry with caller context |
-| `standard` | High-risk PII + credentials | Full | Audit entry with caller context |
-| `untrusted` | All PII patterns | Sensitive tools blocked | Audit entry with caller context |
-
-Audit entries include `caller_id`, `caller_name`, `caller_class`, `user_id`, `company_id`, and `tool` fields. With the `sqlite` audit store, these are queryable:
-
-```sql
-SELECT * FROM audit_events WHERE caller_class = 'untrusted' AND tool = 'memorizer_retrieve_knowledge';
-```
-
 ## Authorization Mode
 
 `OPENFGA_MODE` controls whether OpenFGA authorization is enforced:
@@ -226,33 +187,7 @@ TOOLMESH_EXEC_TIMEOUT=180
 
 ### Logging
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `LOG_LEVEL` | `debug` | Log verbosity: `debug`, `info`, `warn`, `error` |
-| `LOG_FORMAT` | `json` | Output format: `json` or `text` |
-| `DEBUG_BACKENDS` | *(empty)* | Comma-separated backend names for per-backend debug logging |
-| `DEBUG_FILE` | *(empty)* | Path to a separate debug log file (e.g. `debug.log`) |
-
-**Development default.** The default level is `debug` so that MCP communication issues are fully traceable out of the box. At this level, ToolMesh logs complete request/response payloads which may include sensitive data. **For production, set `LOG_LEVEL=info` or higher.**
-
-At `debug` level, ToolMesh logs the complete request/response flow between clients and backends:
-- Incoming JSON-RPC method, params, and request ID
-- Outgoing JSON-RPC results and errors
-- Backend connection lifecycle (connect, discover, disconnect)
-- Tool call parameters sent to MCP backends and their responses
-- Executor pipeline steps (authz, credential injection, gate pre, execution, gate post)
-
-#### Per-backend debug file
-
-When troubleshooting a specific backend, set `DEBUG_BACKENDS` and `DEBUG_FILE` to write debug-level output for only the named backends to a separate file. The file also includes the ToolMesh startup banner (version, commit, build date) so recipients have full context. Normal stdout logging continues at the global `LOG_LEVEL` unchanged.
-
-```bash
-DEBUG_BACKENDS=github
-DEBUG_FILE=debug.log
-LOG_LEVEL=error          # keep stdout quiet, debug goes to the file
-```
-
-The `./data` directory is typically volume-mounted to the host, so the debug file is directly accessible without `docker cp`.
+ToolMesh uses structured logging via `slog`. The default level is `debug` for full MCP traceability out of the box — **set `LOG_LEVEL=info` or higher for production** since debug logs include complete request/response payloads. Per-backend debug files, log formats, and all logging variables are documented in [docs/configuration.md](docs/configuration.md#logging).
 
 ## Architecture
 
@@ -298,26 +233,17 @@ Tools from each backend are exposed with a prefix (e.g. `memorizer_retrieve_know
 
 ## REST Proxy Mode ([DADL](https://dadl.ai))
 
-When an MCP server doesn't expose an endpoint you need, describe it in a `.dadl` file and ToolMesh calls the REST API directly — no wrapper server needed.
+When an MCP server doesn't expose an endpoint you need, describe it in a `.dadl` file and ToolMesh calls the REST API directly — no wrapper server needed. Both modes run in parallel.
 
-```
-Current:    Claude → ToolMesh → MCP Server → REST API
-New:        Claude → ToolMesh → REST API (via .dadl file)
-```
-
-Both modes run in parallel. Add a REST backend to `config/backends.yaml`:
+Add a REST backend to `config/backends.yaml`:
 
 ```yaml
 backends:
   - name: vikunja
     transport: rest
     dadl: /app/dadl/vikunja.dadl
-    url: "https://vikunja.example.com/api/v1"  # overrides base_url in .dadl
+    url: "https://vikunja.example.com/api/v1"
 ```
-
-The `url` field is optional — it overrides the `base_url` in the `.dadl` file. This is useful for APIs like Vikunja where each deployment has a different URL, while APIs like Stripe can hardcode their URL in the `.dadl` file.
-
-### A taste of DADL
 
 Want Claude to list GitHub issues? Here's all it takes:
 
@@ -333,101 +259,9 @@ tools:
       state: { type: string, in: query }
 ```
 
-That's it — ToolMesh handles auth, pagination, retries, and error mapping. The full `.dadl` format below adds these as declarative defaults.
+ToolMesh handles auth, pagination, retries, and error mapping. DADL supports bearer tokens, OAuth2, session auth, API keys, automatic pagination, retry with backoff, response transformation, composite tools, and more.
 
-### Writing a .dadl File
-
-A `.dadl` file describes a REST API declaratively:
-
-```yaml
-spec: "https://dadl.ai/spec/dadl-spec-v0.1.md"
-backend:
-  name: myapi
-  type: rest
-  base_url: https://api.example.com/v1  # optional if url is set in backends.yaml
-  description: "My API service"
-
-  auth:
-    type: bearer                    # bearer, oauth2, session, apikey
-    credential: my-api-token        # logical name for CredentialStore
-    inject_into: header
-    header_name: Authorization
-    prefix: "Bearer "
-
-  defaults:
-    headers:
-      Content-Type: application/json
-    pagination:
-      strategy: page                # cursor, offset, page, link_header
-      request:
-        page_param: page
-        limit_param: per_page
-        limit_default: 50
-      response:
-        total_pages_header: x-total-pages
-      behavior: auto
-      max_pages: 20
-    errors:
-      format: json
-      message_path: "$.message"
-      retry_on: [429, 502, 503]
-      terminal: [400, 404]
-      retry_strategy:
-        max_retries: 3
-        backoff: exponential
-        initial_delay: 1s
-
-  tools:
-    list_items:
-      method: GET
-      path: /items
-      description: "List all items"
-      params:
-        page: { type: integer, in: query }
-        search: { type: string, in: query }
-
-    get_item:
-      method: GET
-      path: /items/{id}
-      description: "Get a single item"
-      params:
-        id: { type: integer, in: path, required: true }
-      pagination: none
-
-    create_item:
-      method: POST
-      path: /items
-      description: "Create an item"
-      params:
-        name: { type: string, in: body, required: true }
-        tags: { type: array, in: body }
-      pagination: none
-```
-
-REST Proxy tools integrate seamlessly into Code Mode:
-
-```javascript
-const tasks = await toolmesh.vikunja_list_project_tasks({ project_id: 1 });
-await toolmesh.vikunja_set_task_position({ id: 42, position: 1.5, project_view_id: 1 });
-```
-
-### DADL Features
-
-- **Auth**: Bearer token, OAuth2 client_credentials, session-based login, API key (header or query)
-- **Pagination**: Automatic multi-page fetching (cursor, offset, page number, Link header)
-- **Error Handling**: Configurable retry on transient errors (429, 5xx) with exponential backoff
-- **Response Transformation**: JSONPath extraction (`result_path`) and jq filters (`transform`)
-- **Access Classification**: Per-tool access levels (`read`/`write`/`admin`/`dangerous` + custom) for role-based authorization policies
-- **Composite Tools**: Server-side multi-endpoint orchestration in TypeScript — sandboxed, audited, max 50 API calls per execution
-- **Hints & Examples**: Per-tool domain knowledge and few-shot prompts for better LLM accuracy
-- **Type Definitions**: Reusable type schemas for large APIs (100+ tools)
-- **File Handling**: Built-in file broker — upload, download, and reference files by URL (never inline)
-
-### Creating DADLs
-
-As shown above, the fastest path is asking an LLM. If you use Claude Code with ToolMesh connected, it can create the `.dadl` file, add the backend entry to `config/backends.yaml`, and set the credential — all in one session.
-
-To share a DADL with the community, browse and contribute at [dadl.ai](https://dadl.ai), email it to dadl@dunkel.cloud, or open a PR on the [dadl-registry](https://github.com/DunkelCloud/dadl-registry).
+For the full spec, examples, and the community registry, see [dadl.ai](https://dadl.ai). The fastest way to create a `.dadl` file is asking any LLM that knows the format.
 
 ## Code Mode
 

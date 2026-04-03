@@ -75,10 +75,31 @@ TOOLMESH_EXEC_TIMEOUT=180
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `LOG_LEVEL` | `info` | Log level: `debug`, `info`, `warn`, `error` |
-| `LOG_FORMAT` | `json` | Log format: `json` or `text` |
+| `LOG_LEVEL` | `debug` | Log verbosity: `debug`, `info`, `warn`, `error` |
+| `LOG_FORMAT` | `json` | Output format: `json` or `text` |
 | `DEBUG_BACKENDS` | *(empty)* | Comma-separated backend names for per-backend debug file logging |
 | `DEBUG_FILE` | *(empty)* | Path to the debug log file (e.g. `debug.log`). Both `DEBUG_BACKENDS` and `DEBUG_FILE` must be set to activate. |
+
+**Development default.** The default level is `debug` so that MCP communication issues are fully traceable out of the box. At this level, ToolMesh logs complete request/response payloads which may include sensitive data. **For production, set `LOG_LEVEL=info` or higher.**
+
+At `debug` level, ToolMesh logs the complete request/response flow between clients and backends:
+- Incoming JSON-RPC method, params, and request ID
+- Outgoing JSON-RPC results and errors
+- Backend connection lifecycle (connect, discover, disconnect)
+- Tool call parameters sent to MCP backends and their responses
+- Executor pipeline steps (authz, credential injection, gate pre, execution, gate post)
+
+### Per-backend debug file
+
+When troubleshooting a specific backend, set `DEBUG_BACKENDS` and `DEBUG_FILE` to write debug-level output for only the named backends to a separate file. The file also includes the ToolMesh startup banner (version, commit, build date) so recipients have full context. Normal stdout logging continues at the global `LOG_LEVEL` unchanged.
+
+```bash
+DEBUG_BACKENDS=github
+DEBUG_FILE=debug.log
+LOG_LEVEL=error          # keep stdout quiet, debug goes to the file
+```
+
+The `./data` directory is typically volume-mounted to the host, so the debug file is directly accessible without `docker cp`.
 
 ## Docker Compose Databases
 

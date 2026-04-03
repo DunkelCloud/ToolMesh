@@ -1,0 +1,50 @@
+name: Bug Report
+description: Report a bug or unexpected behavior
+labels: ["bug"]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: ToolMesh Version
+      description: "Output of the ToolMesh startup banner or Docker image tag"
+      placeholder: "v0.1.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: backend-type
+    attributes:
+      label: Backend Type
+      options:
+        - DADL (REST proxy)
+        - MCP Server
+        - Both
+        - Not applicable
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: "Describe the bug. Include error messages, log output, or unexpected behavior."
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+    validations:
+      required: false
+  - type: textarea
+    id: config
+    attributes:
+      label: Relevant configuration
+      description: "backends.yaml, .dadl snippet, docker-compose, or .env (redact secrets)."
+      render: yaml
+    validations:
+      required: false

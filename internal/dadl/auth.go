@@ -19,6 +19,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -99,6 +100,10 @@ func (a *RestAuth) HandleUnauthorized(ctx context.Context) error {
 func (a *RestAuth) injectBearer(ctx context.Context, req *http.Request) error {
 	token, err := a.creds.Get(ctx, a.config.Credential, credentials.TenantInfo{})
 	if err != nil {
+		if errors.Is(err, credentials.ErrCredentialNotFound) {
+			a.logger.InfoContext(ctx, "bearer credential not found, skipping auth header", "credential", a.config.Credential)
+			return nil
+		}
 		return fmt.Errorf("get bearer credential %q: %w", a.config.Credential, err)
 	}
 
@@ -117,6 +122,10 @@ func (a *RestAuth) injectBearer(ctx context.Context, req *http.Request) error {
 func (a *RestAuth) injectBasic(ctx context.Context, req *http.Request) error {
 	username, err := a.creds.Get(ctx, a.config.UsernameCredential, credentials.TenantInfo{})
 	if err != nil {
+		if errors.Is(err, credentials.ErrCredentialNotFound) {
+			a.logger.InfoContext(ctx, "basic auth credential not found, skipping auth header", "credential", a.config.UsernameCredential)
+			return nil
+		}
 		return fmt.Errorf("get basic username credential %q: %w", a.config.UsernameCredential, err)
 	}
 
@@ -124,6 +133,10 @@ func (a *RestAuth) injectBasic(ctx context.Context, req *http.Request) error {
 	if a.config.PasswordCredential != "" {
 		password, err = a.creds.Get(ctx, a.config.PasswordCredential, credentials.TenantInfo{})
 		if err != nil {
+			if errors.Is(err, credentials.ErrCredentialNotFound) {
+				a.logger.InfoContext(ctx, "basic auth password credential not found, skipping auth header", "credential", a.config.PasswordCredential)
+				return nil
+			}
 			return fmt.Errorf("get basic password credential %q: %w", a.config.PasswordCredential, err)
 		}
 	}
@@ -136,6 +149,10 @@ func (a *RestAuth) injectBasic(ctx context.Context, req *http.Request) error {
 func (a *RestAuth) injectAPIKey(ctx context.Context, req *http.Request) error {
 	key, err := a.creds.Get(ctx, a.config.Credential, credentials.TenantInfo{})
 	if err != nil {
+		if errors.Is(err, credentials.ErrCredentialNotFound) {
+			a.logger.InfoContext(ctx, "apikey credential not found, skipping auth header", "credential", a.config.Credential)
+			return nil
+		}
 		return fmt.Errorf("get apikey credential %q: %w", a.config.Credential, err)
 	}
 
@@ -159,6 +176,10 @@ func (a *RestAuth) injectOAuth2(ctx context.Context, req *http.Request) error {
 	if err != nil {
 		return err
 	}
+	if token == "" {
+		a.logger.InfoContext(ctx, "oauth2 credentials not found, skipping auth header")
+		return nil
+	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	return nil
 }
@@ -176,10 +197,16 @@ func (a *RestAuth) getOAuth2Token(ctx context.Context) (string, error) {
 	// Fetch new token
 	clientID, err := a.creds.Get(ctx, a.config.ClientIDCredential, credentials.TenantInfo{})
 	if err != nil {
+		if errors.Is(err, credentials.ErrCredentialNotFound) {
+			return "", nil
+		}
 		return "", fmt.Errorf("get oauth2 client_id: %w", err)
 	}
 	clientSecret, err := a.creds.Get(ctx, a.config.ClientSecretCredential, credentials.TenantInfo{})
 	if err != nil {
+		if errors.Is(err, credentials.ErrCredentialNotFound) {
+			return "", nil
+		}
 		return "", fmt.Errorf("get oauth2 client_secret: %w", err)
 	}
 

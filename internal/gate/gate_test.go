@@ -113,12 +113,14 @@ func TestRateLimiter_Check(t *testing.T) {
 
 	// Should not exceed with limit of 5
 	for i := 0; i < 5; i++ {
+		rl.Record("user1")
 		if rl.Check("user1", 5) {
 			t.Fatalf("should not exceed limit at request %d", i+1)
 		}
 	}
 
 	// The 6th request should exceed
+	rl.Record("user1")
 	if !rl.Check("user1", 5) {
 		t.Fatal("should exceed limit at request 6")
 	}

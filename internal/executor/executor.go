@@ -118,6 +118,7 @@ func (e *Executor) ExecuteTool(ctx context.Context, req ExecuteToolRequest) (*ba
 	)
 
 	// Build the audit entry — populated at each exit point.
+	// Redact sensitive parameter values before persisting to the audit store.
 	entry := audit.AuditEntry{
 		TraceID:     traceID,
 		Timestamp:   start,
@@ -127,7 +128,7 @@ func (e *Executor) ExecuteTool(ctx context.Context, req ExecuteToolRequest) (*ba
 		CallerName:  uc.CallerName,
 		CallerClass: uc.CallerClass,
 		Tool:        req.ToolName,
-		Params:      req.Params,
+		Params:      sanitizeParams(req.Params),
 		Backend:     splitToolPrefix(req.ToolName)[0],
 	}
 
@@ -293,6 +294,10 @@ func (e *Executor) ExecuteTool(ctx context.Context, req ExecuteToolRequest) (*ba
 }
 
 // recordAudit persists an audit entry, logging any store errors.
+// By design, audit recording failures do not block the tool response — availability
+// is prioritized over auditability. The error is logged so operators can detect
+// audit store issues. For strict audit requirements, configure an external audit
+// pipeline or monitor for these log entries.
 func (e *Executor) recordAudit(ctx context.Context, entry audit.AuditEntry) {
 	if e.audit == nil {
 		return
@@ -315,18 +320,73 @@ func (e *Executor) resolveCredentials(ctx context.Context, backendPrefix string,
 	// Try prefix-based listing first (e.g. CREDENTIAL_GITHUB_API_KEY, CREDENTIAL_GITHUB_TOKEN)
 	if lister, ok := e.creds.(credentials.PrefixLister); ok {
 		creds, err := lister.ListByPrefix(ctx, prefix, tenant)
-		if err == nil && len(creds) > 0 {
+		if err != nil {
+			e.logger.WarnContext(ctx, "credential prefix lookup failed", "prefix", prefix, "error", err)
+		} else if len(creds) > 0 {
 			return creds
 		}
 	}
 
 	// Fallback: single <BACKEND>_API_KEY credential
 	credName := strings.ToUpper(backendPrefix) + "_API_KEY"
-	if cred, err := e.creds.Get(ctx, credName, tenant); err == nil {
+	cred, err := e.creds.Get(ctx, credName, tenant)
+	if err != nil {
+		e.logger.DebugContext(ctx, "credential lookup returned no result", "backend", backendPrefix)
+	} else {
 		return map[string]string{credName: cred}
 	}
 
 	return nil
+}
+
+// sensitiveParamNames is the set of parameter name patterns that should be redacted in audit logs.
+var sensitiveParamNames = map[string]bool{
+	"password":      true,
+	"secret":        true,
+	"token":         true,
+	"api_key":       true,
+	"apikey":        true,
+	"access_token":  true,
+	"refresh_token": true,
+	"authorization": true,
+	"credential":    true,
+	"private_key":   true,
+}
+
+// sanitizeParams returns a copy of params with sensitive values replaced by "[REDACTED]".
+func sanitizeParams(params map[string]any) map[string]any {
+	if len(params) == 0 {
+		return params
+	}
+	sanitized := make(map[string]any, len(params))
+	for k, v := range params {
+		if sensitiveParamNames[strings.ToLower(k)] {
+			sanitized[k] = "[REDACTED]"
+		} else {
+			sanitized[k] = v
+		}
+	}
+	return sanitized
+}
+
+// FilterAuthorizedTools filters a list of tools to only those the user is authorized to execute.
+// If no authorizer is configured, all tools are returned.
+func (e *Executor) FilterAuthorizedTools(ctx context.Context, userID string, tools []backend.ToolDescriptor) []backend.ToolDescriptor {
+	if e.authorizer == nil {
+		return tools
+	}
+	authorized := make([]backend.ToolDescriptor, 0, len(tools))
+	for _, t := range tools {
+		allowed, err := e.authorizer.Check(ctx, userID, t.Name)
+		if err != nil {
+			e.logger.DebugContext(ctx, "authz check failed during list_tools filter", "tool", t.Name, "error", err)
+			continue
+		}
+		if allowed {
+			authorized = append(authorized, t)
+		}
+	}
+	return authorized
 }
 
 // splitToolPrefix extracts the backend prefix from a tool name like "backend_tool".

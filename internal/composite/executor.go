@@ -90,7 +90,7 @@ func Execute(
 	// Wrap code in an async IIFE so `await` works on api.* calls.
 	// goja processes the microtask queue (Promises) in leave() when RunString returns,
 	// so the Promise will be resolved by the time we inspect it.
-	wrappedCode := fmt.Sprintf("(async function() {\n%s\n})()", comp.Code)
+	wrappedCode := fmt.Sprintf("(async function() {\n\"use strict\";\n%s\n})()", comp.Code)
 
 	val, err := rt.RunString(wrappedCode)
 	if err != nil {

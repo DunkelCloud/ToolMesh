@@ -27,6 +27,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -91,7 +92,8 @@ func (s *Server) cors(next http.HandlerFunc) http.HandlerFunc {
 					w.Header().Set("Access-Control-Allow-Credentials", "true")
 				}
 			} else {
-				// No allowlist configured — reflect any origin (backwards compat)
+				// No allowlist configured — reflect any origin for MCP client compatibility.
+				// Set TOOLMESH_CORS_ORIGINS to restrict in production.
 				w.Header().Set("Access-Control-Allow-Origin", origin)
 				w.Header().Set("Access-Control-Allow-Credentials", "true")
 			}
@@ -415,6 +417,22 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Validate redirect_uri schemes — only HTTPS (or http://localhost for dev)
+	for _, uri := range req.RedirectURIs {
+		parsed, err := url.Parse(uri)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_redirect_uri", "error_description": fmt.Sprintf("malformed URI: %s", uri)})
+			return
+		}
+		if parsed.Scheme == "http" && (parsed.Hostname() == "localhost" || parsed.Hostname() == "127.0.0.1" || parsed.Hostname() == "::1") {
+			continue // http://localhost is allowed for development
+		}
+		if parsed.Scheme != "https" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_redirect_uri", "error_description": fmt.Sprintf("redirect_uri must use https scheme: %s", uri)})
+			return
+		}
+	}
+
 	clientID := generateID()
 	clientSecret := generateID()
 
@@ -450,7 +468,38 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		redirectURI := r.URL.Query().Get("redirect_uri")
 		state := r.URL.Query().Get("state")
 		codeChallenge := r.URL.Query().Get("code_challenge")
+		codeChallengeMethod := r.URL.Query().Get("code_challenge_method")
 		scope := r.URL.Query().Get("scope")
+
+		// PKCE is mandatory (OAuth 2.1)
+		if codeChallenge == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_request", "error_description": "code_challenge is required (PKCE)"})
+			return
+		}
+		if codeChallengeMethod != "" && codeChallengeMethod != "S256" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_request", "error_description": "only S256 code_challenge_method is supported"})
+			return
+		}
+
+		// Validate redirect_uri against registered client before rendering login form
+		if s.tokenStore != nil {
+			client, err := s.tokenStore.GetClient(r.Context(), clientID)
+			if err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_request", "error_description": "unknown client"})
+				return
+			}
+			uriValid := false
+			for _, uri := range client.RedirectURIs {
+				if uri == redirectURI {
+					uriValid = true
+					break
+				}
+			}
+			if !uriValid {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_redirect_uri"})
+				return
+			}
+		}
 
 		s.renderLoginForm(w, clientID, redirectURI, state, codeChallenge, scope)
 		return
@@ -470,6 +519,12 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		state := r.FormValue("state")
 		codeChallenge := r.FormValue("code_challenge")
 		scope := r.FormValue("scope")
+
+		// PKCE is mandatory (OAuth 2.1)
+		if codeChallenge == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_request", "error_description": "code_challenge is required (PKCE)"})
+			return
+		}
 
 		// Authenticate user
 		var userID, companyID, plan string
@@ -544,7 +599,7 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(redirectURI, "?") {
 			sep = "&"
 		}
-		http.Redirect(w, r, fmt.Sprintf("%s%scode=%s&state=%s", redirectURI, sep, code, state), http.StatusFound)
+		http.Redirect(w, r, fmt.Sprintf("%s%scode=%s&state=%s", redirectURI, sep, url.QueryEscape(code), url.QueryEscape(state)), http.StatusFound)
 		return
 	}
 
@@ -594,12 +649,16 @@ func (s *Server) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	// PKCE S256 verification — required when a code_challenge was provided
-	if ac.CodeChallenge != "" {
-		if codeVerifier == "" {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_grant", "error_description": "code_verifier required"})
-			return
-		}
+	// PKCE S256 verification — always required (OAuth 2.1)
+	if ac.CodeChallenge == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_grant", "error_description": "authorization code was issued without PKCE"})
+		return
+	}
+	if codeVerifier == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_grant", "error_description": "code_verifier required"})
+		return
+	}
+	{
 		h := sha256.Sum256([]byte(codeVerifier))
 		computed := base64.RawURLEncoding.EncodeToString(h[:])
 		if subtle.ConstantTimeCompare([]byte(computed), []byte(ac.CodeChallenge)) != 1 {

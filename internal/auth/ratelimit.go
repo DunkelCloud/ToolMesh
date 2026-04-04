@@ -38,18 +38,26 @@ func NewDCRRateLimiter(rdb *redis.Client) *DCRRateLimiter {
 	return &DCRRateLimiter{rdb: rdb}
 }
 
+// rateLimitScript atomically increments and sets TTL in a single round-trip.
+// This prevents a crash between INCR and EXPIRE from leaving a key without TTL.
+var rateLimitScript = redis.NewScript(`
+	local count = redis.call("INCR", KEYS[1])
+	if count == 1 then
+		redis.call("EXPIRE", KEYS[1], ARGV[1])
+	end
+	return count
+`)
+
 // Allow checks if the given IP is allowed to perform another DCR registration.
 // Returns true if allowed, false if the rate limit is exceeded.
 func (rl *DCRRateLimiter) Allow(ctx context.Context, ip string) (bool, error) {
 	key := prefixDCRRate + ip
+	windowSecs := int(dcrRateWindow.Seconds())
 
-	pipe := rl.rdb.Pipeline()
-	incrCmd := pipe.Incr(ctx, key)
-	pipe.Expire(ctx, key, dcrRateWindow)
-	if _, err := pipe.Exec(ctx); err != nil {
+	count, err := rateLimitScript.Run(ctx, rl.rdb, []string{key}, windowSecs).Int64()
+	if err != nil {
 		return false, fmt.Errorf("dcr rate limit check: %w", err)
 	}
 
-	count := incrCmd.Val()
 	return count <= int64(dcrRateLimit), nil
 }

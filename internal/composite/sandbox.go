@@ -60,4 +60,15 @@ func LockdownRuntime(rt *goja.Runtime) {
 	_ = rt.Set("Function", func(call goja.FunctionCall) goja.Value {
 		panic(rt.NewGoError(fmt.Errorf("function constructor is not allowed in composite sandbox")))
 	})
+
+	// Freeze Function.prototype.constructor to prevent prototype-chain bypass:
+	//   const F = (function(){}).constructor; F('code')()
+	_, _ = rt.RunString(`
+		Object.defineProperty(Function.prototype, 'constructor', {
+			value: undefined, writable: false, configurable: false
+		});
+		Object.defineProperty(Object.prototype, 'constructor', {
+			value: undefined, writable: false, configurable: false
+		});
+	`)
 }

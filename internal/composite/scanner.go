@@ -32,24 +32,29 @@ type Violation struct {
 
 // scanBlocklist is the set of identifiers that are forbidden in composite code.
 var scanBlocklist = map[unistring.String]bool{
-	"fetch":          true,
-	"XMLHttpRequest": true,
-	"require":        true,
-	"import":         true,
-	"process":        true,
-	"fs":             true,
-	"os":             true,
-	"child_process":  true,
-	"globalThis":     true,
-	"setTimeout":     true,
-	"setInterval":    true,
-	"setImmediate":   true,
-	"clearTimeout":   true,
-	"clearInterval":  true,
-	"clearImmediate": true,
-	"window":         true,
-	"self":           true,
-	"global":         true,
+	"fetch":                     true,
+	"XMLHttpRequest":            true,
+	"require":                   true,
+	"import":                    true,
+	"process":                   true,
+	"fs":                        true,
+	"os":                        true,
+	"child_process":             true,
+	"globalThis":                true,
+	"setTimeout":                true,
+	"setInterval":               true,
+	"setImmediate":              true,
+	"clearTimeout":              true,
+	"clearInterval":             true,
+	"clearImmediate":            true,
+	"window":                    true,
+	"self":                      true,
+	"global":                    true,
+	"constructor":               true,
+	"__proto__":                 true,
+	"getOwnPropertyDescriptor":  true,
+	"getOwnPropertyDescriptors": true,
+	"Reflect":                   true,
 }
 
 // ScanCode performs static analysis on composite JavaScript code.
@@ -224,6 +229,10 @@ func walkExpression(expr ast.Expression, fileSet *file.FileSet, violations *[]Vi
 		walkExpression(e.Argument, fileSet, violations)
 	case *ast.YieldExpression:
 		walkExpression(e.Argument, fileSet, violations)
+	case *ast.Optional:
+		walkExpression(e.Expression, fileSet, violations)
+	case *ast.OptionalChain:
+		walkExpression(e.Expression, fileSet, violations)
 	}
 }
 

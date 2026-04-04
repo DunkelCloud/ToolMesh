@@ -55,6 +55,7 @@ func NewRateLimiter() *RateLimiter {
 }
 
 // Check returns true if the user has exceeded the given limit per hour.
+// This is a read-only check that does not record a request.
 func (rl *RateLimiter) Check(userID string, limit int) bool {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
@@ -70,19 +71,28 @@ func (rl *RateLimiter) Check(userID string, limit int) bool {
 			pruned = append(pruned, t)
 		}
 	}
-
-	// Record this request
-	pruned = append(pruned, now)
 	rl.windows[userID] = pruned
+
+	return len(pruned) > limit
+}
+
+// Record adds a request timestamp for the given user.
+// Call this once per actual request, separate from Check to prevent
+// policy scripts from inflating the counter by calling Check in a loop.
+func (rl *RateLimiter) Record(userID string) {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+
+	now := time.Now()
+	rl.windows[userID] = append(rl.windows[userID], now)
 
 	// Remove stale users to prevent unbounded memory growth
 	if len(rl.windows) > 1000 {
+		cutoff := now.Add(-time.Hour)
 		for uid, w := range rl.windows {
 			if len(w) == 0 || w[len(w)-1].Before(cutoff) {
 				delete(rl.windows, uid)
 			}
 		}
 	}
-
-	return len(pruned) > limit
 }

@@ -388,12 +388,16 @@ func TestCodeRunner_SandboxViolation_Eval(t *testing.T) {
 	mb := &codeRunnerTestBackend{}
 	runner := newTestCodeRunner(t, mb)
 
-	_, err := runner.Execute(testCtx(), `eval("1+1")`)
-	if err == nil {
-		t.Fatal("expected error for eval() usage")
+	result, err := runner.Execute(testCtx(), `eval("1+1")`)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.Contains(err.Error(), "eval is not allowed") {
-		t.Errorf("error = %q, want to contain \"eval is not allowed\"", err.Error())
+	if !result.IsError {
+		t.Fatal("expected IsError=true for eval() usage")
+	}
+	text := extractText(t, result)
+	if !strings.Contains(text, "forbidden") {
+		t.Errorf("result text = %q, want to contain \"forbidden\"", text)
 	}
 }
 
@@ -401,9 +405,12 @@ func TestCodeRunner_SandboxViolation_Require(t *testing.T) {
 	mb := &codeRunnerTestBackend{}
 	runner := newTestCodeRunner(t, mb)
 
-	_, err := runner.Execute(testCtx(), `const fs = require("fs")`)
-	if err == nil {
-		t.Fatal("expected error for require() usage")
+	result, err := runner.Execute(testCtx(), `const fs = require("fs")`)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.IsError {
+		t.Fatal("expected IsError=true for require() usage")
 	}
 }
 
@@ -411,9 +418,12 @@ func TestCodeRunner_SandboxViolation_Fetch(t *testing.T) {
 	mb := &codeRunnerTestBackend{}
 	runner := newTestCodeRunner(t, mb)
 
-	_, err := runner.Execute(testCtx(), `await fetch("https://example.com")`)
-	if err == nil {
-		t.Fatal("expected error for fetch() usage")
+	result, err := runner.Execute(testCtx(), `await fetch("https://example.com")`)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.IsError {
+		t.Fatal("expected IsError=true for fetch() usage")
 	}
 }
 

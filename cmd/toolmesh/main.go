@@ -212,7 +212,7 @@ func main() {
 		}
 		logger.Info("OpenFGA authorizer initialized", "mode", "restrict", "storeId", cfg.OpenFGAStoreID)
 	} else {
-		logger.Warn("OpenFGA authorization bypassed", "mode", "bypass")
+		logger.Warn("SECURITY: OpenFGA authorization is BYPASSED — all tool calls are allowed without permission checks. Set OPENFGA_MODE=restrict for production use.", "mode", "bypass")
 	}
 
 	// Initialize gate pipeline via registry
@@ -447,6 +447,22 @@ func loadRESTBackends(composite *backend.CompositeBackend, backendsConfigPath, d
 				adapter.SetBlobTTL(d)
 			} else {
 				logger.Warn("invalid blob_ttl option, using default 1h", "name", entry.Name, "value", ttlStr)
+			}
+		}
+		if timeoutStr, ok := entry.Options["timeout"]; ok {
+			if d, parseErr := time.ParseDuration(timeoutStr); parseErr == nil {
+				adapter.SetHTTPTimeout(d)
+				logger.Info("REST backend timeout override", "name", entry.Name, "timeout", d)
+			} else {
+				logger.Warn("invalid timeout option, using default", "name", entry.Name, "value", timeoutStr)
+			}
+		}
+		if timeoutStr, ok := entry.Options["streaming_timeout"]; ok {
+			if d, parseErr := time.ParseDuration(timeoutStr); parseErr == nil {
+				adapter.SetStreamingHTTPTimeout(d)
+				logger.Info("REST backend streaming timeout override", "name", entry.Name, "streaming_timeout", d)
+			} else {
+				logger.Warn("invalid streaming_timeout option, using default", "name", entry.Name, "value", timeoutStr)
 			}
 		}
 

@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -60,6 +61,22 @@ func NewCodeRunner(nameMap map[string]string, exec *executor.Executor, coercer *
 // Returns a ToolResult with the collected results in the same JSON format
 // as the previous static parser approach.
 func (r *CodeRunner) Execute(ctx context.Context, code string) (*backend.ToolResult, error) {
+	// Static analysis: scan code-mode submissions for forbidden patterns
+	violations, err := composite.ScanCode(code, "execute_code")
+	if err == nil && len(violations) > 0 {
+		msgs := make([]string, 0, len(violations))
+		for _, v := range violations {
+			msgs = append(msgs, fmt.Sprintf("line %d: %s", v.Line, v.Message))
+		}
+		return &backend.ToolResult{
+			IsError: true,
+			Content: []any{map[string]any{
+				"type": "text",
+				"text": fmt.Sprintf("execute_code: static analysis found forbidden patterns:\n%s", strings.Join(msgs, "\n")),
+			}},
+		}, nil
+	}
+
 	ctx, cancel := context.WithTimeout(ctx, codeTimeout)
 	defer cancel()
 
@@ -206,7 +223,7 @@ func (r *CodeRunner) Execute(ctx context.Context, code string) (*backend.ToolRes
 	}()
 
 	// Wrap code in async IIFE so `await` works on toolmesh.* calls
-	wrappedCode := fmt.Sprintf("(async function() {\n%s\n})()", code)
+	wrappedCode := fmt.Sprintf("(async function() {\n\"use strict\";\n%s\n})()", code)
 
 	val, err := rt.RunString(wrappedCode)
 	if err != nil {

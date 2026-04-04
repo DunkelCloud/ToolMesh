@@ -186,6 +186,32 @@ func TestServer_CORSHeaders(t *testing.T) {
 	}
 }
 
+func TestServer_CORSHeaders_Allowlist(t *testing.T) {
+	_, mux := newTestServer(t, &config.Config{
+		CORSAllowedOrigins: []string{"https://claude.ai"},
+	})
+
+	// Allowed origin
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodOptions, "/mcp", nil)
+	req.Header.Set("Origin", "https://claude.ai")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Header().Get("Access-Control-Allow-Origin") != "https://claude.ai" {
+		t.Errorf("CORS origin = %q, want \"https://claude.ai\"", w.Header().Get("Access-Control-Allow-Origin"))
+	}
+
+	// Blocked origin
+	req2 := httptest.NewRequestWithContext(context.Background(), http.MethodOptions, "/mcp", nil)
+	req2.Header.Set("Origin", "https://evil.example.com")
+	w2 := httptest.NewRecorder()
+	mux.ServeHTTP(w2, req2)
+
+	if w2.Header().Get("Access-Control-Allow-Origin") != "" {
+		t.Errorf("CORS should block unlisted origin, got %q", w2.Header().Get("Access-Control-Allow-Origin"))
+	}
+}
+
 func TestServer_MCP_Initialize(t *testing.T) {
 	_, mux := newTestServer(t, &config.Config{})
 
@@ -438,10 +464,11 @@ func TestServer_Authorize_WrongPassword(t *testing.T) {
 	_, mux, _ := newTestServerWithRedis(t, &config.Config{AuthPassword: "correct"})
 
 	form := url.Values{
-		"password":     {"wrong"},
-		"client_id":    {"c1"},
-		"redirect_uri": {"https://example.com/callback"},
-		"state":        {"s1"},
+		"password":       {"wrong"},
+		"client_id":      {"c1"},
+		"redirect_uri":   {"https://example.com/callback"},
+		"state":          {"s1"},
+		"code_challenge": {"dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"},
 	}
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/authorize", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")

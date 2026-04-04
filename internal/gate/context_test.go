@@ -64,6 +64,7 @@ func TestRateLimiter_Check_BasicLimit(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			var exceeded bool
 			for i := 0; i < tt.calls; i++ {
+				rl.Record(tt.userID)
 				exceeded = rl.Check(tt.userID, tt.limit)
 			}
 			if exceeded != tt.wantExc {
@@ -79,7 +80,7 @@ func TestRateLimiter_Check_IndependentUsers(t *testing.T) {
 
 	// User A makes 5 requests with limit 5
 	for i := 0; i < 5; i++ {
-		rl.Check("user-x", 5)
+		rl.Record("user-x")
 	}
 
 	// User B should still be under limit
@@ -94,7 +95,7 @@ func TestRateLimiter_Check_StaleUserCleanup(t *testing.T) {
 	// Populate more than 1000 users to trigger cleanup
 	for i := 0; i < 1005; i++ {
 		userID := fmt.Sprintf("stale-user-%d", i)
-		rl.Check(userID, 100)
+		rl.Record(userID)
 	}
 
 	// Manually expire some entries to test cleanup path
@@ -106,8 +107,8 @@ func TestRateLimiter_Check_StaleUserCleanup(t *testing.T) {
 	}
 	rl.mu.Unlock()
 
-	// Next check should trigger cleanup of stale users
-	rl.Check("trigger-cleanup-user", 100)
+	// Next record should trigger cleanup of stale users
+	rl.Record("trigger-cleanup-user")
 
 	rl.mu.Lock()
 	remaining := len(rl.windows)
@@ -131,7 +132,7 @@ func TestRateLimiter_Check_EmptyWindowCleanup(t *testing.T) {
 	rl.mu.Unlock()
 
 	// Trigger cleanup
-	rl.Check("new-user", 100)
+	rl.Record("new-user")
 
 	rl.mu.Lock()
 	remaining := len(rl.windows)

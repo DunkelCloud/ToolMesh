@@ -18,13 +18,16 @@
 package gate
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"time"
 
+	"github.com/DunkelCloud/ToolMesh/internal/composite"
 	"github.com/dop251/goja"
 )
 
@@ -100,6 +103,10 @@ func (g *Gate) Name() string {
 // Evaluate runs all policies against the given context.
 // Policies can modify the response or throw an error to reject the request.
 func (g *Gate) Evaluate(gctx GateContext) (*EvalResult, error) {
+	// Record the request once for rate limiting, separate from the Check call
+	// exposed to policies (which is read-only to prevent counter pollution).
+	g.rateLimiter.Record(gctx.User.UserID)
+
 	for _, p := range g.policies {
 		if err := g.evalPolicy(p, gctx); err != nil {
 			g.logger.Warn("policy rejected request",
@@ -114,8 +121,24 @@ func (g *Gate) Evaluate(gctx GateContext) (*EvalResult, error) {
 	return &EvalResult{Allowed: true}, nil
 }
 
+// gatePolicyTimeout is the maximum time a gate policy may run before being interrupted.
+const gatePolicyTimeout = 5 * time.Second
+
 func (g *Gate) evalPolicy(p policy, gctx GateContext) error {
 	vm := goja.New()
+
+	// Defense-in-depth: lock down the runtime even though policies are from trusted files
+	composite.LockdownRuntime(vm)
+
+	// Set up timeout to prevent infinite loops in policies
+	ctx, cancel := context.WithTimeout(context.Background(), gatePolicyTimeout)
+	defer cancel()
+	go func() {
+		<-ctx.Done()
+		if ctx.Err() == context.DeadlineExceeded {
+			vm.Interrupt(fmt.Errorf("gate policy %s: execution timeout exceeded", p.name))
+		}
+	}()
 
 	// Marshal the context to a JS-friendly object
 	ctxJSON, err := json.Marshal(gctx)

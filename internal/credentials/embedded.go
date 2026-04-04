@@ -42,7 +42,7 @@ func (s *EmbeddedStore) Get(_ context.Context, logicalName string, _ TenantInfo)
 	envKey := "CREDENTIAL_" + strings.ToUpper(logicalName)
 	val := os.Getenv(envKey)
 	if val == "" {
-		return "", fmt.Errorf("credential %q not found (env %s is empty): %w", logicalName, envKey, ErrCredentialNotFound)
+		return "", fmt.Errorf("credential %q not found: %w", logicalName, ErrCredentialNotFound)
 	}
 	return val, nil
 }

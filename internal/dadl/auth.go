@@ -40,10 +40,11 @@ type RestAuth struct {
 	logger     *slog.Logger
 	httpClient *http.Client
 
-	mu            sync.Mutex
-	cachedToken   string
-	tokenExpiry   time.Time
-	sessionTokens map[string]string // for session auth: token name → value
+	mu              sync.Mutex
+	cachedToken     string
+	tokenExpiry     time.Time
+	sessionTokens   map[string]string // for session auth: token name → value
+	sessionTokenTTL time.Time         // expiry time for session tokens
 }
 
 // NewRestAuth creates a RestAuth handler for the given auth configuration.
@@ -259,10 +260,21 @@ func (a *RestAuth) getOAuth2Token(ctx context.Context) (string, error) {
 	return a.cachedToken, nil
 }
 
+// defaultSessionTTL is the maximum lifetime for session tokens before re-login.
+const defaultSessionTTL = time.Hour
+
 func (a *RestAuth) injectSession(ctx context.Context, req *http.Request) error {
 	a.mu.Lock()
 	hasTokens := len(a.sessionTokens) > 0
+	expired := !a.sessionTokenTTL.IsZero() && time.Now().After(a.sessionTokenTTL)
 	a.mu.Unlock()
+
+	if expired {
+		a.mu.Lock()
+		a.sessionTokens = make(map[string]string)
+		a.mu.Unlock()
+		hasTokens = false
+	}
 
 	if !hasTokens {
 		if err := a.doSessionLogin(ctx); err != nil {
@@ -352,6 +364,7 @@ func (a *RestAuth) doSessionLogin(ctx context.Context) error {
 		a.sessionTokens[name] = fmt.Sprintf("%v", val)
 	}
 
-	a.logger.Info("session login successful", "tokens", len(a.sessionTokens))
+	a.sessionTokenTTL = time.Now().Add(defaultSessionTTL)
+	a.logger.Info("session login successful", "tokens", len(a.sessionTokens), "ttl", defaultSessionTTL)
 	return nil
 }

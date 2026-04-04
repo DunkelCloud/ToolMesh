@@ -43,17 +43,27 @@ const defaultAllowedUploadDir = "/tmp/toolmesh-uploads"
 // maxResponseBytes is the maximum number of bytes to read from a backend response.
 const maxResponseBytes = 10 * 1024 * 1024 // 10 MB
 
+// defaultHTTPTimeout is the default timeout for non-streaming REST API requests.
+const defaultHTTPTimeout = 30 * time.Second
+
+// defaultStreamingHTTPTimeout is the default timeout for streaming REST API requests
+// (e.g., SSE, chunked responses from LLM APIs). Streaming responses may take minutes
+// for complex prompts, so the overall timeout is much longer and read progress is
+// governed by the context deadline from the executor.
+const defaultStreamingHTTPTimeout = 10 * time.Minute
+
 // RESTAdapter implements ToolBackend for REST APIs described by DADL files.
 type RESTAdapter struct {
-	spec             *dadl.Spec
-	httpClient       *http.Client
-	auth             *dadl.RestAuth
-	creds            credentials.CredentialStore
-	logger           *slog.Logger
-	allowedUploadDir string
-	fileBroker       *FileBrokerClient // nil = use blob store or error
-	blobStore        *blob.Store       // embedded blob store for binary responses
-	blobTTL          time.Duration     // TTL for blob URLs (from backends.yaml options.blob_ttl)
+	spec                *dadl.Spec
+	httpClient          *http.Client
+	streamingHTTPClient *http.Client // separate client with longer timeout for streaming responses
+	auth                *dadl.RestAuth
+	creds               credentials.CredentialStore
+	logger              *slog.Logger
+	allowedUploadDir    string
+	fileBroker          *FileBrokerClient // nil = use blob store or error
+	blobStore           *blob.Store       // embedded blob store for binary responses
+	blobTTL             time.Duration     // TTL for blob URLs (from backends.yaml options.blob_ttl)
 }
 
 // NewRESTAdapter creates a RESTAdapter from a parsed DADL spec.
@@ -62,16 +72,27 @@ func NewRESTAdapter(spec *dadl.Spec, creds credentials.CredentialStore, logger *
 	if spec.Backend.BaseURL == "" {
 		return nil, fmt.Errorf("REST backend %q: base_url is required (set in .dadl file or via backends.yaml url field)", spec.Backend.Name)
 	}
+
+	// SSRF protection: validate base_url does not point to private/internal addresses
+	if err := ValidateBaseURL(spec.Backend.BaseURL); err != nil {
+		logger.Warn("SSRF: base_url validation failed for backend, proceeding with caution",
+			"backend", spec.Backend.Name,
+			"base_url", spec.Backend.BaseURL,
+			"error", err,
+		)
+	}
+
 	auth := dadl.NewRestAuth(spec.Backend.Auth, spec.Backend.BaseURL, creds, logger)
 
 	return &RESTAdapter{
-		spec:             spec,
-		httpClient:       &http.Client{Timeout: 30 * time.Second},
-		auth:             auth,
-		creds:            creds,
-		logger:           logger,
-		allowedUploadDir: defaultAllowedUploadDir,
-		blobTTL:          time.Hour,
+		spec:                spec,
+		httpClient:          &http.Client{Timeout: defaultHTTPTimeout},
+		streamingHTTPClient: &http.Client{Timeout: defaultStreamingHTTPTimeout},
+		auth:                auth,
+		creds:               creds,
+		logger:              logger,
+		allowedUploadDir:    defaultAllowedUploadDir,
+		blobTTL:             time.Hour,
 	}, nil
 }
 
@@ -88,6 +109,16 @@ func (a *RESTAdapter) SetBlobStore(bs *blob.Store) {
 // SetBlobTTL overrides the default blob TTL (1h).
 func (a *RESTAdapter) SetBlobTTL(ttl time.Duration) {
 	a.blobTTL = ttl
+}
+
+// SetHTTPTimeout overrides the default HTTP client timeout for non-streaming requests.
+func (a *RESTAdapter) SetHTTPTimeout(d time.Duration) {
+	a.httpClient.Timeout = d
+}
+
+// SetStreamingHTTPTimeout overrides the default HTTP client timeout for streaming requests.
+func (a *RESTAdapter) SetStreamingHTTPTimeout(d time.Duration) {
+	a.streamingHTTPClient.Timeout = d
 }
 
 // ListTools returns all tools available from this REST backend,
@@ -138,6 +169,9 @@ func (a *RESTAdapter) Execute(ctx context.Context, toolName string, params map[s
 		"backend", a.spec.Backend.Name,
 		"tool", toolName,
 		"method", tool.Method,
+	)
+	a.logger.DebugContext(ctx, "REST tool params",
+		"tool", toolName,
 		"params", params,
 	)
 
@@ -777,7 +811,7 @@ func (a *RESTAdapter) doRequestRaw(ctx context.Context, tool *dadl.ToolDef, para
 		"url", urlStr,
 	)
 
-	resp, err := a.httpClient.Do(req)
+	resp, err := a.streamingHTTPClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("http request: %w", err)
 	}

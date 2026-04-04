@@ -51,9 +51,9 @@ func NewAuthorizer(apiURL, storeID string, logger *slog.Logger) (*Authorizer, er
 // Check verifies if the given user is allowed to execute the specified tool.
 // Returns true if authorized, false otherwise.
 func (a *Authorizer) Check(ctx context.Context, userID, toolName string) (bool, error) {
-	// OpenFGA object IDs cannot contain colons; tool names like "echo:echo"
-	// are stored as "tool:echo_echo" in tuples.
-	fgaToolID := strings.ReplaceAll(toolName, ":", "_")
+	// OpenFGA object IDs cannot contain colons; encode colons as "%3A" to avoid
+	// collisions between "backend:tool_name" and "backend_tool_name".
+	fgaToolID := strings.ReplaceAll(toolName, ":", "%3A")
 	body := client.ClientCheckRequest{
 		User:     "user:" + userID,
 		Relation: "can_execute",

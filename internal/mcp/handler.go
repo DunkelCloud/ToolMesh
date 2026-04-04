@@ -24,6 +24,7 @@ import (
 	"github.com/DunkelCloud/ToolMesh/internal/backend"
 	"github.com/DunkelCloud/ToolMesh/internal/executor"
 	"github.com/DunkelCloud/ToolMesh/internal/tsdef"
+	"github.com/DunkelCloud/ToolMesh/internal/userctx"
 )
 
 // Handler processes incoming MCP tool calls and routes them through the executor.
@@ -136,6 +137,14 @@ func (h *Handler) handleListTools(ctx context.Context, params map[string]any) (*
 	for _, t := range tools {
 		if re.MatchString(t.Name) || re.MatchString(t.Description) {
 			filtered = append(filtered, t)
+		}
+	}
+
+	// Filter through authorization — only return tools the caller can execute
+	if h.executor != nil {
+		uc := userctx.FromContext(ctx)
+		if uc != nil {
+			filtered = h.executor.FilterAuthorizedTools(ctx, uc.UserID, filtered)
 		}
 	}
 

@@ -179,9 +179,13 @@ func envStr(key, fallback string) string {
 
 func envInt(key string, fallback int) int {
 	if v := os.Getenv(key); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			return n
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			// L-9: Warn on invalid integer env vars instead of silently falling back.
+			fmt.Fprintf(os.Stderr, "WARNING: env %s=%q is not a valid integer, using default %d\n", key, v, fallback)
+			return fallback
 		}
+		return n
 	}
 	return fallback
 }

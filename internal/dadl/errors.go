@@ -65,6 +65,9 @@ func (m *ErrorMapper) CheckResponse(statusCode int, body []byte) (err error, ret
 	return fmt.Errorf("HTTP %d: %s", statusCode, msg), true
 }
 
+// maxErrorMessageLen is the maximum length of error messages passed to clients (M-16).
+const maxErrorMessageLen = 1024
+
 func (m *ErrorMapper) extractMessage(body []byte) string {
 	if len(body) == 0 || m.config.MessagePath == "" {
 		return "(no message)"
@@ -72,20 +75,27 @@ func (m *ErrorMapper) extractMessage(body []byte) string {
 
 	jp, err := NewJSONPath(m.config.MessagePath)
 	if err != nil {
-		return string(body)
+		return truncateMessage(string(body))
 	}
 
 	var data any
 	if err := jsonUnmarshal(body, &data); err != nil {
-		return string(body)
+		return truncateMessage(string(body))
 	}
 
 	val, err := jp.Extract(data)
 	if err != nil {
-		return string(body)
+		return truncateMessage(string(body))
 	}
 
-	return fmt.Sprintf("%v", val)
+	return truncateMessage(fmt.Sprintf("%v", val))
+}
+
+func truncateMessage(s string) string {
+	if len(s) > maxErrorMessageLen {
+		return s[:maxErrorMessageLen] + "... (truncated)"
+	}
+	return s
 }
 
 // Retryer executes HTTP requests with retry logic.

@@ -178,11 +178,13 @@ func TestServer_CORSHeaders(t *testing.T) {
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
 
+	// With no allowlist configured, origin is reflected but credentials are NOT
+	// allowed (H-2: prevents CSRF-like attacks from arbitrary origins).
 	if w.Header().Get("Access-Control-Allow-Origin") != "https://claude.ai" {
 		t.Errorf("CORS origin = %q, want \"https://claude.ai\"", w.Header().Get("Access-Control-Allow-Origin"))
 	}
-	if w.Header().Get("Access-Control-Allow-Credentials") != "true" {
-		t.Error("expected Access-Control-Allow-Credentials: true")
+	if w.Header().Get("Access-Control-Allow-Credentials") != "" {
+		t.Errorf("Access-Control-Allow-Credentials must NOT be set when origin is not in allowlist, got %q", w.Header().Get("Access-Control-Allow-Credentials"))
 	}
 }
 
@@ -394,11 +396,12 @@ func TestServer_OAuthFlow(t *testing.T) {
 	u, _ := url.Parse(location)
 	code := u.Query().Get("code")
 
-	// Step 3: Exchange code for token (with PKCE verifier)
+	// Step 3: Exchange code for token (with PKCE verifier + client_id per H-7)
 	tokenForm := url.Values{
 		"grant_type":    {"authorization_code"},
 		"code":          {code},
 		"code_verifier": {codeVerifier},
+		"client_id":     {clientID},
 	}
 	tokenReq := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/token", strings.NewReader(tokenForm.Encode()))
 	tokenReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -438,10 +441,11 @@ func TestServer_OAuthFlow(t *testing.T) {
 		t.Errorf("unexpected error with valid token: %v", mcpResp["error"])
 	}
 
-	// Step 5: Refresh token
+	// Step 5: Refresh token (with client_id per H-7)
 	refreshForm := url.Values{
 		"grant_type":    {"refresh_token"},
 		"refresh_token": {refreshToken},
+		"client_id":     {clientID},
 	}
 	refreshReq := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/token", strings.NewReader(refreshForm.Encode()))
 	refreshReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")

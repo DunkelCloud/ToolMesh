@@ -17,10 +17,40 @@ package mcp
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"time"
 )
+
+// SecurityHeaders sets standard security response headers on all responses (M-4).
+func SecurityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "DENY")
+		next.ServeHTTP(w, r)
+	})
+}
+
+// PanicRecovery returns HTTP middleware that catches panics in handlers,
+// logs them, and returns a 500 Internal Server Error instead of crashing (H-10).
+func PanicRecovery(logger *slog.Logger) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			defer func() {
+				if rec := recover(); rec != nil {
+					logger.ErrorContext(r.Context(), "panic recovered in HTTP handler",
+						"panic", fmt.Sprintf("%v", rec),
+						"method", r.Method,
+						"path", r.URL.Path,
+					)
+					http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+				}
+			}()
+			next.ServeHTTP(w, r)
+		})
+	}
+}
 
 // RequestLogging returns HTTP middleware that logs every request with
 // method, path, status, duration, and a generated trace ID.

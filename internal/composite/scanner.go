@@ -134,8 +134,6 @@ func walkNode(node ast.Node, fileSet *file.FileSet, violations *[]Violation) {
 		}
 		walkExpression(n.Left, fileSet, violations)
 
-	default:
-		walkChildren(node, fileSet, violations)
 	}
 }
 
@@ -220,6 +218,10 @@ func walkExpression(expr ast.Expression, fileSet *file.FileSet, violations *[]Vi
 		walkExpression(e.Left, fileSet, violations)
 		walkExpression(e.Member, fileSet, violations)
 	case *ast.TemplateLiteral:
+		// Tagged template: `tag`foo${x}`` has Tag set (H-12).
+		if e.Tag != nil {
+			walkExpression(e.Tag, fileSet, violations)
+		}
 		for _, expr := range e.Expressions {
 			walkExpression(expr, fileSet, violations)
 		}
@@ -233,6 +235,8 @@ func walkExpression(expr ast.Expression, fileSet *file.FileSet, violations *[]Vi
 		walkExpression(e.Expression, fileSet, violations)
 	case *ast.OptionalChain:
 		walkExpression(e.Expression, fileSet, violations)
+	case *ast.ClassLiteral:
+		walkClassBody(e, fileSet, violations)
 	}
 }
 
@@ -301,10 +305,37 @@ func walkStatement(stmt ast.Statement, fileSet *file.FileSet, violations *[]Viol
 		if s.Function != nil {
 			walkStatement(s.Function.Body, fileSet, violations)
 		}
+	case *ast.ClassDeclaration:
+		if s.Class != nil {
+			walkClassBody(s.Class, fileSet, violations)
+		}
+	case *ast.LabelledStatement:
+		walkStatement(s.Statement, fileSet, violations)
 	}
 }
 
-// walkChildren is a fallback for nodes not specifically handled.
-func walkChildren(_ ast.Node, _ *file.FileSet, _ *[]Violation) {
-	// Fallback — specific node types are handled by walkExpression/walkStatement
+// walkClassBody walks the body of a class declaration/expression (H-12).
+func walkClassBody(class *ast.ClassLiteral, fileSet *file.FileSet, violations *[]Violation) {
+	if class == nil {
+		return
+	}
+	if class.SuperClass != nil {
+		walkExpression(class.SuperClass, fileSet, violations)
+	}
+	for _, prop := range class.Body {
+		switch p := prop.(type) {
+		case *ast.ClassStaticBlock:
+			for _, stmt := range p.Block.List {
+				walkStatement(stmt, fileSet, violations)
+			}
+		case *ast.MethodDefinition:
+			walkExpression(p.Key, fileSet, violations)
+			if p.Body != nil {
+				walkStatement(p.Body.Body, fileSet, violations)
+			}
+		case *ast.FieldDefinition:
+			walkExpression(p.Key, fileSet, violations)
+			walkExpression(p.Initializer, fileSet, violations)
+		}
+	}
 }

@@ -114,7 +114,7 @@ func (e *Executor) ExecuteTool(ctx context.Context, req ExecuteToolRequest) (*ba
 
 	e.logger.DebugContext(ctx, "executor pipeline start",
 		"tool", req.ToolName,
-		"params", req.Params,
+		"params", sanitizeParams(req.Params),
 	)
 
 	// Build the audit entry — populated at each exit point.

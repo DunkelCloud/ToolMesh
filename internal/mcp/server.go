@@ -85,21 +85,30 @@ func (s *Server) SetupRoutes(mux *http.ServeMux) {
 func (s *Server) cors(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		origin := r.Header.Get("Origin")
+
+		// Always set Vary: Origin so caching proxies key on origin (M-1).
+		w.Header().Add("Vary", "Origin")
+
 		if origin != "" {
+			allowed := false
 			if len(s.cfg.CORSAllowedOrigins) > 0 {
 				if s.originAllowed(origin) {
-					w.Header().Set("Access-Control-Allow-Origin", origin)
-					w.Header().Set("Access-Control-Allow-Credentials", "true")
+					allowed = true
 				}
 			} else {
-				// No allowlist configured — reflect any origin for MCP client compatibility.
-				// Set TOOLMESH_CORS_ORIGINS to restrict in production.
+				// No allowlist configured — reflect origin but do NOT set
+				// Allow-Credentials to prevent CSRF-like attacks (H-2).
+				w.Header().Set("Access-Control-Allow-Origin", origin)
+			}
+
+			// Only set credentials and full CORS headers when origin is explicitly allowed (L-8).
+			if allowed {
 				w.Header().Set("Access-Control-Allow-Origin", origin)
 				w.Header().Set("Access-Control-Allow-Credentials", "true")
+				w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+				w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, Mcp-Protocol-Version")
+				w.Header().Set("Access-Control-Max-Age", "86400")
 			}
-			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, Mcp-Protocol-Version")
-			w.Header().Set("Access-Control-Max-Age", "86400")
 		}
 
 		if r.Method == http.MethodOptions {
@@ -115,14 +124,24 @@ func (s *Server) cors(next http.HandlerFunc) http.HandlerFunc {
 // configured CORS allowlist. Entries can be exact domains or use a "*."
 // prefix for subdomain matching.
 func (s *Server) originAllowed(origin string) bool {
+	parsed, err := url.Parse(origin)
+	if err != nil {
+		return false
+	}
+	hostname := parsed.Hostname()
+	if hostname == "" {
+		return false
+	}
+
 	for _, allowed := range s.cfg.CORSAllowedOrigins {
 		if allowed == origin {
 			return true
 		}
 		if strings.HasPrefix(allowed, "*.") {
 			// Wildcard subdomain match: "*.example.com" matches "https://foo.example.com"
-			suffix := allowed[1:] // ".example.com"
-			if strings.HasSuffix(origin, suffix) {
+			// but NOT "https://evil-example.com" (H-1).
+			domain := allowed[2:] // "example.com"
+			if hostname == domain || strings.HasSuffix(hostname, "."+domain) {
 				return true
 			}
 		}
@@ -155,6 +174,15 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx = userctx.WithUserContext(ctx, uc)
+
+	// L-2: Validate Content-Type
+	if ct := r.Header.Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+		s.writeJSONRPCError(w, nil, -32700, "Content-Type must be application/json")
+		return
+	}
+
+	// M-2: Limit request body size
+	r.Body = http.MaxBytesReader(w, r.Body, 10<<20) // 10 MB
 
 	// Parse JSON-RPC request
 	var req jsonRPCRequest
@@ -247,7 +275,9 @@ func (s *Server) handleToolsCall(w http.ResponseWriter, ctx context.Context, req
 
 	result, err := s.handler.HandleToolCall(ctx, params.Name, params.Arguments)
 	if err != nil {
-		s.writeJSONRPCError(w, req.ID, -32603, err.Error())
+		// M-17: Log full error server-side, return generic message to client.
+		s.logger.ErrorContext(ctx, "tool call failed", "tool", params.Name, "error", err)
+		s.writeJSONRPCError(w, req.ID, -32603, "Internal error")
 		return
 	}
 
@@ -321,14 +351,14 @@ func (s *Server) authenticate(r *http.Request) *userctx.UserContext {
 		}
 	}
 
-	// 4. No auth configured — allow anonymous
+	// 4. No auth configured — allow anonymous (L-4: Authenticated=false for anonymous).
 	if !s.authRequired() {
 		return &userctx.UserContext{
 			UserID:        "anonymous",
 			CompanyID:     "default",
 			Roles:         []string{},
 			Plan:          "free",
-			Authenticated: true,
+			Authenticated: false,
 			CallerID:      "anonymous",
 			CallerClass:   "untrusted",
 		}
@@ -347,14 +377,28 @@ func extractBearer(r *http.Request) string {
 	if strings.HasPrefix(h, "Bearer ") {
 		return strings.TrimPrefix(h, "Bearer ")
 	}
-	return h
+	// L-1: Do not return raw header for non-Bearer auth types.
+	return ""
 }
 
-// clientIP extracts the client IP address, preferring X-Forwarded-For.
+// clientIP extracts the client IP address. Uses the rightmost non-private IP
+// from X-Forwarded-For to prevent spoofing (H-6), falling back to RemoteAddr.
 func clientIP(r *http.Request) string {
 	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		parts := strings.SplitN(xff, ",", 2)
-		return strings.TrimSpace(parts[0])
+		parts := strings.Split(xff, ",")
+		// Walk from right to left, return the first non-private IP.
+		// The rightmost entry is set by the closest trusted proxy.
+		for i := len(parts) - 1; i >= 0; i-- {
+			ip := strings.TrimSpace(parts[i])
+			parsed := net.ParseIP(ip)
+			if parsed == nil {
+				continue
+			}
+			if parsed.IsLoopback() || parsed.IsPrivate() || parsed.IsLinkLocalUnicast() {
+				continue
+			}
+			return ip
+		}
 	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
@@ -407,6 +451,15 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+
+	// L-2: Validate Content-Type
+	if ct := r.Header.Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_request", "error_description": "Content-Type must be application/json"})
+		return
+	}
+
+	// M-3: Limit request body size
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1 MB
 
 	var req struct {
 		RedirectURIs []string `json:"redirect_uris"`
@@ -612,6 +665,9 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// M-4: Prevent caching of token responses.
+	w.Header().Set("Cache-Control", "no-store")
+
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1 MB limit
 	if err := r.ParseForm(); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_request"})
@@ -632,6 +688,7 @@ func (s *Server) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Req
 	ctx := r.Context()
 	code := r.FormValue("code")                  //nolint:gosec // G120: body size limited in handleToken
 	codeVerifier := r.FormValue("code_verifier") //nolint:gosec // G120: body size limited in handleToken
+	clientID := r.FormValue("client_id")         //nolint:gosec // G120: body size limited in handleToken
 
 	if s.tokenStore == nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_grant"})
@@ -649,13 +706,18 @@ func (s *Server) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	// PKCE S256 verification — always required (OAuth 2.1)
-	if ac.CodeChallenge == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_grant", "error_description": "authorization code was issued without PKCE"})
+	// Verify client_id matches the auth code (H-7).
+	if clientID == "" || clientID != ac.ClientID {
+		s.logger.WarnContext(ctx, "client_id mismatch in auth code grant",
+			"expected", ac.ClientID, "got", clientID)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_grant"})
 		return
 	}
-	if codeVerifier == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_grant", "error_description": "code_verifier required"})
+
+	// PKCE S256 verification — always required (OAuth 2.1).
+	// Use a single generic error for all PKCE failures (L-3).
+	if ac.CodeChallenge == "" || codeVerifier == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_grant", "error_description": "PKCE verification failed"})
 		return
 	}
 	{
@@ -718,6 +780,7 @@ func (s *Server) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Req
 func (s *Server) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	refreshToken := r.FormValue("refresh_token") //nolint:gosec // G120: body size limited in handleToken
+	clientID := r.FormValue("client_id")         //nolint:gosec // G120: body size limited in handleToken
 
 	if s.tokenStore == nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_grant"})
@@ -726,6 +789,14 @@ func (s *Server) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request)
 
 	oldTI, err := s.tokenStore.ConsumeRefreshToken(ctx, refreshToken)
 	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_grant"})
+		return
+	}
+
+	// Verify client_id matches the refresh token's client (H-7).
+	if clientID == "" || clientID != oldTI.ClientID {
+		s.logger.WarnContext(ctx, "client_id mismatch in refresh token grant",
+			"expected", oldTI.ClientID, "got", clientID)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_grant"})
 		return
 	}

@@ -5,6 +5,69 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+Entries here are kept short; see the corresponding
+[GitHub Release](https://github.com/DunkelCloud/ToolMesh/releases)
+for the full narrative and details.
+
+## [0.1.2] - 2026-04-05
+
+### Security
+
+- SSRF hardening: REST `base_url` and redirects validated against
+  private/loopback/link-local/metadata ranges at both config load and
+  connection time; DNS resolution fails closed.
+- Sandbox scanner now walks class bodies, static blocks, and tagged
+  template literals.
+- OAuth 2.1: `client_id` verified in authorization_code and
+  refresh_token grants.
+- New `SecurityHeaders` and `PanicRecovery` HTTP middleware; `/mcp`
+  enforces JSON content-type and a 10 MB body cap; `clientIP` uses
+  rightmost-non-private X-Forwarded-For.
+- CORS wildcard matching requires a proper subdomain boundary; blob
+  store files written with 0600 and path traversal blocked.
+- DADL jq transforms capped at 100k results / 10 MB output; error
+  messages truncated at 1 KB.
+- Sensitive parameters redacted in debug logs, not only audit records.
+
+### Tests
+
+- `go test -cover ./...` restored from 51.2% to 80.0% with 48 new
+  unit-test files. See the v0.1.2 release notes for per-package
+  numbers.
+
+## [0.1.1] - 2026-04-04
+
+### Security
+
+- Composite/code-mode sandbox: `Function.prototype.constructor` frozen
+  to block prototype-chain bypasses; scanner blocklist extended
+  (`constructor`, `__proto__`, `Reflect`, …); `execute_code` runs
+  through the same static analysis.
+- OAuth 2.1: PKCE (S256) mandatory on all `/authorize` requests;
+  `redirect_uri` validated on GET flow; DCR rejects non-HTTPS redirect
+  URIs.
+- Gate policy VM runs with a 5s timeout under `LockdownRuntime`;
+  `RateLimiter.Check` separated from `Record` so policies cannot
+  inflate counters.
+- `list_tools` results filtered through the OpenFGA authorizer.
+- Sensitive params redacted before audit persistence; credential env
+  var names no longer leaked in error messages.
+- Initial SSRF validation for DADL `base_url`.
+
+### Changed
+
+- REST HTTP client split into default (30s) and streaming (10min)
+  variants; per-backend `timeout` / `streaming_timeout` options in
+  `backends.yaml`.
+- Missing `CREDENTIAL_*` env vars now silently skip the auth header
+  instead of aborting, enabling optional-auth APIs (e.g. Semantic
+  Scholar).
+
+### Fixed
+
+- PR container images tagged `pr-<N>` are correctly deleted on PR
+  close.
+
 ## [0.1.0] - 2026-04-02
 
 Initial release.

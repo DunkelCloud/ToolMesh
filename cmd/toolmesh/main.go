@@ -320,8 +320,8 @@ func main() {
 	mcpServer.SetupRoutes(httpMux)
 	httpMux.Handle("/blobs/", blobStore)
 
-	// Wrap with request logging middleware (trace ID + access log).
-	httpHandler := mcp.RequestLogging(logger)(httpMux)
+	// Wrap with middleware: panic recovery (outermost) → security headers → request logging.
+	httpHandler := mcp.PanicRecovery(logger)(mcp.SecurityHeaders(mcp.RequestLogging(logger)(httpMux)))
 
 	srv := &http.Server{
 		Addr:         fmt.Sprintf(":%d", cfg.Port),

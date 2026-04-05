@@ -43,6 +43,9 @@ const defaultAllowedUploadDir = "/tmp/toolmesh-uploads"
 // maxResponseBytes is the maximum number of bytes to read from a backend response.
 const maxResponseBytes = 10 * 1024 * 1024 // 10 MB
 
+// maxStreamingBytes is the maximum number of bytes for streaming binary responses.
+const maxStreamingBytes = 100 * 1024 * 1024 // 100 MB
+
 // defaultHTTPTimeout is the default timeout for non-streaming REST API requests.
 const defaultHTTPTimeout = 30 * time.Second
 
@@ -73,26 +76,36 @@ func NewRESTAdapter(spec *dadl.Spec, creds credentials.CredentialStore, logger *
 		return nil, fmt.Errorf("REST backend %q: base_url is required (set in .dadl file or via backends.yaml url field)", spec.Backend.Name)
 	}
 
-	// SSRF protection: validate base_url does not point to private/internal addresses
+	// SSRF protection: validate base_url does not point to private/internal addresses.
+	// Validation failure is fatal — untrusted specs must not reach private networks.
 	if err := ValidateBaseURL(spec.Backend.BaseURL); err != nil {
-		logger.Warn("SSRF: base_url validation failed for backend, proceeding with caution",
-			"backend", spec.Backend.Name,
-			"base_url", spec.Backend.BaseURL,
-			"error", err,
-		)
+		return nil, fmt.Errorf("SSRF: base_url validation failed for backend %q (%s): %w", spec.Backend.Name, spec.Backend.BaseURL, err)
 	}
 
 	auth := dadl.NewRestAuth(spec.Backend.Auth, spec.Backend.BaseURL, creds, logger)
 
+	// Each adapter gets its own transport with SSRF-safe dial hooks (H-4, M-19)
+	// and redirect validation (H-3).
+	transport := SSRFSafeTransport(defaultHTTPTimeout)
+	streamTransport := SSRFSafeTransport(defaultStreamingHTTPTimeout)
+
 	return &RESTAdapter{
-		spec:                spec,
-		httpClient:          &http.Client{Timeout: defaultHTTPTimeout},
-		streamingHTTPClient: &http.Client{Timeout: defaultStreamingHTTPTimeout},
-		auth:                auth,
-		creds:               creds,
-		logger:              logger,
-		allowedUploadDir:    defaultAllowedUploadDir,
-		blobTTL:             time.Hour,
+		spec: spec,
+		httpClient: &http.Client{
+			Timeout:       defaultHTTPTimeout,
+			Transport:     transport,
+			CheckRedirect: ssrfSafeCheckRedirect,
+		},
+		streamingHTTPClient: &http.Client{
+			Timeout:       defaultStreamingHTTPTimeout,
+			Transport:     streamTransport,
+			CheckRedirect: ssrfSafeCheckRedirect,
+		},
+		auth:             auth,
+		creds:            creds,
+		logger:           logger,
+		allowedUploadDir: defaultAllowedUploadDir,
+		blobTTL:          time.Hour,
 	}, nil
 }
 
@@ -714,8 +727,9 @@ func (a *RESTAdapter) executeStreamingBinary(ctx context.Context, tool *dadl.Too
 	filename := filenameFromHeaders(resp, contentType)
 	ttl := a.blobTTL
 
-	// Count bytes while streaming through to file broker
-	counter := &byteCounter{Reader: resp.Body}
+	// Limit streaming size to prevent unbounded memory/disk usage (H-5).
+	limited := io.LimitReader(resp.Body, maxStreamingBytes)
+	counter := &byteCounter{Reader: limited}
 
 	a.logger.InfoContext(ctx, "streaming binary response to file broker",
 		"content_type", contentType,
@@ -852,6 +866,11 @@ func (a *RESTAdapter) paginateResults(ctx context.Context, tool *dadl.ToolDef, p
 	maxPages := config.MaxPages
 	if maxPages == 0 {
 		maxPages = 20
+	}
+	// M-15: Hard upper limit on pagination to prevent excessive requests.
+	const hardMaxPages = 50
+	if maxPages > hardMaxPages {
+		maxPages = hardMaxPages
 	}
 
 	for page := 1; page < maxPages; page++ {

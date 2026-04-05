@@ -20,6 +20,12 @@ import (
 	"github.com/itchyny/gojq"
 )
 
+// maxJQOutputBytes is the maximum output size for jq transforms (M-21).
+const maxJQOutputBytes = 10 * 1024 * 1024 // 10 MB
+
+// maxJQResults is the maximum number of result items from a jq expression.
+const maxJQResults = 100_000
+
 // ApplyTransform runs a jq expression on JSON data and returns the result.
 func ApplyTransform(data []byte, jqExpr string) ([]byte, error) {
 	if jqExpr == "" {
@@ -47,11 +53,23 @@ func ApplyTransform(data []byte, jqExpr string) ([]byte, error) {
 			return nil, fmt.Errorf("jq execution error: %w", err)
 		}
 		results = append(results, v)
+		if len(results) > maxJQResults {
+			return nil, fmt.Errorf("jq output exceeded maximum result count (%d)", maxJQResults)
+		}
 	}
 
 	// If single result, return it directly; otherwise return array
+	var out []byte
 	if len(results) == 1 {
-		return jsonMarshal(results[0])
+		out, err = jsonMarshal(results[0])
+	} else {
+		out, err = jsonMarshal(results)
 	}
-	return jsonMarshal(results)
+	if err != nil {
+		return nil, err
+	}
+	if len(out) > maxJQOutputBytes {
+		return nil, fmt.Errorf("jq output exceeded maximum size (%d bytes)", maxJQOutputBytes)
+	}
+	return out, nil
 }

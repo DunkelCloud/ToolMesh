@@ -63,6 +63,7 @@ func LockdownRuntime(rt *goja.Runtime) {
 
 	// Freeze Function.prototype.constructor to prevent prototype-chain bypass:
 	//   const F = (function(){}).constructor; F('code')()
+	// Also lock down AsyncFunction and GeneratorFunction constructors (H-11).
 	_, _ = rt.RunString(`
 		Object.defineProperty(Function.prototype, 'constructor', {
 			value: undefined, writable: false, configurable: false
@@ -70,5 +71,19 @@ func LockdownRuntime(rt *goja.Runtime) {
 		Object.defineProperty(Object.prototype, 'constructor', {
 			value: undefined, writable: false, configurable: false
 		});
+		(function() {
+			try {
+				var AsyncFunction = (async function(){}).constructor;
+				Object.defineProperty(AsyncFunction.prototype, 'constructor', {
+					value: undefined, writable: false, configurable: false
+				});
+			} catch(e) {}
+			try {
+				var GeneratorFunction = (function*(){}).constructor;
+				Object.defineProperty(GeneratorFunction.prototype, 'constructor', {
+					value: undefined, writable: false, configurable: false
+				});
+			} catch(e) {}
+		})();
 	`)
 }

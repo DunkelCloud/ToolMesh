@@ -76,7 +76,7 @@ func (s *Store) Put(body io.Reader, contentType string, ttl time.Duration) (id s
 	filename := id + ext
 	path := filepath.Join(s.dir, filename)
 
-	f, err := os.Create(path) //nolint:gosec // path is constructed from trusted dir + generated ID
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0o600) //nolint:gosec // path is constructed from trusted dir + generated ID
 	if err != nil {
 		return "", 0, fmt.Errorf("create blob file: %w", err)
 	}
@@ -140,6 +140,8 @@ func (s *Store) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", entry.ContentType)
 	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename=%q`, filepath.Base(entry.FilePath)))
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Cache-Control", "private, no-store")
 
 	if r.Method == http.MethodHead {
 		w.Header().Set("Content-Length", fmt.Sprintf("%d", entry.Size))

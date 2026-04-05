@@ -18,12 +18,14 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 )
 
 // CompositeBackend aggregates multiple ToolBackend instances.
 // Named backends get tool names prefixed: "backendName:toolName".
 // Passthrough backends already manage their own prefixes (e.g. MCPAdapter).
 type CompositeBackend struct {
+	mu           sync.RWMutex
 	backends     map[string]ToolBackend
 	passthroughs []ToolBackend
 }
@@ -36,6 +38,8 @@ func NewCompositeBackend(backends map[string]ToolBackend) *CompositeBackend {
 // AddPassthrough adds a backend that manages its own tool name prefixes.
 // Tool calls are delegated to passthrough backends when no named backend matches.
 func (c *CompositeBackend) AddPassthrough(b ToolBackend) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.passthroughs = append(c.passthroughs, b)
 }
 
@@ -43,6 +47,9 @@ func (c *CompositeBackend) AddPassthrough(b ToolBackend) {
 // Tool names use underscore as separator: "backend_toolname".
 // We match against known backend names (longest prefix wins).
 func (c *CompositeBackend) Execute(ctx context.Context, toolName string, params map[string]any) (*ToolResult, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
 	// Check named backends by prefix match
 	for name, b := range c.backends {
 		prefix := name + "_"
@@ -70,6 +77,9 @@ func (c *CompositeBackend) Execute(ctx context.Context, toolName string, params 
 
 // ListTools aggregates tools from all backends.
 func (c *CompositeBackend) ListTools(ctx context.Context) ([]ToolDescriptor, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
 	var all []ToolDescriptor
 
 	// Named backends — prefix tool names with underscore separator
@@ -103,11 +113,16 @@ func (c *CompositeBackend) ListTools(ctx context.Context) ([]ToolDescriptor, err
 
 // AddNamed adds a named backend after construction.
 func (c *CompositeBackend) AddNamed(name string, b ToolBackend) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.backends[name] = b
 }
 
 // BackendSummaries collects summaries from all backends that implement BackendSummarizer.
 func (c *CompositeBackend) BackendSummaries() []BackendInfo {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
 	var all []BackendInfo
 	for _, b := range c.backends {
 		if s, ok := b.(BackendSummarizer); ok {
@@ -124,6 +139,9 @@ func (c *CompositeBackend) BackendSummaries() []BackendInfo {
 
 // Healthy returns nil if at least one backend is healthy.
 func (c *CompositeBackend) Healthy(ctx context.Context) error {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
 	for _, b := range c.backends {
 		if err := b.Healthy(ctx); err == nil {
 			return nil

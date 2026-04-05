@@ -90,7 +90,7 @@ func TestToInputSchema_Array(t *testing.T) {
 func TestToInputSchema_NoParams(t *testing.T) {
 	td := ToolDef{Name: "test"}
 	schema := td.ToInputSchema()
-	if schema["type"] != "object" {
+	if schema["type"] != kindObject {
 		t.Error("should be object")
 	}
 }

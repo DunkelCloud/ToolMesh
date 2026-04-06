@@ -61,7 +61,7 @@ func TestExecuteTool_Success(t *testing.T) {
 	mb := &mockBackend{}
 	logger := newTestLogger()
 
-	exec := New(nil, nil, mb, nil, nil, 120*time.Second, logger)
+	exec := New(nil, nil, mb, nil, nil, 120*time.Second, logger, nil)
 
 	ctx := userctx.WithUserContext(context.Background(), &userctx.UserContext{
 		UserID:        testUserID,
@@ -94,7 +94,7 @@ func TestExecuteTool_NoUserContext(t *testing.T) {
 	mb := &mockBackend{}
 	logger := newTestLogger()
 
-	exec := New(nil, nil, mb, nil, nil, 120*time.Second, logger)
+	exec := New(nil, nil, mb, nil, nil, 120*time.Second, logger, nil)
 
 	_, err := exec.ExecuteTool(context.Background(), ExecuteToolRequest{
 		ToolName: "test:tool",
@@ -112,7 +112,7 @@ func TestExecuteTool_BackendError(t *testing.T) {
 	}
 	logger := newTestLogger()
 
-	exec := New(nil, nil, mb, nil, nil, 120*time.Second, logger)
+	exec := New(nil, nil, mb, nil, nil, 120*time.Second, logger, nil)
 
 	ctx := userctx.WithUserContext(context.Background(), &userctx.UserContext{
 		UserID:        testUserID,
@@ -144,7 +144,7 @@ func TestExecuteTool_GateRejects(t *testing.T) {
 		t.Fatalf("failed to create gate: %v", err)
 	}
 
-	exec := New(nil, nil, mb, gate.NewPipeline([]gate.Evaluator{g}), nil, 120*time.Second, logger)
+	exec := New(nil, nil, mb, gate.NewPipeline([]gate.Evaluator{g}), nil, 120*time.Second, logger, nil)
 
 	ctx := userctx.WithUserContext(context.Background(), &userctx.UserContext{
 		UserID:        testUserID,
@@ -178,7 +178,7 @@ func TestExecuteTool_GatePasses(t *testing.T) {
 		t.Fatalf("failed to create gate: %v", err)
 	}
 
-	exec := New(nil, nil, mb, gate.NewPipeline([]gate.Evaluator{g}), nil, 120*time.Second, logger)
+	exec := New(nil, nil, mb, gate.NewPipeline([]gate.Evaluator{g}), nil, 120*time.Second, logger, nil)
 
 	ctx := userctx.WithUserContext(context.Background(), &userctx.UserContext{
 		UserID:        testUserID,
@@ -223,7 +223,7 @@ func TestExecuteTool_PreGateBlocksBeforeBackend(t *testing.T) {
 		t.Fatalf("failed to create gate: %v", err)
 	}
 
-	exec := New(nil, nil, mb, gate.NewPipeline([]gate.Evaluator{g}), nil, 120*time.Second, logger)
+	exec := New(nil, nil, mb, gate.NewPipeline([]gate.Evaluator{g}), nil, 120*time.Second, logger, nil)
 
 	ctx := userctx.WithUserContext(context.Background(), &userctx.UserContext{
 		UserID:        testUserID,
@@ -284,7 +284,7 @@ func TestExecuteTool_PostGateFiltersResponse(t *testing.T) {
 		t.Fatalf("failed to create gate: %v", err)
 	}
 
-	exec := New(nil, nil, mb, gate.NewPipeline([]gate.Evaluator{g}), nil, 120*time.Second, logger)
+	exec := New(nil, nil, mb, gate.NewPipeline([]gate.Evaluator{g}), nil, 120*time.Second, logger, nil)
 
 	ctx := userctx.WithUserContext(context.Background(), &userctx.UserContext{
 		UserID:        testUserID,
@@ -314,7 +314,7 @@ func TestExecuteTool_BackendResultWithExistingMetadata(t *testing.T) {
 	}
 	logger := newTestLogger()
 
-	exec := New(nil, nil, mb, nil, nil, 120*time.Second, logger)
+	exec := New(nil, nil, mb, nil, nil, 120*time.Second, logger, nil)
 
 	ctx := userctx.WithUserContext(context.Background(), &userctx.UserContext{
 		UserID:        testUserID,
@@ -381,7 +381,7 @@ func TestCallerCredentialDurchstich(t *testing.T) {
 	}
 	pipeline := gate.NewPipeline([]gate.Evaluator{g})
 
-	exec := New(nil, credStore, mb, pipeline, nil, 120*time.Second, newTestLogger())
+	exec := New(nil, credStore, mb, pipeline, nil, 120*time.Second, newTestLogger(), nil)
 
 	tests := []struct {
 		name             string
@@ -512,7 +512,7 @@ func TestCallerCredentialDurchstich_PostGateWithCallerClass(t *testing.T) {
 		t.Fatalf("failed to create gate: %v", err)
 	}
 
-	exec := New(nil, nil, mb, gate.NewPipeline([]gate.Evaluator{g}), nil, 120*time.Second, newTestLogger())
+	exec := New(nil, nil, mb, gate.NewPipeline([]gate.Evaluator{g}), nil, 120*time.Second, newTestLogger(), nil)
 
 	// Trusted caller should see the response
 	ctx := userctx.WithUserContext(context.Background(), &userctx.UserContext{

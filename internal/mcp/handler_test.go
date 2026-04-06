@@ -35,7 +35,7 @@ func newHandlerWithTools(t *testing.T, tools []backend.ToolDescriptor) *Handler 
 	t.Helper()
 	mb := &mockToolBackend{tools: tools}
 	logger := handlerTestLogger()
-	exec := executor.New(nil, nil, mb, nil, nil, 120*time.Second, logger)
+	exec := executor.New(nil, nil, mb, nil, nil, 120*time.Second, logger, nil)
 	return NewHandler(exec, mb, nil, "", logger)
 }
 

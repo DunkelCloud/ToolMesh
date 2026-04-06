@@ -58,7 +58,7 @@ func (m *mockCreds) ListByPrefix(_ context.Context, _ string, _ credentials.Tena
 func (m *mockCreds) Healthy(_ context.Context) error { return nil }
 
 func TestResolveCredentials_PrefixLister(t *testing.T) {
-	exec := New(nil, &mockCreds{listed: map[string]string{"GITHUB_TOKEN": "tok"}}, &mockBackend{}, nil, nil, time.Second, newTestLogger())
+	exec := New(nil, &mockCreds{listed: map[string]string{"GITHUB_TOKEN": "tok"}}, &mockBackend{}, nil, nil, time.Second, newTestLogger(), nil)
 	got := exec.resolveCredentials(context.Background(), "github", credentials.TenantInfo{})
 	if got["GITHUB_TOKEN"] != "tok" {
 		t.Errorf("got %v", got)
@@ -70,7 +70,7 @@ func TestResolveCredentials_Fallback(t *testing.T) {
 	exec := New(nil, &mockCreds{
 		get:    map[string]string{"GITHUB_API_KEY": "fallback-key"},
 		listed: map[string]string{}, // empty prefix listing
-	}, &mockBackend{}, nil, nil, time.Second, newTestLogger())
+	}, &mockBackend{}, nil, nil, time.Second, newTestLogger(), nil)
 	got := exec.resolveCredentials(context.Background(), "github", credentials.TenantInfo{})
 	if got["GITHUB_API_KEY"] != "fallback-key" {
 		t.Errorf("got %v", got)
@@ -78,7 +78,7 @@ func TestResolveCredentials_Fallback(t *testing.T) {
 }
 
 func TestResolveCredentials_NoneFound(t *testing.T) {
-	exec := New(nil, &mockCreds{get: map[string]string{}, listed: map[string]string{}}, &mockBackend{}, nil, nil, time.Second, newTestLogger())
+	exec := New(nil, &mockCreds{get: map[string]string{}, listed: map[string]string{}}, &mockBackend{}, nil, nil, time.Second, newTestLogger(), nil)
 	got := exec.resolveCredentials(context.Background(), "github", credentials.TenantInfo{})
 	if got != nil {
 		t.Errorf("expected nil, got %v", got)
@@ -86,7 +86,7 @@ func TestResolveCredentials_NoneFound(t *testing.T) {
 }
 
 func TestFilterAuthorizedTools_NoAuthorizer(t *testing.T) {
-	exec := New(nil, nil, &mockBackend{}, nil, nil, time.Second, newTestLogger())
+	exec := New(nil, nil, &mockBackend{}, nil, nil, time.Second, newTestLogger(), nil)
 	tools := []backend.ToolDescriptor{{Name: "a"}, {Name: "b"}}
 	got := exec.FilterAuthorizedTools(context.Background(), "u1", tools)
 	if len(got) != 2 {
@@ -115,7 +115,7 @@ func TestFilterAuthorizedTools_WithAuthorizer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewAuthorizer: %v", err)
 	}
-	exec := New(authorizer, nil, &mockBackend{}, nil, nil, time.Second, newTestLogger())
+	exec := New(authorizer, nil, &mockBackend{}, nil, nil, time.Second, newTestLogger(), nil)
 	tools := []backend.ToolDescriptor{{Name: "a"}, {Name: "b"}}
 	got := exec.FilterAuthorizedTools(context.Background(), "u1", tools)
 	if len(got) != 1 || got[0].Name != "a" {

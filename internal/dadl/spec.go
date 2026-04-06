@@ -25,6 +25,10 @@ type Spec struct {
 	SourceURL  string     `yaml:"source_url"`
 	Date       string     `yaml:"date"`
 	Backend    BackendDef `yaml:"backend"`
+
+	// ContentHash is the hex-encoded SHA-256 digest of the raw DADL file content.
+	// Populated by ParseBytes; not part of the YAML schema.
+	ContentHash string `yaml:"-"`
 }
 
 // ContainsCode returns true if the spec has composite tools (inline JavaScript).

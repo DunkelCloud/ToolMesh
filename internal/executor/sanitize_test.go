@@ -75,7 +75,7 @@ func TestExecute_DebugLoggingRedactsSecrets(t *testing.T) {
 	logger := slog.New(h)
 
 	mb := &mockBackend{}
-	exec := New(nil, nil, mb, nil, nil, 5*time.Second, logger)
+	exec := New(nil, nil, mb, nil, nil, 5*time.Second, logger, nil)
 
 	ctx := userctx.WithUserContext(context.Background(), &userctx.UserContext{
 		UserID:        "u",

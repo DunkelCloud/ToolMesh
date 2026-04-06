@@ -15,6 +15,8 @@
 package dadl
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"regexp"
@@ -54,6 +56,8 @@ func ParseBytes(data []byte) (*Spec, error) {
 	if err := Validate(&spec); err != nil {
 		return nil, fmt.Errorf("validate dadl: %w", err)
 	}
+	hash := sha256.Sum256(data)
+	spec.ContentHash = hex.EncodeToString(hash[:])
 	return &spec, nil
 }
 

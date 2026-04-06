@@ -64,7 +64,7 @@ func (b *codeRunnerTestBackend) Healthy(_ context.Context) error { return nil }
 func newTestCodeRunner(t *testing.T, mb *codeRunnerTestBackend) *CodeRunner {
 	t.Helper()
 	logger := handlerTestLogger()
-	exec := executor.New(nil, nil, mb, nil, nil, 120*time.Second, logger)
+	exec := executor.New(nil, nil, mb, nil, nil, 120*time.Second, logger, nil)
 	nameMap := map[string]string{
 		"test_foo": testToolFoo,
 		"test_bar": testToolBar,

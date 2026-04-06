@@ -56,10 +56,11 @@ type telemetryState struct {
 
 // report is a single entry in the telemetry payload.
 type report struct {
-	DADLHash   string `json:"dadl_hash"`
-	CallCount  int    `json:"call_count"`
-	ErrorCount int    `json:"error_count"`
-	Version    string `json:"version"`
+	DADLHash       string `json:"dadl_hash"`
+	CallCount      int    `json:"call_count"`
+	ErrorCount     int    `json:"error_count"`
+	Version        string `json:"version"`
+	MCPServerCount int    `json:"mcp_server_count,omitempty"`
 }
 
 // Collector accumulates tool call statistics and periodically sends them.
@@ -68,6 +69,8 @@ type Collector struct {
 	counters map[string]*counterPair // dadlHash → counts
 	backends map[string]string       // backendName → dadlHash
 	lastSent time.Time               // last successful send (from state file)
+
+	mcpServerCount int
 
 	dataDir  string
 	version  string
@@ -107,6 +110,14 @@ func New(dataDir, version string, logger *slog.Logger) *Collector {
 
 	c.loadState()
 	return c
+}
+
+// SetMCPServerCount records the number of configured MCP server backends.
+// This count is included in every telemetry report entry.
+func (c *Collector) SetMCPServerCount(n int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.mcpServerCount = n
 }
 
 // RegisterBackend maps a backend name to its DADL content hash so that
@@ -229,10 +240,11 @@ func (c *Collector) buildPayload() []report {
 			continue
 		}
 		reports = append(reports, report{
-			DADLHash:   hash,
-			CallCount:  cp.CallCount,
-			ErrorCount: cp.ErrorCount,
-			Version:    c.version,
+			DADLHash:       hash,
+			CallCount:      cp.CallCount,
+			ErrorCount:     cp.ErrorCount,
+			Version:        c.version,
+			MCPServerCount: c.mcpServerCount,
 		})
 	}
 	return reports

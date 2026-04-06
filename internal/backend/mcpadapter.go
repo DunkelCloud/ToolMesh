@@ -73,6 +73,13 @@ type backendConn struct {
 	tools   []ToolDescriptor
 }
 
+// BackendCount returns the number of configured MCP server backends.
+func (a *MCPAdapter) BackendCount() int {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return len(a.backends)
+}
+
 // NewMCPAdapter creates an MCPAdapter from a YAML configuration file.
 func NewMCPAdapter(configPath string, creds credentials.CredentialStore, logger *slog.Logger) (*MCPAdapter, error) {
 	adapter := &MCPAdapter{

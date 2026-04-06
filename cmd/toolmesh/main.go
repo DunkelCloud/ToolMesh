@@ -199,6 +199,8 @@ func main() {
 	// Initialize telemetry collector
 	tc := telemetry.New(cfg.DataDir, version.Version, logger)
 
+	tc.SetMCPServerCount(mcpAdapter.BackendCount())
+
 	// Initialize REST Proxy backends from DADL files
 	loadRESTBackends(compositeBackend, cfg.BackendsConfigPath, cfg.DADLDir, blobStore, credStore, tc, logger, baseHandler, debugFile, debugSet)
 

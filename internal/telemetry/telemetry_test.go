@@ -98,7 +98,7 @@ func TestStatePersistence_RoundTrip(t *testing.T) {
 	c1.persistState()
 
 	// Verify the state file exists and contains valid JSON.
-	data, err := os.ReadFile(filepath.Join(dir, stateFile))
+	data, err := os.ReadFile(filepath.Join(dir, stateFile)) //nolint:gosec // test path from t.TempDir()
 	if err != nil {
 		t.Fatalf("state file not created: %v", err)
 	}

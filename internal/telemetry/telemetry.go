@@ -129,7 +129,7 @@ func (c *Collector) RecordCall(backendName string, success bool) {
 	}
 }
 
-// Run starts the 24h send loop. It blocks until ctx is cancelled, at which
+// Run starts the 24h send loop. It blocks until ctx is canceled, at which
 // point it persists the current counters and returns.
 func (c *Collector) Run(ctx context.Context) {
 	ticker := time.NewTicker(sendInterval)
@@ -177,7 +177,7 @@ func (c *Collector) send(ctx context.Context) {
 		c.logger.WarnContext(ctx, "telemetry: send failed, will retry next cycle", "error", err)
 		return
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		c.mu.Lock()
@@ -303,6 +303,7 @@ type rewriteTransport struct {
 	baseURL string
 }
 
+// RoundTrip rewrites the request URL to the test base URL.
 func (t *rewriteTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	req = req.Clone(req.Context())
 	req.URL, _ = req.URL.Parse(t.baseURL + req.URL.Path)

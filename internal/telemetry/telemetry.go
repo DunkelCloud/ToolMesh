@@ -67,9 +67,11 @@ type Collector struct {
 	mu       sync.Mutex
 	counters map[string]*counterPair // dadlHash → counts
 	backends map[string]string       // backendName → dadlHash
+	lastSent time.Time               // last successful send (from state file)
 
 	dataDir  string
 	version  string
+	interval time.Duration
 	disabled bool
 	logger   *slog.Logger
 	client   *http.Client
@@ -80,11 +82,20 @@ type Collector struct {
 func New(dataDir, version string, logger *slog.Logger) *Collector {
 	disabled := strings.EqualFold(os.Getenv("DO_NOT_SEND_ANONYMOUS_STATISTICS"), "yes")
 
+	interval := sendInterval
+	if raw := os.Getenv("TELEMETRY_INTERVAL"); raw != "" {
+		if d, err := time.ParseDuration(raw); err == nil && d > 0 {
+			interval = d
+			logger.Info("telemetry: interval override", "interval", d)
+		}
+	}
+
 	c := &Collector{
 		counters: make(map[string]*counterPair),
 		backends: make(map[string]string),
 		dataDir:  dataDir,
 		version:  version,
+		interval: interval,
 		disabled: disabled,
 		logger:   logger,
 		client:   &http.Client{Timeout: httpTimeout},
@@ -129,10 +140,17 @@ func (c *Collector) RecordCall(backendName string, success bool) {
 	}
 }
 
-// Run starts the 24h send loop. It blocks until ctx is canceled, at which
+// Run starts the send loop. It blocks until ctx is canceled, at which
 // point it persists the current counters and returns.
+// On startup, if more than one interval has elapsed since the last send,
+// an immediate send is triggered so restarts don't reset the cycle.
 func (c *Collector) Run(ctx context.Context) {
-	ticker := time.NewTicker(sendInterval)
+	// Send immediately if overdue (e.g. after restart).
+	if !c.disabled && !c.lastSent.IsZero() && time.Since(c.lastSent) >= c.interval {
+		c.send(ctx)
+	}
+
+	ticker := time.NewTicker(c.interval)
 	defer ticker.Stop()
 
 	for {
@@ -182,6 +200,7 @@ func (c *Collector) send(ctx context.Context) {
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		c.mu.Lock()
 		c.resetCounters(payload)
+		c.lastSent = time.Now().UTC()
 		c.mu.Unlock()
 		c.persistState()
 		c.logger.Info("telemetry: report sent", "entries", len(payload))
@@ -235,12 +254,19 @@ func (c *Collector) loadState() {
 		c.logger.Warn("telemetry: failed to parse state file, starting fresh", "error", err)
 		return
 	}
-	if state.Telemetry == nil || state.Telemetry.Counters == nil {
+	if state.Telemetry == nil {
 		return
 	}
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
+	if state.Telemetry.LastSent != "" {
+		if t, err := time.Parse(time.RFC3339, state.Telemetry.LastSent); err == nil {
+			c.lastSent = t
+		}
+	}
+
 	for hash, cp := range state.Telemetry.Counters {
 		c.counters[hash] = &counterPair{
 			CallCount:  cp.CallCount,

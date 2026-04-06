@@ -45,5 +45,5 @@ data/
 # Docker
 docker-compose.override.yml
 
-# Claude Code project rules (local only)
-CLAUDE.md
+# Claude Code project rules (local only, not checked in)
+CLAUDE.local.md

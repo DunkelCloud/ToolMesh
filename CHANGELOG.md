@@ -9,6 +9,19 @@ Entries here are kept short; see the corresponding
 [GitHub Release](https://github.com/DunkelCloud/ToolMesh/releases)
 for the full narrative and details.
 
+## [0.1.3] - 2026-04-06
+
+### Added
+
+- Anonymous, opt-out telemetry: aggregated DADL usage statistics
+  (content hash, call/error counts, MCP server count, version) sent
+  to `tmc.dunkel.cloud` every 24 hours. Opt out via
+  `DO_NOT_SEND_ANONYMOUS_STATISTICS=yes`. No individual data collected.
+- SHA-256 `ContentHash` computed on DADL parse for telemetry
+  identification.
+- Telemetry state persisted to `toolmesh.json` across restarts;
+  overdue sends triggered immediately on startup.
+
 ## [0.1.2] - 2026-04-05
 
 ### Security

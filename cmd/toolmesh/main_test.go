@@ -85,7 +85,7 @@ func TestBackendLogger_DebugEnabled(t *testing.T) {
 func TestLoadRESTBackends_MissingFile(t *testing.T) {
 	// Non-existent file should simply return without error.
 	composite := backend.NewCompositeBackend(map[string]backend.ToolBackend{})
-	loadRESTBackends(composite, filepath.Join(t.TempDir(), "does-not-exist.yaml"), "", nil, nil, quietLogger(), nil, nil, nil)
+	loadRESTBackends(composite, filepath.Join(t.TempDir(), "does-not-exist.yaml"), "", nil, nil, nil, quietLogger(), nil, nil, nil)
 	// Assert nothing was added.
 	tools, _ := composite.ListTools(t.Context())
 	if len(tools) != 0 {
@@ -100,7 +100,7 @@ func TestLoadRESTBackends_InvalidYAML(t *testing.T) {
 		t.Fatal(err)
 	}
 	composite := backend.NewCompositeBackend(map[string]backend.ToolBackend{})
-	loadRESTBackends(composite, path, dir, nil, nil, quietLogger(), nil, nil, nil)
+	loadRESTBackends(composite, path, dir, nil, nil, nil, quietLogger(), nil, nil, nil)
 	// Should log error but not panic.
 }
 
@@ -116,7 +116,7 @@ backends:
 		t.Fatal(err)
 	}
 	composite := backend.NewCompositeBackend(map[string]backend.ToolBackend{})
-	loadRESTBackends(composite, path, dir, nil, nil, quietLogger(), nil, nil, nil)
+	loadRESTBackends(composite, path, dir, nil, nil, nil, quietLogger(), nil, nil, nil)
 }
 
 func TestLoadRESTBackends_NonRestBackendSkipped(t *testing.T) {
@@ -132,7 +132,7 @@ backends:
 		t.Fatal(err)
 	}
 	composite := backend.NewCompositeBackend(map[string]backend.ToolBackend{})
-	loadRESTBackends(composite, path, dir, nil, nil, quietLogger(), nil, nil, nil)
+	loadRESTBackends(composite, path, dir, nil, nil, nil, quietLogger(), nil, nil, nil)
 	tools, _ := composite.ListTools(t.Context())
 	if len(tools) != 0 {
 		t.Errorf("expected 0 tools for non-rest backend, got %d", len(tools))
@@ -152,5 +152,5 @@ backends:
 		t.Fatal(err)
 	}
 	composite := backend.NewCompositeBackend(map[string]backend.ToolBackend{})
-	loadRESTBackends(composite, backendsPath, dir, nil, nil, quietLogger(), nil, nil, nil)
+	loadRESTBackends(composite, backendsPath, dir, nil, nil, nil, quietLogger(), nil, nil, nil)
 }

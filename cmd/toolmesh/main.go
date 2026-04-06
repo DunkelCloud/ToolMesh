@@ -40,6 +40,7 @@ import (
 	"github.com/DunkelCloud/ToolMesh/internal/executor"
 	"github.com/DunkelCloud/ToolMesh/internal/gate"
 	"github.com/DunkelCloud/ToolMesh/internal/mcp"
+	"github.com/DunkelCloud/ToolMesh/internal/telemetry"
 	"github.com/DunkelCloud/ToolMesh/internal/tsdef"
 	"github.com/DunkelCloud/ToolMesh/internal/version"
 	"github.com/redis/go-redis/v9"
@@ -195,8 +196,11 @@ func main() {
 	}
 	logger.Info("blob store initialized", "dir", blobDir, "base_url", blobBaseURL)
 
+	// Initialize telemetry collector
+	tc := telemetry.New(cfg.DataDir, version.Version, logger)
+
 	// Initialize REST Proxy backends from DADL files
-	loadRESTBackends(compositeBackend, cfg.BackendsConfigPath, cfg.DADLDir, blobStore, credStore, logger, baseHandler, debugFile, debugSet)
+	loadRESTBackends(compositeBackend, cfg.BackendsConfigPath, cfg.DADLDir, blobStore, credStore, tc, logger, baseHandler, debugFile, debugSet)
 
 	// Initialize OpenFGA authorizer based on OPENFGA_MODE
 	var authorizer *authz.Authorizer
@@ -247,7 +251,7 @@ func main() {
 
 	// Initialize executor
 	execTimeout := time.Duration(cfg.ExecTimeout) * time.Second
-	exec := executor.New(authorizer, credStore, compositeBackend, gatePipeline, auditStore, execTimeout, logger)
+	exec := executor.New(authorizer, credStore, compositeBackend, gatePipeline, auditStore, execTimeout, logger, tc)
 
 	// Initialize token store for auth state.
 	// The file-based store always runs for persistence across restarts.
@@ -331,6 +335,9 @@ func main() {
 		IdleTimeout:  120 * time.Second,
 	}
 
+	// Start telemetry send loop (persists counters on ctx cancellation)
+	go tc.Run(ctx)
+
 	// Graceful shutdown
 	go func() {
 		sigCh := make(chan os.Signal, 1)
@@ -369,7 +376,7 @@ func backendLogger(name string, globalLogger *slog.Logger, stdoutHandler slog.Ha
 
 // loadRESTBackends scans the backends config for transport: rest entries,
 // parses their DADL files, and adds them to the composite backend.
-func loadRESTBackends(composite *backend.CompositeBackend, backendsConfigPath, dadlDir string, blobStore *blob.Store, creds credentials.CredentialStore, logger *slog.Logger, stdoutHandler slog.Handler, debugFile *os.File, debugSet map[string]bool) {
+func loadRESTBackends(composite *backend.CompositeBackend, backendsConfigPath, dadlDir string, blobStore *blob.Store, creds credentials.CredentialStore, tc *telemetry.Collector, logger *slog.Logger, stdoutHandler slog.Handler, debugFile *os.File, debugSet map[string]bool) {
 	data, err := os.ReadFile(backendsConfigPath) //nolint:gosec // path from trusted config
 	if err != nil {
 		return // no config = no REST backends
@@ -467,6 +474,9 @@ func loadRESTBackends(composite *backend.CompositeBackend, backendsConfigPath, d
 		}
 
 		composite.AddNamed(spec.Backend.Name, adapter)
+		if tc != nil {
+			tc.RegisterBackend(spec.Backend.Name, spec.ContentHash)
+		}
 		logger.Info("REST proxy backend loaded",
 			"name", spec.Backend.Name,
 			"tools", len(spec.Backend.Tools),

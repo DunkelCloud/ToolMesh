@@ -30,6 +30,7 @@ import (
 	"github.com/DunkelCloud/ToolMesh/internal/backend"
 	"github.com/DunkelCloud/ToolMesh/internal/credentials"
 	"github.com/DunkelCloud/ToolMesh/internal/gate"
+	"github.com/DunkelCloud/ToolMesh/internal/telemetry"
 	"github.com/DunkelCloud/ToolMesh/internal/userctx"
 	"github.com/google/uuid"
 )
@@ -48,6 +49,7 @@ type Executor struct {
 	backend    backend.ToolBackend
 	gate       *gate.Pipeline
 	audit      audit.AuditStore
+	telemetry  *telemetry.Collector
 	timeout    time.Duration
 	logger     *slog.Logger
 }
@@ -61,6 +63,7 @@ func New(
 	auditStore audit.AuditStore,
 	timeout time.Duration,
 	logger *slog.Logger,
+	tc *telemetry.Collector,
 ) *Executor {
 	return &Executor{
 		authorizer: authorizer,
@@ -68,6 +71,7 @@ func New(
 		backend:    be,
 		gate:       gatePipeline,
 		audit:      auditStore,
+		telemetry:  tc,
 		timeout:    timeout,
 		logger:     logger,
 	}
@@ -299,15 +303,17 @@ func (e *Executor) ExecuteTool(ctx context.Context, req ExecuteToolRequest) (*ba
 // audit store issues. For strict audit requirements, configure an external audit
 // pipeline or monitor for these log entries.
 func (e *Executor) recordAudit(ctx context.Context, entry audit.AuditEntry) {
-	if e.audit == nil {
-		return
+	if e.audit != nil {
+		if err := e.audit.Record(ctx, entry); err != nil {
+			e.logger.ErrorContext(ctx, "failed to record audit entry",
+				"traceId", entry.TraceID,
+				"tool", entry.Tool,
+				"error", err,
+			)
+		}
 	}
-	if err := e.audit.Record(ctx, entry); err != nil {
-		e.logger.ErrorContext(ctx, "failed to record audit entry",
-			"traceId", entry.TraceID,
-			"tool", entry.Tool,
-			"error", err,
-		)
+	if e.telemetry != nil && entry.Backend != "" {
+		e.telemetry.RecordCall(entry.Backend, entry.Status == statusSuccess)
 	}
 }
 

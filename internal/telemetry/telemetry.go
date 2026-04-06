@@ -147,7 +147,18 @@ func (c *Collector) RecordCall(backendName string, success bool) {
 func (c *Collector) Run(ctx context.Context) {
 	// Send immediately if overdue (e.g. after restart).
 	if !c.disabled && !c.lastSent.IsZero() && time.Since(c.lastSent) >= c.interval {
+		c.logger.Debug("telemetry: overdue, sending now",
+			"lastSent", c.lastSent,
+			"interval", c.interval,
+			"age", time.Since(c.lastSent).Round(time.Second),
+		)
 		c.send(ctx)
+	} else {
+		c.logger.Debug("telemetry: run loop started",
+			"interval", c.interval,
+			"disabled", c.disabled,
+			"lastSent", c.lastSent,
+		)
 	}
 
 	ticker := time.NewTicker(c.interval)
@@ -273,6 +284,11 @@ func (c *Collector) loadState() {
 			ErrorCount: cp.ErrorCount,
 		}
 	}
+
+	c.logger.Debug("telemetry: state loaded",
+		"lastSent", c.lastSent,
+		"counters", len(c.counters),
+	)
 }
 
 // persistState writes the current counters to the state file atomically.

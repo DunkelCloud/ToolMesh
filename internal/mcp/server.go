@@ -410,12 +410,12 @@ func clientIP(r *http.Request) string {
 // OAuth 2.1 Endpoints
 
 func (s *Server) handleOAuthMetadata(w http.ResponseWriter, _ *http.Request) {
-	iss := s.cfg.Issuer
+	iss := strings.TrimRight(s.cfg.Issuer, "/")
 	writeJSON(w, http.StatusOK, map[string]any{
-		"issuer":                                iss,
-		"authorization_endpoint":                iss + "authorize",
-		"token_endpoint":                        iss + "token",
-		"registration_endpoint":                 iss + "register",
+		"issuer":                                iss + "/",
+		"authorization_endpoint":                iss + "/authorize",
+		"token_endpoint":                        iss + "/token",
+		"registration_endpoint":                 iss + "/register",
 		"response_types_supported":              []string{"code"},
 		"grant_types_supported":                 []string{"authorization_code", "refresh_token"},
 		"code_challenge_methods_supported":      []string{"S256"},
@@ -425,9 +425,10 @@ func (s *Server) handleOAuthMetadata(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) handleProtectedResource(w http.ResponseWriter, _ *http.Request) {
+	iss := strings.TrimRight(s.cfg.Issuer, "/") + "/"
 	writeJSON(w, http.StatusOK, map[string]any{
-		"resource":                 s.cfg.Issuer,
-		"authorization_servers":    []string{s.cfg.Issuer},
+		"resource":                 iss,
+		"authorization_servers":    []string{iss},
 		"bearer_methods_supported": []string{"header"},
 	})
 }

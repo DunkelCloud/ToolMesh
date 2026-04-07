@@ -134,6 +134,24 @@ func TestServer_OAuthMetadata(t *testing.T) {
 	}
 }
 
+func TestServer_OAuthMetadata_NoTrailingSlash(t *testing.T) {
+	_, mux := newTestServer(t, &config.Config{Issuer: "https://toolmesh.io"})
+
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/.well-known/oauth-authorization-server", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	var resp map[string]any
+	json.NewDecoder(w.Body).Decode(&resp)
+
+	if resp["issuer"] != "https://toolmesh.io/" {
+		t.Errorf("issuer = %v, want trailing slash", resp["issuer"])
+	}
+	if resp["authorization_endpoint"] != "https://toolmesh.io/authorize" {
+		t.Errorf("authorization_endpoint = %v", resp["authorization_endpoint"])
+	}
+}
+
 func TestServer_ProtectedResource(t *testing.T) {
 	_, mux := newTestServer(t, &config.Config{Issuer: "https://toolmesh.io/"})
 

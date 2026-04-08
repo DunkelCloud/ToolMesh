@@ -40,6 +40,12 @@ And unlike MCP gateways that just pass tool calls through, ToolMesh adds what pr
 | **Credential Store** | Inject secrets at execution time, never in prompts | Per-request injection via Executor pipeline |
 | **Gate** | JavaScript policies validate inputs (pre) and filter outputs (post) | goja |
 
+## Try the demo
+
+Want to try ToolMesh before installing? Connect to our public demo instance — no Docker, no config, no API keys:
+
+**[demo.toolmesh.io](https://toolmesh.io/demo)** — Hacker News APIs via ToolMesh. Works with Claude Desktop, Claude Code, and ChatGPT. Login: `dadl` / `toolmesh`.
+
 ## Quickstart
 
 ```bash

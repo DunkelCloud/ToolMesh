@@ -556,6 +556,100 @@ func TestBuildQuery_URLEncoding(t *testing.T) {
 	}
 }
 
+// TestBuildQuery_NilValues verifies that nil parameter values (from JS undefined)
+// are skipped instead of being serialized as "<nil>". Fixes #46.
+func TestBuildQuery_NilValues(t *testing.T) {
+	spec := &dadl.Spec{
+		Backend: dadl.BackendDef{
+			Name:    "testapi",
+			Type:    "rest",
+			BaseURL: "https://api.example.com",
+			Tools:   map[string]dadl.ToolDef{"t": {Method: "GET", Path: "/"}},
+		},
+	}
+	adapter, err := NewRESTAdapter(spec, &testCredStore{}, slog.Default())
+	if err != nil {
+		t.Fatalf("create adapter: %v", err)
+	}
+
+	tool := &dadl.ToolDef{
+		Params: map[string]dadl.ParamDef{
+			"q":      {Type: "string", In: "query"},
+			"filter": {Type: "string", In: "query"},
+		},
+	}
+
+	// filter is explicitly nil (JS undefined → Go nil)
+	query := adapter.buildQuery(tool, map[string]any{"q": "test", "filter": nil})
+	if strings.Contains(query, "nil") {
+		t.Errorf("query contains nil value: %s", query)
+	}
+	if !strings.Contains(query, "q=test") {
+		t.Errorf("query missing valid param: %s", query)
+	}
+	if strings.Contains(query, "filter") {
+		t.Errorf("query should not contain nil param 'filter': %s", query)
+	}
+}
+
+// TestBuildQuery_NilWithDefault verifies that nil values fall back to the default.
+func TestBuildQuery_NilWithDefault(t *testing.T) {
+	spec := &dadl.Spec{
+		Backend: dadl.BackendDef{
+			Name:    "testapi",
+			Type:    "rest",
+			BaseURL: "https://api.example.com",
+			Tools:   map[string]dadl.ToolDef{"t": {Method: "GET", Path: "/"}},
+		},
+	}
+	adapter, err := NewRESTAdapter(spec, &testCredStore{}, slog.Default())
+	if err != nil {
+		t.Fatalf("create adapter: %v", err)
+	}
+
+	tool := &dadl.ToolDef{
+		Params: map[string]dadl.ParamDef{
+			"tags": {Type: "string", In: "query", Default: "story"},
+		},
+	}
+
+	query := adapter.buildQuery(tool, map[string]any{"tags": nil})
+	if !strings.Contains(query, "tags=story") {
+		t.Errorf("nil value should fall back to default, got: %s", query)
+	}
+}
+
+// TestBuildBody_NilValues verifies that nil body values are omitted. Fixes #46.
+func TestBuildBody_NilValues(t *testing.T) {
+	spec := &dadl.Spec{
+		Backend: dadl.BackendDef{
+			Name:    "testapi",
+			Type:    "rest",
+			BaseURL: "https://api.example.com",
+			Tools:   map[string]dadl.ToolDef{"t": {Method: "POST", Path: "/"}},
+		},
+	}
+	adapter, err := NewRESTAdapter(spec, &testCredStore{}, slog.Default())
+	if err != nil {
+		t.Fatalf("create adapter: %v", err)
+	}
+
+	tool := &dadl.ToolDef{
+		Params: map[string]dadl.ParamDef{
+			"name":   {Type: "string", In: "body"},
+			"filter": {Type: "string", In: "body"},
+		},
+	}
+
+	body := adapter.buildBody(tool, map[string]any{"name": "test", "filter": nil})
+	if _, exists := body["filter"]; exists {
+		t.Errorf("body should not contain nil param 'filter': %v", body)
+	}
+	if body["name"] != "test" {
+		t.Errorf("body missing valid param 'name': %v", body)
+	}
+}
+
 func TestBuildPath_URLEncoding(t *testing.T) {
 	spec := &dadl.Spec{
 		Backend: dadl.BackendDef{

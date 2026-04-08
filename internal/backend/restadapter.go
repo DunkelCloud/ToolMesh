@@ -436,7 +436,7 @@ func (a *RESTAdapter) buildQuery(tool *dadl.ToolDef, params map[string]any) stri
 			continue
 		}
 		val, ok := params[name]
-		if !ok {
+		if !ok || val == nil {
 			if def.Default != nil {
 				val = def.Default
 			} else {
@@ -455,7 +455,7 @@ func (a *RESTAdapter) buildBody(tool *dadl.ToolDef, params map[string]any) map[s
 		if def.In != "body" {
 			continue
 		}
-		if val, ok := params[name]; ok {
+		if val, ok := params[name]; ok && val != nil {
 			body[name] = val
 		}
 	}

@@ -60,7 +60,7 @@ func TestRESTAdapter_ExecuteComposite(t *testing.T) {
 		},
 	}
 
-	adapter, err := NewRESTAdapter(spec, &testCredStore{}, slog.Default())
+	adapter, err := NewRESTAdapter(spec, &testCredStore{}, slog.Default(), testRESTOpts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,7 +107,7 @@ func TestRESTAdapter_ExecuteComposite_Error(t *testing.T) {
 			},
 		},
 	}
-	adapter, _ := NewRESTAdapter(spec, &testCredStore{}, slog.Default())
+	adapter, _ := NewRESTAdapter(spec, &testCredStore{}, slog.Default(), testRESTOpts)
 	result, err := adapter.Execute(context.Background(), "bad", nil)
 	if err != nil {
 		t.Fatal(err)
@@ -208,7 +208,7 @@ func TestMarshallResults_Paginated(t *testing.T) {
 		},
 	}
 
-	adapter, err := NewRESTAdapter(spec, &testCredStore{}, slog.Default())
+	adapter, err := NewRESTAdapter(spec, &testCredStore{}, slog.Default(), testRESTOpts)
 	if err != nil {
 		t.Fatal(err)
 	}

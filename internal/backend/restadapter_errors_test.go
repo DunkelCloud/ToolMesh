@@ -51,7 +51,7 @@ func TestRESTAdapter_ErrorResponse(t *testing.T) {
 			},
 		},
 	}
-	a, _ := NewRESTAdapter(spec, &testCredStore{}, slog.Default())
+	a, _ := NewRESTAdapter(spec, &testCredStore{}, slog.Default(), testRESTOpts)
 	result, err := a.Execute(context.Background(), "t", nil)
 	if err != nil {
 		t.Fatal(err)
@@ -83,7 +83,7 @@ func TestRESTAdapter_404WithoutErrorConfig(t *testing.T) {
 			},
 		},
 	}
-	a, _ := NewRESTAdapter(spec, &testCredStore{}, slog.Default())
+	a, _ := NewRESTAdapter(spec, &testCredStore{}, slog.Default(), testRESTOpts)
 	result, err := a.Execute(context.Background(), "t", nil)
 	if err != nil {
 		t.Fatal(err)
@@ -116,7 +116,7 @@ func TestRESTAdapter_ResponseTransform(t *testing.T) {
 			},
 		},
 	}
-	a, _ := NewRESTAdapter(spec, &testCredStore{}, slog.Default())
+	a, _ := NewRESTAdapter(spec, &testCredStore{}, slog.Default(), testRESTOpts)
 	result, err := a.Execute(context.Background(), "t", nil)
 	if err != nil {
 		t.Fatal(err)

@@ -21,6 +21,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -303,5 +304,124 @@ func TestRestAuth_HandleUnauthorized_NoOp(t *testing.T) {
 	auth := NewRestAuth(AuthConfig{Type: "bearer"}, "", &realMockCreds{}, newQuietLogger())
 	if err := auth.HandleUnauthorized(context.Background()); err != nil {
 		t.Errorf("bearer HandleUnauthorized: %v", err)
+	}
+}
+
+func TestRestAuth_SessionCookieForward(t *testing.T) {
+	// Login endpoint sets a session cookie and returns empty JSON.
+	loginCalled := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/login" {
+			loginCalled++
+			http.SetCookie(w, &http.Cookie{Name: "session_id", Value: "abc123", Path: "/"})
+			http.SetCookie(w, &http.Cookie{Name: "csrf_token", Value: "xyz789", Path: "/"})
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{}`))
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	auth := NewRestAuth(AuthConfig{
+		Type: "session",
+		Login: &SessionLogin{
+			Path:   "/login",
+			Method: "POST",
+			Body:   map[string]string{"user": "admin"},
+		},
+	}, srv.URL, &realMockCreds{}, newQuietLogger())
+
+	// CookieJar should be non-nil for session auth.
+	jar := auth.CookieJar()
+	if jar == nil {
+		t.Fatal("CookieJar() returned nil for session auth")
+	}
+
+	// Trigger login via InjectAuth.
+	req, _ := http.NewRequestWithContext(context.Background(), "GET", srv.URL+"/api/data", nil)
+	if err := auth.InjectAuth(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+	if loginCalled != 1 {
+		t.Fatalf("login called %d times, want 1", loginCalled)
+	}
+
+	// Cookie jar should contain the login cookies. Parse the server URL
+	// and check cookies for that URL.
+	srvURL, _ := url.Parse(srv.URL)
+	cookies := jar.Cookies(srvURL)
+	if len(cookies) != 2 {
+		t.Fatalf("cookie jar has %d cookies, want 2", len(cookies))
+	}
+
+	cookieMap := make(map[string]string)
+	for _, c := range cookies {
+		cookieMap[c.Name] = c.Value
+	}
+	if cookieMap["session_id"] != "abc123" {
+		t.Errorf("session_id = %q, want abc123", cookieMap["session_id"])
+	}
+	if cookieMap["csrf_token"] != "xyz789" {
+		t.Errorf("csrf_token = %q, want xyz789", cookieMap["csrf_token"])
+	}
+}
+
+func TestRestAuth_SessionCookieForward_ResetOnReLogin(t *testing.T) {
+	loginCount := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		loginCount++
+		http.SetCookie(w, &http.Cookie{
+			Name:  "sid",
+			Value: "session-" + strings.Repeat("x", loginCount),
+			Path:  "/",
+		})
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+
+	auth := NewRestAuth(AuthConfig{
+		Type: "session",
+		Login: &SessionLogin{
+			Path:   "/",
+			Method: "POST",
+			Body:   map[string]string{},
+		},
+		Refresh: &RefreshConfig{Action: "re_login"},
+	}, srv.URL, &realMockCreds{}, newQuietLogger())
+
+	// First login.
+	req, _ := http.NewRequestWithContext(context.Background(), "GET", srv.URL+"/", nil)
+	if err := auth.InjectAuth(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+
+	srvURL, _ := url.Parse(srv.URL)
+	jar := auth.CookieJar()
+	cookies := jar.Cookies(srvURL)
+	if len(cookies) != 1 || cookies[0].Value != "session-x" {
+		t.Fatalf("after first login: cookies = %v", cookies)
+	}
+
+	// HandleUnauthorized should reset the jar and re-login.
+	if err := auth.HandleUnauthorized(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	cookies = jar.Cookies(srvURL)
+	if len(cookies) != 1 || cookies[0].Value != "session-xx" {
+		t.Fatalf("after re-login: cookies = %v", cookies)
+	}
+}
+
+func TestRestAuth_CookieJar_NilForNonSession(t *testing.T) {
+	auth := NewRestAuth(AuthConfig{
+		Type:       "bearer",
+		Credential: "tok",
+	}, "http://example.com", &realMockCreds{}, newQuietLogger())
+
+	if jar := auth.CookieJar(); jar != nil {
+		t.Error("CookieJar() should be nil for non-session auth")
 	}
 }

@@ -60,7 +60,7 @@ func TestRESTAdapter_RetryOnTransientError(t *testing.T) {
 			},
 		},
 	}
-	a, _ := NewRESTAdapter(spec, &testCredStore{}, slog.Default())
+	a, _ := NewRESTAdapter(spec, &testCredStore{}, slog.Default(), testRESTOpts)
 	result, err := a.Execute(context.Background(), "t", nil)
 	if err != nil {
 		t.Fatal(err)
@@ -104,7 +104,7 @@ func TestRESTAdapter_RetryExhausted(t *testing.T) {
 			},
 		},
 	}
-	a, _ := NewRESTAdapter(spec, &testCredStore{}, slog.Default())
+	a, _ := NewRESTAdapter(spec, &testCredStore{}, slog.Default(), testRESTOpts)
 	result, _ := a.Execute(context.Background(), "t", nil)
 	if !result.IsError {
 		t.Error("expected error after retry exhaustion")
@@ -132,7 +132,7 @@ func TestRESTAdapter_JQTransform(t *testing.T) {
 			},
 		},
 	}
-	a, _ := NewRESTAdapter(spec, &testCredStore{}, slog.Default())
+	a, _ := NewRESTAdapter(spec, &testCredStore{}, slog.Default(), testRESTOpts)
 	result, err := a.Execute(context.Background(), "t", nil)
 	if err != nil {
 		t.Fatal(err)

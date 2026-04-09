@@ -104,7 +104,7 @@ func TestRESTAdapter_BinaryResponse(t *testing.T) {
 			},
 		},
 	}
-	a, err := NewRESTAdapter(spec, &testCredStore{}, slog.Default())
+	a, err := NewRESTAdapter(spec, &testCredStore{}, slog.Default(), testRESTOpts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +148,7 @@ func TestRESTAdapter_QueryParams(t *testing.T) {
 			},
 		},
 	}
-	a, _ := NewRESTAdapter(spec, &testCredStore{}, slog.Default())
+	a, _ := NewRESTAdapter(spec, &testCredStore{}, slog.Default(), testRESTOpts)
 	_, err := a.Execute(context.Background(), "search", map[string]any{"q": "hello", "limit": 10})
 	if err != nil {
 		t.Fatal(err)

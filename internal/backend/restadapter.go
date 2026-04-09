@@ -102,23 +102,33 @@ func NewRESTAdapter(spec *dadl.Spec, creds credentials.CredentialStore, logger *
 	streamTransport := SSRFSafeTransport(defaultStreamingHTTPTimeout, opts.AllowPrivateURL, opts.TLSSkipVerify)
 	redirectCheck := newRedirectChecker(opts.AllowPrivateURL)
 
+	httpClient := &http.Client{
+		Timeout:       defaultHTTPTimeout,
+		Transport:     transport,
+		CheckRedirect: redirectCheck,
+	}
+	streamingClient := &http.Client{
+		Timeout:       defaultStreamingHTTPTimeout,
+		Transport:     streamTransport,
+		CheckRedirect: redirectCheck,
+	}
+
+	// Share cookie jar from auth so cookies set during login (e.g. UniFi
+	// session cookies) are forwarded to subsequent tool requests.
+	if jar := auth.CookieJar(); jar != nil {
+		httpClient.Jar = jar
+		streamingClient.Jar = jar
+	}
+
 	return &RESTAdapter{
-		spec: spec,
-		httpClient: &http.Client{
-			Timeout:       defaultHTTPTimeout,
-			Transport:     transport,
-			CheckRedirect: redirectCheck,
-		},
-		streamingHTTPClient: &http.Client{
-			Timeout:       defaultStreamingHTTPTimeout,
-			Transport:     streamTransport,
-			CheckRedirect: redirectCheck,
-		},
-		auth:             auth,
-		creds:            creds,
-		logger:           logger,
-		allowedUploadDir: defaultAllowedUploadDir,
-		blobTTL:          time.Hour,
+		spec:                spec,
+		httpClient:          httpClient,
+		streamingHTTPClient: streamingClient,
+		auth:                auth,
+		creds:               creds,
+		logger:              logger,
+		allowedUploadDir:    defaultAllowedUploadDir,
+		blobTTL:             time.Hour,
 	}, nil
 }
 

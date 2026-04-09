@@ -24,6 +24,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/http/cookiejar"
 	"net/url"
 	"strings"
 	"sync"
@@ -32,6 +33,36 @@ import (
 	"github.com/DunkelCloud/ToolMesh/internal/credentials"
 )
 
+// resettableJar wraps an http.CookieJar so it can be cleared on re-login
+// without replacing the jar reference held by multiple HTTP clients.
+type resettableJar struct {
+	mu  sync.Mutex
+	jar http.CookieJar
+}
+
+// SetCookies implements http.CookieJar.
+func (r *resettableJar) SetCookies(u *url.URL, cookies []*http.Cookie) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.jar.SetCookies(u, cookies)
+}
+
+// Cookies implements http.CookieJar.
+func (r *resettableJar) Cookies(u *url.URL) []*http.Cookie {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.jar.Cookies(u)
+}
+
+// Reset discards all stored cookies by replacing the inner jar.
+func (r *resettableJar) Reset() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.jar, _ = cookiejar.New(nil)
+}
+
+const authTypeSession = "session"
+
 // RestAuth manages authentication token lifecycle for REST API calls.
 type RestAuth struct {
 	config     AuthConfig
@@ -39,6 +70,7 @@ type RestAuth struct {
 	creds      credentials.CredentialStore
 	logger     *slog.Logger
 	httpClient *http.Client
+	cookieJar  *resettableJar // non-nil when login.cookies = "forward"
 
 	mu              sync.Mutex
 	cachedToken     string
@@ -49,14 +81,34 @@ type RestAuth struct {
 
 // NewRestAuth creates a RestAuth handler for the given auth configuration.
 func NewRestAuth(config AuthConfig, baseURL string, creds credentials.CredentialStore, logger *slog.Logger) *RestAuth {
+	client := &http.Client{Timeout: 30 * time.Second}
+
+	var jar *resettableJar
+	if config.Type == authTypeSession {
+		inner, _ := cookiejar.New(nil)
+		jar = &resettableJar{jar: inner}
+		client.Jar = jar
+	}
+
 	return &RestAuth{
 		config:        config,
 		baseURL:       baseURL,
 		creds:         creds,
 		logger:        logger,
-		httpClient:    &http.Client{Timeout: 30 * time.Second},
+		httpClient:    client,
+		cookieJar:     jar,
 		sessionTokens: make(map[string]string),
 	}
+}
+
+// CookieJar returns the shared cookie jar, or nil if cookie forwarding
+// is not enabled. The RESTAdapter uses this to attach the same jar to
+// its HTTP clients so cookies from login are sent with tool requests.
+func (a *RestAuth) CookieJar() http.CookieJar {
+	if a.cookieJar == nil {
+		return nil
+	}
+	return a.cookieJar
 }
 
 // InjectAuth adds authentication credentials to an HTTP request.
@@ -70,7 +122,7 @@ func (a *RestAuth) InjectAuth(ctx context.Context, req *http.Request) error {
 		return a.injectAPIKey(ctx, req)
 	case "oauth2":
 		return a.injectOAuth2(ctx, req)
-	case "session":
+	case authTypeSession:
 		return a.injectSession(ctx, req)
 	case "":
 		return nil // no auth
@@ -82,10 +134,13 @@ func (a *RestAuth) InjectAuth(ctx context.Context, req *http.Request) error {
 // HandleUnauthorized is called when a 401 response is received.
 // For session auth, it triggers re-login.
 func (a *RestAuth) HandleUnauthorized(ctx context.Context) error {
-	if a.config.Type == "session" && a.config.Refresh != nil && a.config.Refresh.Action == "re_login" {
+	if a.config.Type == authTypeSession && a.config.Refresh != nil && a.config.Refresh.Action == "re_login" {
 		a.mu.Lock()
 		a.sessionTokens = make(map[string]string)
 		a.mu.Unlock()
+		if a.cookieJar != nil {
+			a.cookieJar.Reset()
+		}
 		return a.doSessionLogin(ctx)
 	}
 	if a.config.Type == "oauth2" {

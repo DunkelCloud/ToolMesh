@@ -444,8 +444,24 @@ func loadRESTBackends(composite *backend.CompositeBackend, backendsConfigPath, d
 			logger.Warn("scoping strategy not yet implemented, exposing all tools", "strategy", spec.Backend.Scoping.Strategy)
 		}
 
+		// Resolve per-backend security options.
+		// allow_private_url defaults to true — admin-configured backends are trusted.
+		allowPrivate := true
+		if entry.AllowPrivateURL != nil {
+			allowPrivate = *entry.AllowPrivateURL
+		}
+		if allowPrivate {
+			logger.Warn("SSRF base_url validation skipped (allow_private_url)", "name", entry.Name)
+		}
+		if entry.TLSSkipVerify {
+			logger.Warn("TLS certificate validation disabled (tls_skip_verify)", "name", entry.Name)
+		}
+
 		bl := backendLogger(spec.Backend.Name, logger, stdoutHandler, debugFile, debugSet)
-		adapter, err := backend.NewRESTAdapter(spec, creds, bl)
+		adapter, err := backend.NewRESTAdapter(spec, creds, bl, backend.RESTAdapterOptions{
+			AllowPrivateURL: allowPrivate,
+			TLSSkipVerify:   entry.TLSSkipVerify,
+		})
 		if err != nil {
 			logger.Error("failed to create REST adapter", "name", entry.Name, "error", err)
 			continue

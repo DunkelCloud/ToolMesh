@@ -30,7 +30,7 @@ func TestRESTAdapter_Setters(t *testing.T) {
 		Spec:    "https://dadl.ai/spec/dadl-spec-v0.1.md",
 		Backend: dadl.BackendDef{Name: "t", Type: "rest", BaseURL: "https://api.example.com"},
 	}
-	a, err := NewRESTAdapter(spec, &testCredStore{}, slog.Default())
+	a, err := NewRESTAdapter(spec, &testCredStore{}, slog.Default(), testRESTOpts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,7 +59,7 @@ func TestRESTAdapter_Healthy(t *testing.T) {
 		Spec:    "https://dadl.ai/spec/dadl-spec-v0.1.md",
 		Backend: dadl.BackendDef{Name: "t", Type: "rest", BaseURL: srv.URL},
 	}
-	a, err := NewRESTAdapter(spec, &testCredStore{}, slog.Default())
+	a, err := NewRESTAdapter(spec, &testCredStore{}, slog.Default(), testRESTOpts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,7 +78,7 @@ func TestRESTAdapter_Healthy_ReturnsError(t *testing.T) {
 		Spec:    "https://dadl.ai/spec/dadl-spec-v0.1.md",
 		Backend: dadl.BackendDef{Name: "t", Type: "rest", BaseURL: srv.URL},
 	}
-	a, _ := NewRESTAdapter(spec, &testCredStore{}, slog.Default())
+	a, _ := NewRESTAdapter(spec, &testCredStore{}, slog.Default(), testRESTOpts)
 	if err := a.Healthy(context.Background()); err == nil {
 		t.Error("expected error for 500 health check")
 	}
@@ -89,7 +89,7 @@ func TestRESTAdapter_Execute_UnknownTool(t *testing.T) {
 		Spec:    "https://dadl.ai/spec/dadl-spec-v0.1.md",
 		Backend: dadl.BackendDef{Name: "t", Type: "rest", BaseURL: "https://api.example.com"},
 	}
-	a, _ := NewRESTAdapter(spec, &testCredStore{}, slog.Default())
+	a, _ := NewRESTAdapter(spec, &testCredStore{}, slog.Default(), testRESTOpts)
 	_, err := a.Execute(context.Background(), "nonexistent", nil)
 	if err == nil {
 		t.Error("expected error for unknown tool")

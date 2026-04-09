@@ -22,9 +22,7 @@ import (
 )
 
 func TestSSRFSafeTransport_InvalidAddr(t *testing.T) {
-	withStrictSSRF(t)
-
-	tr := SSRFSafeTransport(2 * time.Second)
+	tr := SSRFSafeTransport(2*time.Second, false, false)
 	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://not-a-real-host.invalid/", nil)
 	client := &http.Client{Transport: tr, Timeout: 5 * time.Second}
 	resp, err := client.Do(req)
@@ -37,7 +35,6 @@ func TestSSRFSafeTransport_InvalidAddr(t *testing.T) {
 }
 
 func TestValidateBaseURL_PublicHostPasses(t *testing.T) {
-	withStrictSSRF(t)
 	// example.com resolves to a public IP.
 	if err := ValidateBaseURL("https://example.com/api"); err != nil {
 		t.Errorf("expected public host to pass, got %v", err)

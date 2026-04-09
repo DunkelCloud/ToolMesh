@@ -19,3 +19,11 @@ backends:
   #   url: "https://vikunja.example.com/api/v1"  # overrides base_url in .dadl (optional)
   #   options:
   #     blob_ttl: "1h"  # how long binary response URLs stay valid (default: 1h)
+
+  # REST Proxy targeting an internal service (private network, self-signed cert)
+  # - name: internal-api
+  #   transport: rest
+  #   dadl: internal.dadl
+  #   url: "https://192.168.1.50:8443/api"
+  #   allow_private_url: true    # allow private/loopback base_url (default: true)
+  #   tls_skip_verify: true      # accept self-signed or invalid TLS certificates (default: false)

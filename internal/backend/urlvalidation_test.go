@@ -24,19 +24,7 @@ import (
 	"time"
 )
 
-// withStrictSSRF disables the allow-private-base-url test hook for the
-// duration of a test. Tests that exercise SSRF-rejection paths must set
-// this so they behave like production.
-func withStrictSSRF(t *testing.T) {
-	t.Helper()
-	prev := allowPrivateBaseURL
-	allowPrivateBaseURL = false
-	t.Cleanup(func() { allowPrivateBaseURL = prev })
-}
-
 func TestValidateBaseURL_Rejects(t *testing.T) {
-	withStrictSSRF(t)
-
 	tests := []struct {
 		name    string
 		url     string
@@ -67,14 +55,6 @@ func TestValidateBaseURL_Rejects(t *testing.T) {
 	}
 }
 
-func TestValidateBaseURL_AllowedWhenHookOn(t *testing.T) {
-	// With the hook enabled (default in tests via export_test.go init),
-	// all URLs pass through.
-	if err := ValidateBaseURL("http://127.0.0.1/"); err != nil {
-		t.Errorf("with allowPrivateBaseURL=true, expected nil, got %v", err)
-	}
-}
-
 func TestIsPrivateIP(t *testing.T) {
 	tests := []struct {
 		ip   string
@@ -100,14 +80,14 @@ func TestIsPrivateIP(t *testing.T) {
 	}
 }
 
-func TestSSRFSafeTransport_AllowHookOn(t *testing.T) {
-	// With hook enabled, transport skips IP validation and dials directly.
+func TestSSRFSafeTransport_AllowPrivate(t *testing.T) {
+	// With allowPrivate=true, transport skips IP validation and dials directly.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
 
-	tr := SSRFSafeTransport(5 * time.Second)
+	tr := SSRFSafeTransport(5*time.Second, true, false)
 	client := &http.Client{Transport: tr}
 	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, srv.URL, nil)
 	resp, err := client.Do(req)
@@ -121,15 +101,13 @@ func TestSSRFSafeTransport_AllowHookOn(t *testing.T) {
 }
 
 func TestSSRFSafeTransport_RejectsPrivateIP(t *testing.T) {
-	withStrictSSRF(t)
-
 	// Dial 127.0.0.1 directly — the transport must refuse.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
 
-	tr := SSRFSafeTransport(5 * time.Second)
+	tr := SSRFSafeTransport(5*time.Second, false, false)
 	client := &http.Client{Transport: tr}
 	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, srv.URL, nil)
 	resp, err := client.Do(req)
@@ -144,7 +122,7 @@ func TestSSRFSafeTransport_RejectsPrivateIP(t *testing.T) {
 	}
 }
 
-func TestSSRFSafeCheckRedirect(t *testing.T) {
+func TestRedirectChecker(t *testing.T) {
 	// Build fake via chain — we don't actually need real requests.
 	mkReq := func(host string) *http.Request {
 		r, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://"+host+"/", nil)
@@ -152,48 +130,49 @@ func TestSSRFSafeCheckRedirect(t *testing.T) {
 	}
 
 	t.Run("too many redirects", func(t *testing.T) {
+		checker := newRedirectChecker(false)
 		via := make([]*http.Request, 10)
 		for i := range via {
 			via[i] = mkReq("example.com")
 		}
-		if err := ssrfSafeCheckRedirect(mkReq("example.com"), via); err == nil {
+		if err := checker(mkReq("example.com"), via); err == nil {
 			t.Error("expected error on >=10 redirects")
 		}
 	})
 
-	t.Run("hook on allows all", func(t *testing.T) {
-		// Hook is on by default in tests (see export_test.go).
-		if err := ssrfSafeCheckRedirect(mkReq("127.0.0.1"), nil); err != nil {
-			t.Errorf("with hook on, expected nil, got %v", err)
+	t.Run("allowPrivate permits loopback", func(t *testing.T) {
+		checker := newRedirectChecker(true)
+		if err := checker(mkReq("127.0.0.1"), nil); err != nil {
+			t.Errorf("with allowPrivate, expected nil, got %v", err)
 		}
 	})
 
-	t.Run("hook off rejects localhost", func(t *testing.T) {
-		withStrictSSRF(t)
-		if err := ssrfSafeCheckRedirect(mkReq("localhost"), nil); err == nil {
+	t.Run("strict rejects localhost", func(t *testing.T) {
+		checker := newRedirectChecker(false)
+		if err := checker(mkReq("localhost"), nil); err == nil {
 			t.Error("expected rejection for localhost")
 		}
 	})
 
-	t.Run("hook off rejects metadata", func(t *testing.T) {
-		withStrictSSRF(t)
-		if err := ssrfSafeCheckRedirect(mkReq("metadata.google.internal"), nil); err == nil {
+	t.Run("strict rejects metadata", func(t *testing.T) {
+		checker := newRedirectChecker(false)
+		if err := checker(mkReq("metadata.google.internal"), nil); err == nil {
 			t.Error("expected rejection for metadata")
 		}
 	})
 
-	t.Run("hook off rejects dns failure", func(t *testing.T) {
-		withStrictSSRF(t)
-		if err := ssrfSafeCheckRedirect(mkReq("this-does-not-exist.invalid"), nil); err == nil {
+	t.Run("strict rejects dns failure", func(t *testing.T) {
+		checker := newRedirectChecker(false)
+		if err := checker(mkReq("this-does-not-exist.invalid"), nil); err == nil {
 			t.Error("expected rejection for DNS failure")
 		}
 	})
 
 	t.Run("empty hostname passes", func(t *testing.T) {
-		withStrictSSRF(t)
+		checker := newRedirectChecker(false)
 		r, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://example.com/", nil)
 		r.URL.Host = ""
-		if err := ssrfSafeCheckRedirect(r, nil); err != nil {
+		if err := checker(r, nil); err != nil {
 			t.Errorf("empty hostname: expected nil, got %v", err)
 		}
 	})

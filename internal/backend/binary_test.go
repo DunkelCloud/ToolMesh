@@ -109,7 +109,7 @@ func TestBinaryResponseHandling(t *testing.T) {
 		},
 	}
 
-	adapter, err := NewRESTAdapter(spec, &testCredStore{creds: map[string]string{}}, slog.Default())
+	adapter, err := NewRESTAdapter(spec, &testCredStore{creds: map[string]string{}}, slog.Default(), testRESTOpts)
 	if err != nil {
 		t.Fatalf("create adapter: %v", err)
 	}
@@ -181,7 +181,7 @@ func TestBinaryResponseFallbackBlobStore(t *testing.T) {
 		},
 	}
 
-	adapter, err := NewRESTAdapter(spec, &testCredStore{creds: map[string]string{}}, slog.Default())
+	adapter, err := NewRESTAdapter(spec, &testCredStore{creds: map[string]string{}}, slog.Default(), testRESTOpts)
 	if err != nil {
 		t.Fatalf("create adapter: %v", err)
 	}
@@ -254,7 +254,7 @@ func TestJSONResponseUnchanged(t *testing.T) {
 		},
 	}
 
-	adapter, err := NewRESTAdapter(spec, &testCredStore{creds: map[string]string{}}, slog.Default())
+	adapter, err := NewRESTAdapter(spec, &testCredStore{creds: map[string]string{}}, slog.Default(), testRESTOpts)
 	if err != nil {
 		t.Fatalf("create adapter: %v", err)
 	}
@@ -307,7 +307,7 @@ func TestBinaryResponseLargePayload(t *testing.T) {
 		},
 	}
 
-	adapter, err := NewRESTAdapter(spec, &testCredStore{creds: map[string]string{}}, slog.Default())
+	adapter, err := NewRESTAdapter(spec, &testCredStore{creds: map[string]string{}}, slog.Default(), testRESTOpts)
 	if err != nil {
 		t.Fatalf("create adapter: %v", err)
 	}
@@ -374,7 +374,7 @@ func TestBinaryResponseNoBlobStoreError(t *testing.T) {
 		},
 	}
 
-	adapter, err := NewRESTAdapter(spec, &testCredStore{creds: map[string]string{}}, slog.Default())
+	adapter, err := NewRESTAdapter(spec, &testCredStore{creds: map[string]string{}}, slog.Default(), testRESTOpts)
 	if err != nil {
 		t.Fatalf("create adapter: %v", err)
 	}
@@ -419,7 +419,7 @@ func TestBinaryContentTypeDetection(t *testing.T) {
 		},
 	}
 
-	adapter, err := NewRESTAdapter(spec, &testCredStore{creds: map[string]string{}}, slog.Default())
+	adapter, err := NewRESTAdapter(spec, &testCredStore{creds: map[string]string{}}, slog.Default(), testRESTOpts)
 	if err != nil {
 		t.Fatalf("create adapter: %v", err)
 	}
@@ -511,7 +511,7 @@ func TestBinaryStreamingCollect(t *testing.T) {
 		},
 	}
 
-	adapter, err := NewRESTAdapter(spec, &testCredStore{creds: map[string]string{}}, slog.Default())
+	adapter, err := NewRESTAdapter(spec, &testCredStore{creds: map[string]string{}}, slog.Default(), testRESTOpts)
 	if err != nil {
 		t.Fatalf("create adapter: %v", err)
 	}

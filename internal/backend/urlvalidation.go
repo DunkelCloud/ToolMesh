@@ -16,6 +16,7 @@ package backend
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"net"
 	"net/http"
@@ -24,18 +25,10 @@ import (
 	"time"
 )
 
-// allowPrivateBaseURL is a test hook that disables private-IP checks in
-// ValidateBaseURL and the SSRF-safe transport/redirect hooks. Production code
-// must never set this to true.
-var allowPrivateBaseURL = false
-
 // ValidateBaseURL checks that a base URL does not point to private, loopback,
 // or link-local addresses. This prevents SSRF when DADL specs are loaded from
 // untrusted sources (e.g., community registry).
 func ValidateBaseURL(rawURL string) error {
-	if allowPrivateBaseURL {
-		return nil
-	}
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
 		return fmt.Errorf("invalid base_url: %w", err)
@@ -94,12 +87,27 @@ func IsPrivateIP(ip net.IP) bool {
 
 // SSRFSafeTransport returns an *http.Transport that validates resolved IPs at
 // connection time (preventing DNS rebinding) and blocks redirects to private IPs.
-func SSRFSafeTransport(timeout time.Duration) *http.Transport {
+//
+// When allowPrivate is true, IP validation is skipped (for admin-configured
+// backends that intentionally target internal networks).
+// When tlsSkipVerify is true, TLS certificate validation is disabled (for
+// backends using self-signed certificates).
+func SSRFSafeTransport(timeout time.Duration, allowPrivate, tlsSkipVerify bool) *http.Transport {
 	dialer := &net.Dialer{Timeout: timeout}
-	if allowPrivateBaseURL {
-		return &http.Transport{DialContext: dialer.DialContext}
+
+	var tlsConfig *tls.Config
+	if tlsSkipVerify {
+		tlsConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec // admin-configured per-backend opt-in
+	}
+
+	if allowPrivate {
+		return &http.Transport{
+			DialContext:     dialer.DialContext,
+			TLSClientConfig: tlsConfig,
+		}
 	}
 	return &http.Transport{
+		TLSClientConfig: tlsConfig,
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			host, port, err := net.SplitHostPort(addr)
 			if err != nil {
@@ -120,31 +128,35 @@ func SSRFSafeTransport(timeout time.Duration) *http.Transport {
 	}
 }
 
-// ssrfSafeCheckRedirect validates that redirect targets do not point to private IPs.
-func ssrfSafeCheckRedirect(req *http.Request, via []*http.Request) error {
-	if len(via) >= 10 {
-		return fmt.Errorf("stopped after 10 redirects")
-	}
-	if allowPrivateBaseURL {
-		return nil
-	}
-	hostname := req.URL.Hostname()
-	if hostname == "" {
-		return nil
-	}
-	lower := strings.ToLower(hostname)
-	if lower == "localhost" || lower == "metadata.google.internal" {
-		return fmt.Errorf("redirect to private hostname %q blocked", hostname)
-	}
-	ips, err := net.DefaultResolver.LookupHost(req.Context(), hostname)
-	if err != nil {
-		return fmt.Errorf("redirect DNS resolution failed for %q: %w", hostname, err)
-	}
-	for _, ipStr := range ips {
-		ip := net.ParseIP(ipStr)
-		if ip != nil && IsPrivateIP(ip) {
-			return fmt.Errorf("redirect to private IP %s (%q) blocked", ipStr, hostname)
+// newRedirectChecker returns a CheckRedirect function. When allowPrivate is
+// true, only the redirect count is enforced. Otherwise, redirect targets are
+// also validated against private/loopback addresses.
+func newRedirectChecker(allowPrivate bool) func(*http.Request, []*http.Request) error {
+	return func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 10 {
+			return fmt.Errorf("stopped after 10 redirects")
 		}
+		if allowPrivate {
+			return nil
+		}
+		hostname := req.URL.Hostname()
+		if hostname == "" {
+			return nil
+		}
+		lower := strings.ToLower(hostname)
+		if lower == "localhost" || lower == "metadata.google.internal" {
+			return fmt.Errorf("redirect to private hostname %q blocked", hostname)
+		}
+		ips, err := net.DefaultResolver.LookupHost(req.Context(), hostname)
+		if err != nil {
+			return fmt.Errorf("redirect DNS resolution failed for %q: %w", hostname, err)
+		}
+		for _, ipStr := range ips {
+			ip := net.ParseIP(ipStr)
+			if ip != nil && IsPrivateIP(ip) {
+				return fmt.Errorf("redirect to private IP %s (%q) blocked", ipStr, hostname)
+			}
+		}
+		return nil
 	}
-	return nil
 }

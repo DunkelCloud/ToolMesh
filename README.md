@@ -1,6 +1,6 @@
 # ToolMesh — Let AI agents touch real systems. Safely.
 
-> One Go binary between your agents and your infrastructure — with authorization, credential security, audit logging, and output policies on every tool call.
+> The missing control layer between AI agents and enterprise systems. ToolMesh turns uncontrolled AI tool calls into a governed, auditable process — and connects any REST API or MCP server in minutes, not months.
 
 [![Go](https://img.shields.io/badge/Go-1.25+-00ADD8?style=flat&logo=go)](https://go.dev)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
@@ -24,21 +24,21 @@ You don't write the YAML by hand. You ask an LLM. Claude, GPT, Gemini — any mo
 
 And unlike MCP gateways that just pass tool calls through, ToolMesh adds what production deployments actually need:
 
+- **Credential Security** — secrets injected at execution time, never in prompts or LLM client configs
 - **Authorization** — fine-grained user → plan → tool control (OpenFGA)
-- **Credential Security** — secrets injected at execution time, never in prompts
+- **Input & Output Gating** — JS policies block confidential data and filter responses
 - **Audit Trail** — every tool call recorded with structured logging or queryable SQLite
-- **Input & Output Gating** — JS policies validate parameters and filter responses
 
 ## The Six Pillars
 
 | Pillar | What it does | Backed by |
 |--------|-------------|-----------|
-| **Any Backend** | Connect MCP servers or describe REST APIs declaratively via DADL | Go MCP SDK + DADL (.dadl files) |
-| **Code Mode** | LLMs write typed JS instead of error-prone JSON | AST-parsed tool calls |
-| **Audit** | Execution trail — every tool call recorded and queryable | slog / SQLite |
-| **OpenFGA** | Fine-grained authorization (user → plan → tool) | OpenFGA |
-| **Credential Store** | Inject secrets at execution time, never in prompts | Per-request injection via Executor pipeline |
-| **Gate** | JavaScript policies validate inputs (pre) and filter outputs (post) | goja |
+| **Any Backend** | 30 lines of DADL replace a whole MCP server. Also proxies existing MCP servers. | Go MCP SDK + DADL (.dadl files) |
+| **Code Mode** | 15 MCP servers at once? Without ToolMesh, impossible. Code Mode cuts 50,000+ tokens to ~1,000. | AST-parsed tool calls |
+| **Credential Store** | Secrets injected at execution time — never in prompts, never in LLM client configs | Per-request injection via Executor pipeline |
+| **OpenFGA** | Fine-grained authorization (user → plan → tool). Example: free users get read-only, pro gets everything. | OpenFGA |
+| **Gate** | Block confidential data before execution, redact PII in responses | goja |
+| **Audit** | Every tool call recorded and queryable — answer "what did that agent do?" with SQL | slog / SQLite |
 
 ## Try the demo
 
@@ -251,6 +251,18 @@ backends:
     url: "https://vikunja.example.com/api/v1"
 ```
 
+For internal services with private IPs or self-signed certificates:
+
+```yaml
+backends:
+  - name: internal-api
+    transport: rest
+    dadl: internal.dadl
+    url: "https://192.168.1.50:8443/api"
+    allow_private_url: true    # allow private/loopback addresses (default: true)
+    tls_skip_verify: true      # accept self-signed certificates (default: false)
+```
+
 Want Claude to list GitHub issues? Here's all it takes:
 
 ```yaml
@@ -271,20 +283,20 @@ For the full spec, examples, and the community registry, see [dadl.ai](https://d
 
 ## Code Mode
 
-Instead of raw JSON tool calls, LLMs can use typed JavaScript:
+Connect 15 MCP servers to a single AI agent? Without ToolMesh, that simply does not work — the context window fills up, the client chokes. Code Mode makes it possible.
+
+Instead of exposing hundreds of individual tool definitions (50,000+ tokens), ToolMesh exposes two meta-tools: `list_tools` and `execute_code`. The LLM gets compact TypeScript interfaces (~1,000 tokens) and writes JavaScript against them:
 
 ```javascript
-// List available tools with TypeScript definitions
-const tools = await toolmesh.list_tools();
-
-// Execute tools with typed parameters
-const result = await toolmesh.memorizer_retrieve_knowledge({
-  query: "project architecture",
-  top_k: 5
+const repos = await toolmesh.github_list_repos({ sort: "updated" });
+const issues = await toolmesh.github_list_issues({
+  owner: repos[0].owner.login,
+  repo: repos[0].name,
+  state: "open"
 });
 ```
 
-ToolMesh parses the code, extracts tool calls, and routes them through the full execution pipeline (AuthZ → Credentials → Gate pre → Backend → Gate post).
+Multiple API calls in a single round-trip. ToolMesh parses the code, extracts tool calls, and routes them through the full execution pipeline.
 
 ## Extension Model
 
@@ -296,7 +308,7 @@ ToolMesh uses a registry-based extension model inspired by Go's `database/sql` d
 | Tool Backend | `mcp`, `rest` (DADL), `echo` | `config/backends.yaml` |
 | Gate Evaluator | `goja` | `GATE_EVALUATORS=<list>` |
 
-Enterprise extensions (InfisicalStore, VaultStore, Compliance-LLM, etc.) are available separately and included via Go build tags: `go build -tags enterprise ./cmd/toolmesh`.
+Enterprise extensions (InfisicalStore, VaultStore, Compliance-LLM, etc.) are planned and will be included via Go build tags: `go build -tags enterprise ./cmd/toolmesh`.
 
 See [docs/architecture.md](docs/architecture.md#extension-model) for details.
 

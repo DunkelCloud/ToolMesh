@@ -14,9 +14,7 @@
 
 package backend
 
-// TestMain is intentionally not defined here; we only use init() to enable
-// the private-IP test hook so that tests pointing at 127.0.0.1 / httptest
-// servers do not trip SSRF validation.
-func init() {
-	allowPrivateBaseURL = true
-}
+// testRESTOpts is the default RESTAdapterOptions used by tests. It allows
+// private URLs so that tests targeting httptest servers on 127.0.0.1 work
+// without tripping SSRF validation.
+var testRESTOpts = RESTAdapterOptions{AllowPrivateURL: true}

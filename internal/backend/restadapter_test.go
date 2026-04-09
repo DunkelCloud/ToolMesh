@@ -74,7 +74,7 @@ func TestRESTAdapter_ListTools(t *testing.T) {
 		},
 	}
 
-	adapter, err := NewRESTAdapter(spec, &testCredStore{}, slog.Default())
+	adapter, err := NewRESTAdapter(spec, &testCredStore{}, slog.Default(), testRESTOpts)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -184,7 +184,7 @@ func TestRESTAdapter_Execute(t *testing.T) {
 		},
 	}
 
-	adapter, err := NewRESTAdapter(spec, &testCredStore{}, slog.Default())
+	adapter, err := NewRESTAdapter(spec, &testCredStore{}, slog.Default(), testRESTOpts)
 	if err != nil {
 		t.Fatalf("create adapter: %v", err)
 	}
@@ -261,7 +261,7 @@ func TestRESTAdapter_FormEncodedBody(t *testing.T) {
 		},
 	}
 
-	adapter, err := NewRESTAdapter(spec, &testCredStore{creds: map[string]string{"tok": "sk_test_123"}}, slog.Default())
+	adapter, err := NewRESTAdapter(spec, &testCredStore{creds: map[string]string{"tok": "sk_test_123"}}, slog.Default(), testRESTOpts)
 	if err != nil {
 		t.Fatalf("create adapter: %v", err)
 	}
@@ -326,7 +326,7 @@ func TestRESTAdapter_FormEncodedNestedObject(t *testing.T) {
 		},
 	}
 
-	adapter, _ := NewRESTAdapter(spec, &testCredStore{creds: map[string]string{"tok": "sk_test_123"}}, slog.Default())
+	adapter, _ := NewRESTAdapter(spec, &testCredStore{creds: map[string]string{"tok": "sk_test_123"}}, slog.Default(), testRESTOpts)
 
 	_, err := adapter.Execute(context.Background(), "create_price", map[string]any{
 		"unit_amount": 1999,
@@ -361,7 +361,7 @@ func TestRESTAdapter_BackendSummaries(t *testing.T) {
 			Tools:       map[string]dadl.ToolDef{"t": {Method: "GET", Path: "/"}},
 		},
 	}
-	adapter, _ := NewRESTAdapter(spec, &testCredStore{}, slog.Default())
+	adapter, _ := NewRESTAdapter(spec, &testCredStore{}, slog.Default(), testRESTOpts)
 	summaries := adapter.BackendSummaries()
 	if len(summaries) != 1 {
 		t.Fatalf("got %d summaries, want 1", len(summaries))
@@ -470,7 +470,7 @@ func TestRESTAdapter_MultipartFileUpload(t *testing.T) {
 		},
 	}
 
-	adapter, err := NewRESTAdapter(spec, &testCredStore{creds: map[string]string{}}, slog.Default())
+	adapter, err := NewRESTAdapter(spec, &testCredStore{creds: map[string]string{}}, slog.Default(), testRESTOpts)
 	if err != nil {
 		t.Fatalf("create adapter: %v", err)
 	}
@@ -536,7 +536,7 @@ func TestBuildQuery_URLEncoding(t *testing.T) {
 			Tools:   map[string]dadl.ToolDef{"t": {Method: "GET", Path: "/"}},
 		},
 	}
-	adapter, err := NewRESTAdapter(spec, &testCredStore{}, slog.Default())
+	adapter, err := NewRESTAdapter(spec, &testCredStore{}, slog.Default(), testRESTOpts)
 	if err != nil {
 		t.Fatalf("create adapter: %v", err)
 	}
@@ -567,7 +567,7 @@ func TestBuildQuery_NilValues(t *testing.T) {
 			Tools:   map[string]dadl.ToolDef{"t": {Method: "GET", Path: "/"}},
 		},
 	}
-	adapter, err := NewRESTAdapter(spec, &testCredStore{}, slog.Default())
+	adapter, err := NewRESTAdapter(spec, &testCredStore{}, slog.Default(), testRESTOpts)
 	if err != nil {
 		t.Fatalf("create adapter: %v", err)
 	}
@@ -602,7 +602,7 @@ func TestBuildQuery_NilWithDefault(t *testing.T) {
 			Tools:   map[string]dadl.ToolDef{"t": {Method: "GET", Path: "/"}},
 		},
 	}
-	adapter, err := NewRESTAdapter(spec, &testCredStore{}, slog.Default())
+	adapter, err := NewRESTAdapter(spec, &testCredStore{}, slog.Default(), testRESTOpts)
 	if err != nil {
 		t.Fatalf("create adapter: %v", err)
 	}
@@ -629,7 +629,7 @@ func TestBuildBody_NilValues(t *testing.T) {
 			Tools:   map[string]dadl.ToolDef{"t": {Method: "POST", Path: "/"}},
 		},
 	}
-	adapter, err := NewRESTAdapter(spec, &testCredStore{}, slog.Default())
+	adapter, err := NewRESTAdapter(spec, &testCredStore{}, slog.Default(), testRESTOpts)
 	if err != nil {
 		t.Fatalf("create adapter: %v", err)
 	}
@@ -659,7 +659,7 @@ func TestBuildPath_URLEncoding(t *testing.T) {
 			Tools:   map[string]dadl.ToolDef{"t": {Method: "GET", Path: "/"}},
 		},
 	}
-	adapter, err := NewRESTAdapter(spec, &testCredStore{}, slog.Default())
+	adapter, err := NewRESTAdapter(spec, &testCredStore{}, slog.Default(), testRESTOpts)
 	if err != nil {
 		t.Fatalf("create adapter: %v", err)
 	}

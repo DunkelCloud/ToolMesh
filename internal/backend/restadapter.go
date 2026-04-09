@@ -69,37 +69,50 @@ type RESTAdapter struct {
 	blobTTL             time.Duration     // TTL for blob URLs (from backends.yaml options.blob_ttl)
 }
 
+// RESTAdapterOptions controls per-backend security settings.
+type RESTAdapterOptions struct {
+	// AllowPrivateURL skips SSRF base_url validation, permitting private/loopback
+	// addresses. This is the default for admin-configured backends.
+	AllowPrivateURL bool
+	// TLSSkipVerify accepts invalid or self-signed TLS certificates.
+	TLSSkipVerify bool
+}
+
 // NewRESTAdapter creates a RESTAdapter from a parsed DADL spec.
 // The spec.Backend.BaseURL must be set (either from the .dadl file or overridden via backends.yaml).
-func NewRESTAdapter(spec *dadl.Spec, creds credentials.CredentialStore, logger *slog.Logger) (*RESTAdapter, error) {
+func NewRESTAdapter(spec *dadl.Spec, creds credentials.CredentialStore, logger *slog.Logger, opts RESTAdapterOptions) (*RESTAdapter, error) {
 	if spec.Backend.BaseURL == "" {
 		return nil, fmt.Errorf("REST backend %q: base_url is required (set in .dadl file or via backends.yaml url field)", spec.Backend.Name)
 	}
 
 	// SSRF protection: validate base_url does not point to private/internal addresses.
-	// Validation failure is fatal — untrusted specs must not reach private networks.
-	if err := ValidateBaseURL(spec.Backend.BaseURL); err != nil {
-		return nil, fmt.Errorf("SSRF: base_url validation failed for backend %q (%s): %w", spec.Backend.Name, spec.Backend.BaseURL, err)
+	// Skipped when the admin explicitly allows private URLs (default for local config).
+	if !opts.AllowPrivateURL {
+		if err := ValidateBaseURL(spec.Backend.BaseURL); err != nil {
+			return nil, fmt.Errorf("SSRF: base_url validation failed for backend %q (%s): %w", spec.Backend.Name, spec.Backend.BaseURL, err)
+		}
 	}
 
 	auth := dadl.NewRestAuth(spec.Backend.Auth, spec.Backend.BaseURL, creds, logger)
 
 	// Each adapter gets its own transport with SSRF-safe dial hooks (H-4, M-19)
-	// and redirect validation (H-3).
-	transport := SSRFSafeTransport(defaultHTTPTimeout)
-	streamTransport := SSRFSafeTransport(defaultStreamingHTTPTimeout)
+	// and redirect validation (H-3). When AllowPrivateURL is set, IP checks are
+	// skipped in both the dialer and redirect handler.
+	transport := SSRFSafeTransport(defaultHTTPTimeout, opts.AllowPrivateURL, opts.TLSSkipVerify)
+	streamTransport := SSRFSafeTransport(defaultStreamingHTTPTimeout, opts.AllowPrivateURL, opts.TLSSkipVerify)
+	redirectCheck := newRedirectChecker(opts.AllowPrivateURL)
 
 	return &RESTAdapter{
 		spec: spec,
 		httpClient: &http.Client{
 			Timeout:       defaultHTTPTimeout,
 			Transport:     transport,
-			CheckRedirect: ssrfSafeCheckRedirect,
+			CheckRedirect: redirectCheck,
 		},
 		streamingHTTPClient: &http.Client{
 			Timeout:       defaultStreamingHTTPTimeout,
 			Transport:     streamTransport,
-			CheckRedirect: ssrfSafeCheckRedirect,
+			CheckRedirect: redirectCheck,
 		},
 		auth:             auth,
 		creds:            creds,

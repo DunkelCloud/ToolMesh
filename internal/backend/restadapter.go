@@ -359,7 +359,11 @@ func (a *RESTAdapter) BackendSummaries() []BackendInfo {
 
 func (a *RESTAdapter) doRequest(ctx context.Context, tool *dadl.ToolDef, params map[string]any) (*http.Response, []byte, error) {
 	// Build URL
-	urlStr := a.spec.Backend.BaseURL + a.buildPath(tool, params)
+	toolPath, err := a.buildPath(tool, params)
+	if err != nil {
+		return nil, nil, err
+	}
+	urlStr := a.spec.Backend.BaseURL + toolPath
 
 	// Build query string
 	query := a.buildQuery(tool, params)
@@ -440,16 +444,29 @@ func (a *RESTAdapter) doRequest(ctx context.Context, tool *dadl.ToolDef, params 
 	return resp, body, nil
 }
 
-func (a *RESTAdapter) buildPath(tool *dadl.ToolDef, params map[string]any) string {
+// buildPath substitutes path parameters into the tool's URL template. Every
+// parameter declared with `in: path` is treated as required: a missing or nil
+// value returns an error instead of leaving the literal `{name}` placeholder
+// in the URL. Sending a request with an unsubstituted placeholder produces
+// confusing backend-specific errors (400 "could not route", 401 auth errors,
+// etc.) that look unrelated to the real cause.
+func (a *RESTAdapter) buildPath(tool *dadl.ToolDef, params map[string]any) (string, error) {
 	path := tool.Path
 	for name, def := range tool.Params {
-		if def.In == "path" {
-			if val, ok := params[name]; ok {
-				path = strings.ReplaceAll(path, "{"+name+"}", url.PathEscape(fmt.Sprintf("%v", val)))
-			}
+		if def.In != "path" {
+			continue
 		}
+		val, ok := params[name]
+		if !ok || val == nil {
+			return "", fmt.Errorf("missing required path parameter %q", name)
+		}
+		str := fmt.Sprintf("%v", val)
+		if str == "" {
+			return "", fmt.Errorf("path parameter %q cannot be empty", name)
+		}
+		path = strings.ReplaceAll(path, "{"+name+"}", url.PathEscape(str))
 	}
-	return path
+	return path, nil
 }
 
 func (a *RESTAdapter) buildQuery(tool *dadl.ToolDef, params map[string]any) string {
@@ -790,7 +807,11 @@ func (a *RESTAdapter) executeStreamingBinary(ctx context.Context, tool *dadl.Too
 // doRequestRaw performs the HTTP request but returns the raw response without
 // reading the body. The caller is responsible for closing resp.Body.
 func (a *RESTAdapter) doRequestRaw(ctx context.Context, tool *dadl.ToolDef, params map[string]any) (*http.Response, error) {
-	urlStr := a.spec.Backend.BaseURL + a.buildPath(tool, params)
+	toolPath, err := a.buildPath(tool, params)
+	if err != nil {
+		return nil, err
+	}
+	urlStr := a.spec.Backend.BaseURL + toolPath
 
 	query := a.buildQuery(tool, params)
 	if query != "" {

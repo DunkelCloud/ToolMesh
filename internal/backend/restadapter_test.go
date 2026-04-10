@@ -671,11 +671,99 @@ func TestBuildPath_URLEncoding(t *testing.T) {
 		},
 	}
 
-	path := adapter.buildPath(tool, map[string]any{"id": "../admin"})
+	path, err := adapter.buildPath(tool, map[string]any{"id": "../admin"})
+	if err != nil {
+		t.Fatalf("buildPath: %v", err)
+	}
 	if strings.Contains(path, "../admin") {
 		t.Errorf("path contains unencoded traversal: %s", path)
 	}
 	if !strings.Contains(path, "..%2Fadmin") {
 		t.Errorf("path not properly encoded: %s", path)
+	}
+}
+
+// TestBuildPath_MissingRequiredParam verifies that a missing path parameter
+// is rejected up front with a clear error instead of leaving the literal
+// {name} placeholder in the URL. Sending a request with an unsubstituted
+// placeholder produces confusing backend-specific errors (400 "could not
+// route", 401 auth errors, etc.) that look unrelated to the real cause.
+func TestBuildPath_MissingRequiredParam(t *testing.T) {
+	spec := &dadl.Spec{
+		Backend: dadl.BackendDef{
+			Name:    "testapi",
+			Type:    "rest",
+			BaseURL: "https://api.example.com",
+			Tools:   map[string]dadl.ToolDef{"t": {Method: "GET", Path: "/"}},
+		},
+	}
+	adapter, err := NewRESTAdapter(spec, &testCredStore{}, slog.Default(), testRESTOpts)
+	if err != nil {
+		t.Fatalf("create adapter: %v", err)
+	}
+
+	tool := &dadl.ToolDef{
+		Path: "/accounts/{account_id}/d1/database",
+		Params: map[string]dadl.ParamDef{
+			"account_id": {Type: "string", In: "path", Required: true},
+		},
+	}
+
+	// No account_id supplied.
+	_, err = adapter.buildPath(tool, map[string]any{})
+	if err == nil {
+		t.Fatal("expected error for missing path parameter, got nil")
+	}
+	if !strings.Contains(err.Error(), "account_id") {
+		t.Errorf("error does not mention the missing parameter name: %v", err)
+	}
+
+	// Explicitly nil value.
+	_, err = adapter.buildPath(tool, map[string]any{"account_id": nil})
+	if err == nil {
+		t.Fatal("expected error for nil path parameter, got nil")
+	}
+
+	// Empty string.
+	_, err = adapter.buildPath(tool, map[string]any{"account_id": ""})
+	if err == nil {
+		t.Fatal("expected error for empty path parameter, got nil")
+	}
+}
+
+// TestBuildPath_SubstitutesAllRequiredParams verifies the happy path with
+// multiple path parameters.
+func TestBuildPath_SubstitutesAllRequiredParams(t *testing.T) {
+	spec := &dadl.Spec{
+		Backend: dadl.BackendDef{
+			Name:    "testapi",
+			Type:    "rest",
+			BaseURL: "https://api.example.com",
+			Tools:   map[string]dadl.ToolDef{"t": {Method: "GET", Path: "/"}},
+		},
+	}
+	adapter, err := NewRESTAdapter(spec, &testCredStore{}, slog.Default(), testRESTOpts)
+	if err != nil {
+		t.Fatalf("create adapter: %v", err)
+	}
+
+	tool := &dadl.ToolDef{
+		Path: "/accounts/{account_id}/d1/database/{database_id}/query",
+		Params: map[string]dadl.ParamDef{
+			"account_id":  {Type: "string", In: "path", Required: true},
+			"database_id": {Type: "string", In: "path", Required: true},
+		},
+	}
+
+	path, err := adapter.buildPath(tool, map[string]any{
+		"account_id":  "acct-123",
+		"database_id": "db-456",
+	})
+	if err != nil {
+		t.Fatalf("buildPath: %v", err)
+	}
+	want := "/accounts/acct-123/d1/database/db-456/query"
+	if path != want {
+		t.Errorf("path = %q, want %q", path, want)
 	}
 }

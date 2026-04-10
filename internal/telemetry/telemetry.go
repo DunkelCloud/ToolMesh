@@ -153,34 +153,60 @@ func (c *Collector) RecordCall(backendName string, success bool) {
 
 // Run starts the send loop. It blocks until ctx is canceled, at which
 // point it persists the current counters and returns.
-// On startup, if more than one interval has elapsed since the last send,
-// an immediate send is triggered so restarts don't reset the cycle.
+//
+// Scheduling accounts for the persisted LastSent so that containers which
+// restart more often than once per interval still send on schedule:
+//   - Never sent (zero LastSent): first fire after a full interval.
+//   - LastSent older than one interval: send immediately, then schedule normally.
+//   - LastSent within the interval: first fire at (LastSent + interval),
+//     i.e. only the remaining time, not a fresh full interval.
 func (c *Collector) Run(ctx context.Context) {
-	// Send immediately if overdue (e.g. after restart).
-	if !c.disabled && !c.lastSent.IsZero() && time.Since(c.lastSent) >= c.interval {
-		c.logger.Debug("telemetry: overdue, sending now",
-			"lastSent", c.lastSent,
+	if c.disabled {
+		// Telemetry is opted out, but we still want persistState() to run on
+		// shutdown so counters survive for potential re-enablement.
+		<-ctx.Done()
+		c.persistState()
+		return
+	}
+
+	c.mu.Lock()
+	lastSent := c.lastSent
+	c.mu.Unlock()
+
+	var firstDelay time.Duration
+	switch {
+	case lastSent.IsZero():
+		firstDelay = c.interval
+		c.logger.Debug("telemetry: run loop started (no prior send)",
+			"firstSendIn", firstDelay,
 			"interval", c.interval,
-			"age", time.Since(c.lastSent).Round(time.Second),
+		)
+	case time.Since(lastSent) >= c.interval:
+		age := time.Since(lastSent).Round(time.Second)
+		c.logger.Debug("telemetry: overdue, sending now",
+			"lastSent", lastSent,
+			"interval", c.interval,
+			"age", age,
 		)
 		c.send(ctx)
-	} else {
-		c.logger.Debug("telemetry: run loop started",
+		firstDelay = c.interval
+	default:
+		firstDelay = c.interval - time.Since(lastSent)
+		c.logger.Debug("telemetry: run loop started (resuming partial interval)",
+			"firstSendIn", firstDelay.Round(time.Second),
+			"lastSent", lastSent,
 			"interval", c.interval,
-			"disabled", c.disabled,
-			"lastSent", c.lastSent,
 		)
 	}
 
-	ticker := time.NewTicker(c.interval)
-	defer ticker.Stop()
+	timer := time.NewTimer(firstDelay)
+	defer timer.Stop()
 
 	for {
 		select {
-		case <-ticker.C:
-			if !c.disabled {
-				c.send(ctx)
-			}
+		case <-timer.C:
+			c.send(ctx)
+			timer.Reset(c.interval)
 		case <-ctx.Done():
 			c.persistState()
 			return
@@ -231,18 +257,28 @@ func (c *Collector) send(ctx context.Context) {
 	}
 }
 
-// buildPayload creates the report slice from current counters. Must be called
-// with c.mu held.
+// buildPayload creates the report slice from the set of registered backends.
+// One entry is produced per unique DADL hash — even when the counters are
+// zero — so that idle installations still appear in the telemetry database as
+// a heartbeat. Must be called with c.mu held.
 func (c *Collector) buildPayload() []report {
-	var reports []report
-	for hash, cp := range c.counters {
-		if cp.CallCount == 0 && cp.ErrorCount == 0 {
+	seen := make(map[string]struct{}, len(c.backends))
+	reports := make([]report, 0, len(c.backends))
+	for _, hash := range c.backends {
+		if _, dup := seen[hash]; dup {
 			continue
+		}
+		seen[hash] = struct{}{}
+
+		var calls, errors int
+		if cp := c.counters[hash]; cp != nil {
+			calls = cp.CallCount
+			errors = cp.ErrorCount
 		}
 		reports = append(reports, report{
 			DADLHash:       hash,
-			CallCount:      cp.CallCount,
-			ErrorCount:     cp.ErrorCount,
+			CallCount:      calls,
+			ErrorCount:     errors,
 			Version:        c.version,
 			MCPServerCount: c.mcpServerCount,
 		})
@@ -304,13 +340,18 @@ func (c *Collector) loadState() {
 }
 
 // persistState writes the current counters to the state file atomically.
+// LastSent reflects the last *successful* send — never the time of this
+// persist call — so that shutdown persists do not corrupt the overdue check
+// on the next startup.
 func (c *Collector) persistState() {
 	c.mu.Lock()
 	state := stateData{
 		Telemetry: &telemetryState{
-			LastSent: time.Now().UTC().Format(time.RFC3339),
 			Counters: make(map[string]*counterPair, len(c.counters)),
 		},
+	}
+	if !c.lastSent.IsZero() {
+		state.Telemetry.LastSent = c.lastSent.UTC().Format(time.RFC3339)
 	}
 	for hash, cp := range c.counters {
 		state.Telemetry.Counters[hash] = &counterPair{

@@ -135,26 +135,6 @@ func main() {
 	}
 	logger.Info("credential store initialized", "type", cfg.CredentialStore)
 
-	// Initialize MCPAdapter (external MCP backends)
-	// Use FilteredTeeHandler so only records with a matching "backend"
-	// attribute are written to the debug file.
-	mcpLogger := logger
-	if debugFile != nil && debugSet != nil {
-		filtered := debuglog.NewFilteredTeeHandler(baseHandler, debugFile, debugSet)
-		mcpLogger = slog.New(mcp.NewContextHandler(filtered))
-	}
-	mcpAdapter, err := backend.NewMCPAdapter(cfg.BackendsConfigPath, credStore, mcpLogger)
-	if err != nil {
-		logger.Error("failed to create MCP adapter", "error", err)
-		os.Exit(1)
-	}
-	defer mcpAdapter.Close()
-
-	// Connect to all configured MCP backends
-	if err := mcpAdapter.Connect(ctx); err != nil {
-		logger.Error("failed to connect backends", "error", err)
-	}
-
 	// Load TypeScript tool definitions (canonical source)
 	toolDefs, err := tsdef.LoadDir(cfg.ToolsDir)
 	if err != nil {
@@ -180,12 +160,6 @@ func main() {
 	// Create type coercer for LLM tolerance
 	coercer := tsdef.NewCoercer(toolDefs, logger)
 
-	// Compose all backends: built-in echo + external MCP backends
-	compositeBackend := backend.NewCompositeBackend(map[string]backend.ToolBackend{
-		"echo": echoBackend,
-	})
-	compositeBackend.AddPassthrough(mcpAdapter)
-
 	// Initialize blob store for binary API responses
 	blobBaseURL := strings.TrimRight(cfg.Issuer, "/")
 	blobDir := filepath.Join(cfg.DataDir, "blobs")
@@ -199,10 +173,46 @@ func main() {
 	// Initialize telemetry collector
 	tc := telemetry.New(cfg.DataDir, version.Version, logger)
 
-	tc.SetMCPServerCount(mcpAdapter.BackendCount())
+	// Build backends from backends.yaml (MCP + REST via DADL)
+	bldCfg := &buildBackendsConfig{
+		cfg:         cfg,
+		credStore:   credStore,
+		blobStore:   blobStore,
+		tc:          tc,
+		logger:      logger,
+		baseHandler: baseHandler,
+		debugFile:   debugFile,
+		debugSet:    debugSet,
+	}
+	res, err := buildBackends(ctx, bldCfg)
+	if err != nil {
+		logger.Error("failed to build backends", "error", err)
+		os.Exit(1)
+	}
+	defer res.mcpAdapter.Close()
 
-	// Initialize REST Proxy backends from DADL files
-	loadRESTBackends(compositeBackend, cfg.BackendsConfigPath, cfg.DADLDir, blobStore, credStore, tc, logger, baseHandler, debugFile, debugSet)
+	// Compose all backends: built-in echo + external MCP + REST
+	compositeBackend := backend.NewCompositeBackend(res.named)
+	compositeBackend.AddNamed("echo", echoBackend)
+	for _, p := range res.passthroughs {
+		compositeBackend.AddPassthrough(p)
+	}
+	tc.SetMCPServerCount(res.mcpAdapter.BackendCount())
+
+	// Watch backends.yaml for changes and hot-reload
+	go watchBackendsConfig(ctx, cfg.BackendsConfigPath, 5*time.Second, func() {
+		logger.Info("backends.yaml changed, reloading backends")
+		newRes, reloadErr := buildBackends(ctx, bldCfg)
+		if reloadErr != nil {
+			logger.Error("hot-reload failed, keeping current backends", "error", reloadErr)
+			return
+		}
+		// Merge echo backend (static) with reloaded backends
+		newRes.named["echo"] = echoBackend
+		compositeBackend.Swap(newRes.named, newRes.passthroughs)
+		tc.SetMCPServerCount(newRes.mcpAdapter.BackendCount())
+		logger.Info("backends hot-reloaded successfully")
+	})
 
 	// Initialize OpenFGA authorizer based on OPENFGA_MODE
 	var authorizer *authz.Authorizer
@@ -366,6 +376,87 @@ func main() {
 	logger.Info("ToolMesh stopped")
 }
 
+// buildBackendsConfig holds the dependencies needed by buildBackends.
+// Grouped into a struct to keep the signature manageable and reusable
+// from both startup and the hot-reload callback.
+type buildBackendsConfig struct {
+	cfg         *config.Config
+	credStore   credentials.CredentialStore
+	blobStore   *blob.Store
+	tc          *telemetry.Collector
+	logger      *slog.Logger
+	baseHandler slog.Handler
+	debugFile   *os.File
+	debugSet    map[string]bool
+}
+
+// backendsResult holds the output of buildBackends — the named backend map,
+// passthrough backends, and the MCPAdapter (for lifecycle management).
+type backendsResult struct {
+	named        map[string]backend.ToolBackend
+	passthroughs []backend.ToolBackend
+	mcpAdapter   *backend.MCPAdapter
+}
+
+// buildBackends creates all MCP and REST backends from backends.yaml and DADL
+// files. This function is called at startup and on hot-reload. It returns the
+// named map and passthroughs ready for CompositeBackend.Swap().
+func buildBackends(ctx context.Context, bc *buildBackendsConfig) (*backendsResult, error) {
+	// Initialize MCPAdapter (external MCP backends)
+	mcpLogger := bc.logger
+	if bc.debugFile != nil && bc.debugSet != nil {
+		filtered := debuglog.NewFilteredTeeHandler(bc.baseHandler, bc.debugFile, bc.debugSet)
+		mcpLogger = slog.New(mcp.NewContextHandler(filtered))
+	}
+	mcpAdapter, err := backend.NewMCPAdapter(bc.cfg.BackendsConfigPath, bc.credStore, mcpLogger)
+	if err != nil {
+		return nil, fmt.Errorf("create MCP adapter: %w", err)
+	}
+
+	if err := mcpAdapter.Connect(ctx); err != nil {
+		bc.logger.Error("failed to connect MCP backends", "error", err)
+	}
+
+	// Build named REST backends from DADL files
+	named := make(map[string]backend.ToolBackend)
+	loadRESTBackendsInto(named, bc.cfg.BackendsConfigPath, bc.cfg.DADLDir, bc.blobStore, bc.credStore, bc.tc, bc.logger, bc.baseHandler, bc.debugFile, bc.debugSet)
+
+	return &backendsResult{
+		named:        named,
+		passthroughs: []backend.ToolBackend{mcpAdapter},
+		mcpAdapter:   mcpAdapter,
+	}, nil
+}
+
+// watchBackendsConfig polls the backends config file for changes and calls
+// reload when a modification is detected. Uses stat-based polling to avoid
+// adding an fsnotify dependency. The initial mtime is captured on first tick
+// so startup does not trigger a spurious reload.
+func watchBackendsConfig(ctx context.Context, path string, interval time.Duration, reload func()) {
+	var lastMod time.Time
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			info, err := os.Stat(path)
+			if err != nil {
+				continue
+			}
+			mod := info.ModTime()
+			if !mod.Equal(lastMod) {
+				if !lastMod.IsZero() {
+					reload()
+				}
+				lastMod = mod
+			}
+		}
+	}
+}
+
 // backendLogger returns a tee logger for debug-listed backends,
 // or the global logger for all others.
 func backendLogger(name string, globalLogger *slog.Logger, stdoutHandler slog.Handler, debugFile *os.File, debugSet map[string]bool) *slog.Logger {
@@ -376,9 +467,9 @@ func backendLogger(name string, globalLogger *slog.Logger, stdoutHandler slog.Ha
 	return globalLogger
 }
 
-// loadRESTBackends scans the backends config for transport: rest entries,
-// parses their DADL files, and adds them to the composite backend.
-func loadRESTBackends(composite *backend.CompositeBackend, backendsConfigPath, dadlDir string, blobStore *blob.Store, creds credentials.CredentialStore, tc *telemetry.Collector, logger *slog.Logger, stdoutHandler slog.Handler, debugFile *os.File, debugSet map[string]bool) {
+// loadRESTBackendsInto scans the backends config for transport: rest entries,
+// parses their DADL files, and populates the named map.
+func loadRESTBackendsInto(named map[string]backend.ToolBackend, backendsConfigPath, dadlDir string, blobStore *blob.Store, creds credentials.CredentialStore, tc *telemetry.Collector, logger *slog.Logger, stdoutHandler slog.Handler, debugFile *os.File, debugSet map[string]bool) {
 	data, err := os.ReadFile(backendsConfigPath) //nolint:gosec // path from trusted config
 	if err != nil {
 		return // no config = no REST backends
@@ -491,7 +582,7 @@ func loadRESTBackends(composite *backend.CompositeBackend, backendsConfigPath, d
 			}
 		}
 
-		composite.AddNamed(spec.Backend.Name, adapter)
+		named[spec.Backend.Name] = adapter
 		if tc != nil {
 			tc.RegisterBackend(spec.Backend.Name, spec.ContentHash)
 		}

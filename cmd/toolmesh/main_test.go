@@ -84,12 +84,10 @@ func TestBackendLogger_DebugEnabled(t *testing.T) {
 
 func TestLoadRESTBackends_MissingFile(t *testing.T) {
 	// Non-existent file should simply return without error.
-	composite := backend.NewCompositeBackend(map[string]backend.ToolBackend{})
-	loadRESTBackends(composite, filepath.Join(t.TempDir(), "does-not-exist.yaml"), "", nil, nil, nil, quietLogger(), nil, nil, nil)
-	// Assert nothing was added.
-	tools, _ := composite.ListTools(t.Context())
-	if len(tools) != 0 {
-		t.Errorf("expected 0 tools, got %d", len(tools))
+	named := make(map[string]backend.ToolBackend)
+	loadRESTBackendsInto(named, filepath.Join(t.TempDir(), "does-not-exist.yaml"), "", nil, nil, nil, quietLogger(), nil, nil, nil)
+	if len(named) != 0 {
+		t.Errorf("expected 0 backends, got %d", len(named))
 	}
 }
 
@@ -99,8 +97,8 @@ func TestLoadRESTBackends_InvalidYAML(t *testing.T) {
 	if err := os.WriteFile(path, []byte(":::not valid: : : yaml"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	composite := backend.NewCompositeBackend(map[string]backend.ToolBackend{})
-	loadRESTBackends(composite, path, dir, nil, nil, nil, quietLogger(), nil, nil, nil)
+	named := make(map[string]backend.ToolBackend)
+	loadRESTBackendsInto(named, path, dir, nil, nil, nil, quietLogger(), nil, nil, nil)
 	// Should log error but not panic.
 }
 
@@ -115,8 +113,8 @@ backends:
 	if err := os.WriteFile(path, yaml, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	composite := backend.NewCompositeBackend(map[string]backend.ToolBackend{})
-	loadRESTBackends(composite, path, dir, nil, nil, nil, quietLogger(), nil, nil, nil)
+	named := make(map[string]backend.ToolBackend)
+	loadRESTBackendsInto(named, path, dir, nil, nil, nil, quietLogger(), nil, nil, nil)
 }
 
 func TestLoadRESTBackends_NonRestBackendSkipped(t *testing.T) {
@@ -131,11 +129,10 @@ backends:
 	if err := os.WriteFile(path, yaml, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	composite := backend.NewCompositeBackend(map[string]backend.ToolBackend{})
-	loadRESTBackends(composite, path, dir, nil, nil, nil, quietLogger(), nil, nil, nil)
-	tools, _ := composite.ListTools(t.Context())
-	if len(tools) != 0 {
-		t.Errorf("expected 0 tools for non-rest backend, got %d", len(tools))
+	named := make(map[string]backend.ToolBackend)
+	loadRESTBackendsInto(named, path, dir, nil, nil, nil, quietLogger(), nil, nil, nil)
+	if len(named) != 0 {
+		t.Errorf("expected 0 backends for non-rest transport, got %d", len(named))
 	}
 }
 
@@ -151,6 +148,6 @@ backends:
 	if err := os.WriteFile(backendsPath, yaml, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	composite := backend.NewCompositeBackend(map[string]backend.ToolBackend{})
-	loadRESTBackends(composite, backendsPath, dir, nil, nil, nil, quietLogger(), nil, nil, nil)
+	named := make(map[string]backend.ToolBackend)
+	loadRESTBackendsInto(named, backendsPath, dir, nil, nil, nil, quietLogger(), nil, nil, nil)
 }

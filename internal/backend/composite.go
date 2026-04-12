@@ -18,40 +18,59 @@ import (
 	"context"
 	"fmt"
 	"strings"
-	"sync"
+	"sync/atomic"
 )
 
-// CompositeBackend aggregates multiple ToolBackend instances.
-// Named backends get tool names prefixed: "backendName:toolName".
-// Passthrough backends already manage their own prefixes (e.g. MCPAdapter).
-type CompositeBackend struct {
-	mu           sync.RWMutex
+// compositeState holds an immutable snapshot of the composite backend's state.
+// All reads use a single atomic load with zero lock contention.
+type compositeState struct {
 	backends     map[string]ToolBackend
 	passthroughs []ToolBackend
 }
 
+// CompositeBackend aggregates multiple ToolBackend instances.
+// Named backends get tool names prefixed: "backendName_toolName".
+// Passthrough backends already manage their own prefixes (e.g. MCPAdapter).
+//
+// State is stored behind an atomic.Pointer for lock-free reads on the hot path
+// (Execute, ListTools). Mutations create a shallow copy and atomically swap.
+type CompositeBackend struct {
+	state atomic.Pointer[compositeState]
+}
+
 // NewCompositeBackend creates a CompositeBackend from named backends.
 func NewCompositeBackend(backends map[string]ToolBackend) *CompositeBackend {
-	return &CompositeBackend{backends: backends}
+	c := &CompositeBackend{}
+	c.state.Store(&compositeState{
+		backends:     backends,
+		passthroughs: nil,
+	})
+	return c
 }
 
 // AddPassthrough adds a backend that manages its own tool name prefixes.
 // Tool calls are delegated to passthrough backends when no named backend matches.
 func (c *CompositeBackend) AddPassthrough(b ToolBackend) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.passthroughs = append(c.passthroughs, b)
+	for {
+		old := c.state.Load()
+		next := &compositeState{
+			backends:     old.backends,
+			passthroughs: append(append([]ToolBackend(nil), old.passthroughs...), b),
+		}
+		if c.state.CompareAndSwap(old, next) {
+			return
+		}
+	}
 }
 
 // Execute routes the tool call to the correct backend based on the name prefix.
 // Tool names use underscore as separator: "backend_toolname".
 // We match against known backend names (longest prefix wins).
 func (c *CompositeBackend) Execute(ctx context.Context, toolName string, params map[string]any) (*ToolResult, error) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	s := c.state.Load()
 
 	// Check named backends by prefix match
-	for name, b := range c.backends {
+	for name, b := range s.backends {
 		prefix := name + "_"
 		if strings.HasPrefix(toolName, prefix) {
 			realTool := strings.TrimPrefix(toolName, prefix)
@@ -60,7 +79,7 @@ func (c *CompositeBackend) Execute(ctx context.Context, toolName string, params 
 	}
 
 	// Try passthrough backends (they handle their own routing)
-	for _, b := range c.passthroughs {
+	for _, b := range s.passthroughs {
 		result, err := b.Execute(ctx, toolName, params)
 		if err == nil {
 			return result, nil
@@ -77,14 +96,13 @@ func (c *CompositeBackend) Execute(ctx context.Context, toolName string, params 
 
 // ListTools aggregates tools from all backends.
 func (c *CompositeBackend) ListTools(ctx context.Context) ([]ToolDescriptor, error) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	s := c.state.Load()
 
 	var all []ToolDescriptor
 
 	// Named backends — prefix tool names with underscore separator
 	// (MCP spec requires tool names to match [a-zA-Z0-9_-])
-	for name, b := range c.backends {
+	for name, b := range s.backends {
 		tools, err := b.ListTools(ctx)
 		if err != nil {
 			continue
@@ -100,7 +118,7 @@ func (c *CompositeBackend) ListTools(ctx context.Context) ([]ToolDescriptor, err
 	}
 
 	// Passthrough backends — tools already have prefixes
-	for _, b := range c.passthroughs {
+	for _, b := range s.passthroughs {
 		tools, err := b.ListTools(ctx)
 		if err != nil {
 			continue
@@ -113,25 +131,46 @@ func (c *CompositeBackend) ListTools(ctx context.Context) ([]ToolDescriptor, err
 
 // AddNamed adds a named backend after construction.
 func (c *CompositeBackend) AddNamed(name string, b ToolBackend) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.backends[name] = b
+	for {
+		old := c.state.Load()
+		newMap := make(map[string]ToolBackend, len(old.backends)+1)
+		for k, v := range old.backends {
+			newMap[k] = v
+		}
+		newMap[name] = b
+		next := &compositeState{
+			backends:     newMap,
+			passthroughs: old.passthroughs,
+		}
+		if c.state.CompareAndSwap(old, next) {
+			return
+		}
+	}
+}
+
+// Swap atomically replaces the entire composite state (named backends and
+// passthroughs) with the provided values. Concurrent readers see either the
+// old or the new state — never a mix. Use this for hot-reload scenarios.
+func (c *CompositeBackend) Swap(backends map[string]ToolBackend, passthroughs []ToolBackend) {
+	c.state.Store(&compositeState{
+		backends:     backends,
+		passthroughs: passthroughs,
+	})
 }
 
 // BackendSummaries collects summaries from all backends that implement BackendSummarizer.
 func (c *CompositeBackend) BackendSummaries() []BackendInfo {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	s := c.state.Load()
 
 	var all []BackendInfo
-	for _, b := range c.backends {
-		if s, ok := b.(BackendSummarizer); ok {
-			all = append(all, s.BackendSummaries()...)
+	for _, b := range s.backends {
+		if sum, ok := b.(BackendSummarizer); ok {
+			all = append(all, sum.BackendSummaries()...)
 		}
 	}
-	for _, b := range c.passthroughs {
-		if s, ok := b.(BackendSummarizer); ok {
-			all = append(all, s.BackendSummaries()...)
+	for _, b := range s.passthroughs {
+		if sum, ok := b.(BackendSummarizer); ok {
+			all = append(all, sum.BackendSummaries()...)
 		}
 	}
 	return all
@@ -139,15 +178,14 @@ func (c *CompositeBackend) BackendSummaries() []BackendInfo {
 
 // Healthy returns nil if at least one backend is healthy.
 func (c *CompositeBackend) Healthy(ctx context.Context) error {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	s := c.state.Load()
 
-	for _, b := range c.backends {
+	for _, b := range s.backends {
 		if err := b.Healthy(ctx); err == nil {
 			return nil
 		}
 	}
-	for _, b := range c.passthroughs {
+	for _, b := range s.passthroughs {
 		if err := b.Healthy(ctx); err == nil {
 			return nil
 		}

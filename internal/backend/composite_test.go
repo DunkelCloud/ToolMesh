@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 )
 
@@ -200,4 +201,99 @@ func TestCompositeBackend_ConcurrentAccess(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+}
+
+func TestCompositeBackend_Swap(t *testing.T) {
+	a := &stubBackend{name: "a", tools: []ToolDescriptor{{Name: "one"}}}
+	c := NewCompositeBackend(map[string]ToolBackend{"a": a})
+
+	// Before swap: a_one should work.
+	ctx := context.Background()
+	if _, err := c.Execute(ctx, "a_one", nil); err != nil {
+		t.Fatalf("before swap: %v", err)
+	}
+
+	// Swap to a completely new set of backends.
+	b := &stubBackend{name: "b", tools: []ToolDescriptor{{Name: "two"}}}
+	c.Swap(map[string]ToolBackend{"b": b}, nil)
+
+	// After swap: a_one should fail, b_two should work.
+	if _, err := c.Execute(ctx, "a_one", nil); err == nil {
+		t.Error("expected error for old backend after swap")
+	}
+	r, err := c.Execute(ctx, "b_two", nil)
+	if err != nil {
+		t.Fatalf("after swap: %v", err)
+	}
+	item := r.Content[0].(map[string]any)
+	if item["text"] != "b:two" {
+		t.Errorf("got %v, want b:two", item["text"])
+	}
+
+	// ListTools should reflect new state.
+	tools, _ := c.ListTools(ctx)
+	if len(tools) != 1 || tools[0].Name != "b_two" {
+		t.Errorf("tools after swap = %v, want [b_two]", tools)
+	}
+}
+
+// TestCompositeBackend_ConcurrentSwap exercises Swap while concurrent readers
+// call Execute and ListTools. The purpose is to verify no data races occur
+// (run with -race) and that readers always see a consistent state snapshot.
+func TestCompositeBackend_ConcurrentSwap(t *testing.T) {
+	backends := make([]map[string]ToolBackend, 10)
+	for i := range backends {
+		name := fmt.Sprintf("b%d", i)
+		backends[i] = map[string]ToolBackend{
+			name: &stubBackend{name: name, tools: []ToolDescriptor{{Name: "t"}}},
+		}
+	}
+
+	c := NewCompositeBackend(backends[0])
+	ctx := context.Background()
+
+	var wg sync.WaitGroup
+	var swapCount atomic.Int64
+
+	// Writer: continuously swaps to new backend sets.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 1; i < len(backends); i++ {
+			c.Swap(backends[i], nil)
+			swapCount.Add(1)
+		}
+	}()
+
+	// Readers: call Execute and ListTools concurrently with swaps.
+	for i := 0; i < 20; i++ {
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 50; j++ {
+				tools, _ := c.ListTools(ctx)
+				// Each snapshot must have exactly 1 backend with 1 tool.
+				if len(tools) != 1 {
+					t.Errorf("ListTools returned %d tools, want 1 (inconsistent snapshot)", len(tools))
+					return
+				}
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 50; j++ {
+				// Try all possible tool names — one should succeed per snapshot.
+				for k := range backends {
+					name := fmt.Sprintf("b%d_t", k)
+					_, _ = c.Execute(ctx, name, nil)
+				}
+			}
+		}()
+	}
+
+	wg.Wait()
+
+	if swapCount.Load() != int64(len(backends)-1) {
+		t.Errorf("expected %d swaps, got %d", len(backends)-1, swapCount.Load())
+	}
 }

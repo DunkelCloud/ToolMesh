@@ -70,7 +70,11 @@ backends:
 	// Capture logs to see why the backend might not load.
 	buf := &capturedWriter{}
 	logger := slog.New(slog.NewTextHandler(io.MultiWriter(buf), nil))
-	loadRESTBackends(composite, backendsPath, dir, nil, creds, nil, logger, nil, nil, nil)
+	named := make(map[string]backend.ToolBackend)
+	loadRESTBackendsInto(named, backendsPath, dir, nil, creds, nil, logger, nil, nil, nil)
+	for k, v := range named {
+		composite.AddNamed(k, v)
+	}
 
 	tools, err := composite.ListTools(t.Context())
 	if err != nil {
@@ -107,8 +111,8 @@ backends:
 `)
 	_ = os.WriteFile(backendsPath, yaml, 0o600)
 
-	composite := backend.NewCompositeBackend(map[string]backend.ToolBackend{})
-	loadRESTBackends(composite, backendsPath, dir, nil, credentials.NewEmbeddedStore(), nil, quietLogger(), nil, nil, nil)
+	named := make(map[string]backend.ToolBackend)
+	loadRESTBackendsInto(named, backendsPath, dir, nil, credentials.NewEmbeddedStore(), nil, quietLogger(), nil, nil, nil)
 	// Should still load without panic.
 }
 
@@ -122,6 +126,6 @@ func TestLoadRESTBackends_AbsoluteDADLPath(t *testing.T) {
 	yaml := []byte("backends:\n  - name: testapi\n    transport: rest\n    dadl: " + dadlPath + "\n")
 	_ = os.WriteFile(backendsPath, yaml, 0o600)
 
-	composite := backend.NewCompositeBackend(map[string]backend.ToolBackend{})
-	loadRESTBackends(composite, backendsPath, "/some/other/dir", nil, credentials.NewEmbeddedStore(), nil, quietLogger(), nil, nil, nil)
+	named := make(map[string]backend.ToolBackend)
+	loadRESTBackendsInto(named, backendsPath, "/some/other/dir", nil, credentials.NewEmbeddedStore(), nil, quietLogger(), nil, nil, nil)
 }

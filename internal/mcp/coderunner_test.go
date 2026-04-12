@@ -336,12 +336,30 @@ func TestCodeRunner_ToolError(t *testing.T) {
 	}
 	runner := newTestCodeRunner(t, mb)
 
-	_, err := runner.Execute(testCtx(), `await toolmesh.test_foo({ key: "val" })`)
-	if err == nil {
-		t.Fatal("expected error from failed tool call")
+	// Tool errors are returned to JS as error objects instead of panicking.
+	// The execute_code call itself succeeds; the error is in the results.
+	result, err := runner.Execute(testCtx(), `await toolmesh.test_foo({ key: "val" })`)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
 	}
-	if !strings.Contains(err.Error(), "backend failure") {
-		t.Errorf("error = %q, want to contain \"backend failure\"", err.Error())
+	if result.IsError {
+		t.Fatalf("unexpected IsError on result: %v", result.Content)
+	}
+
+	text := extractText(t, result)
+	var results []map[string]any
+	if err := json.Unmarshal([]byte(text), &results); err != nil {
+		t.Fatalf("failed to unmarshal results: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result entry, got %d", len(results))
+	}
+	errMsg, ok := results[0]["error"].(string)
+	if !ok {
+		t.Fatalf("expected error string in result, got: %v", results[0])
+	}
+	if !strings.Contains(errMsg, "backend failure") {
+		t.Errorf("error = %q, want to contain \"backend failure\"", errMsg)
 	}
 }
 
@@ -554,5 +572,92 @@ func TestCodeRunner_EmptyParams(t *testing.T) {
 	}
 	if len(mb.calls[0].Params) != 0 {
 		t.Errorf("expected empty params, got %v", mb.calls[0].Params)
+	}
+}
+
+func TestCodeRunner_LoopWithFailingCalls(t *testing.T) {
+	callNum := 0
+	mb := &codeRunnerTestBackend{
+		handler: func(_ string, _ map[string]any) (*backend.ToolResult, error) {
+			callNum++
+			if callNum == 2 {
+				return nil, &testError{msg: "transient failure"}
+			}
+			return &backend.ToolResult{
+				Content: []any{map[string]any{"type": "text", "text": `{"ok": true}`}},
+			}, nil
+		},
+	}
+	runner := newTestCodeRunner(t, mb)
+
+	// 3 iterations: call 1 succeeds, call 2 fails, call 3 succeeds.
+	// All 3 should execute — the failing call must not stop the loop.
+	code := `
+		for (let i = 0; i < 3; i++) {
+			await toolmesh.test_foo({ i: i });
+		}
+	`
+	result, err := runner.Execute(testCtx(), code)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected IsError: %v", result.Content)
+	}
+	if len(mb.calls) != 3 {
+		t.Fatalf("expected 3 calls, got %d", len(mb.calls))
+	}
+
+	text := extractText(t, result)
+	var results []map[string]any
+	if err := json.Unmarshal([]byte(text), &results); err != nil {
+		t.Fatalf("failed to unmarshal results: %v", err)
+	}
+	if len(results) != 3 {
+		t.Fatalf("expected 3 result entries, got %d: %s", len(results), text)
+	}
+	// Second entry should be the error
+	if _, ok := results[1]["error"]; !ok {
+		t.Errorf("expected error in second result, got: %v", results[1])
+	}
+}
+
+func TestCodeRunner_ErrorReturnedToJS(t *testing.T) {
+	mb := &codeRunnerTestBackend{
+		handler: func(_ string, _ map[string]any) (*backend.ToolResult, error) {
+			return nil, &testError{msg: "something broke"}
+		},
+	}
+	runner := newTestCodeRunner(t, mb)
+
+	// JS code can inspect the error object returned by a failed call.
+	code := `
+		const r = await toolmesh.test_foo({});
+		if (r.error) return { wasError: true, msg: r.error };
+		return { wasError: false };
+	`
+	result, err := runner.Execute(testCtx(), code)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected IsError: %v", result.Content)
+	}
+
+	text := extractText(t, result)
+	var results []map[string]any
+	if err := json.Unmarshal([]byte(text), &results); err != nil {
+		t.Fatalf("failed to unmarshal results: %v", err)
+	}
+	last := results[len(results)-1]
+	retVal, ok := last["return"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected return map, got: %v", last)
+	}
+	if retVal["wasError"] != true {
+		t.Errorf("wasError = %v, want true", retVal["wasError"])
+	}
+	if msg, _ := retVal["msg"].(string); !strings.Contains(msg, "something broke") {
+		t.Errorf("msg = %q, want to contain \"something broke\"", msg)
 	}
 }

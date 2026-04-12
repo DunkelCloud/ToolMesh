@@ -69,11 +69,16 @@ func schemaToTypeScript(schema map[string]any) string {
 	}
 
 	required := make(map[string]bool)
-	if req, ok := schema["required"].([]any); ok {
+	switch req := schema["required"].(type) {
+	case []any:
 		for _, r := range req {
 			if s, ok := r.(string); ok {
 				required[s] = true
 			}
+		}
+	case []string:
+		for _, s := range req {
+			required[s] = true
 		}
 	}
 

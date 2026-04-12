@@ -60,6 +60,71 @@ func TestGenerateToolDefinitions(t *testing.T) {
 	}
 }
 
+func TestSchemaToTypeScript_RequiredStringSlice(t *testing.T) {
+	// Regression: buildInputSchema produces []string for the required array,
+	// but schemaToTypeScript only handled []any. This caused all params to
+	// appear optional in list_tools output.
+	schema := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"query": map[string]any{"type": "string"},
+			"limit": map[string]any{"type": "integer"},
+		},
+		"required": []string{"query"},
+	}
+
+	got := schemaToTypeScript(schema)
+
+	if !strings.Contains(got, "query: string") {
+		t.Errorf("query should be required (no ?), got:\n%s", got)
+	}
+	if strings.Contains(got, "query?") {
+		t.Errorf("query must not be optional, got:\n%s", got)
+	}
+	if !strings.Contains(got, "limit?: number") {
+		t.Errorf("limit should be optional, got:\n%s", got)
+	}
+}
+
+func TestSchemaToTypeScript_RequiredAnySlice(t *testing.T) {
+	schema := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"page":  map[string]any{"type": "string"},
+			"text":  map[string]any{"type": "string"},
+			"minor": map[string]any{"type": "boolean"},
+		},
+		"required": []any{"page", "text"},
+	}
+
+	got := schemaToTypeScript(schema)
+
+	if strings.Contains(got, "page?") {
+		t.Errorf("page must not be optional, got:\n%s", got)
+	}
+	if strings.Contains(got, "text?") {
+		t.Errorf("text must not be optional, got:\n%s", got)
+	}
+	if !strings.Contains(got, "minor?: boolean") {
+		t.Errorf("minor should be optional, got:\n%s", got)
+	}
+}
+
+func TestSchemaToTypeScript_NoRequired(t *testing.T) {
+	schema := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"limit": map[string]any{"type": "integer"},
+		},
+	}
+
+	got := schemaToTypeScript(schema)
+
+	if !strings.Contains(got, "limit?: number") {
+		t.Errorf("limit should be optional when no required field, got:\n%s", got)
+	}
+}
+
 func TestSanitizeName(t *testing.T) {
 	tests := []struct {
 		input string

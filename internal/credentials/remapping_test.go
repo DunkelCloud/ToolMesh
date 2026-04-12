@@ -23,7 +23,7 @@ func TestRemappingStore_Get_Remapped(t *testing.T) {
 	t.Setenv("MY_PROD_TOKEN", "secret-prod-value")
 
 	delegate := NewEmbeddedStore()
-	store := NewRemappingStore(delegate, map[string]string{
+	store := NewRemappingStore(delegate, map[string]string{ //nolint:gosec // test credential mapping, not real secrets
 		"CREDENTIAL_ANTHROPIC_TOKEN": "MY_PROD_TOKEN",
 	})
 
@@ -40,7 +40,7 @@ func TestRemappingStore_Get_Delegates(t *testing.T) {
 	t.Setenv("CREDENTIAL_OTHER_KEY", "delegate-value")
 
 	delegate := NewEmbeddedStore()
-	store := NewRemappingStore(delegate, map[string]string{
+	store := NewRemappingStore(delegate, map[string]string{ //nolint:gosec // test credential mapping, not real secrets
 		"CREDENTIAL_ANTHROPIC_TOKEN": "MY_PROD_TOKEN",
 	})
 
@@ -59,7 +59,7 @@ func TestRemappingStore_Get_EmptyRemapped(t *testing.T) {
 	t.Setenv("EMPTY_VAR", "")
 
 	delegate := NewEmbeddedStore()
-	store := NewRemappingStore(delegate, map[string]string{
+	store := NewRemappingStore(delegate, map[string]string{ //nolint:gosec // test credential mapping
 		"CREDENTIAL_ANTHROPIC_TOKEN": "EMPTY_VAR",
 	})
 
@@ -74,7 +74,7 @@ func TestRemappingStore_ListByPrefix_MergesRemapped(t *testing.T) {
 	t.Setenv("CUSTOM_GH_SECRET", "from-remap")
 
 	delegate := NewEmbeddedStore()
-	store := NewRemappingStore(delegate, map[string]string{
+	store := NewRemappingStore(delegate, map[string]string{ //nolint:gosec // test credential mapping
 		"CREDENTIAL_GITHUB_SECRET": "CUSTOM_GH_SECRET",
 	})
 

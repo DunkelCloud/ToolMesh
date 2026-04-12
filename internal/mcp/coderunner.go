@@ -181,7 +181,12 @@ func (r *CodeRunner) Execute(ctx context.Context, code string) (*backend.ToolRes
 					"error": err.Error(),
 				})
 				mu.Unlock()
-				panic(rt.NewGoError(fmt.Errorf("execute_code: toolmesh.%s failed: %w", sn, err)))
+				// Return error object to JS instead of panicking.
+				// This lets loops continue and subsequent calls execute.
+				errObj := rt.NewObject()
+				_ = errObj.Set("error", err.Error())
+				_ = errObj.Set("tool", cn)
+				return rt.ToValue(errObj)
 			}
 
 			// Log result

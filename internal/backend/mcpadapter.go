@@ -50,6 +50,7 @@ type BackendEntry struct {
 	AllowPrivateURL *bool             `yaml:"allow_private_url"` // allow private/loopback base_url (default: true)
 	TLSSkipVerify   bool              `yaml:"tls_skip_verify"`   // accept invalid/self-signed TLS certificates
 	Options         map[string]string `yaml:"options"`           // backend-specific options (e.g. blob_ttl: "1h")
+	Env             map[string]string `yaml:"env"`               // credential env remapping (DADL name → actual env var)
 }
 
 // BackendInfo provides a summary of a backend for tool description enrichment.

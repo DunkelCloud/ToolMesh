@@ -548,8 +548,17 @@ func loadRESTBackendsInto(named map[string]backend.ToolBackend, backendsConfigPa
 			logger.Warn("TLS certificate validation disabled (tls_skip_verify)", "name", entry.Name)
 		}
 
+		// Build per-backend credential store with optional env remapping.
+		// This allows the same DADL to target different endpoints (prod/staging)
+		// by remapping credential variable names in backends.yaml.
+		backendCreds := creds
+		if len(entry.Env) > 0 {
+			backendCreds = credentials.NewRemappingStore(creds, entry.Env)
+			logger.Info("credential env remapping active", "name", entry.Name, "mappings", len(entry.Env))
+		}
+
 		bl := backendLogger(spec.Backend.Name, logger, stdoutHandler, debugFile, debugSet)
-		adapter, err := backend.NewRESTAdapter(spec, creds, bl, backend.RESTAdapterOptions{
+		adapter, err := backend.NewRESTAdapter(spec, backendCreds, bl, backend.RESTAdapterOptions{
 			AllowPrivateURL: allowPrivate,
 			TLSSkipVerify:   entry.TLSSkipVerify,
 		})

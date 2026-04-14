@@ -305,7 +305,40 @@ func (a *MCPAdapter) Execute(ctx context.Context, toolName string, params map[st
 			"tool", realTool,
 			"error", err,
 		)
-		return nil, fmt.Errorf("call tool %s on backend %s: %w", realTool, backendName, err)
+
+		// Auto-reconnect: if the connection died, try once to re-establish it.
+		if isConnectionClosed(err) {
+			a.logger.WarnContext(ctx, "backend connection lost, attempting reconnect",
+				"backend", backendName,
+			)
+
+			if reconnErr := a.reconnectBackend(ctx, backendName); reconnErr != nil {
+				a.logger.ErrorContext(ctx, "reconnect failed",
+					"backend", backendName,
+					"error", reconnErr,
+				)
+				return nil, fmt.Errorf("call tool %s on backend %s (reconnect also failed): %w", realTool, backendName, reconnErr)
+			}
+
+			// Retry with the fresh session.
+			a.mu.RLock()
+			conn = a.backends[backendName]
+			a.mu.RUnlock()
+
+			result, err = conn.session.CallTool(ctx, &mcp.CallToolParams{
+				Name:      realTool,
+				Arguments: params,
+			})
+			if err != nil {
+				return nil, fmt.Errorf("call tool %s on backend %s (after reconnect): %w", realTool, backendName, err)
+			}
+			a.logger.InfoContext(ctx, "retry after reconnect succeeded",
+				"backend", backendName,
+				"tool", realTool,
+			)
+		} else {
+			return nil, fmt.Errorf("call tool %s on backend %s: %w", realTool, backendName, err)
+		}
 	}
 
 	// Convert MCP Content to our ToolResult format
@@ -372,6 +405,46 @@ func (a *MCPAdapter) Healthy(_ context.Context) error {
 	}
 
 	return fmt.Errorf("no backends connected")
+}
+
+// isConnectionClosed returns true when the error indicates the MCP session
+// is no longer usable (server restart, network drop, idle timeout, etc.).
+func isConnectionClosed(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	for _, pattern := range []string{
+		"connection closed",
+		"client is closing",
+		"broken pipe",
+		"connection reset",
+		"use of closed network connection",
+	} {
+		if strings.Contains(msg, pattern) {
+			return true
+		}
+	}
+	return false
+}
+
+// reconnectBackend closes the stale session and establishes a new one.
+func (a *MCPAdapter) reconnectBackend(ctx context.Context, name string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	conn, ok := a.backends[name]
+	if !ok {
+		return fmt.Errorf("backend %q not found", name)
+	}
+
+	// Tear down the old session if it still exists.
+	if conn.session != nil {
+		_ = conn.session.Close()
+		conn.session = nil
+	}
+
+	return a.connectBackend(ctx, name, conn)
 }
 
 // Close terminates all backend sessions.

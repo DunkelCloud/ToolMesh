@@ -16,6 +16,7 @@ package backend
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -23,6 +24,7 @@ import (
 	"time"
 
 	"github.com/DunkelCloud/ToolMesh/internal/credentials"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 func TestMCPAdapter_Close_NoSessions(t *testing.T) {
@@ -210,5 +212,81 @@ func TestMCPAdapter_HTTPTransport_MissingCredential(t *testing.T) {
 	})
 	if err == nil {
 		t.Error("expected error for missing credential")
+	}
+}
+
+func TestIsConnectionClosed(t *testing.T) {
+	tests := []struct {
+		err  string
+		want bool
+	}{
+		{"connection closed: calling \"tools/call\": client is closing", true},
+		{"client is closing: sending \"tools/call\"", true},
+		{"write: broken pipe", true},
+		{"read: connection reset by peer", true},
+		{"use of closed network connection", true},
+		{"timeout waiting for response", false},
+		{"backend returned 500", false},
+	}
+	for _, tt := range tests {
+		if got := isConnectionClosed(fmt.Errorf("%s", tt.err)); got != tt.want {
+			t.Errorf("isConnectionClosed(%q) = %v, want %v", tt.err, got, tt.want)
+		}
+	}
+	if isConnectionClosed(nil) {
+		t.Error("isConnectionClosed(nil) should be false")
+	}
+}
+
+func TestMCPAdapter_ReconnectBackend_NotFound(t *testing.T) {
+	a := &MCPAdapter{
+		backends: map[string]*backendConn{},
+		logger:   slog.Default(),
+	}
+	if err := a.reconnectBackend(context.Background(), "missing"); err == nil {
+		t.Error("expected error for missing backend")
+	}
+}
+
+func TestMCPAdapter_ReconnectBackend_ClosesOldSession(t *testing.T) {
+	ctx := context.Background()
+
+	// Create a real in-memory MCP session so we have a non-nil session to close.
+	server := mcp.NewServer(&mcp.Implementation{Name: "srv", Version: "0.1"}, nil)
+	ct, st := mcp.NewInMemoryTransports()
+	go server.Connect(ctx, st, nil) //nolint:errcheck
+
+	client := mcp.NewClient(&mcp.Implementation{Name: "tm", Version: "0.1"}, nil)
+	session, err := client.Connect(ctx, ct, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	adapter := &MCPAdapter{
+		backends: map[string]*backendConn{
+			"test": {
+				entry: BackendEntry{
+					Name:      "test",
+					Transport: "http",
+					URL:       "https://192.0.2.1/mcp", // unroutable, connect will fail
+				},
+				session: session,
+			},
+		},
+		logger: slog.Default(),
+		creds:  credentials.NewEmbeddedStore(),
+		client: client,
+	}
+
+	// reconnectBackend should close the old session and attempt a new connection.
+	// The new connection will fail (unroutable URL), but the old session should
+	// be nil'd out, proving the stale session was cleaned up.
+	err = adapter.reconnectBackend(ctx, "test")
+	if err == nil {
+		t.Fatal("expected error from unroutable URL, got nil")
+	}
+
+	if adapter.backends["test"].session != nil {
+		t.Error("expected old session to be nil after failed reconnect")
 	}
 }

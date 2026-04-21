@@ -363,7 +363,10 @@ func (a *RESTAdapter) doRequest(ctx context.Context, tool *dadl.ToolDef, params 
 	if err != nil {
 		return nil, nil, err
 	}
-	urlStr := a.spec.Backend.BaseURL + toolPath
+	urlStr, err := joinURL(a.spec.Backend.BaseURL, toolPath)
+	if err != nil {
+		return nil, nil, err
+	}
 
 	// Build query string
 	query := a.buildQuery(tool, params)
@@ -442,6 +445,38 @@ func (a *RESTAdapter) doRequest(ctx context.Context, tool *dadl.ToolDef, params 
 	}
 
 	return resp, body, nil
+}
+
+// joinURL combines a backend base URL with a tool path using RFC 3986
+// reference resolution. If toolPath is itself an absolute URL (e.g. a tool
+// hosted on a different host than the base, like Google Maps vs. Places API),
+// it is returned as-is. Otherwise the base is treated as a directory and the
+// tool path as relative to it, so a base with a path prefix
+// (e.g. "https://gitlab.example.com/api/v4") is preserved when combined with
+// a tool path like "/projects".
+func joinURL(baseURL, toolPath string) (string, error) {
+	ref, err := url.Parse(toolPath)
+	if err != nil {
+		return "", fmt.Errorf("parse tool path %q: %w", toolPath, err)
+	}
+	if ref.IsAbs() {
+		return ref.String(), nil
+	}
+	base, err := url.Parse(baseURL)
+	if err != nil {
+		return "", fmt.Errorf("parse base URL %q: %w", baseURL, err)
+	}
+	if !strings.HasSuffix(base.Path, "/") {
+		base.Path += "/"
+		if base.RawPath != "" {
+			base.RawPath += "/"
+		}
+	}
+	relRef, err := url.Parse(strings.TrimPrefix(toolPath, "/"))
+	if err != nil {
+		return "", fmt.Errorf("parse tool path %q: %w", toolPath, err)
+	}
+	return base.ResolveReference(relRef).String(), nil
 }
 
 // buildPath substitutes path parameters into the tool's URL template. Every
@@ -811,7 +846,10 @@ func (a *RESTAdapter) doRequestRaw(ctx context.Context, tool *dadl.ToolDef, para
 	if err != nil {
 		return nil, err
 	}
-	urlStr := a.spec.Backend.BaseURL + toolPath
+	urlStr, err := joinURL(a.spec.Backend.BaseURL, toolPath)
+	if err != nil {
+		return nil, err
+	}
 
 	query := a.buildQuery(tool, params)
 	if query != "" {

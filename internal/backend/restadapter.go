@@ -411,6 +411,12 @@ func (a *RESTAdapter) doRequest(ctx context.Context, tool *dadl.ToolDef, params 
 		req.Header.Set(k, v)
 	}
 
+	// Apply per-tool `in: header` params (overrides defaults, but Content-Type
+	// and auth are reasserted below so they cannot be clobbered).
+	if err := a.applyHeaderParams(req, tool, params); err != nil {
+		return nil, nil, err
+	}
+
 	// Override content type: multipart boundary takes precedence, then tool-level override
 	if contentTypeOverride != "" {
 		req.Header.Set("Content-Type", contentTypeOverride)
@@ -538,6 +544,56 @@ func (a *RESTAdapter) buildBody(tool *dadl.ToolDef, params map[string]any) map[s
 		return nil
 	}
 	return body
+}
+
+// reservedHeaderParams are HTTP headers that a DADL `in: header` param MUST
+// NOT override. Content-Type is decided by multipart boundary / tool.ContentType
+// / backend defaults; Authorization is owned by auth.InjectAuth. Allowing a
+// tool param to set either one creates silent security and transport bugs.
+var reservedHeaderParams = map[string]struct{}{
+	"content-type":  {},
+	"authorization": {},
+}
+
+// applyHeaderParams sets HTTP headers for every tool parameter declared with
+// `in: header`. Caller-supplied values take precedence over parameter defaults;
+// missing-and-no-default means the header is not emitted. Required params
+// without a value return an error so the caller sees a clean 4xx-style failure
+// instead of the upstream returning an opaque 400 for a silently dropped
+// required header (e.g. Places API's X-Goog-FieldMask).
+//
+// This runs AFTER backend.defaults.headers (so per-tool header params can
+// override a generic default like Accept) and BEFORE Content-Type resolution
+// and auth injection (which are reasserted on the request anyway). Param names
+// matching reservedHeaderParams are skipped case-insensitively.
+func (a *RESTAdapter) applyHeaderParams(req *http.Request, tool *dadl.ToolDef, params map[string]any) error {
+	for name, def := range tool.Params {
+		if def.In != "header" {
+			continue
+		}
+		if _, reserved := reservedHeaderParams[strings.ToLower(name)]; reserved {
+			continue
+		}
+		val, ok := params[name]
+		if !ok || val == nil {
+			if def.Default != nil {
+				val = def.Default
+			} else if def.Required {
+				return fmt.Errorf("missing required header parameter %q", name)
+			} else {
+				continue
+			}
+		}
+		str := fmt.Sprintf("%v", val)
+		if str == "" {
+			if def.Required {
+				return fmt.Errorf("header parameter %q cannot be empty", name)
+			}
+			continue
+		}
+		req.Header.Set(name, str)
+	}
+	return nil
 }
 
 // buildFormEncoded encodes body params as application/x-www-form-urlencoded.
@@ -889,6 +945,10 @@ func (a *RESTAdapter) doRequestRaw(ctx context.Context, tool *dadl.ToolDef, para
 
 	for k, v := range a.spec.Backend.Defaults.Headers {
 		req.Header.Set(k, v)
+	}
+
+	if err := a.applyHeaderParams(req, tool, params); err != nil {
+		return nil, err
 	}
 
 	if contentTypeOverride != "" {

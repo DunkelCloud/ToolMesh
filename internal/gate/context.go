@@ -34,11 +34,18 @@ const (
 
 // GateContext is the context passed to gate policies for evaluation.
 type GateContext struct {
-	User     userctx.UserContext `json:"user"`
-	Tool     string              `json:"tool"`
-	Params   map[string]any      `json:"params"`
-	Phase    Phase               `json:"phase"`
-	Response *backend.ToolResult `json:"response"`
+	User userctx.UserContext `json:"user"`
+	Tool string              `json:"tool"`
+	// ToolAccess is the DADL-declared access classification for the tool
+	// (e.g. "read", "write", "admin", "dangerous", or any custom string).
+	// Empty when the underlying backend does not provide a value, e.g. for
+	// upstream MCP servers without an access tag. Exposed to policies as
+	// ctx.toolAccess — see config/policies/examples/readonly_gate.js for
+	// a reference policy that turns this into a read-only enforcement rule.
+	ToolAccess string              `json:"toolAccess"`
+	Params     map[string]any      `json:"params"`
+	Phase      Phase               `json:"phase"`
+	Response   *backend.ToolResult `json:"response"`
 }
 
 // RateLimiter tracks per-user request counts with a sliding window.

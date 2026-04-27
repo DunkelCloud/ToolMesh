@@ -158,6 +158,46 @@ func (c *CompositeBackend) Swap(backends map[string]ToolBackend, passthroughs []
 	})
 }
 
+// LookupTool routes the lookup to the matching named backend (by tool name
+// prefix) or falls back to passthrough backends. Returns the descriptor with
+// the Access classification when available, or false if no backend owns the
+// tool. Backends that do not implement ToolMetadataLookup are skipped silently.
+func (c *CompositeBackend) LookupTool(toolName string) (ToolDescriptor, bool) {
+	s := c.state.Load()
+
+	for name, b := range s.backends {
+		prefix := name + "_"
+		if !strings.HasPrefix(toolName, prefix) {
+			continue
+		}
+		lookup, ok := b.(ToolMetadataLookup)
+		if !ok {
+			return ToolDescriptor{}, false
+		}
+		realTool := strings.TrimPrefix(toolName, prefix)
+		desc, found := lookup.LookupTool(realTool)
+		if !found {
+			return ToolDescriptor{}, false
+		}
+		// Re-apply the public prefix so callers receive the same name they
+		// passed in (named backends store tools under their bare names).
+		desc.Name = toolName
+		return desc, true
+	}
+
+	for _, b := range s.passthroughs {
+		lookup, ok := b.(ToolMetadataLookup)
+		if !ok {
+			continue
+		}
+		if desc, found := lookup.LookupTool(toolName); found {
+			return desc, true
+		}
+	}
+
+	return ToolDescriptor{}, false
+}
+
 // BackendSummaries collects summaries from all backends that implement BackendSummarizer.
 func (c *CompositeBackend) BackendSummaries() []BackendInfo {
 	s := c.state.Load()

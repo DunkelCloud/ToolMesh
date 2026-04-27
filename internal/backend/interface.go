@@ -23,6 +23,11 @@ type ToolDescriptor struct {
 	Description string         `json:"description"`
 	InputSchema map[string]any `json:"inputSchema"`
 	Backend     string         `json:"backend"` // e.g. "mcp:memorizer", "mcp:brave"
+	// Access is the DADL-declared access classification for this tool.
+	// Well-known values: "read", "write", "admin", "dangerous"; custom
+	// strings are allowed. Empty means unclassified (e.g. tools sourced
+	// from upstream MCP servers that do not provide an access tag).
+	Access string `json:"access,omitempty"`
 }
 
 // ToolResult holds the result of a tool execution.
@@ -49,4 +54,17 @@ type ToolBackend interface {
 // dynamic tool descriptions shown to LLMs.
 type BackendSummarizer interface {
 	BackendSummaries() []BackendInfo
+}
+
+// ToolMetadataLookup is an optional interface for backends that can resolve
+// a single tool's descriptor by name without iterating ListTools. Used by
+// the executor to enrich the gate context and audit trail with the tool's
+// access classification on every call. Backends that do not implement this
+// interface simply yield an empty Access on the gate context — policies
+// that depend on the value should treat empty as "unclassified".
+type ToolMetadataLookup interface {
+	// LookupTool returns the descriptor for the given tool name. The bool
+	// is false if the backend does not own this tool. Implementations must
+	// be safe for concurrent use.
+	LookupTool(toolName string) (ToolDescriptor, bool)
 }

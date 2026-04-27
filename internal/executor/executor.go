@@ -121,6 +121,13 @@ func (e *Executor) ExecuteTool(ctx context.Context, req ExecuteToolRequest) (*ba
 		"params", sanitizeParams(req.Params),
 	)
 
+	// Resolve the tool's access classification once. The lookup is best-effort —
+	// backends that do not implement ToolMetadataLookup yield an empty string,
+	// in which case gate policies that depend on the value treat the tool as
+	// unclassified. Resolution happens before AuthZ so the access tag is
+	// available on every audit entry, including denied calls.
+	toolAccess := e.lookupToolAccess(req.ToolName)
+
 	// Build the audit entry — populated at each exit point.
 	// Redact sensitive parameter values before persisting to the audit store.
 	entry := audit.AuditEntry{
@@ -132,6 +139,7 @@ func (e *Executor) ExecuteTool(ctx context.Context, req ExecuteToolRequest) (*ba
 		CallerName:  uc.CallerName,
 		CallerClass: uc.CallerClass,
 		Tool:        req.ToolName,
+		ToolAccess:  toolAccess,
 		Params:      sanitizeParams(req.Params),
 		Backend:     splitToolPrefix(req.ToolName)[0],
 	}
@@ -189,9 +197,10 @@ func (e *Executor) ExecuteTool(ctx context.Context, req ExecuteToolRequest) (*ba
 	if e.gate != nil {
 		e.logger.DebugContext(ctx, "gate pre-execution start", "tool", req.ToolName)
 		gctx := gate.GateContext{
-			User:   *uc,
-			Tool:   req.ToolName,
-			Params: req.Params,
+			User:       *uc,
+			Tool:       req.ToolName,
+			ToolAccess: toolAccess,
+			Params:     req.Params,
 		}
 		if err := e.gate.EvaluatePre(gctx); err != nil {
 			e.logger.WarnContext(ctx, "gate pre-execution rejected",
@@ -242,10 +251,11 @@ func (e *Executor) ExecuteTool(ctx context.Context, req ExecuteToolRequest) (*ba
 	if e.gate != nil {
 		e.logger.DebugContext(ctx, "gate post-execution start", "tool", req.ToolName)
 		gctx := gate.GateContext{
-			User:     *uc,
-			Tool:     req.ToolName,
-			Params:   req.Params,
-			Response: result,
+			User:       *uc,
+			Tool:       req.ToolName,
+			ToolAccess: toolAccess,
+			Params:     req.Params,
+			Response:   result,
 		}
 		if err := e.gate.EvaluatePost(gctx); err != nil {
 			e.logger.WarnContext(ctx, "gate post-execution rejected",
@@ -401,4 +411,21 @@ func splitToolPrefix(toolName string) [2]string {
 		return [2]string{toolName[:idx], toolName[idx+1:]}
 	}
 	return [2]string{"", toolName}
+}
+
+// lookupToolAccess resolves the DADL-declared access classification for the
+// given tool, if the underlying backend supports descriptor lookup. Returns
+// an empty string when the backend does not implement ToolMetadataLookup or
+// does not own the tool — gate policies and audit entries treat empty as
+// unclassified.
+func (e *Executor) lookupToolAccess(toolName string) string {
+	lookup, ok := e.backend.(backend.ToolMetadataLookup)
+	if !ok {
+		return ""
+	}
+	desc, found := lookup.LookupTool(toolName)
+	if !found {
+		return ""
+	}
+	return desc.Access
 }

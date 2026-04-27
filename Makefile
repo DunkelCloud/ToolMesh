@@ -10,7 +10,7 @@ LDFLAGS  := -s -w \
 
 BIN_DIR  := bin
 
-.PHONY: all build test lint vet fmt lint-dadl clean docker docker-dev help
+.PHONY: all build test lint lint-go vet fmt lint-dadl clean docker docker-dev help
 
 all: lint test build ## Run lint, test, and build
 
@@ -36,7 +36,14 @@ vet: ## Run go vet
 fmt: ## Check formatting
 	@test -z "$$(gofmt -l .)" || (echo "Run gofmt:" && gofmt -l . && exit 1)
 
-lint: vet fmt ## Run all linters
+lint-go: ## Run golangci-lint with the project config (matches CI)
+	@command -v golangci-lint >/dev/null 2>&1 || { \
+		echo "golangci-lint is not installed. Install it from https://golangci-lint.run or run 'go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest'."; \
+		exit 1; \
+	}
+	golangci-lint run ./...
+
+lint: vet fmt lint-go ## Run all linters (matches CI)
 
 lint-dadl: build ## Scan DADL composites for security violations
 	$(BIN_DIR)/lint-dadl dadl/*.dadl

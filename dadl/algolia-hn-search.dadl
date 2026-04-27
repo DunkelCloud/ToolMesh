@@ -81,9 +81,9 @@ backend:
         page_param: page
         limit_param: hitsPerPage
         limit_default: 20
-      response:
-        total_pages_header: x-total-pages
-        current_page_header: x-current-page
+      # Algolia returns nbHits/nbPages/page in the JSON body, not in headers,
+      # and the DADL spec has no body-path pagination fields. behavior: expose
+      # surfaces page/hitsPerPage as tool params; LLMs read nbPages off result.
       behavior: expose
       max_pages: 50
     errors:

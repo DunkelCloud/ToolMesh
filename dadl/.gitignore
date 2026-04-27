@@ -1,0 +1,11 @@
+# Track only the bundled, no-credential DADLs and the README — everything else
+# in this directory is the user's own files and stays untracked, so a pull or
+# branch switch never disturbs the user's local DADLs.
+#
+# This is a temporary solution. The proper fix is to split bundled and
+# user-managed DADLs into separate directories (see CHANGELOG / issue tracker).
+*
+!.gitignore
+!README.md
+!hackernews.dadl
+!algolia-hn-search.dadl

@@ -15,6 +15,7 @@
 package dadl
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -498,5 +499,75 @@ backend:
 	}
 	if spec.ContainsCode() {
 		t.Error("ContainsCode() = true, want false")
+	}
+}
+
+// TestParseBytes_BackendVersion exercises the optional backend.version field:
+// it must be parsed onto BackendDef.Version, accept MAJOR.MINOR and
+// MAJOR.MINOR.PATCH, reject malformed strings, and remain optional.
+func TestParseBytes_BackendVersion(t *testing.T) {
+	const tmpl = `
+spec: "https://dadl.ai/spec/dadl-spec-v0.1.md"
+backend:
+  name: test-api
+  type: rest%s
+  base_url: https://api.example.com
+  tools:
+    get_item:
+      method: GET
+      path: /items/{id}
+      params:
+        id: { type: integer, in: path, required: true }
+`
+
+	t.Run("accepts MAJOR.MINOR", func(t *testing.T) {
+		spec, err := ParseBytes([]byte(fmt.Sprintf(tmpl, "\n  version: \"1.0\"")))
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if spec.Backend.Version != "1.0" {
+			t.Errorf("Version = %q, want %q", spec.Backend.Version, "1.0")
+		}
+	})
+
+	t.Run("accepts MAJOR.MINOR.PATCH", func(t *testing.T) {
+		spec, err := ParseBytes([]byte(fmt.Sprintf(tmpl, "\n  version: \"1.2.1\"")))
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if spec.Backend.Version != "1.2.1" {
+			t.Errorf("Version = %q, want %q", spec.Backend.Version, "1.2.1")
+		}
+	})
+
+	t.Run("optional when absent", func(t *testing.T) {
+		spec, err := ParseBytes([]byte(fmt.Sprintf(tmpl, "")))
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if spec.Backend.Version != "" {
+			t.Errorf("Version = %q, want empty", spec.Backend.Version)
+		}
+	})
+
+	rejected := []struct {
+		name    string
+		version string
+	}{
+		{"missing minor", "1"},
+		{"leading v", "v1.0"},
+		{"too many segments", "1.0.0.0"},
+		{"non-numeric pre-release", "1.0-beta"},
+	}
+	for _, tc := range rejected {
+		t.Run("rejects "+tc.name, func(t *testing.T) {
+			_, err := ParseBytes([]byte(fmt.Sprintf(tmpl, "\n  version: \""+tc.version+"\"")))
+			if err == nil {
+				t.Fatalf("expected error for version %q, got nil", tc.version)
+			}
+			if !strings.Contains(err.Error(), "backend.version") {
+				t.Errorf("error %q should mention backend.version", err.Error())
+			}
+		})
 	}
 }

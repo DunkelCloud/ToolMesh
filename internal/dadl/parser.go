@@ -39,6 +39,10 @@ var supportedSpecs = map[string]bool{
 // specVersionRe extracts the version from a DADL spec URL.
 var specVersionRe = regexp.MustCompile(`^https://dadl\.ai/spec/dadl-spec-v(\d+\.\d+)\.md$`)
 
+// backendVersionRe matches the optional backend.version field — MAJOR.MINOR
+// or MAJOR.MINOR.PATCH, both forms appear in the registry.
+var backendVersionRe = regexp.MustCompile(`^\d+\.\d+(\.\d+)?$`)
+
 // Parse reads and validates a .dadl file, returning the parsed Spec.
 func Parse(path string) (*Spec, error) {
 	data, err := os.ReadFile(path) //nolint:gosec // path from trusted config
@@ -108,6 +112,11 @@ func Validate(spec *Spec) error {
 	// base_url is optional in the DADL — can be provided via backends.yaml at runtime
 	if b.Name == "" {
 		return fmt.Errorf("backend.name must not be empty")
+	}
+
+	// Validate optional backend.version — accept MAJOR.MINOR or MAJOR.MINOR.PATCH.
+	if b.Version != "" && !backendVersionRe.MatchString(b.Version) {
+		return fmt.Errorf("backend.version %q must be MAJOR.MINOR or MAJOR.MINOR.PATCH (e.g. \"1.0\", \"1.2.1\")", b.Version)
 	}
 
 	// Validate auth

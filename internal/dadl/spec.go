@@ -26,7 +26,9 @@ type Spec struct {
 	Date       string     `yaml:"date"`
 	Backend    BackendDef `yaml:"backend"`
 
-	// ContentHash is the hex-encoded SHA-256 digest of the raw DADL file content.
+	// ContentHash is the hex-encoded SHA-256 digest of the DADL file content
+	// with CRLF line endings normalized to LF, so the value is identical on
+	// Windows and Linux for the same logical file.
 	// Populated by ParseBytes; not part of the YAML schema.
 	ContentHash string `yaml:"-"`
 }

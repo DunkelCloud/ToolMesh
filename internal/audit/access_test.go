@@ -59,13 +59,14 @@ func TestSQLiteStore_ToolAccessRoundTrip(t *testing.T) {
 func TestSQLiteStore_ToolAccessMigration(t *testing.T) {
 	dataDir := t.TempDir()
 	dbPath := filepath.Join(dataDir, "audit.db")
+	setupCtx := context.Background()
 
 	// Create a legacy schema, deliberately omitting tool_access.
 	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
-	if _, err := db.Exec(`
+	if _, err := db.ExecContext(setupCtx, `
 		CREATE TABLE audit_events (
 			id            INTEGER PRIMARY KEY AUTOINCREMENT,
 			trace_id      TEXT NOT NULL,
@@ -89,7 +90,7 @@ func TestSQLiteStore_ToolAccessMigration(t *testing.T) {
 		t.Fatalf("create legacy schema: %v", err)
 	}
 	// Insert a legacy row that has no access classification.
-	if _, err := db.Exec(`
+	if _, err := db.ExecContext(setupCtx, `
 		INSERT INTO audit_events (trace_id, timestamp, tool, status)
 		VALUES ('legacy-1', ?, 'github_list_repos', 'success')
 	`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {

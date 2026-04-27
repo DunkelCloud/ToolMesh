@@ -1,0 +1,423 @@
+# algolia-hn-search.dadl — Algolia Hacker News Search API for ToolMesh
+# Full-text search, filtering, and retrieval for Hacker News content
+#
+# Domain Notes for LLM consumers:
+# - This is the ALGOLIA search API (hn.algolia.com), NOT the Firebase HN API
+#   Use this for full-text search, filtering, and sorted retrieval
+#   Use hackernews.dadl (Firebase) for live feeds, polling, and direct ID lookups
+# - Completely public API — no authentication or API key required
+# - All endpoints are read-only GET requests returning JSON
+# - Two search modes: "search" (relevance-ranked) vs "search_by_date" (newest first)
+# - The tags parameter supports AND (comma) and OR (parentheses) logic:
+#     tags=story,author_pg          → stories AND by pg
+#     tags=(story,comment),author_pg → (stories OR comments) AND by pg
+# - Available tag values: story, comment, ask_hn, show_hn, poll, pollopt, front_page
+# - Author tags: author_{username}  |  Story tags: story_{id}
+# - numericFilters syntax: field operator value, comma-separated
+#     numericFilters=points>100,num_comments>50
+#     numericFilters=created_at_i>1609459200   (Unix timestamp)
+#   Operators: <, <=, =, >, >=
+# - Pagination is page-based (zero-indexed), default 20 hits/page, max 1000 hits/page
+# - Response always includes: hits, nbHits, page, nbPages, hitsPerPage
+# - Hit fields vary by type: stories have title/url/points, comments have comment_text/story_id
+# - The items/{id} endpoint returns the FULL nested comment tree (children array)
+#   This is unique to Algolia — Firebase only returns child IDs
+# - Text fields in _highlightResult contain <em> tags for matched terms
+# - created_at_i is Unix epoch seconds — use for time-range filters
+# - No official rate limit, but be reasonable — avoid tight loops
+spec: "https://dadl.ai/spec/dadl-spec-v0.1.md"
+credits:
+  - "Dunkel Cloud GmbH"
+source_name: "Algolia HN Search API"
+source_url: https://hn.algolia.com/api
+date: "2026-04-04"
+
+backend:
+  name: algolia-hn-search
+  type: rest
+  version: "1.0"
+  base_url: https://hn.algolia.com/api/v1
+  description: "Algolia Hacker News Search API — full-text search, filtering, and retrieval for stories, comments, and users on Hacker News"
+
+  coverage:
+    endpoints: 4
+    total_endpoints: 4
+    percentage: 100
+    focus: "full-text search (relevance and date), item retrieval with comment trees, user profiles"
+    missing: "none — full coverage of the Algolia HN Search API"
+    last_reviewed: "2026-04-04"
+
+  setup:
+    credential_steps:
+      - "No credentials required — the Algolia HN Search API is fully public"
+      - "No signup or API key needed"
+    env_var: ""
+    backends_yaml: |
+      - name: algolia-hn-search
+        transport: rest
+        dadl: algolia-hn-search.dadl
+        url: "https://hn.algolia.com/api/v1"
+    required_scopes: []
+    docs_url: "https://hn.algolia.com/api"
+    notes: >
+      Completely public API — no authentication, no API keys.
+      Two search endpoints: /search (relevance) and /search_by_date (chronological).
+      Use tags and numericFilters for precise filtering.
+      The /items endpoint returns full nested comment trees, unlike the Firebase API.
+
+  # No authentication required — Algolia HN Search is public
+  auth:
+    type: apikey
+    credential: none
+    inject_into: query
+    # Placeholder: Algolia HN Search requires no auth. ToolMesh requires an auth block.
+
+  defaults:
+    headers:
+      Accept: application/json
+    pagination:
+      strategy: page
+      request:
+        page_param: page
+        limit_param: hitsPerPage
+        limit_default: 20
+      response:
+        total_pages_header: x-total-pages
+        current_page_header: x-current-page
+      behavior: expose
+      max_pages: 50
+    errors:
+      format: json
+      message_path: "$.message"
+      retry_on: [429, 502, 503, 504]
+      terminal: [400, 404]
+      retry_strategy:
+        max_retries: 3
+        backoff: exponential
+        initial_delay: 1s
+    response:
+      result_path: "$.hits"
+      allow_jq_override: true
+
+  tools:
+
+    # ── Search ────────────────────────────────────────────────────
+
+    search:
+      method: GET
+      path: /search
+      access: read
+      description: >
+        Full-text search ranked by relevance (points, num_comments). Best for
+        finding popular/relevant content. Returns hits with: objectID, title,
+        url, author, points, num_comments, created_at, created_at_i, story_text,
+        comment_text, _tags, _highlightResult. Also returns nbHits, page,
+        nbPages, hitsPerPage at the top level.
+      params:
+        query:       { type: string,  in: query, required: false, description: "Full-text search query. Omit or leave empty to match all items (useful with tags/numericFilters)." }
+        tags:        { type: string,  in: query, required: false, description: "Filter by tag. Values: story, comment, ask_hn, show_hn, poll, pollopt, front_page, author_{username}, story_{id}. Comma = AND, parentheses = OR. Example: (story,comment),author_pg" }
+        numericFilters: { type: string, in: query, required: false, description: "Numeric filter on points, num_comments, or created_at_i (Unix seconds). Operators: < <= = > >=. Example: points>100,num_comments>50" }
+        page:        { type: integer, in: query, required: false, default: 0, description: "Page number (zero-indexed)" }
+        hitsPerPage: { type: integer, in: query, required: false, default: 20, description: "Results per page (max 1000)" }
+
+    search_by_date:
+      method: GET
+      path: /search_by_date
+      access: read
+      description: >
+        Full-text search ranked by date (newest first). Same parameters and
+        response format as search, but results are sorted chronologically.
+        Best for finding recent content or monitoring new submissions.
+        Identical response fields to the search endpoint.
+      params:
+        query:       { type: string,  in: query, required: false, description: "Full-text search query. Omit or leave empty to match all items (useful with tags/numericFilters)." }
+        tags:        { type: string,  in: query, required: false, description: "Filter by tag. Values: story, comment, ask_hn, show_hn, poll, pollopt, front_page, author_{username}, story_{id}. Comma = AND, parentheses = OR." }
+        numericFilters: { type: string, in: query, required: false, description: "Numeric filter on points, num_comments, or created_at_i (Unix seconds). Operators: < <= = > >=." }
+        page:        { type: integer, in: query, required: false, default: 0, description: "Page number (zero-indexed)" }
+        hitsPerPage: { type: integer, in: query, required: false, default: 20, description: "Results per page (max 1000)" }
+
+    # ── Items & Users ─────────────────────────────────────────────
+
+    get_item:
+      method: GET
+      path: /items/{id}
+      access: read
+      description: >
+        Get an item by ID with its full nested comment tree. Unlike the Firebase
+        API, this returns the complete children array with recursively nested
+        comments already resolved. Each child has: id, created_at, author, text,
+        points, children. The parent item also includes title, url, points,
+        num_comments.
+      params:
+        id: { type: integer, in: path, required: true, description: "Hacker News item ID" }
+      response:
+        result_path: "$"
+      pagination: none
+
+    get_user:
+      method: GET
+      path: /users/{username}
+      access: read
+      description: >
+        Get a user profile by username. Returns: username, about (HTML bio),
+        karma, created_at, avg, and other profile metadata.
+        Username is case-sensitive.
+      params:
+        username: { type: string, in: path, required: true, description: "Hacker News username (case-sensitive)" }
+      response:
+        result_path: "$"
+      pagination: none
+
+  # ── Composites ──────────────────────────────────────────────────
+
+  composites:
+    search_stories:
+      description: "Search for stories only, returning a clean list with title, url, author, points, num_comments, and created_at. Convenience wrapper around search with tags=story."
+      params:
+        query:
+          type: string
+          required: true
+        min_points:
+          type: integer
+          default: 0
+        limit:
+          type: integer
+          default: 20
+      timeout: 15s
+      depends_on: [search]
+      code: |
+        const mp = Number(params.min_points) || 0;
+        const filters = mp > 0 ? `points>${mp}` : undefined;
+        const result = await api.search({
+          query: params.query,
+          tags: "story",
+          numericFilters: filters,
+          hitsPerPage: params.limit
+        });
+        return result.map(h => ({
+          id: h.objectID, title: h.title, url: h.url,
+          author: h.author, points: h.points,
+          num_comments: h.num_comments, created_at: h.created_at
+        }));
+
+    search_recent_comments:
+      description: "Search for recent comments matching a query, sorted by date (newest first). Returns comment text, author, story title, and timestamps."
+      params:
+        query:
+          type: string
+          required: true
+        limit:
+          type: integer
+          default: 20
+      timeout: 15s
+      depends_on: [search_by_date]
+      code: |
+        const result = await api.search_by_date({
+          query: params.query,
+          tags: "comment",
+          hitsPerPage: params.limit
+        });
+        return result.map(h => ({
+          id: h.objectID, author: h.author, text: h.comment_text,
+          story_id: h.story_id, story_title: h.story_title,
+          created_at: h.created_at
+        }));
+
+    get_front_page:
+      description: "Get current HN front page stories with full details, sorted by relevance. Equivalent to browsing the HN homepage."
+      params:
+        limit:
+          type: integer
+          default: 30
+      timeout: 15s
+      depends_on: [search]
+      code: |
+        const result = await api.search({
+          tags: "front_page",
+          hitsPerPage: params.limit
+        });
+        return result.map(h => ({
+          id: h.objectID, title: h.title, url: h.url,
+          author: h.author, points: h.points,
+          num_comments: h.num_comments, created_at: h.created_at
+        }));
+
+    search_distilled:
+      description: >
+        LLM-optimized search that strips all Algolia metadata cruft before returning results.
+        Implements the _clean_hit() pattern from hn-pulse: raw Algolia hits are ~2 KB each due to
+        _highlightResult, _snippetResult, _rankingInfo, _tags, and other index-internal fields.
+        This composite reduces each hit to ~200 bytes — only data an LLM actually needs.
+        Supports both relevance (sort=relevance) and recency (sort=date) ranking, and all
+        content types via the tags parameter. Designed as the primary search primitive for
+        LangGraph-style ReAct agents that combine this Algolia backend with the Firebase HN
+        backend (hackernews.dadl) for live enrichment.
+      params:
+        query:
+          type: string
+          required: true
+          description: "Full-text search query"
+        tags:
+          type: string
+          default: "story"
+          description: "Content type filter. Values: story, comment, ask_hn, show_hn, poll, front_page, author_{username}, story_{id}. Comma = AND, parentheses = OR."
+        sort:
+          type: string
+          default: "relevance"
+          description: "Ranking mode: 'relevance' (points + comments) or 'date' (newest first)"
+        min_points:
+          type: integer
+          default: 0
+          description: "Minimum points filter (0 = no filter)"
+        limit:
+          type: integer
+          default: 20
+          description: "Number of results (max 1000)"
+      timeout: 15s
+      depends_on: [search, search_by_date]
+      code: |
+        // _clean_hit: strip all Algolia-internal fields, keep only LLM-relevant data
+        // Inspired by hn-pulse/_clean_hit() — reduces ~2 KB/hit to ~200 bytes
+        function cleanHit(h) {
+          return {
+            id:           h.objectID,
+            title:        h.title || h.story_title || null,
+            url:          h.url   || h.story_url   || null,
+            author:       h.author,
+            points:       h.points       || null,
+            num_comments: h.num_comments || null,
+            created_at:   h.created_at,
+            text:         h.story_text   || h.comment_text || null
+          };
+        }
+        const mp = Number(params.min_points) || 0;
+        const numericFilters = mp > 0 ? `points>${mp}` : undefined;
+        const args = { query: params.query, tags: params.tags, hitsPerPage: params.limit, numericFilters };
+        const hits = params.sort === "date"
+          ? await api.search_by_date(args)
+          : await api.search(args);
+        return hits.map(cleanHit).filter(h => h.id);
+
+    get_user_activity:
+      description: "Get a user's recent stories and comments. Fetches the user profile and their most recent submissions of each type."
+      params:
+        username:
+          type: string
+          required: true
+        limit:
+          type: integer
+          default: 10
+      timeout: 15s
+      depends_on: [get_user, search_by_date]
+      code: |
+        const user = await api.get_user({ username: params.username });
+        const stories = await api.search_by_date({
+          tags: `author_${params.username},story`,
+          hitsPerPage: params.limit
+        });
+        const comments = await api.search_by_date({
+          tags: `author_${params.username},comment`,
+          hitsPerPage: params.limit
+        });
+        return {
+          user: { username: user.username, karma: user.karma, created_at: user.created_at },
+          recent_stories: stories.map(h => ({ id: h.objectID, title: h.title, points: h.points, created_at: h.created_at })),
+          recent_comments: comments.map(h => ({ id: h.objectID, story_title: h.story_title, text: h.comment_text, created_at: h.created_at }))
+        };
+
+  # ── Examples ────────────────────────────────────────────────────
+
+  examples:
+    - name: "Search for popular AI stories"
+      description: "Find highly-upvoted stories about AI from the last year"
+      code: |
+        const stories = await api.search_stories({
+          query: "artificial intelligence",
+          min_points: 100,
+          limit: 10
+        });
+        return stories;
+
+    - name: "Monitor new comments on a topic"
+      description: "Get the latest comments mentioning a technology"
+      code: |
+        const comments = await api.search_recent_comments({
+          query: "rust programming",
+          limit: 15
+        });
+        return comments;
+
+    - name: "Browse the front page"
+      description: "Get current HN front page stories"
+      code: |
+        const frontPage = await api.get_front_page({ limit: 20 });
+        return frontPage;
+
+    - name: "Research a user's contributions"
+      description: "Look up a user and their recent activity"
+      code: |
+        const activity = await api.get_user_activity({ username: "dang", limit: 5 });
+        return activity;
+
+    - name: "Time-filtered search"
+      description: "Search stories from a specific time range using Unix timestamps"
+      code: |
+        const weekAgo = Math.floor(Date.now() / 1000) - 7 * 86400;
+        const results = await api.search({
+          query: "startup",
+          tags: "story",
+          numericFilters: `created_at_i>${weekAgo},points>50`,
+          hitsPerPage: 25
+        });
+        return results.map(h => ({
+          title: h.title, points: h.points, author: h.author
+        }));
+
+    - name: "Get full comment thread"
+      description: "Retrieve a story with its complete nested comment tree"
+      code: |
+        const item = await api.get_item({ id: 42041862 });
+        return {
+          title: item.title,
+          points: item.points,
+          comment_count: item.children?.length || 0,
+          first_comments: (item.children || []).slice(0, 5).map(c => ({
+            author: c.author, text: c.text
+          }))
+        };
+
+    - name: "LLM-optimized search (distilled)"
+      description: "Search with metadata stripped for minimal token consumption — ideal for LangGraph agents"
+      code: |
+        const hits = await api.search_distilled({
+          query: "WebAssembly",
+          tags: "story",
+          sort: "relevance",
+          min_points: 50,
+          limit: 10
+        });
+        return hits;
+
+  # ── Hints ───────────────────────────────────────────────────────
+
+  hints:
+    search:
+      ranking: "results ranked by points, num_comments, and text relevance"
+      empty_query: "omit query param to match all — useful with tags=front_page or author filters"
+      tags_logic: "comma = AND, parentheses = OR — e.g. (story,comment),author_pg"
+      numeric_filters: "filter on points, num_comments, created_at_i (Unix seconds). Operators: < <= = > >="
+      max_hits_per_page: "1000 is the hard maximum for hitsPerPage"
+    search_by_date:
+      ranking: "identical to search but sorted by created_at_i descending (newest first)"
+      use_case: "best for monitoring, recent activity, and time-series analysis"
+    search_distilled:
+      clean_hit_pattern: "strips _highlightResult, _snippetResult, _rankingInfo, _tags, _distinctSeqID and all other Algolia-internal fields — ~2 KB/hit → ~200 bytes"
+      langgraph_use: "primary search primitive for LangGraph ReAct agents — pair with hackernews.dadl get_item for live comment counts and full comment trees"
+      firebase_enrichment: "Algolia objectID == HN item ID — use it to call Firebase get_item for real-time data (score, descendants) after distilling Algolia results"
+      null_text: "text field is null for stories (story has url/title, not body text) — non-null only for Ask HN and comments"
+    get_item:
+      nested_children: "unlike Firebase API, returns the FULL nested comment tree (children array)"
+      children_recursive: "each child has its own children array — tree can be deep"
+    get_user:
+      case_sensitive: "username is case-sensitive"
+      no_submissions: "does not include submitted item IDs — use search with author_ tag instead"

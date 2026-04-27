@@ -1,0 +1,339 @@
+# hackernews.dadl — Hacker News (Firebase) REST API for ToolMesh
+# Read-only public API for stories, comments, users, and live feeds
+#
+# Domain Notes for LLM consumers:
+# - The HN API is completely public — no authentication or API key required
+# - All endpoints are read-only GET requests returning JSON
+# - All paths end with .json (Firebase convention)
+# - Items are polymorphic: a single /item/{id}.json returns stories, comments, jobs, polls, pollopts
+#   depending on the "type" field — always check the type before processing
+# - Story lists (top/new/best/ask/show/job) return arrays of integer IDs, NOT full item objects
+#   You must call get_item for each ID to get the full item data
+# - Comment threads: item.kids contains child comment IDs (ordered by ranking)
+#   Recursively fetch kids to build a comment tree
+# - "dead" items were flagged/killed by mods; "deleted" items were removed by authors
+# - User.submitted contains ALL item IDs ever posted (can be very large for active users)
+# - No pagination on story lists — they return the full list (up to 500 for top/new/best, 200 for ask/show/job)
+# - Timestamps are Unix epoch seconds (not milliseconds)
+# - Text fields (item.text, user.about) contain raw HTML
+# - No official rate limit, but be respectful — batch requests reasonably
+# - The /updates endpoint provides real-time changed items/profiles for polling use cases
+spec: "https://dadl.ai/spec/dadl-spec-v0.1.md"
+credits:
+  - "Dunkel Cloud GmbH"
+source_name: "Hacker News API (Firebase)"
+source_url: https://github.com/HackerNews/API
+date: "2026-04-04"
+
+backend:
+  name: hackernews
+  type: rest
+  version: "1.0"
+  base_url: https://hacker-news.firebaseio.com/v0
+  description: "Hacker News API — read-only access to stories, comments, polls, jobs, users, and live feeds from news.ycombinator.com"
+
+  coverage:
+    endpoints: 11
+    total_endpoints: 11
+    percentage: 100
+    focus: "items (stories, comments, polls, jobs), users, story feeds (top, new, best, ask, show, job), updates, max item ID"
+    missing: "none — full coverage of the public Firebase API"
+    last_reviewed: "2026-04-04"
+
+  setup:
+    credential_steps:
+      - "No credentials required — the Hacker News API is fully public"
+      - "No signup or API key needed"
+    env_var: ""
+    backends_yaml: |
+      - name: hackernews
+        transport: rest
+        dadl: hackernews.dadl
+        url: "https://hacker-news.firebaseio.com/v0"
+    required_scopes: []
+    docs_url: "https://github.com/HackerNews/API"
+    notes: >
+      Completely public API — no authentication, no API keys, no rate limit headers.
+      Be respectful with request volume. The API is backed by Firebase and returns
+      JSON for all endpoints. Append .json to all paths. For real-time updates
+      consider the Firebase SDK (Server-Sent Events) instead of polling.
+
+  # No authentication required — HN API is public
+  auth:
+    type: apikey
+    credential: none
+    inject_into: query
+    # Placeholder: HN API requires no auth. ToolMesh requires an auth block.
+    # The credential "none" signals no secret is needed.
+
+  defaults:
+    headers:
+      Accept: application/json
+    errors:
+      format: json
+      message_path: "$.error"
+      retry_on: [429, 502, 503, 504]
+      terminal: [400, 404]
+      retry_strategy:
+        max_retries: 3
+        backoff: exponential
+        initial_delay: 1s
+    response:
+      allow_jq_override: true
+
+  tools:
+
+    # ── Items (Stories, Comments, Polls, Jobs) ────────────────────
+
+    get_item:
+      method: GET
+      path: /item/{id}.json
+      access: read
+      description: >
+        Get any item by ID. Items are polymorphic — the "type" field indicates
+        whether it is a story, comment, job, poll, or pollopt. Returns null
+        for non-existent IDs. Key fields: id, type, by, time, text, url,
+        score, title, kids (child comment IDs), parent, descendants (total
+        comment count for stories), deleted, dead.
+      params:
+        id: { type: integer, in: path, required: true, description: "Item ID (integer)" }
+      response:
+        result_path: "$"
+      pagination: none
+
+    # ── Users ─────────────────────────────────────────────────────
+
+    get_user:
+      method: GET
+      path: /user/{id}.json
+      access: read
+      description: >
+        Get a user profile by username. Returns karma, creation date, about
+        (HTML bio), and submitted (array of all item IDs the user has posted).
+        Username is case-sensitive. Returns null for non-existent users.
+      params:
+        id: { type: string, in: path, required: true, description: "Username (case-sensitive)" }
+      response:
+        result_path: "$"
+      pagination: none
+
+    # ── Story Feeds ───────────────────────────────────────────────
+    # All feed endpoints return arrays of item IDs (integers), NOT full items.
+    # Call get_item on each ID to retrieve the actual story data.
+
+    get_top_stories:
+      method: GET
+      path: /topstories.json
+      access: read
+      description: >
+        Get up to 500 top story IDs, ordered by ranking on the HN front page.
+        Returns an array of integer item IDs — call get_item for full details.
+      response:
+        result_path: "$"
+      pagination: none
+
+    get_new_stories:
+      method: GET
+      path: /newstories.json
+      access: read
+      description: >
+        Get up to 500 newest story IDs, ordered by submission time (newest first).
+        Returns an array of integer item IDs — call get_item for full details.
+      response:
+        result_path: "$"
+      pagination: none
+
+    get_best_stories:
+      method: GET
+      path: /beststories.json
+      access: read
+      description: >
+        Get up to 500 best story IDs (all-time highest-voted recent stories).
+        Returns an array of integer item IDs — call get_item for full details.
+      response:
+        result_path: "$"
+      pagination: none
+
+    get_ask_stories:
+      method: GET
+      path: /askstories.json
+      access: read
+      description: >
+        Get up to 200 latest Ask HN story IDs. These are posts where users
+        ask the HN community a question. Returns an array of integer item IDs.
+      response:
+        result_path: "$"
+      pagination: none
+
+    get_show_stories:
+      method: GET
+      path: /showstories.json
+      access: read
+      description: >
+        Get up to 200 latest Show HN story IDs. These are posts where users
+        showcase their projects to the HN community. Returns an array of
+        integer item IDs.
+      response:
+        result_path: "$"
+      pagination: none
+
+    get_job_stories:
+      method: GET
+      path: /jobstories.json
+      access: read
+      description: >
+        Get up to 200 latest job posting IDs from the HN jobs board.
+        Returns an array of integer item IDs.
+      response:
+        result_path: "$"
+      pagination: none
+
+    # ── Utilities ─────────────────────────────────────────────────
+
+    get_max_item:
+      method: GET
+      path: /maxitem.json
+      access: read
+      description: >
+        Get the current largest item ID. Useful for polling: fetch items
+        between your last known ID and max ID to catch new submissions.
+        Returns a single integer.
+      response:
+        result_path: "$"
+      pagination: none
+
+    get_updates:
+      method: GET
+      path: /updates.json
+      access: read
+      description: >
+        Get recently changed item IDs and user profiles. Returns an object
+        with "items" (array of changed item IDs) and "profiles" (array of
+        changed usernames). Useful for building a polling-based sync.
+      response:
+        result_path: "$"
+      pagination: none
+
+  # ── Composites ───────────────────────────────────────────────────
+
+  composites:
+    get_top_stories_full:
+      description: "Get the top N stories with full item details (default: 10). Fetches story IDs then resolves each to its full item object."
+      params:
+        limit:
+          type: integer
+          default: 10
+      timeout: 30s
+      depends_on: [get_top_stories, get_item]
+      code: |
+        const ids = await api.get_top_stories();
+        const topIds = ids.slice(0, params.limit || 10);
+        const stories = await Promise.all(topIds.map(id => api.get_item({ id })));
+        return stories.filter(s => s !== null);
+
+    get_story_with_comments:
+      description: "Get a story and its top-level comments resolved to full item objects. Returns the story with a 'comments' array containing the full comment items."
+      params:
+        id:
+          type: integer
+          required: true
+        comment_limit:
+          type: integer
+          default: 20
+      timeout: 30s
+      depends_on: [get_item]
+      code: |
+        const story = await api.get_item({ id: params.id });
+        if (!story || !story.kids || story.kids.length === 0) return { ...story, comments: [] };
+        const kidIds = story.kids.slice(0, params.comment_limit || 20);
+        const comments = await Promise.all(kidIds.map(id => api.get_item({ id })));
+        return { ...story, comments: comments.filter(c => c !== null && !c.deleted && !c.dead) };
+
+    get_user_stories:
+      description: "Get a user's most recent stories (not comments). Fetches the user profile, then resolves their most recent submitted items and filters to type=story. Scans 20 recent submissions to stay within the 50-call sandbox limit — users who mostly post comments may return fewer stories than the limit."
+      params:
+        username:
+          type: string
+          required: true
+        limit:
+          type: integer
+          default: 10
+      timeout: 30s
+      depends_on: [get_user, get_item]
+      code: |
+        const user = await api.get_user({ id: params.username });
+        if (!user || !user.submitted) return [];
+        const recentIds = user.submitted.slice(0, 20);
+        const items = await Promise.all(recentIds.map(id => api.get_item({ id })));
+        return items.filter(i => i && i.type === "story" && !i.deleted && !i.dead).slice(0, params.limit || 10);
+
+  # ── Examples ─────────────────────────────────────────────────────
+
+  examples:
+    - name: "Browse front page"
+      description: "Get the current top 5 stories with titles and scores"
+      code: |
+        const stories = await api.get_top_stories_full({ limit: 5 });
+        return stories.map(s => ({
+          title: s.title, score: s.score, by: s.by,
+          url: s.url, comments: s.descendants
+        }));
+
+    - name: "Read a story's comments"
+      description: "Get a story and its top-level comments"
+      code: |
+        const result = await api.get_story_with_comments({ id: 42041862, comment_limit: 10 });
+        return {
+          title: result.title,
+          comments: result.comments.map(c => ({ by: c.by, text: c.text }))
+        };
+
+    - name: "Check user profile"
+      description: "Look up a user and their recent stories"
+      code: |
+        const user = await api.get_user({ id: "dang" });
+        const stories = await api.get_user_stories({ username: "dang", limit: 5 });
+        return { karma: user.karma, created: user.created, recent_stories: stories };
+
+    - name: "Poll for new items"
+      description: "Get recently changed items and profiles for sync"
+      code: |
+        const updates = await api.get_updates();
+        const changedItems = await Promise.all(
+          updates.items.slice(0, 5).map(id => api.get_item({ id }))
+        );
+        return { changed_profiles: updates.profiles, sample_items: changedItems };
+
+  # ── Hints ────────────────────────────────────────────────────────
+
+  hints:
+    get_item:
+      polymorphic: "type field is one of: story, comment, job, poll, pollopt — always check type"
+      null_response: "returns null (not 404) for non-existent IDs"
+      kids_order: "kids array is ordered by ranking, not chronologically"
+      html_fields: "text field contains raw HTML — sanitize before display"
+    get_user:
+      case_sensitive: "username is case-sensitive"
+      submitted_size: "submitted array can be very large for active users (10k+ items)"
+    get_top_stories:
+      id_only: "returns integer IDs only — call get_item on each for full data"
+      max_items: "up to 500 IDs"
+    get_new_stories:
+      id_only: "returns integer IDs only — call get_item on each for full data"
+      max_items: "up to 500 IDs"
+    get_best_stories:
+      id_only: "returns integer IDs only — call get_item on each for full data"
+      max_items: "up to 500 IDs"
+    get_ask_stories:
+      id_only: "returns integer IDs only"
+      max_items: "up to 200 IDs"
+    get_show_stories:
+      id_only: "returns integer IDs only"
+      max_items: "up to 200 IDs"
+    get_job_stories:
+      id_only: "returns integer IDs only"
+      max_items: "up to 200 IDs"
+    get_max_item:
+      polling: "compare with your last known ID to detect new items"
+    get_updates:
+      polling: "designed for building polling-based sync — check periodically"

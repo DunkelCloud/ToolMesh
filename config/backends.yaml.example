@@ -13,12 +13,19 @@ backends:
   #   args: ["--port", "0"]
 
   # REST Proxy via DADL (no MCP server needed)
-  # - name: vikunja
+  # The hackernews DADL ships with ToolMesh and needs no credentials —
+  # uncomment this block to try it out without any setup.
+  # - name: hackernews
   #   transport: rest
-  #   dadl: vikunja.dadl  # relative to TOOLMESH_DADL_DIR (default: /app/dadl), absolute paths also work
-  #   url: "https://vikunja.example.com/api/v1"  # overrides base_url in .dadl (optional)
+  #   dadl: hackernews.dadl  # relative to TOOLMESH_DADL_DIR (default: /app/dadl), absolute paths also work
   #   options:
   #     blob_ttl: "1h"  # how long binary response URLs stay valid (default: 1h)
+  #
+  # For DADLs requiring credentials (download from https://dadl.ai/browse):
+  # - name: vikunja
+  #   transport: rest
+  #   dadl: vikunja.dadl
+  #   url: "https://vikunja.example.com/api/v1"  # overrides base_url in .dadl (optional)
 
   # REST Proxy targeting an internal service (private network, self-signed cert)
   # - name: internal-api

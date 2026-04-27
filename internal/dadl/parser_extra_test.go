@@ -17,6 +17,7 @@ package dadl
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -50,6 +51,41 @@ backend:
 func TestParse_MissingFile(t *testing.T) {
 	if _, err := Parse("/nonexistent/file/x.dadl"); err == nil {
 		t.Error("expected error")
+	}
+}
+
+// TestParseBytes_ContentHashIsLineEndingAgnostic verifies that the same logical
+// DADL file produces the same ContentHash whether it has CRLF or LF line endings.
+// This matters when DADL files travel across platforms (e.g. Git autocrlf on
+// Windows) and we want telemetry / registry lookups to match.
+func TestParseBytes_ContentHashIsLineEndingAgnostic(t *testing.T) {
+	lf := `spec: "https://dadl.ai/spec/dadl-spec-v0.1.md"
+backend:
+  name: test
+  type: rest
+  base_url: "https://example.com"
+  tools:
+    ping:
+      method: GET
+      path: /ping
+`
+	crlf := strings.ReplaceAll(lf, "\n", "\r\n")
+
+	specLF, err := ParseBytes([]byte(lf))
+	if err != nil {
+		t.Fatalf("LF parse: %v", err)
+	}
+	specCRLF, err := ParseBytes([]byte(crlf))
+	if err != nil {
+		t.Fatalf("CRLF parse: %v", err)
+	}
+
+	if specLF.ContentHash == "" {
+		t.Fatal("LF hash is empty")
+	}
+	if specLF.ContentHash != specCRLF.ContentHash {
+		t.Errorf("hashes differ across line endings:\n  LF:   %s\n  CRLF: %s",
+			specLF.ContentHash, specCRLF.ContentHash)
 	}
 }
 

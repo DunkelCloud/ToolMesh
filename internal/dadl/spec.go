@@ -42,7 +42,8 @@ func (s *Spec) ContainsCode() bool {
 // BackendDef describes a REST API backend with its tools, auth, and behavior.
 type BackendDef struct {
 	Name        string                  `yaml:"name"`
-	Type        string                  `yaml:"type"` // must be "rest"
+	Type        string                  `yaml:"type"`    // must be "rest"
+	Version     string                  `yaml:"version"` // optional, MAJOR.MINOR or MAJOR.MINOR.PATCH
 	BaseURL     string                  `yaml:"base_url"`
 	Description string                  `yaml:"description"`
 	Auth        AuthConfig              `yaml:"auth"`

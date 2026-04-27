@@ -66,7 +66,18 @@ func (b *EchoBackend) ListTools(_ context.Context) ([]ToolDescriptor, error) {
 	return b.toolDefs, nil
 }
 
+// LookupTool resolves a single echo tool by name from the loaded definitions.
+func (b *EchoBackend) LookupTool(toolName string) (ToolDescriptor, bool) {
+	for _, t := range b.toolDefs {
+		if t.Name == toolName {
+			return t, true
+		}
+	}
+	return ToolDescriptor{}, false
+}
+
 // defaultEchoTools returns fallback tool definitions when no TS files are available.
+// All echo tools are pure functions with no side effects, so they classify as "read".
 func defaultEchoTools() []ToolDescriptor {
 	return []ToolDescriptor{
 		{
@@ -83,6 +94,7 @@ func defaultEchoTools() []ToolDescriptor {
 				"required": []any{"message"},
 			},
 			Backend: "builtin:echo",
+			Access:  "read",
 		},
 		{
 			Name:        "add",
@@ -96,6 +108,7 @@ func defaultEchoTools() []ToolDescriptor {
 				"required": []any{"a", "b"},
 			},
 			Backend: "builtin:echo",
+			Access:  "read",
 		},
 		{
 			Name:        "time",
@@ -105,6 +118,7 @@ func defaultEchoTools() []ToolDescriptor {
 				"properties": map[string]any{},
 			},
 			Backend: "builtin:echo",
+			Access:  "read",
 		},
 	}
 }

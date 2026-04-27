@@ -50,6 +50,12 @@ func (s *LogStore) Record(_ context.Context, entry AuditEntry) error {
 		"backend", entry.Backend,
 	}
 
+	// Only emit tool_access when present so log lines stay clean for
+	// upstream MCP backends that do not provide a classification.
+	if entry.ToolAccess != "" {
+		attrs = append(attrs, "tool_access", entry.ToolAccess)
+	}
+
 	if entry.Error != "" {
 		attrs = append(attrs, "error", entry.Error)
 	}

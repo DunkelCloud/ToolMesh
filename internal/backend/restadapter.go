@@ -169,6 +169,7 @@ func (a *RESTAdapter) ListTools(_ context.Context) ([]ToolDescriptor, error) {
 			Description: tool.Description,
 			InputSchema: schema,
 			Backend:     "rest:" + a.spec.Backend.Name,
+			Access:      tool.Access,
 		})
 	}
 
@@ -180,6 +181,7 @@ func (a *RESTAdapter) ListTools(_ context.Context) ([]ToolDescriptor, error) {
 			Description: comp.Description,
 			InputSchema: schema,
 			Backend:     "rest:" + a.spec.Backend.Name,
+			Access:      comp.Access,
 		})
 	}
 
@@ -347,6 +349,31 @@ func (a *RESTAdapter) Healthy(ctx context.Context) error {
 		return fmt.Errorf("health check returned HTTP %d", resp.StatusCode)
 	}
 	return nil
+}
+
+// LookupTool returns the descriptor for a tool owned by this REST backend.
+// The lookup runs against the parsed DADL spec held in memory, so it is
+// O(1) and safe to call on the hot path of every tool execution.
+func (a *RESTAdapter) LookupTool(toolName string) (ToolDescriptor, bool) {
+	if tool, ok := a.spec.Backend.Tools[toolName]; ok {
+		return ToolDescriptor{
+			Name:        toolName,
+			Description: tool.Description,
+			InputSchema: buildInputSchema(tool),
+			Backend:     "rest:" + a.spec.Backend.Name,
+			Access:      tool.Access,
+		}, true
+	}
+	if comp, ok := a.spec.Backend.Composites[toolName]; ok {
+		return ToolDescriptor{
+			Name:        toolName,
+			Description: comp.Description,
+			InputSchema: buildCompositeInputSchema(comp),
+			Backend:     "rest:" + a.spec.Backend.Name,
+			Access:      comp.Access,
+		}, true
+	}
+	return ToolDescriptor{}, false
 }
 
 // BackendSummaries returns metadata for this REST backend.

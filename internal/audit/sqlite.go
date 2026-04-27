@@ -86,7 +86,7 @@ func NewSQLiteStore(dataDir string, retentionDays int) (*SQLiteStore, error) {
 }
 
 func createSchema(db *sql.DB) error {
-	_, err := db.ExecContext(context.Background(), `
+	if _, err := db.ExecContext(context.Background(), `
 		CREATE TABLE IF NOT EXISTS audit_events (
 			id            INTEGER PRIMARY KEY AUTOINCREMENT,
 			trace_id      TEXT NOT NULL,
@@ -97,6 +97,7 @@ func createSchema(db *sql.DB) error {
 			caller_name   TEXT NOT NULL DEFAULT '',
 			caller_class  TEXT NOT NULL DEFAULT '',
 			tool          TEXT NOT NULL,
+			tool_access   TEXT NOT NULL DEFAULT '',
 			params        TEXT,
 			duration_ms   INTEGER NOT NULL DEFAULT 0,
 			status        TEXT NOT NULL,
@@ -113,8 +114,34 @@ func createSchema(db *sql.DB) error {
 		CREATE INDEX IF NOT EXISTS idx_audit_tool ON audit_events(tool);
 		CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_events(timestamp);
 		CREATE INDEX IF NOT EXISTS idx_audit_status ON audit_events(status);
-	`)
-	return err
+	`); err != nil {
+		return err
+	}
+
+	// Migration: add tool_access column to pre-existing databases that were
+	// created before the access-aware gate landed. SQLite has no
+	// "ADD COLUMN IF NOT EXISTS", so we probe pragma_table_info first.
+	return ensureToolAccessColumn(db)
+}
+
+// ensureToolAccessColumn adds the tool_access column to legacy audit
+// databases that predate the access-aware gate. No-op when the column
+// already exists.
+func ensureToolAccessColumn(db *sql.DB) error {
+	row := db.QueryRowContext(context.Background(),
+		`SELECT COUNT(*) FROM pragma_table_info('audit_events') WHERE name = 'tool_access'`)
+	var count int
+	if err := row.Scan(&count); err != nil {
+		return fmt.Errorf("audit sqlite: probe tool_access column: %w", err)
+	}
+	if count > 0 {
+		return nil
+	}
+	if _, err := db.ExecContext(context.Background(),
+		`ALTER TABLE audit_events ADD COLUMN tool_access TEXT NOT NULL DEFAULT ''`); err != nil {
+		return fmt.Errorf("audit sqlite: add tool_access column: %w", err)
+	}
+	return nil
 }
 
 // Record persists a single audit entry to SQLite.
@@ -144,11 +171,11 @@ func (s *SQLiteStore) Record(ctx context.Context, entry AuditEntry) error {
 	_, err = s.db.ExecContext(ctx, `
 		INSERT INTO audit_events (
 			trace_id, timestamp, user_id, company_id, caller_id, caller_name, caller_class,
-			tool, params, duration_ms, status, error, backend,
+			tool, tool_access, params, duration_ms, status, error, backend,
 			is_composite, child_events, metadata
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		entry.TraceID, entry.Timestamp.UTC().Format(time.RFC3339Nano), entry.UserID, entry.CompanyID,
-		entry.CallerID, entry.CallerName, entry.CallerClass, entry.Tool,
+		entry.CallerID, entry.CallerName, entry.CallerClass, entry.Tool, entry.ToolAccess,
 		nullableBytes(paramsJSON), entry.DurationMs, entry.Status,
 		nullableString(entry.Error), entry.Backend,
 		boolToInt(entry.IsComposite), nullableBytes(childJSON), nullableBytes(metaJSON),
@@ -197,7 +224,7 @@ func (s *SQLiteStore) Query(ctx context.Context, filter AuditFilter) ([]AuditEnt
 		args = append(args, filter.Status)
 	}
 
-	query := "SELECT trace_id, timestamp, user_id, company_id, caller_id, caller_name, caller_class, tool, params, duration_ms, status, error, backend, is_composite, child_events, metadata FROM audit_events"
+	query := "SELECT trace_id, timestamp, user_id, company_id, caller_id, caller_name, caller_class, tool, tool_access, params, duration_ms, status, error, backend, is_composite, child_events, metadata FROM audit_events"
 	if len(conditions) > 0 {
 		query += " WHERE " + strings.Join(conditions, " AND ")
 	}
@@ -225,7 +252,7 @@ func (s *SQLiteStore) Query(ctx context.Context, filter AuditFilter) ([]AuditEnt
 
 		if err := rows.Scan(
 			&e.TraceID, &ts, &e.UserID, &e.CompanyID,
-			&e.CallerID, &e.CallerName, &e.CallerClass, &e.Tool,
+			&e.CallerID, &e.CallerName, &e.CallerClass, &e.Tool, &e.ToolAccess,
 			&paramsJSON, &e.DurationMs, &e.Status,
 			&errStr, &e.Backend, &isComposite,
 			&childJSON, &metaJSON,

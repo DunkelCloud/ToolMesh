@@ -65,9 +65,15 @@ type DefaultsConfig struct {
 
 // ToolDef describes a single REST API tool (endpoint).
 type ToolDef struct {
-	Method      string              `yaml:"method"` // GET, POST, PUT, PATCH, DELETE
-	Path        string              `yaml:"path"`   // /resource/{id}
-	Description string              `yaml:"description"`
+	Method      string `yaml:"method"` // GET, POST, PUT, PATCH, DELETE
+	Path        string `yaml:"path"`   // /resource/{id}
+	Description string `yaml:"description"`
+	// Access classifies the operation for downstream policy decisions.
+	// Well-known values: "read", "write", "admin", "dangerous". DADL authors
+	// may use any custom string (e.g. "billing", "pii"). Empty means
+	// unclassified — policies that require an explicit value should reject
+	// such tools when running in strict mode.
+	Access      string              `yaml:"access"`
 	Params      map[string]ParamDef `yaml:"params"`
 	Body        *BodyDef            `yaml:"body"`
 	Response    *ResponseConfig     `yaml:"response"`
@@ -229,11 +235,16 @@ type DiscoveryConfig struct {
 // multiple primitive REST tools into a higher-level operation.
 // Composites run in a sandboxed goja runtime with access only to api.* calls.
 type CompositeDef struct {
-	Description string              `yaml:"description"` // required
-	Code        string              `yaml:"code"`        // required — JavaScript source
-	Params      map[string]ParamDef `yaml:"params"`      // optional input parameters
-	Timeout     string              `yaml:"timeout"`     // optional, default "30s", max "120s"
-	DependsOn   []string            `yaml:"depends_on"`  // optional — primitive tools used
+	Description string `yaml:"description"` // required
+	Code        string `yaml:"code"`        // required — JavaScript source
+	// Access classifies the composite for policy decisions. Same semantics
+	// as ToolDef.Access. Composites typically inherit the highest access
+	// level of their primitive dependencies; the DADL author sets this
+	// explicitly because static analysis cannot reliably infer it.
+	Access    string              `yaml:"access"`
+	Params    map[string]ParamDef `yaml:"params"`     // optional input parameters
+	Timeout   string              `yaml:"timeout"`    // optional, default "30s", max "120s"
+	DependsOn []string            `yaml:"depends_on"` // optional — primitive tools used
 }
 
 // MaxCompositeTimeout is the maximum allowed timeout for a composite tool.

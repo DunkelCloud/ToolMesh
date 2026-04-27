@@ -23,14 +23,20 @@ import (
 
 // AuditEntry represents a single tool execution record.
 type AuditEntry struct {
-	TraceID     string            `json:"trace_id"`
-	Timestamp   time.Time         `json:"timestamp"`
-	UserID      string            `json:"user_id"`
-	CompanyID   string            `json:"company_id"`
-	CallerID    string            `json:"caller_id"`
-	CallerName  string            `json:"caller_name,omitempty"`
-	CallerClass string            `json:"caller_class"`
-	Tool        string            `json:"tool"`
+	TraceID     string    `json:"trace_id"`
+	Timestamp   time.Time `json:"timestamp"`
+	UserID      string    `json:"user_id"`
+	CompanyID   string    `json:"company_id"`
+	CallerID    string    `json:"caller_id"`
+	CallerName  string    `json:"caller_name,omitempty"`
+	CallerClass string    `json:"caller_class"`
+	Tool        string    `json:"tool"`
+	// ToolAccess is the DADL-declared access classification of the tool
+	// at execution time (e.g. "read", "write", "admin", "dangerous"). Empty
+	// when the backend did not provide a value (typical for upstream MCP
+	// servers). Recorded so operators can audit and aggregate by
+	// classification without re-resolving the DADL after the fact.
+	ToolAccess  string            `json:"tool_access,omitempty"`
 	Params      map[string]any    `json:"params,omitempty"`
 	DurationMs  int64             `json:"duration_ms"`
 	Status      string            `json:"status"` // "success" | "error" | "denied"

@@ -491,6 +491,35 @@ func (a *MCPAdapter) RegisterTools(backendName string, tools []ToolDescriptor) {
 	}
 }
 
+// LookupTool returns the descriptor for a tool owned by one of the connected
+// MCP backends. Tools surface here with the backend prefix already applied
+// ("backendname_tooltoolname"). Upstream MCP servers do not currently emit
+// an access classification, so the returned descriptor's Access is empty —
+// policies that need an explicit value should treat it as unclassified.
+func (a *MCPAdapter) LookupTool(toolName string) (ToolDescriptor, bool) {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	for name, conn := range a.backends {
+		prefix := name + "_"
+		if !strings.HasPrefix(toolName, prefix) {
+			continue
+		}
+		realTool := strings.TrimPrefix(toolName, prefix)
+		for _, t := range conn.tools {
+			if t.Name == realTool {
+				return ToolDescriptor{
+					Name:        toolName,
+					Description: t.Description,
+					InputSchema: t.InputSchema,
+					Backend:     "mcp:" + name,
+					Access:      t.Access,
+				}, true
+			}
+		}
+	}
+	return ToolDescriptor{}, false
+}
+
 // matchBackend finds the backend whose name is a prefix of the tool name.
 // Returns the backend name, the real tool name (without prefix), and the connection.
 func (a *MCPAdapter) matchBackend(toolName string) (name, realTool string, conn *backendConn) {

@@ -40,6 +40,7 @@ import (
 	"github.com/DunkelCloud/ToolMesh/internal/executor"
 	"github.com/DunkelCloud/ToolMesh/internal/gate"
 	"github.com/DunkelCloud/ToolMesh/internal/mcp"
+	"github.com/DunkelCloud/ToolMesh/internal/metrics"
 	"github.com/DunkelCloud/ToolMesh/internal/telemetry"
 	"github.com/DunkelCloud/ToolMesh/internal/tsdef"
 	"github.com/DunkelCloud/ToolMesh/internal/version"
@@ -328,9 +329,15 @@ func main() {
 		logger.Info("loaded caller-classes config", "path", cfg.CallerClassesConfigPath)
 	}
 
+	// Initialize Prometheus metrics registry (nil when disabled, all record calls are no-ops).
+	var metricsReg *metrics.Registry
+	if cfg.MetricsEnabled {
+		metricsReg = metrics.New(metrics.Options{LabelTool: cfg.MetricsLabelTool})
+	}
+
 	// Initialize MCP handler and server
-	mcpHandler := mcp.NewHandler(exec, compositeBackend, coercer, rawTS, logger)
-	mcpServer := mcp.NewServer(mcpHandler, cfg, logger, tokenStore, userStore, apiKeyStore, rateLimiter, callerClasses)
+	mcpHandler := mcp.NewHandler(exec, compositeBackend, coercer, rawTS, metricsReg, logger)
+	mcpServer := mcp.NewServer(mcpHandler, cfg, logger, tokenStore, userStore, apiKeyStore, rateLimiter, callerClasses, metricsReg)
 
 	httpMux := http.NewServeMux()
 	mcpServer.SetupRoutes(httpMux)
@@ -345,6 +352,27 @@ func main() {
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 60 * time.Second,
 		IdleTimeout:  120 * time.Second,
+	}
+
+	// Metrics endpoint runs on a separate listener so a Prometheus scraper does
+	// not need to traverse the public auth-protected MCP port.
+	var metricsSrv *http.Server
+	if metricsReg != nil {
+		metricsMux := http.NewServeMux()
+		metricsMux.Handle("/metrics", metricsReg.Handler())
+		metricsSrv = &http.Server{
+			Addr:         cfg.MetricsBind,
+			Handler:      metricsMux,
+			ReadTimeout:  10 * time.Second,
+			WriteTimeout: 10 * time.Second,
+			IdleTimeout:  60 * time.Second,
+		}
+		go func() {
+			logger.Info("ToolMesh metrics endpoint listening", "addr", metricsSrv.Addr, "path", "/metrics")
+			if err := metricsSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				logger.Error("metrics server error", "error", err)
+			}
+		}()
 	}
 
 	// Start telemetry send loop (persists counters on ctx cancellation)
@@ -364,6 +392,11 @@ func main() {
 
 		if err := srv.Shutdown(shutdownCtx); err != nil {
 			logger.Error("http server shutdown error", "error", err)
+		}
+		if metricsSrv != nil {
+			if err := metricsSrv.Shutdown(shutdownCtx); err != nil {
+				logger.Error("metrics server shutdown error", "error", err)
+			}
 		}
 	}()
 

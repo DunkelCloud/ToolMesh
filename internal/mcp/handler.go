@@ -20,9 +20,11 @@ import (
 	"log/slog"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/DunkelCloud/ToolMesh/internal/backend"
 	"github.com/DunkelCloud/ToolMesh/internal/executor"
+	"github.com/DunkelCloud/ToolMesh/internal/metrics"
 	"github.com/DunkelCloud/ToolMesh/internal/tsdef"
 	"github.com/DunkelCloud/ToolMesh/internal/userctx"
 )
@@ -35,11 +37,13 @@ type Handler struct {
 	codeRunner *CodeRunner
 	coercer    *tsdef.Coercer
 	rawTS      string // raw TypeScript content for built-in tools
+	metrics    *metrics.Registry
 	logger     *slog.Logger
 }
 
-// NewHandler creates a new MCP tool call handler.
-func NewHandler(exec *executor.Executor, back backend.ToolBackend, coercer *tsdef.Coercer, rawTS string, logger *slog.Logger) *Handler {
+// NewHandler creates a new MCP tool call handler. The metrics registry is
+// optional; pass nil to disable instrumentation.
+func NewHandler(exec *executor.Executor, back backend.ToolBackend, coercer *tsdef.Coercer, rawTS string, m *metrics.Registry, logger *slog.Logger) *Handler {
 	// Build the code mode parser with reverse name lookup from all registered tools
 	tools, _ := back.ListTools(context.Background())
 	parser := NewCodeModeParser(tools)
@@ -57,31 +61,52 @@ func NewHandler(exec *executor.Executor, back backend.ToolBackend, coercer *tsde
 		codeRunner: runner,
 		coercer:    coercer,
 		rawTS:      rawTS,
+		metrics:    m,
 		logger:     logger,
 	}
 }
 
+// splitToolName separates a tool name of the form "<backend>:<tool>" into its
+// backend and tool components. Built-in tools without a colon are reported
+// under the synthetic backend "builtin".
+func splitToolName(name string) (backendName, tool string) {
+	if i := strings.IndexByte(name, ':'); i >= 0 {
+		return name[:i], name[i+1:]
+	}
+	return "builtin", name
+}
+
 // HandleToolCall processes a single tool call through the execution pipeline.
-func (h *Handler) HandleToolCall(ctx context.Context, toolName string, params map[string]any) (*backend.ToolResult, error) {
+func (h *Handler) HandleToolCall(ctx context.Context, toolName string, params map[string]any) (result *backend.ToolResult, err error) {
 	h.logger.InfoContext(ctx, "handling tool call", "tool", toolName)
 	h.logger.DebugContext(ctx, "tool call params", "tool", toolName, "params", params)
+
+	start := time.Now()
+	defer func() {
+		backendLabel, toolLabel := splitToolName(toolName)
+		outcome := "success"
+		if err != nil || (result != nil && result.IsError) {
+			outcome = "error"
+		}
+		h.metrics.RecordToolCall(backendLabel, toolLabel, outcome, time.Since(start))
+	}()
 
 	switch toolName {
 	case "list_tools":
 		return h.handleListTools(ctx, params)
 	case "execute_code":
-		return h.handleExecuteCode(ctx, params)
+		return h.handleExecuteCode(ctx, params), nil
 	default:
 		// Apply type coercion before execution
 		if h.coercer != nil {
-			coerced, err := h.coercer.Coerce(toolName, params)
-			if err != nil {
-				h.logger.DebugContext(ctx, "coercion failed", "tool", toolName, "error", err)
+			coerced, cerr := h.coercer.Coerce(toolName, params)
+			if cerr != nil {
+				h.logger.DebugContext(ctx, "coercion failed", "tool", toolName, "error", cerr)
 				return &backend.ToolResult{
 					IsError: true,
 					Content: []any{map[string]any{
 						"type": "text",
-						"text": fmt.Sprintf("Parameter coercion failed: %s", err),
+						"text": fmt.Sprintf("Parameter coercion failed: %s", cerr),
 					}},
 				}, nil
 			}
@@ -91,7 +116,7 @@ func (h *Handler) HandleToolCall(ctx context.Context, toolName string, params ma
 			params = coerced
 		}
 
-		result, err := h.executor.ExecuteTool(ctx, executor.ExecuteToolRequest{
+		result, err = h.executor.ExecuteTool(ctx, executor.ExecuteToolRequest{
 			ToolName: toolName,
 			Params:   params,
 		})
@@ -169,7 +194,7 @@ func (h *Handler) handleListTools(ctx context.Context, params map[string]any) (*
 	}, nil
 }
 
-func (h *Handler) handleExecuteCode(ctx context.Context, params map[string]any) (*backend.ToolResult, error) {
+func (h *Handler) handleExecuteCode(ctx context.Context, params map[string]any) *backend.ToolResult {
 	codeRaw, ok := params["code"]
 	if !ok {
 		return &backend.ToolResult{
@@ -178,7 +203,7 @@ func (h *Handler) handleExecuteCode(ctx context.Context, params map[string]any) 
 				"type": "text",
 				"text": "Missing required parameter: code",
 			}},
-		}, nil
+		}
 	}
 
 	code, ok := codeRaw.(string)
@@ -189,7 +214,7 @@ func (h *Handler) handleExecuteCode(ctx context.Context, params map[string]any) 
 				"type": "text",
 				"text": "Parameter 'code' must be a string",
 			}},
-		}, nil
+		}
 	}
 
 	h.logger.DebugContext(ctx, "execute_code input", "code", code)
@@ -200,7 +225,7 @@ func (h *Handler) handleExecuteCode(ctx context.Context, params map[string]any) 
 		// If we got a partial result (e.g. some calls succeeded before error), return it
 		if result != nil {
 			result.IsError = true
-			return result, nil
+			return result
 		}
 		return &backend.ToolResult{
 			IsError: true,
@@ -208,10 +233,10 @@ func (h *Handler) handleExecuteCode(ctx context.Context, params map[string]any) 
 				"type": "text",
 				"text": fmt.Sprintf("execute_code failed: %s", err),
 			}},
-		}, nil
+		}
 	}
 
-	return result, nil
+	return result
 }
 
 // BuildToolList returns all tools including Code Mode tools.

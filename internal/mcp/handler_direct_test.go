@@ -35,7 +35,7 @@ func TestHandleToolCall_DirectBackendCall(t *testing.T) {
 		},
 	}, newQuietMCPLogger())
 	exec := executor.New(nil, nil, mb, nil, nil, 5*time.Second, newQuietMCPLogger(), nil)
-	h := NewHandler(exec, mb, coercer, "", newQuietMCPLogger())
+	h := NewHandler(exec, mb, coercer, "", nil, newQuietMCPLogger())
 
 	ctx := userctx.WithUserContext(context.Background(), &userctx.UserContext{
 		UserID:        "u",
@@ -64,7 +64,7 @@ func TestHandleToolCall_CoercionFailure(t *testing.T) {
 		},
 	}, newQuietMCPLogger())
 	exec := executor.New(nil, nil, mb, nil, nil, 5*time.Second, newQuietMCPLogger(), nil)
-	h := NewHandler(exec, mb, coercer, "", newQuietMCPLogger())
+	h := NewHandler(exec, mb, coercer, "", nil, newQuietMCPLogger())
 
 	ctx := userctx.WithUserContext(context.Background(), &userctx.UserContext{
 		UserID:        "u",

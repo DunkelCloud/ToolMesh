@@ -86,6 +86,12 @@ type Config struct {
 	// Registry-based provider selection
 	CredentialStore string // registered store name (default: "embedded")
 	GateEvaluators  string // comma-separated evaluator chain (default: "goja")
+
+	// Prometheus metrics endpoint (served on a separate listener so the
+	// scraper does not need to traverse the public auth domain).
+	MetricsEnabled   bool   // TOOLMESH_METRICS_ENABLED, default true
+	MetricsBind      string // TOOLMESH_METRICS_BIND, default ":9090"
+	MetricsLabelTool bool   // TOOLMESH_METRICS_LABEL_TOOL, default true
 }
 
 // Load reads configuration from environment variables with sensible defaults.
@@ -120,6 +126,9 @@ func Load() (*Config, error) {
 		DataDir:                 envStr("TOOLMESH_DATA_DIR", "/app/data"),
 		CredentialStore:         envStr("CREDENTIAL_STORE", "embedded"),
 		GateEvaluators:          envStr("GATE_EVALUATORS", "goja"),
+		MetricsEnabled:          envBool("TOOLMESH_METRICS_ENABLED", true),
+		MetricsBind:             envStr("TOOLMESH_METRICS_BIND", ":9090"),
+		MetricsLabelTool:        envBool("TOOLMESH_METRICS_LABEL_TOOL", true),
 	}
 
 	// Parse CORS origins
@@ -188,4 +197,17 @@ func envInt(key string, fallback int) int {
 		return n
 	}
 	return fallback
+}
+
+func envBool(key string, fallback bool) bool {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
+	}
+	b, err := strconv.ParseBool(v)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "WARNING: env %s=%q is not a valid bool, using default %t\n", key, v, fallback)
+		return fallback
+	}
+	return b
 }

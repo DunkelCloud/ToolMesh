@@ -82,6 +82,16 @@ func New(opts Options) *Registry {
 
 	reg.MustRegister(logins, toolCalls, toolCallDuration)
 
+	// Pre-initialize all login label combinations to zero so a fresh scrape
+	// returns informative output (HELP/TYPE plus zero counters) before the
+	// first authentication event. The set of (method, result) values is
+	// closed and small enough that this does not bloat cardinality.
+	for _, method := range []string{"oauth_code", "oauth_refresh", "oauth_bearer", "api_key"} {
+		for _, result := range []string{"success", "failure"} {
+			logins.WithLabelValues(method, result)
+		}
+	}
+
 	return &Registry{
 		reg:              reg,
 		logins:           logins,
@@ -124,13 +134,18 @@ func (r *Registry) RecordToolCall(backendName, toolName, result string, duration
 // format on whatever path it is mounted at (usually "/metrics").
 //
 // Returns a 404 handler if r is nil.
+//
+// HandlerOpts.Registry is intentionally left unset so promhttp's own
+// instrumentation (promhttp_metric_handler_requests_total etc.) is registered
+// against the global default registry rather than ours, keeping our scrape
+// output focused on toolmesh_* series.
 func (r *Registry) Handler() http.Handler {
 	if r == nil {
 		return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			http.Error(w, "metrics disabled", http.StatusNotFound)
 		})
 	}
-	return promhttp.HandlerFor(r.reg, promhttp.HandlerOpts{Registry: r.reg})
+	return promhttp.HandlerFor(r.reg, promhttp.HandlerOpts{})
 }
 
 // PrometheusRegistry exposes the underlying [prometheus.Registry], primarily

@@ -98,6 +98,26 @@ func TestNilRegistry_IsSafe(t *testing.T) {
 	}
 }
 
+func TestEmptyScrape_LoginsPreinitialized_NoPromhttpSelfMetrics(t *testing.T) {
+	// A fresh Registry with no observations must still expose every login
+	// label combination at zero so dashboards have something to bind to
+	// before any traffic arrives, and must not leak promhttp's own
+	// instrumentation into our scrape output.
+	r := metrics.New(metrics.Options{LabelTool: true})
+	body := scrapeMetrics(t, r)
+
+	for _, method := range []string{"oauth_code", "oauth_refresh", "oauth_bearer", "api_key"} {
+		for _, result := range []string{"success", "failure"} {
+			want := `toolmesh_logins_total{method="` + method + `",result="` + result + `"} 0`
+			mustContain(t, body, want)
+		}
+	}
+
+	if strings.Contains(body, "promhttp_metric_handler_") {
+		t.Errorf("promhttp self-metrics leaked into scrape output:\n%s", body)
+	}
+}
+
 func TestHandler_ServesPrometheusFormat(t *testing.T) {
 	r := metrics.New(metrics.Options{LabelTool: true})
 	// Record at least one observation per vec — Prometheus does not emit

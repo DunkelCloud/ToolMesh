@@ -70,7 +70,7 @@ func New(opts Options) *Registry {
 	toolCalls := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "toolmesh",
 		Name:      "tool_calls_total",
-		Help:      "Tool invocations after authentication. result=success|error.",
+		Help:      "Tool invocations after authentication. result=success|error|denied (denied = blocked by OpenFGA or output gate).",
 	}, []string{"backend", "tool", "result"})
 
 	toolCallDuration := prometheus.NewHistogramVec(prometheus.HistogramOpts{

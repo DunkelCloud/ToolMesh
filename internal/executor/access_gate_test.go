@@ -82,7 +82,7 @@ func TestExecuteTool_PropagatesToolAccess(t *testing.T) {
 				},
 			}
 			rec := &recordingAudit{}
-			exec := New(nil, nil, be, nil, rec, 30*time.Second, newTestLogger(), nil)
+			exec := New(nil, nil, be, nil, rec, 30*time.Second, newTestLogger(), nil, nil)
 
 			ctx := userctx.WithUserContext(context.Background(), &userctx.UserContext{
 				UserID:        testUserID,
@@ -126,7 +126,7 @@ func TestExecuteTool_GateSeesToolAccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("gate.New: %v", err)
 	}
-	exec := New(nil, nil, be, gate.NewPipeline([]gate.Evaluator{g}), nil, 30*time.Second, newTestLogger(), nil)
+	exec := New(nil, nil, be, gate.NewPipeline([]gate.Evaluator{g}), nil, 30*time.Second, newTestLogger(), nil, nil)
 
 	ctx := userctx.WithUserContext(context.Background(), &userctx.UserContext{
 		UserID:        testUserID,

@@ -29,6 +29,13 @@ import (
 	"github.com/DunkelCloud/ToolMesh/internal/userctx"
 )
 
+// Built-in MCP meta-tool names. These do not pass through the executor and
+// are dispatched directly inside [Handler.HandleToolCall].
+const (
+	toolListTools   = "list_tools"
+	toolExecuteCode = "execute_code"
+)
+
 // Handler processes incoming MCP tool calls and routes them through the executor.
 type Handler struct {
 	executor   *executor.Executor
@@ -66,35 +73,30 @@ func NewHandler(exec *executor.Executor, back backend.ToolBackend, coercer *tsde
 	}
 }
 
-// splitToolName separates a tool name of the form "<backend>:<tool>" into its
-// backend and tool components. Built-in tools without a colon are reported
-// under the synthetic backend "builtin".
-func splitToolName(name string) (backendName, tool string) {
-	if i := strings.IndexByte(name, ':'); i >= 0 {
-		return name[:i], name[i+1:]
-	}
-	return "builtin", name
-}
-
 // HandleToolCall processes a single tool call through the execution pipeline.
 func (h *Handler) HandleToolCall(ctx context.Context, toolName string, params map[string]any) (result *backend.ToolResult, err error) {
 	h.logger.InfoContext(ctx, "handling tool call", "tool", toolName)
 	h.logger.DebugContext(ctx, "tool call params", "tool", toolName, "params", params)
 
-	start := time.Now()
-	defer func() {
-		backendLabel, toolLabel := splitToolName(toolName)
-		outcome := "success"
-		if err != nil || (result != nil && result.IsError) {
-			outcome = "error"
-		}
-		h.metrics.RecordToolCall(backendLabel, toolLabel, outcome, time.Since(start))
-	}()
+	// Instrument only the built-in meta-tools here. Real tool calls — both
+	// direct ones from the default branch and individual calls extracted from
+	// inside execute_code's JS body — are recorded by the executor with their
+	// actual backend/tool labels, so instrumenting them here too would double-count.
+	if toolName == toolListTools || toolName == toolExecuteCode {
+		start := time.Now()
+		defer func() {
+			outcome := "success"
+			if err != nil || (result != nil && result.IsError) {
+				outcome = "error"
+			}
+			h.metrics.RecordToolCall("builtin", toolName, outcome, time.Since(start))
+		}()
+	}
 
 	switch toolName {
-	case "list_tools":
+	case toolListTools:
 		return h.handleListTools(ctx, params)
-	case "execute_code":
+	case toolExecuteCode:
 		return h.handleExecuteCode(ctx, params), nil
 	default:
 		// Apply type coercion before execution

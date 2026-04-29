@@ -45,21 +45,27 @@ that originate from the credential are counted.
 
 ### `toolmesh_tool_calls_total` (counter)
 
-Tool invocations after authentication.
+Tool invocations recorded by the executor, so individual backend calls made
+from inside `execute_code`'s JS body are counted with their real backend/tool
+labels rather than collapsed under `execute_code`. The two MCP meta-tools
+(`list_tools`, `execute_code`) are recorded at the handler under the synthetic
+`builtin` backend so they remain visible in their own right.
 
 | Label     | Values                                                              |
 | --------- | ------------------------------------------------------------------- |
-| `backend` | Backend name (e.g., `hetzner`, `deepl`) or `builtin` for `list_tools` and `execute_code`. |
+| `backend` | Backend name (e.g., `hetzner`, `deepl`), `builtin` for `list_tools`/`execute_code`, or `unknown` for tools without a backend prefix. |
 | `tool`    | Tool name without the backend prefix, or `*` if `TOOLMESH_METRICS_LABEL_TOOL=false`. |
-| `result`  | `success`, `error`                                                  |
+| `result`  | `success`, `error`, `denied`                                        |
 
-`error` covers both transport errors and tool-level errors (`IsError=true`
-results, including PII filtering rejections from the Output Gate and policy
-denials surfaced as errors).
+- `success` — completed without error.
+- `error` — transport failure or `IsError=true` result from the backend.
+- `denied` — blocked by the OpenFGA authorizer or by a pre/post output-gate policy.
 
 ### `toolmesh_tool_call_duration_seconds` (histogram)
 
-End-to-end latency of `HandleToolCall`, from handler entry to result return.
+End-to-end pipeline latency, from executor entry to result return (covers
+AuthZ → credential injection → pre-gate → backend → post-gate). The
+`list_tools` and `execute_code` meta-tools are timed at the MCP handler level.
 
 Buckets are tuned to typical REST-backend latencies:
 `10ms, 50ms, 100ms, 500ms, 1s, 5s, 30s` plus `+Inf`.
@@ -79,9 +85,12 @@ sum by (method) (rate(toolmesh_logins_total[5m]))
 sum(rate(toolmesh_logins_total{result="failure"}[5m]))
   / sum(rate(toolmesh_logins_total[5m]))
 
-# Tool-call error rate per backend
-sum by (backend) (rate(toolmesh_tool_calls_total{result="error"}[5m]))
+# Tool-call error+denied rate per backend
+sum by (backend) (rate(toolmesh_tool_calls_total{result=~"error|denied"}[5m]))
   / sum by (backend) (rate(toolmesh_tool_calls_total[5m]))
+
+# Authorization-denied calls per backend, last hour
+sum by (backend) (increase(toolmesh_tool_calls_total{result="denied"}[1h]))
 
 # p95 tool-call latency per backend
 histogram_quantile(0.95,

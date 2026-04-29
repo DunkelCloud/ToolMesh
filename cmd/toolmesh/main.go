@@ -262,9 +262,17 @@ func main() {
 	}
 	logger.Info("audit store initialized", "type", cfg.AuditStore)
 
+	// Initialize Prometheus metrics registry (nil when disabled — all record
+	// calls are no-ops on a nil receiver). Created before the executor so the
+	// executor can record per-call metrics with backend/tool labels.
+	var metricsReg *metrics.Registry
+	if cfg.MetricsEnabled {
+		metricsReg = metrics.New(metrics.Options{LabelTool: cfg.MetricsLabelTool})
+	}
+
 	// Initialize executor
 	execTimeout := time.Duration(cfg.ExecTimeout) * time.Second
-	exec := executor.New(authorizer, credStore, compositeBackend, gatePipeline, auditStore, execTimeout, logger, tc)
+	exec := executor.New(authorizer, credStore, compositeBackend, gatePipeline, auditStore, execTimeout, logger, tc, metricsReg)
 
 	// Initialize token store for auth state.
 	// The file-based store always runs for persistence across restarts.
@@ -327,12 +335,6 @@ func main() {
 	}
 	if callerClasses != nil {
 		logger.Info("loaded caller-classes config", "path", cfg.CallerClassesConfigPath)
-	}
-
-	// Initialize Prometheus metrics registry (nil when disabled, all record calls are no-ops).
-	var metricsReg *metrics.Registry
-	if cfg.MetricsEnabled {
-		metricsReg = metrics.New(metrics.Options{LabelTool: cfg.MetricsLabelTool})
 	}
 
 	// Initialize MCP handler and server

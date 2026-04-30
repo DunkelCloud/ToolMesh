@@ -6,11 +6,18 @@ services:
     # build: .
     ports:
       - "${TOOLMESH_PORT:-8123}:8080"
+      # Prometheus metrics — runs on a separate listener so the scraper does
+      # not need to traverse the public auth-protected MCP port. Bind to
+      # 127.0.0.1 (or remove the line in a docker-compose.override.yml) if
+      # the host is publicly reachable; the endpoint is unauthenticated.
+      - "${TOOLMESH_METRICS_PORT:-9090}:9090"
     env_file: .env
     environment:
       - OPENFGA_MODE=${OPENFGA_MODE:-bypass}
       - AUDIT_STORE=${AUDIT_STORE:-log}
       - TOOLMESH_DATA_DIR=/app/data
+      - TOOLMESH_METRICS_ENABLED=${TOOLMESH_METRICS_ENABLED:-true}
+      - TOOLMESH_METRICS_LABEL_TOOL=${TOOLMESH_METRICS_LABEL_TOOL:-true}
     depends_on:
       keydb:
         condition: service_healthy

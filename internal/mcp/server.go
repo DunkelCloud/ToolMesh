@@ -34,6 +34,7 @@ import (
 	"github.com/DunkelCloud/ToolMesh/internal/auth"
 	"github.com/DunkelCloud/ToolMesh/internal/backend"
 	"github.com/DunkelCloud/ToolMesh/internal/config"
+	"github.com/DunkelCloud/ToolMesh/internal/metrics"
 	"github.com/DunkelCloud/ToolMesh/internal/userctx"
 	"github.com/DunkelCloud/ToolMesh/internal/version"
 )
@@ -49,10 +50,12 @@ type Server struct {
 	apiKeys       *auth.APIKeyStore
 	rateLimiter   *auth.DCRRateLimiter
 	callerClasses *config.CallerClasses
+	metrics       *metrics.Registry
 }
 
-// NewServer creates a new MCP server.
-func NewServer(handler *Handler, cfg *config.Config, logger *slog.Logger, tokenStore auth.TokenStore, userStore *auth.UserStore, apiKeys *auth.APIKeyStore, rateLimiter *auth.DCRRateLimiter, callerClasses *config.CallerClasses) *Server {
+// NewServer creates a new MCP server. The metrics registry is optional; pass
+// nil to disable instrumentation.
+func NewServer(handler *Handler, cfg *config.Config, logger *slog.Logger, tokenStore auth.TokenStore, userStore *auth.UserStore, apiKeys *auth.APIKeyStore, rateLimiter *auth.DCRRateLimiter, callerClasses *config.CallerClasses, m *metrics.Registry) *Server {
 	if len(cfg.CORSAllowedOrigins) == 0 {
 		logger.Warn("TOOLMESH_CORS_ORIGINS not set: CORS will reflect any origin (open policy)")
 	}
@@ -65,6 +68,7 @@ func NewServer(handler *Handler, cfg *config.Config, logger *slog.Logger, tokenS
 		apiKeys:       apiKeys,
 		rateLimiter:   rateLimiter,
 		callerClasses: callerClasses,
+		metrics:       m,
 	}
 }
 
@@ -302,6 +306,7 @@ func (s *Server) authenticate(r *http.Request) *userctx.UserContext {
 			if callerID == "" {
 				callerID = entry.UserID
 			}
+			s.metrics.RecordLogin("api_key", "success")
 			return &userctx.UserContext{
 				UserID:        entry.UserID,
 				CompanyID:     entry.CompanyID,
@@ -318,6 +323,7 @@ func (s *Server) authenticate(r *http.Request) *userctx.UserContext {
 	// 2. Legacy single API key (env var fallback)
 	if s.cfg.APIKey != "" && bearer != "" && s.apiKeys == nil {
 		if subtle.ConstantTimeCompare([]byte(bearer), []byte(s.cfg.APIKey)) == 1 {
+			s.metrics.RecordLogin("api_key", "success")
 			return &userctx.UserContext{
 				UserID:        s.cfg.AuthUser,
 				CompanyID:     "default",
@@ -338,6 +344,7 @@ func (s *Server) authenticate(r *http.Request) *userctx.UserContext {
 			if callerID == "" {
 				callerID = ti.ClientID
 			}
+			s.metrics.RecordLogin("oauth_bearer", "success")
 			return &userctx.UserContext{
 				UserID:        ti.UserID,
 				CompanyID:     ti.CompanyID,
@@ -698,11 +705,13 @@ func (s *Server) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Req
 
 	ac, err := s.tokenStore.ConsumeAuthCode(ctx, code)
 	if err != nil {
+		s.metrics.RecordLogin("oauth_code", "failure")
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_grant"})
 		return
 	}
 
 	if time.Now().After(ac.ExpiresAt) {
+		s.metrics.RecordLogin("oauth_code", "failure")
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_grant"})
 		return
 	}
@@ -711,6 +720,7 @@ func (s *Server) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Req
 	if clientID == "" || clientID != ac.ClientID {
 		s.logger.WarnContext(ctx, "client_id mismatch in auth code grant",
 			"expected", ac.ClientID, "got", clientID)
+		s.metrics.RecordLogin("oauth_code", "failure")
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_grant"})
 		return
 	}
@@ -718,6 +728,7 @@ func (s *Server) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Req
 	// PKCE S256 verification — always required (OAuth 2.1).
 	// Use a single generic error for all PKCE failures (L-3).
 	if ac.CodeChallenge == "" || codeVerifier == "" {
+		s.metrics.RecordLogin("oauth_code", "failure")
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_grant", "error_description": "PKCE verification failed"})
 		return
 	}
@@ -725,6 +736,7 @@ func (s *Server) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Req
 		h := sha256.Sum256([]byte(codeVerifier))
 		computed := base64.RawURLEncoding.EncodeToString(h[:])
 		if subtle.ConstantTimeCompare([]byte(computed), []byte(ac.CodeChallenge)) != 1 {
+			s.metrics.RecordLogin("oauth_code", "failure")
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_grant", "error_description": "PKCE verification failed"})
 			return
 		}
@@ -769,6 +781,7 @@ func (s *Server) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Req
 		return
 	}
 
+	s.metrics.RecordLogin("oauth_code", "success")
 	writeJSON(w, http.StatusOK, map[string]any{
 		"access_token":  accessToken,
 		"token_type":    "Bearer",
@@ -790,6 +803,7 @@ func (s *Server) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request)
 
 	oldTI, err := s.tokenStore.ConsumeRefreshToken(ctx, refreshToken)
 	if err != nil {
+		s.metrics.RecordLogin("oauth_refresh", "failure")
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_grant"})
 		return
 	}
@@ -798,6 +812,7 @@ func (s *Server) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request)
 	if clientID == "" || clientID != oldTI.ClientID {
 		s.logger.WarnContext(ctx, "client_id mismatch in refresh token grant",
 			"expected", oldTI.ClientID, "got", clientID)
+		s.metrics.RecordLogin("oauth_refresh", "failure")
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_grant"})
 		return
 	}
@@ -835,6 +850,7 @@ func (s *Server) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	s.metrics.RecordLogin("oauth_refresh", "success")
 	writeJSON(w, http.StatusOK, map[string]any{
 		"access_token":  newAccessToken,
 		"token_type":    "Bearer",

@@ -40,6 +40,7 @@ import (
 	"github.com/DunkelCloud/ToolMesh/internal/executor"
 	"github.com/DunkelCloud/ToolMesh/internal/gate"
 	"github.com/DunkelCloud/ToolMesh/internal/mcp"
+	"github.com/DunkelCloud/ToolMesh/internal/metrics"
 	"github.com/DunkelCloud/ToolMesh/internal/telemetry"
 	"github.com/DunkelCloud/ToolMesh/internal/tsdef"
 	"github.com/DunkelCloud/ToolMesh/internal/version"
@@ -261,9 +262,17 @@ func main() {
 	}
 	logger.Info("audit store initialized", "type", cfg.AuditStore)
 
+	// Initialize Prometheus metrics registry (nil when disabled — all record
+	// calls are no-ops on a nil receiver). Created before the executor so the
+	// executor can record per-call metrics with backend/tool labels.
+	var metricsReg *metrics.Registry
+	if cfg.MetricsEnabled {
+		metricsReg = metrics.New(metrics.Options{LabelTool: cfg.MetricsLabelTool})
+	}
+
 	// Initialize executor
 	execTimeout := time.Duration(cfg.ExecTimeout) * time.Second
-	exec := executor.New(authorizer, credStore, compositeBackend, gatePipeline, auditStore, execTimeout, logger, tc)
+	exec := executor.New(authorizer, credStore, compositeBackend, gatePipeline, auditStore, execTimeout, logger, tc, metricsReg)
 
 	// Initialize token store for auth state.
 	// The file-based store always runs for persistence across restarts.
@@ -329,8 +338,8 @@ func main() {
 	}
 
 	// Initialize MCP handler and server
-	mcpHandler := mcp.NewHandler(exec, compositeBackend, coercer, rawTS, logger)
-	mcpServer := mcp.NewServer(mcpHandler, cfg, logger, tokenStore, userStore, apiKeyStore, rateLimiter, callerClasses)
+	mcpHandler := mcp.NewHandler(exec, compositeBackend, coercer, rawTS, metricsReg, logger)
+	mcpServer := mcp.NewServer(mcpHandler, cfg, logger, tokenStore, userStore, apiKeyStore, rateLimiter, callerClasses, metricsReg)
 
 	httpMux := http.NewServeMux()
 	mcpServer.SetupRoutes(httpMux)
@@ -345,6 +354,27 @@ func main() {
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 60 * time.Second,
 		IdleTimeout:  120 * time.Second,
+	}
+
+	// Metrics endpoint runs on a separate listener so a Prometheus scraper does
+	// not need to traverse the public auth-protected MCP port.
+	var metricsSrv *http.Server
+	if metricsReg != nil {
+		metricsMux := http.NewServeMux()
+		metricsMux.Handle("/metrics", metricsReg.Handler())
+		metricsSrv = &http.Server{
+			Addr:         cfg.MetricsBind,
+			Handler:      metricsMux,
+			ReadTimeout:  10 * time.Second,
+			WriteTimeout: 10 * time.Second,
+			IdleTimeout:  60 * time.Second,
+		}
+		go func() {
+			logger.Info("ToolMesh metrics endpoint listening", "addr", metricsSrv.Addr, "path", "/metrics")
+			if err := metricsSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				logger.Error("metrics server error", "error", err)
+			}
+		}()
 	}
 
 	// Start telemetry send loop (persists counters on ctx cancellation)
@@ -364,6 +394,11 @@ func main() {
 
 		if err := srv.Shutdown(shutdownCtx); err != nil {
 			logger.Error("http server shutdown error", "error", err)
+		}
+		if metricsSrv != nil {
+			if err := metricsSrv.Shutdown(shutdownCtx); err != nil {
+				logger.Error("metrics server shutdown error", "error", err)
+			}
 		}
 	}()
 

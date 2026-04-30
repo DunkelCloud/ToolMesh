@@ -195,6 +195,12 @@ TOOLMESH_EXEC_TIMEOUT=180
 
 ToolMesh uses structured logging via `slog`. The default level is `debug` for full MCP traceability out of the box — **set `LOG_LEVEL=info` or higher for production** since debug logs include complete request/response payloads. Per-backend debug files, log formats, and all logging variables are documented in [docs/configuration.md](docs/configuration.md#logging).
 
+### Metrics (Prometheus)
+
+ToolMesh exposes Prometheus metrics on a separate listener (default host port 9090) — login counts by method and result, tool-call rates by backend and outcome, and a latency histogram with REST-tuned buckets. The endpoint is unauthenticated, so bind it to a private interface or expose it only to your Prometheus instance.
+
+Configure via `TOOLMESH_METRICS_PORT`, `TOOLMESH_METRICS_ENABLED`, and `TOOLMESH_METRICS_LABEL_TOOL` in `.env`. See [docs/metrics.md](docs/metrics.md) for the full schema, example PromQL queries, and a sample scrape configuration.
+
 ## Architecture
 
 See [docs/architecture.md](docs/architecture.md) for the full architecture documentation.

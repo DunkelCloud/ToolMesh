@@ -30,6 +30,7 @@ import (
 	"github.com/DunkelCloud/ToolMesh/internal/backend"
 	"github.com/DunkelCloud/ToolMesh/internal/credentials"
 	"github.com/DunkelCloud/ToolMesh/internal/gate"
+	"github.com/DunkelCloud/ToolMesh/internal/metrics"
 	"github.com/DunkelCloud/ToolMesh/internal/telemetry"
 	"github.com/DunkelCloud/ToolMesh/internal/userctx"
 	"github.com/google/uuid"
@@ -50,11 +51,13 @@ type Executor struct {
 	gate       *gate.Pipeline
 	audit      audit.AuditStore
 	telemetry  *telemetry.Collector
+	metrics    *metrics.Registry
 	timeout    time.Duration
 	logger     *slog.Logger
 }
 
-// New creates a new Executor with all required dependencies.
+// New creates a new Executor with all required dependencies. The metrics
+// registry is optional; pass nil to disable Prometheus instrumentation.
 func New(
 	authorizer *authz.Authorizer,
 	creds credentials.CredentialStore,
@@ -64,6 +67,7 @@ func New(
 	timeout time.Duration,
 	logger *slog.Logger,
 	tc *telemetry.Collector,
+	m *metrics.Registry,
 ) *Executor {
 	return &Executor{
 		authorizer: authorizer,
@@ -72,6 +76,7 @@ func New(
 		gate:       gatePipeline,
 		audit:      auditStore,
 		telemetry:  tc,
+		metrics:    m,
 		timeout:    timeout,
 		logger:     logger,
 	}
@@ -324,6 +329,23 @@ func (e *Executor) recordAudit(ctx context.Context, entry audit.AuditEntry) {
 	}
 	if e.telemetry != nil && entry.Backend != "" {
 		e.telemetry.RecordCall(entry.Backend, entry.Status == statusSuccess)
+	}
+	// Prometheus metric — recorded here (rather than at the MCP handler) so that
+	// individual tool calls made from inside execute_code's JS body are counted
+	// with their real backend/tool labels, not collapsed under "execute_code".
+	if e.metrics != nil {
+		backendLabel := entry.Backend
+		toolLabel := splitToolPrefix(entry.Tool)[1]
+		if backendLabel == "" {
+			backendLabel = "unknown"
+			toolLabel = entry.Tool
+		}
+		e.metrics.RecordToolCall(
+			backendLabel,
+			toolLabel,
+			entry.Status,
+			time.Duration(entry.DurationMs)*time.Millisecond,
+		)
 	}
 }
 

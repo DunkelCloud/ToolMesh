@@ -224,9 +224,15 @@ func (h *Handler) handleExecuteCode(ctx context.Context, params map[string]any) 
 	result, err := h.codeRunner.Execute(ctx, code)
 	if err != nil {
 		h.logger.WarnContext(ctx, "execute_code failed", "error", err)
-		// If we got a partial result (e.g. some calls succeeded before error), return it
+		// If we got a partial result (e.g. some calls succeeded before error),
+		// keep it and append the real error so the caller doesn't only see the
+		// runner's "no tool calls found in code" placeholder.
 		if result != nil {
 			result.IsError = true
+			result.Content = append(result.Content, map[string]any{
+				"type": "text",
+				"text": fmt.Sprintf("execute_code failed: %s", err),
+			})
 			return result
 		}
 		return &backend.ToolResult{

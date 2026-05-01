@@ -141,6 +141,38 @@ func TestHandleToolCall_ExecuteCodeEmpty(t *testing.T) {
 	}
 }
 
+// TestHandleToolCall_ExecuteCodeRuntimeError_SurfacesRealError ensures that
+// when JavaScript fails (here: an explicit throw), the response carries the
+// real error message — not just the runner's "no tool calls found in code"
+// placeholder, which was misleading callers debugging non-trivial code.
+func TestHandleToolCall_ExecuteCodeRuntimeError_SurfacesRealError(t *testing.T) {
+	_, mux := newTestServer(t, &config.Config{})
+
+	body := `{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "execute_code", "arguments": {"code": "throw new Error('runtime-boom');"}}}`
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	var resp map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	result, _ := resp["result"].(map[string]any)
+	if result == nil || result["isError"] != true {
+		t.Fatalf("expected isError=true, got %v", resp)
+	}
+
+	contentBytes, _ := json.Marshal(result["content"])
+	contentStr := string(contentBytes)
+	if !strings.Contains(contentStr, "runtime-boom") {
+		t.Errorf("expected response to surface the JS error message 'runtime-boom', got: %s", contentStr)
+	}
+	if !strings.Contains(contentStr, "execute_code failed") {
+		t.Errorf("expected response to be prefixed with 'execute_code failed', got: %s", contentStr)
+	}
+}
+
 func TestBuildBackendDescription(t *testing.T) {
 	mb := &summarizingBackend{
 		infos: []backend.BackendInfo{

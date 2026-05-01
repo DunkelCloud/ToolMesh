@@ -21,6 +21,19 @@ import (
 	"github.com/DunkelCloud/ToolMesh/internal/backend"
 )
 
+// JSON Schema "type" keyword values, also reused as labels in debug_echo
+// output. Centralized so they are referenced by constant rather than as
+// repeated string literals across the package.
+const (
+	jsonTypeString  = "string"
+	jsonTypeNumber  = "number"
+	jsonTypeInteger = "integer"
+	jsonTypeBoolean = "boolean"
+	jsonTypeArray   = "array"
+	jsonTypeObject  = "object"
+	jsonTypeNull    = "null"
+)
+
 // CodeModeParser maintains a reverse lookup from sanitized JS names back to
 // canonical tool names. Used by CodeRunner for name resolution and by
 // GenerateToolDefinitions for list_tools output.
@@ -88,15 +101,15 @@ func schemaToTypeScript(schema map[string]any) string {
 		if propMap, ok := prop.(map[string]any); ok {
 			if t, ok := propMap["type"].(string); ok {
 				switch t {
-				case "string":
-					tsType = "string"
-				case "number", "integer":
-					tsType = "number"
-				case "boolean":
-					tsType = "boolean"
-				case "array":
+				case jsonTypeString:
+					tsType = jsonTypeString
+				case jsonTypeNumber, jsonTypeInteger:
+					tsType = jsonTypeNumber
+				case jsonTypeBoolean:
+					tsType = jsonTypeBoolean
+				case jsonTypeArray:
 					tsType = "any[]"
-				case "object":
+				case jsonTypeObject:
 					tsType = "Record<string, any>"
 				}
 			}

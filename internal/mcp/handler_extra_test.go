@@ -149,7 +149,7 @@ func TestBuildBackendDescription(t *testing.T) {
 			{Name: "nohint"},
 		},
 	}
-	h := NewHandler(nil, mb, nil, "", nil, newQuietMCPLogger())
+	h := NewHandler(nil, mb, nil, "", nil, newQuietMCPLogger(), false)
 	desc := h.buildBackendDescription()
 	if !strings.Contains(desc, "github") || !strings.Contains(desc, "jira") {
 		t.Errorf("desc missing backend names: %s", desc)
@@ -161,7 +161,7 @@ func TestBuildBackendDescription(t *testing.T) {
 
 func TestBuildBackendDescription_NoSummarizer(t *testing.T) {
 	// mockTestBackend doesn't implement BackendSummarizer.
-	h := NewHandler(nil, &mockTestBackend{}, nil, "", nil, newQuietMCPLogger())
+	h := NewHandler(nil, &mockTestBackend{}, nil, "", nil, newQuietMCPLogger(), false)
 	if desc := h.buildBackendDescription(); desc != "" {
 		t.Errorf("expected empty, got %q", desc)
 	}

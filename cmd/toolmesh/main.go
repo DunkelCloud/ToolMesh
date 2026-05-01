@@ -338,7 +338,10 @@ func main() {
 	}
 
 	// Initialize MCP handler and server
-	mcpHandler := mcp.NewHandler(exec, compositeBackend, coercer, rawTS, metricsReg, logger)
+	mcpHandler := mcp.NewHandler(exec, compositeBackend, coercer, rawTS, metricsReg, logger, cfg.DebugTools)
+	if cfg.DebugTools {
+		logger.Warn("debug tools enabled (TOOLMESH_DEBUG_TOOLS=true) — debug_echo and debug_generate exposed; do not use in production")
+	}
 	mcpServer := mcp.NewServer(mcpHandler, cfg, logger, tokenStore, userStore, apiKeyStore, rateLimiter, callerClasses, metricsReg)
 
 	httpMux := http.NewServeMux()

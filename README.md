@@ -201,6 +201,10 @@ ToolMesh exposes Prometheus metrics on a separate listener (default host port 90
 
 Configure via `TOOLMESH_METRICS_PORT`, `TOOLMESH_METRICS_ENABLED`, and `TOOLMESH_METRICS_LABEL_TOOL` in `.env`. See [docs/metrics.md](docs/metrics.md) for the full schema, example PromQL queries, and a sample scrape configuration.
 
+### Debug tools (opt-in)
+
+Set `TOOLMESH_DEBUG_TOOLS=true` in `.env` to expose two diagnostic MCP tools — `debug_echo` (returns size and SHA-256 of the supplied payload, no backend) and `debug_generate` (produces a printable string of N bytes). Use them to probe transport-level size limits between the calling LLM and ToolMesh, or to verify round-trip byte integrity. Off by default; intended for development and incident triage, not production.
+
 ## Architecture
 
 See [docs/architecture.md](docs/architecture.md) for the full architecture documentation.

@@ -42,7 +42,7 @@ func newTestServer(t *testing.T, cfg *config.Config) (*Server, *http.ServeMux) {
 
 	mb := &mockTestBackend{}
 	exec := executor.New(nil, nil, mb, nil, nil, 120*time.Second, logger, nil, nil)
-	handler := NewHandler(exec, mb, nil, "", nil, logger)
+	handler := NewHandler(exec, mb, nil, "", nil, logger, cfg.DebugTools)
 
 	srv := NewServer(handler, cfg, logger, nil, nil, nil, nil, nil, nil)
 	mux := http.NewServeMux()
@@ -64,7 +64,7 @@ func newTestServerWithRedis(t *testing.T, cfg *config.Config) (*Server, *http.Se
 
 	mb := &mockTestBackend{}
 	exec := executor.New(nil, nil, mb, nil, nil, 120*time.Second, logger, nil, nil)
-	handler := NewHandler(exec, mb, nil, "", nil, logger)
+	handler := NewHandler(exec, mb, nil, "", nil, logger, cfg.DebugTools)
 
 	srv := NewServer(handler, cfg, logger, tokenStore, nil, nil, rateLimiter, nil, nil)
 	mux := http.NewServeMux()

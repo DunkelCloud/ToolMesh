@@ -18,6 +18,7 @@ services:
       - TOOLMESH_DATA_DIR=/app/data
       - TOOLMESH_METRICS_ENABLED=${TOOLMESH_METRICS_ENABLED:-true}
       - TOOLMESH_METRICS_LABEL_TOOL=${TOOLMESH_METRICS_LABEL_TOOL:-true}
+      - TOOLMESH_DEBUG_TOOLS=${TOOLMESH_DEBUG_TOOLS:-false}
     depends_on:
       keydb:
         condition: service_healthy

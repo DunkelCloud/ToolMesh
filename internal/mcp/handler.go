@@ -32,8 +32,10 @@ import (
 // Built-in MCP meta-tool names. These do not pass through the executor and
 // are dispatched directly inside [Handler.HandleToolCall].
 const (
-	toolListTools   = "list_tools"
-	toolExecuteCode = "execute_code"
+	toolListTools     = "list_tools"
+	toolExecuteCode   = "execute_code"
+	toolDebugEcho     = "debug_echo"
+	toolDebugGenerate = "debug_generate"
 )
 
 // Handler processes incoming MCP tool calls and routes them through the executor.
@@ -46,11 +48,13 @@ type Handler struct {
 	rawTS      string // raw TypeScript content for built-in tools
 	metrics    *metrics.Registry
 	logger     *slog.Logger
+	debugTools bool // when true, expose debug_echo and debug_generate
 }
 
 // NewHandler creates a new MCP tool call handler. The metrics registry is
-// optional; pass nil to disable instrumentation.
-func NewHandler(exec *executor.Executor, back backend.ToolBackend, coercer *tsdef.Coercer, rawTS string, m *metrics.Registry, logger *slog.Logger) *Handler {
+// optional; pass nil to disable instrumentation. Set debugTools to true to
+// expose the diagnostic tools (debug_echo, debug_generate); off in production.
+func NewHandler(exec *executor.Executor, back backend.ToolBackend, coercer *tsdef.Coercer, rawTS string, m *metrics.Registry, logger *slog.Logger, debugTools bool) *Handler {
 	// Build the code mode parser with reverse name lookup from all registered tools
 	tools, _ := back.ListTools(context.Background())
 	parser := NewCodeModeParser(tools)
@@ -70,7 +74,20 @@ func NewHandler(exec *executor.Executor, back backend.ToolBackend, coercer *tsde
 		rawTS:      rawTS,
 		metrics:    m,
 		logger:     logger,
+		debugTools: debugTools,
 	}
+}
+
+// isBuiltinTool reports whether a tool name is dispatched directly by the
+// handler instead of through the executor.
+func (h *Handler) isBuiltinTool(name string) bool {
+	switch name {
+	case toolListTools, toolExecuteCode:
+		return true
+	case toolDebugEcho, toolDebugGenerate:
+		return h.debugTools
+	}
+	return false
 }
 
 // HandleToolCall processes a single tool call through the execution pipeline.
@@ -82,7 +99,7 @@ func (h *Handler) HandleToolCall(ctx context.Context, toolName string, params ma
 	// direct ones from the default branch and individual calls extracted from
 	// inside execute_code's JS body — are recorded by the executor with their
 	// actual backend/tool labels, so instrumenting them here too would double-count.
-	if toolName == toolListTools || toolName == toolExecuteCode {
+	if h.isBuiltinTool(toolName) {
 		start := time.Now()
 		defer func() {
 			outcome := "success"
@@ -98,6 +115,16 @@ func (h *Handler) HandleToolCall(ctx context.Context, toolName string, params ma
 		return h.handleListTools(ctx, params)
 	case toolExecuteCode:
 		return h.handleExecuteCode(ctx, params), nil
+	case toolDebugEcho:
+		if !h.debugTools {
+			return debugDisabledResult(toolName), nil
+		}
+		return h.handleDebugEcho(params), nil
+	case toolDebugGenerate:
+		if !h.debugTools {
+			return debugDisabledResult(toolName), nil
+		}
+		return h.handleDebugGenerate(params), nil
 	default:
 		// Apply type coercion before execution
 		if h.coercer != nil {
@@ -293,6 +320,10 @@ func (h *Handler) BuildToolList(ctx context.Context) ([]ToolDefinition, error) {
 	// Backend tools are intentionally NOT exposed as individual MCP tools.
 	// They are only accessible via execute_code (Code Mode) and list_tools.
 	// This keeps the MCP surface minimal and avoids tool name validation issues.
+
+	if h.debugTools {
+		tools = append(tools, debugToolDefinitions()...)
+	}
 
 	return tools, nil
 }

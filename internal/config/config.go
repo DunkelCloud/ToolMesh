@@ -92,6 +92,11 @@ type Config struct {
 	MetricsEnabled   bool   // TOOLMESH_METRICS_ENABLED, default true
 	MetricsBind      string // TOOLMESH_METRICS_BIND, default ":9090"
 	MetricsLabelTool bool   // TOOLMESH_METRICS_LABEL_TOOL, default true
+
+	// Debug tools (debug_echo, debug_generate). When enabled, the MCP
+	// surface gains two diagnostic tools for probing transport-level size
+	// limits and round-trip integrity. Default off; intended for dev/test.
+	DebugTools bool // TOOLMESH_DEBUG_TOOLS, default false
 }
 
 // Load reads configuration from environment variables with sensible defaults.
@@ -129,6 +134,7 @@ func Load() (*Config, error) {
 		MetricsEnabled:          envBool("TOOLMESH_METRICS_ENABLED", true),
 		MetricsBind:             envStr("TOOLMESH_METRICS_BIND", ":9090"),
 		MetricsLabelTool:        envBool("TOOLMESH_METRICS_LABEL_TOOL", true),
+		DebugTools:              envBool("TOOLMESH_DEBUG_TOOLS", false),
 	}
 
 	// Parse CORS origins

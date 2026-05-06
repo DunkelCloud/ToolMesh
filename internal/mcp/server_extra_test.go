@@ -27,15 +27,12 @@ import (
 	"github.com/DunkelCloud/ToolMesh/internal/config"
 )
 
-const (
-	initBodyExtra     = `{"jsonrpc": "2.0", "id": 1, "method": "initialize"}`
-	invalidGrantError = "invalid_grant"
-)
+const initBodyExtra = `{"jsonrpc": "2.0", "id": 1, "method": "initialize"}`
 
 func TestOriginAllowed(t *testing.T) {
 	srv, _ := newTestServer(t, &config.Config{
 		CORSAllowedOrigins: []string{
-			"https://claude.ai",
+			testOriginClaudeAI,
 			"*.example.com",
 		},
 	})
@@ -44,7 +41,7 @@ func TestOriginAllowed(t *testing.T) {
 		origin string
 		want   bool
 	}{
-		{"https://claude.ai", true},
+		{testOriginClaudeAI, true},
 		{"https://foo.example.com", true},
 		{"https://bar.example.com", true},
 		{"https://evil-example.com", false}, // must not match *.example.com
@@ -70,10 +67,10 @@ func TestClientIP(t *testing.T) {
 		want       string
 	}{
 		{"no xff fallback to remote", "", "203.0.113.5:443", "203.0.113.5"},
-		{"single public xff", "198.51.100.7", "10.0.0.1:443", "198.51.100.7"},
-		{"private on right, public on left", "198.51.100.7, 10.0.0.1", "10.0.0.1:443", "198.51.100.7"},
+		{"single public xff", testIP198_51_100_7, testIPClaudeAI443, testIP198_51_100_7},
+		{"private on right, public on left", "198.51.100.7, 10.0.0.1", testIPClaudeAI443, testIP198_51_100_7},
 		{"all private xff falls back to remote", "10.0.0.1, 192.168.1.1", "203.0.113.8:443", "203.0.113.8"},
-		{"malformed entries skipped", "garbage, 198.51.100.9", "10.0.0.1:443", "198.51.100.9"},
+		{"malformed entries skipped", "garbage, 198.51.100.9", testIPClaudeAI443, "198.51.100.9"},
 		{"remote addr without port", "", "bare-host", "bare-host"},
 	}
 	for _, tt := range tests {
@@ -116,7 +113,7 @@ func TestMCP_InvalidContentType(t *testing.T) {
 	var resp map[string]any
 	_ = json.NewDecoder(w.Body).Decode(&resp)
 	errObj, _ := resp["error"].(map[string]any)
-	if errObj == nil || errObj["code"].(float64) != -32700 {
+	if errObj == nil || errObj[argNameCode].(float64) != -32700 {
 		t.Errorf("expected parse error, got %v", resp)
 	}
 }
@@ -158,7 +155,7 @@ func TestAuthenticate_Anonymous(t *testing.T) {
 	if uc.Authenticated {
 		t.Error("expected Authenticated=false for anonymous")
 	}
-	if uc.UserID != "anonymous" {
+	if uc.UserID != userAnonymous {
 		t.Errorf("got UserID=%q, want anonymous", uc.UserID)
 	}
 }
@@ -185,7 +182,7 @@ func TestTokenGrant_ClientIDMismatch(t *testing.T) {
 	// with the wrong client_id — should fail with invalid_grant.
 	_, mux, _ := newTestServerWithRedis(t, &config.Config{
 		AuthPassword: "pw",
-		Issuer:       "https://toolmesh.io/",
+		Issuer:       testIssuerToolmesh,
 	})
 
 	regBody := `{"redirect_uris": ["https://example.com/cb"], "client_name": "t"}`
@@ -195,18 +192,18 @@ func TestTokenGrant_ClientIDMismatch(t *testing.T) {
 	mux.ServeHTTP(regW, regReq)
 	var regResp map[string]any
 	_ = json.NewDecoder(regW.Body).Decode(&regResp)
-	clientID := regResp["client_id"].(string)
+	clientID := regResp[oauthClientID].(string)
 
 	// Get an auth code via form POST.
 	codeVerifier := "verifier-with-enough-entropy-01234567890"
 	// Any S256 challenge works since we won't actually reach PKCE verification.
 	form := url.Values{
-		"password":       {"pw"},
-		"client_id":      {clientID},
-		"redirect_uri":   {"https://example.com/cb"},
-		"state":          {"s"},
-		"code_challenge": {"dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"},
-		"scope":          {"claudeai"},
+		testFormPassword:   {"pw"},
+		oauthClientID:      {clientID},
+		oauthRedirectURI:   {"https://example.com/cb"},
+		oauthState:         {"s"},
+		oauthCodeChallenge: {"dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"},
+		oauthScope:         {clientClaudeAI},
 	}
 	authReq := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/authorize", strings.NewReader(form.Encode()))
 	authReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -214,14 +211,14 @@ func TestTokenGrant_ClientIDMismatch(t *testing.T) {
 	mux.ServeHTTP(authW, authReq)
 	loc := authW.Header().Get("Location")
 	u, _ := url.Parse(loc)
-	code := u.Query().Get("code")
+	code := u.Query().Get(argNameCode)
 
 	// Exchange with wrong client_id.
 	tokenForm := url.Values{
-		"grant_type":    {"authorization_code"},
-		"code":          {code},
+		oauthGrantType:  {oauthGrantAuthCode},
+		argNameCode:     {code},
 		"code_verifier": {codeVerifier},
-		"client_id":     {"wrong-client-id"},
+		oauthClientID:   {"wrong-client-id"},
 	}
 	tokReq := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/token", strings.NewReader(tokenForm.Encode()))
 	tokReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -239,8 +236,8 @@ func TestRefreshTokenGrant_MissingClientID(t *testing.T) {
 	_, mux, _ := newTestServerWithRedis(t, &config.Config{})
 
 	form := url.Values{
-		"grant_type":    {"refresh_token"},
-		"refresh_token": {"whatever"},
+		oauthGrantType:    {oauthRefreshToken},
+		oauthRefreshToken: {"whatever"},
 		// no client_id
 	}
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/token", strings.NewReader(form.Encode()))

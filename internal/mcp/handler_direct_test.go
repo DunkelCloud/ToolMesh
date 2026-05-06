@@ -28,9 +28,9 @@ func TestHandleToolCall_DirectBackendCall(t *testing.T) {
 	mb := &mockTestBackend{}
 	coercer := tsdef.NewCoercer([]tsdef.ToolDef{
 		{
-			Name: "test:tool",
+			Name: testDirectToolName,
 			Params: []tsdef.ParamDef{
-				{Name: "count", Type: tsdef.ParamType{Kind: "number"}},
+				{Name: "count", Type: tsdef.ParamType{Kind: jsonTypeNumber}},
 			},
 		},
 	}, newQuietMCPLogger())
@@ -44,7 +44,7 @@ func TestHandleToolCall_DirectBackendCall(t *testing.T) {
 
 	// Normal tool call routed through the default branch with coercion.
 	// "count": "42" gets coerced to number.
-	result, err := h.HandleToolCall(ctx, "test:tool", map[string]any{"count": "42"})
+	result, err := h.HandleToolCall(ctx, testDirectToolName, map[string]any{"count": "42"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,9 +57,9 @@ func TestHandleToolCall_CoercionFailure(t *testing.T) {
 	mb := &mockTestBackend{}
 	coercer := tsdef.NewCoercer([]tsdef.ToolDef{
 		{
-			Name: "test:tool",
+			Name: testDirectToolName,
 			Params: []tsdef.ParamDef{
-				{Name: "req", Required: true, Type: tsdef.ParamType{Kind: "string"}},
+				{Name: "req", Required: true, Type: tsdef.ParamType{Kind: jsonTypeString}},
 			},
 		},
 	}, newQuietMCPLogger())
@@ -72,7 +72,7 @@ func TestHandleToolCall_CoercionFailure(t *testing.T) {
 	})
 
 	// Missing required "req" → coercer returns error.
-	result, err := h.HandleToolCall(ctx, "test:tool", map[string]any{})
+	result, err := h.HandleToolCall(ctx, testDirectToolName, map[string]any{})
 	if err != nil {
 		t.Fatal(err)
 	}

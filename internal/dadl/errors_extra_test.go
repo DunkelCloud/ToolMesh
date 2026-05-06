@@ -41,7 +41,7 @@ func TestTruncateMessage(t *testing.T) {
 }
 
 func TestExtractMessage_InvalidJSON(t *testing.T) {
-	m := NewErrorMapper(ErrorConfig{Format: "json", MessagePath: "$.message"})
+	m := NewErrorMapper(ErrorConfig{Format: testJSONFormat, MessagePath: testJSONPathMessage})
 	msg := m.extractMessage([]byte("not json"))
 	if msg != "not json" {
 		t.Errorf("fallback msg = %q", msg)
@@ -49,7 +49,7 @@ func TestExtractMessage_InvalidJSON(t *testing.T) {
 }
 
 func TestExtractMessage_InvalidJSONPath(t *testing.T) {
-	m := NewErrorMapper(ErrorConfig{Format: "json", MessagePath: "not a jsonpath"})
+	m := NewErrorMapper(ErrorConfig{Format: testJSONFormat, MessagePath: "not a jsonpath"})
 	msg := m.extractMessage([]byte(`{"x":1}`))
 	// With invalid path, extractMessage returns a truncated version of the body.
 	if msg == "" {
@@ -59,7 +59,7 @@ func TestExtractMessage_InvalidJSONPath(t *testing.T) {
 
 func TestRetryer_Success(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError}))
-	r := NewRetryer(RetryStrategyConfig{MaxRetries: 2, InitialDelay: "1ms", Backoff: "fixed"}, logger)
+	r := NewRetryer(RetryStrategyConfig{MaxRetries: 2, InitialDelay: testRetryDelay1ms, Backoff: backoffFixed}, logger)
 
 	calls := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -85,7 +85,7 @@ func TestRetryer_Success(t *testing.T) {
 
 func TestRetryer_RetriesThenFails(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError}))
-	r := NewRetryer(RetryStrategyConfig{MaxRetries: 2, InitialDelay: "1ms", Backoff: "exponential"}, logger)
+	r := NewRetryer(RetryStrategyConfig{MaxRetries: 2, InitialDelay: testRetryDelay1ms, Backoff: backoffExponential}, logger)
 
 	calls := 0
 	fn := func() (*http.Response, error) {
@@ -103,7 +103,7 @@ func TestRetryer_RetriesThenFails(t *testing.T) {
 
 func TestRetryer_ContextCancel(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError}))
-	r := NewRetryer(RetryStrategyConfig{MaxRetries: 5, InitialDelay: "100ms", Backoff: "linear"}, logger)
+	r := NewRetryer(RetryStrategyConfig{MaxRetries: 5, InitialDelay: "100ms", Backoff: backoffLinear}, logger)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // cancel before first retry
@@ -118,7 +118,7 @@ func TestRetryer_ContextCancel(t *testing.T) {
 
 func TestRetryer_DefaultMaxRetries(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError}))
-	r := NewRetryer(RetryStrategyConfig{InitialDelay: "1ms"}, logger)
+	r := NewRetryer(RetryStrategyConfig{InitialDelay: testRetryDelay1ms}, logger)
 
 	calls := 0
 	_, err := r.Do(context.Background(), func() (*http.Response, error) { //nolint:bodyclose // fn never returns a response
@@ -143,9 +143,9 @@ func TestCalcDelay(t *testing.T) {
 		initial  time.Duration
 		want     time.Duration
 	}{
-		{"fixed", 3, 10 * time.Millisecond, 10 * time.Millisecond},
-		{"linear", 3, 10 * time.Millisecond, 30 * time.Millisecond},
-		{"exponential", 2, 10 * time.Millisecond, 20 * time.Millisecond},
+		{backoffFixed, 3, 10 * time.Millisecond, 10 * time.Millisecond},
+		{backoffLinear, 3, 10 * time.Millisecond, 30 * time.Millisecond},
+		{backoffExponential, 2, 10 * time.Millisecond, 20 * time.Millisecond},
 		{"unknown", 1, 10 * time.Millisecond, 10 * time.Millisecond},
 	}
 	for _, tc := range cases {

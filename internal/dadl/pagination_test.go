@@ -21,8 +21,8 @@ import (
 
 func TestPaginator_Cursor(t *testing.T) {
 	p := NewPaginator(PaginationConfig{
-		Strategy: "cursor",
-		Request:  PaginationRequest{CursorParam: "cursor"},
+		Strategy: paginationStrategyCursor,
+		Request:  PaginationRequest{CursorParam: paginationStrategyCursor},
 		Response: PaginationResponse{
 			NextCursor: "$.meta.next_cursor",
 			HasMore:    "$.meta.has_more",
@@ -64,8 +64,8 @@ func TestPaginator_Cursor(t *testing.T) {
 			if next == nil {
 				t.Fatal("expected non-nil")
 			}
-			if next["cursor"] != tt.wantCur {
-				t.Errorf("cursor = %q, want %q", next["cursor"], tt.wantCur)
+			if next[paginationStrategyCursor] != tt.wantCur {
+				t.Errorf("cursor = %q, want %q", next[paginationStrategyCursor], tt.wantCur)
 			}
 		})
 	}
@@ -73,9 +73,9 @@ func TestPaginator_Cursor(t *testing.T) {
 
 func TestPaginator_Offset(t *testing.T) {
 	p := NewPaginator(PaginationConfig{
-		Strategy: "offset",
+		Strategy: paginationStrategyOffset,
 		Request: PaginationRequest{
-			OffsetParam:  "offset",
+			OffsetParam:  paginationStrategyOffset,
 			LimitParam:   "limit",
 			LimitDefault: 10,
 		},
@@ -87,8 +87,8 @@ func TestPaginator_Offset(t *testing.T) {
 	if next == nil {
 		t.Fatal("expected next page params")
 	}
-	if next["offset"] != "10" {
-		t.Errorf("offset = %q, want 10", next["offset"])
+	if next[paginationStrategyOffset] != "10" {
+		t.Errorf("offset = %q, want 10", next[paginationStrategyOffset])
 	}
 
 	// Partial page (5 items) → should return nil
@@ -101,8 +101,8 @@ func TestPaginator_Offset(t *testing.T) {
 
 func TestPaginator_Page(t *testing.T) {
 	p := NewPaginator(PaginationConfig{
-		Strategy: "page",
-		Request:  PaginationRequest{PageParam: "page"},
+		Strategy: paginationStrategyPage,
+		Request:  PaginationRequest{PageParam: paginationStrategyPage},
 		Response: PaginationResponse{TotalPagesHeader: "X-Total-Pages"},
 	})
 
@@ -110,23 +110,23 @@ func TestPaginator_Page(t *testing.T) {
 	headers.Set("X-Total-Pages", "3")
 
 	// Page 1 of 3 → next
-	next := p.NextPageParams(200, headers, nil, map[string]string{"page": "1"})
+	next := p.NextPageParams(200, headers, nil, map[string]string{paginationStrategyPage: "1"})
 	if next == nil {
 		t.Fatal("expected next page params")
 	}
-	if next["page"] != "2" {
-		t.Errorf("page = %q, want 2", next["page"])
+	if next[paginationStrategyPage] != "2" {
+		t.Errorf("page = %q, want 2", next[paginationStrategyPage])
 	}
 
 	// Page 3 of 3 → nil
-	next = p.NextPageParams(200, headers, nil, map[string]string{"page": "3"})
+	next = p.NextPageParams(200, headers, nil, map[string]string{paginationStrategyPage: "3"})
 	if next != nil {
 		t.Errorf("expected nil on last page, got %v", next)
 	}
 }
 
 func TestPaginator_LinkHeader(t *testing.T) {
-	p := NewPaginator(PaginationConfig{Strategy: "link_header"})
+	p := NewPaginator(PaginationConfig{Strategy: paginationStrategyLinkHeader})
 
 	headers := http.Header{}
 	headers.Set("Link", `<https://api.example.com/items?page=2>; rel="next", <https://api.example.com/items?page=5>; rel="last"`)
@@ -148,7 +148,7 @@ func TestPaginator_LinkHeader(t *testing.T) {
 }
 
 func TestPaginator_ErrorStatus(t *testing.T) {
-	p := NewPaginator(PaginationConfig{Strategy: "page"})
+	p := NewPaginator(PaginationConfig{Strategy: paginationStrategyPage})
 	next := p.NextPageParams(500, nil, nil, nil)
 	if next != nil {
 		t.Error("expected nil on error status")

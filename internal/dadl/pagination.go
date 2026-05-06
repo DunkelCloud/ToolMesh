@@ -40,13 +40,13 @@ func (p *Paginator) NextPageParams(statusCode int, headers http.Header, body []b
 	}
 
 	switch p.config.Strategy {
-	case "cursor":
+	case paginationStrategyCursor:
 		return p.nextCursor(body, currentParams)
-	case "offset":
+	case paginationStrategyOffset:
 		return p.nextOffset(body, currentParams)
-	case "page":
+	case paginationStrategyPage:
 		return p.nextPage(headers, currentParams)
-	case "link_header":
+	case paginationStrategyLinkHeader:
 		return p.nextLinkHeader(headers)
 	default:
 		return nil

@@ -142,13 +142,20 @@ func (r *Retryer) Do(ctx context.Context, fn func() (*http.Response, error)) (*h
 	return nil, fmt.Errorf("max retries (%d) exceeded: %w", maxRetries, lastErr)
 }
 
+// Retry backoff strategy values used in DADL error_handling specs.
+const (
+	backoffExponential = "exponential"
+	backoffLinear      = "linear"
+	backoffFixed       = "fixed"
+)
+
 func (r *Retryer) calcDelay(attempt int, initial time.Duration) time.Duration {
 	switch r.strategy.Backoff {
-	case "exponential":
+	case backoffExponential:
 		return initial * time.Duration(math.Pow(2, float64(attempt-1)))
-	case "linear":
+	case backoffLinear:
 		return initial * time.Duration(attempt)
-	case "fixed":
+	case backoffFixed:
 		return initial
 	default:
 		return initial * time.Duration(math.Pow(2, float64(attempt-1)))

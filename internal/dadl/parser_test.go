@@ -45,7 +45,7 @@ backend:
 		t.Errorf("got %d tools, want 1", len(spec.Backend.Tools))
 	}
 	tool := spec.Backend.Tools["get_item"]
-	if tool.Method != "GET" {
+	if tool.Method != httpMethodGET {
 		t.Errorf("got method %q, want GET", tool.Method)
 	}
 	if tool.Path != "/items/{id}" {
@@ -255,7 +255,7 @@ backend:
       max_pages: 10
     errors:
       format: json
-      message_path: "$.message"
+      message_path: testJSONPathMessage
       retry_on: [429, 503]
       terminal: [400, 404]
       retry_strategy:
@@ -295,7 +295,7 @@ backend:
 	if b.Name != "myapi" {
 		t.Errorf("name = %q, want myapi", b.Name)
 	}
-	if b.Auth.Type != "bearer" {
+	if b.Auth.Type != authTypeBearer {
 		t.Errorf("auth.type = %q, want bearer", b.Auth.Type)
 	}
 	if b.Auth.Prefix != "Bearer " {
@@ -304,7 +304,7 @@ backend:
 	if b.Defaults.Pagination == nil {
 		t.Fatal("defaults.pagination is nil")
 	}
-	if b.Defaults.Pagination.Strategy != "page" {
+	if b.Defaults.Pagination.Strategy != paginationStrategyPage {
 		t.Errorf("pagination.strategy = %q, want page", b.Defaults.Pagination.Strategy)
 	}
 	if b.Defaults.Pagination.MaxPages != 10 {

@@ -212,6 +212,29 @@ func (r *CodeRunner) Execute(ctx context.Context, code string) (*backend.ToolRes
 			return extractJSValue(rt, result)
 		})
 	}
+
+	// Guard against the common LLM mistake of invoking discover_tools or
+	// execute_code from inside the JS sandbox. Both are top-level MCP tools,
+	// not toolmesh.* members. The descriptions say "call discover_tools
+	// first" — which is sometimes misread as "call toolmesh.discover_tools()
+	// in the code". Without this guard, the JS engine raises a generic
+	// "Object has no member 'discover_tools'" TypeError that does not point
+	// the caller at the right fix. We only install the guard when no real
+	// backend tool has claimed the same sanitized name.
+	for _, name := range []string{"discover_tools", "execute_code"} {
+		if _, taken := r.nameMap[name]; taken {
+			continue
+		}
+		guardName := name
+		_ = tmObj.Set(guardName, func(_ goja.FunctionCall) goja.Value {
+			panic(rt.NewGoError(fmt.Errorf(
+				"toolmesh.%s is not a backend tool — %s is a separate MCP tool. "+
+					"Call it via the MCP client (outside execute_code), not from inside the `code` parameter",
+				guardName, guardName,
+			)))
+		})
+	}
+
 	if err := rt.Set("toolmesh", tmObj); err != nil {
 		return nil, fmt.Errorf("execute_code: set toolmesh: %w", err)
 	}
@@ -234,17 +257,17 @@ func (r *CodeRunner) Execute(ctx context.Context, code string) (*backend.ToolRes
 	if err != nil {
 		var interrupt *goja.InterruptedError
 		if errors.As(err, &interrupt) {
-			return r.buildResult(results, console),
+			return r.errorResult(results, console),
 				fmt.Errorf("execute_code: interrupted: %s", interrupt.Value())
 		}
-		return r.buildResult(results, console),
+		return r.errorResult(results, console),
 			fmt.Errorf("execute_code: %w", err)
 	}
 
 	// Resolve promise
 	retVal, err := composite.ResolvePromise(val)
 	if err != nil {
-		return r.buildResult(results, console),
+		return r.errorResult(results, console),
 			fmt.Errorf("execute_code: %w", err)
 	}
 
@@ -281,6 +304,21 @@ func (r *CodeRunner) Execute(ctx context.Context, code string) (*backend.ToolRes
 			"text": "no tool calls found in code",
 		}},
 	}, nil
+}
+
+// errorResult is the buildResult variant used in error paths: it surfaces
+// partial results when at least one tool call ran before the error, and
+// returns nil otherwise. Returning nil tells the handler to emit only the
+// real error message instead of also surfacing buildResult's misleading
+// "no tool calls found in code" placeholder. The placeholder is appropriate
+// when the success path lands on an empty results slice (i.e. the code had
+// no toolmesh.* calls at all), but in an error path the actual error is
+// the message the caller needs to see.
+func (r *CodeRunner) errorResult(results []any, console []string) *backend.ToolResult {
+	if len(results) == 0 {
+		return nil
+	}
+	return r.buildResult(results, console)
 }
 
 // buildResult marshals collected tool call results into the standard JSON format.

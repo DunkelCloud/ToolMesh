@@ -57,6 +57,9 @@ func TestHandleToolCall_DiscoverTools(t *testing.T) {
 	}
 }
 
+// TestHandleToolCall_DiscoverToolsMissingPattern verifies that omitting the
+// pattern argument is treated as ".*" (list all). The previous behavior — error
+// out demanding the magic string — was friction for the most common case.
 func TestHandleToolCall_DiscoverToolsMissingPattern(t *testing.T) {
 	_, mux := newTestServer(t, &config.Config{})
 
@@ -69,8 +72,11 @@ func TestHandleToolCall_DiscoverToolsMissingPattern(t *testing.T) {
 	var resp map[string]any
 	_ = json.NewDecoder(w.Body).Decode(&resp)
 	result, _ := resp["result"].(map[string]any)
-	if result == nil || result["isError"] != true {
-		t.Errorf("expected isError=true, got %v", resp)
+	if result == nil {
+		t.Fatalf("expected result, got %v", resp)
+	}
+	if result["isError"] == true {
+		t.Errorf("expected isError=false (pattern defaults to \".*\"), got %v", result)
 	}
 }
 
@@ -143,8 +149,9 @@ func TestHandleToolCall_ExecuteCodeEmpty(t *testing.T) {
 
 // TestHandleToolCall_ExecuteCodeRuntimeError_SurfacesRealError ensures that
 // when JavaScript fails (here: an explicit throw), the response carries the
-// real error message — not just the runner's "no tool calls found in code"
-// placeholder, which was misleading callers debugging non-trivial code.
+// real error message — and ONLY that. Earlier behavior emitted both the
+// runner's "no tool calls found in code" placeholder and the real error,
+// which was contradictory ("no calls found, but here's a TypeError…").
 func TestHandleToolCall_ExecuteCodeRuntimeError_SurfacesRealError(t *testing.T) {
 	_, mux := newTestServer(t, &config.Config{})
 
@@ -171,6 +178,66 @@ func TestHandleToolCall_ExecuteCodeRuntimeError_SurfacesRealError(t *testing.T) 
 	if !strings.Contains(contentStr, "execute_code failed") {
 		t.Errorf("expected response to be prefixed with 'execute_code failed', got: %s", contentStr)
 	}
+	// The "no tool calls found in code" placeholder must NOT appear when a
+	// runtime error is the real cause — emitting both messages contradicts
+	// itself and obscures the actual error.
+	if strings.Contains(contentStr, "no tool calls found in code") {
+		t.Errorf("response must not contain 'no tool calls found in code' alongside a runtime error, got: %s", contentStr)
+	}
+}
+
+// TestHandleToolCall_ExecuteCodeDiscoverToolsGuard verifies that calling
+// toolmesh.discover_tools(...) from inside execute_code surfaces the explicit
+// guard message — not the bare goja TypeError "Object has no member …" that
+// gave callers no clue what they did wrong. The same applies to execute_code.
+func TestHandleToolCall_ExecuteCodeDiscoverToolsGuard(t *testing.T) {
+	_, mux := newTestServer(t, &config.Config{})
+
+	cases := []struct {
+		name string
+		code string
+	}{
+		{name: "discover_tools", code: `await toolmesh.discover_tools({pattern: ".*"});`},
+		{name: "execute_code", code: `await toolmesh.execute_code({code: "1"});`},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body := `{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "execute_code", "arguments": {"code": ` + jsonString(tc.code) + `}}}`
+			req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp", strings.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+			mux.ServeHTTP(w, req)
+
+			var resp map[string]any
+			if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			result, _ := resp["result"].(map[string]any)
+			if result == nil || result["isError"] != true {
+				t.Fatalf("expected isError=true, got %v", resp)
+			}
+
+			contentBytes, _ := json.Marshal(result["content"])
+			contentStr := string(contentBytes)
+			if !strings.Contains(contentStr, "toolmesh."+tc.name+" is not a backend tool") {
+				t.Errorf("expected guard message naming toolmesh.%s, got: %s", tc.name, contentStr)
+			}
+			if !strings.Contains(contentStr, "separate MCP tool") {
+				t.Errorf("expected guard to point at separate MCP tool semantics, got: %s", contentStr)
+			}
+			// The placeholder must not leak alongside the guard message.
+			if strings.Contains(contentStr, "no tool calls found in code") {
+				t.Errorf("response must not contain 'no tool calls found in code' alongside guard message, got: %s", contentStr)
+			}
+		})
+	}
+}
+
+// jsonString renders s as a JSON-encoded string literal (with quotes).
+func jsonString(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b)
 }
 
 func TestBuildBackendDescription(t *testing.T) {

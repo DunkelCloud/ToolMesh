@@ -17,11 +17,9 @@ jobs:
       - uses: golangci/golangci-lint-action@v9
         with:
           # Pin to a known-good lint version. The action otherwise floats to
-          # the latest release; v2.12.2 (2026-05-06) tightened goconst enough
-          # to flag 400+ pre-existing findings across the codebase, blocking
-          # every PR on unrelated style nits. Bump deliberately, alongside a
-          # cleanup commit, when we want to adopt a newer version.
-          version: v2.11.4
+          # the latest release; bump deliberately, alongside a cleanup commit,
+          # when adopting a newer version.
+          version: v2.12.2
 
   build:
     runs-on: ubuntu-latest

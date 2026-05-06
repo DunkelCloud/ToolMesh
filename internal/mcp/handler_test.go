@@ -57,7 +57,7 @@ func TestListTools_PatternRequired(t *testing.T) {
 	h := newHandlerWithTools(t, nil)
 	ctx := userctx.WithUserContext(context.Background(), &userctx.UserContext{UserID: "u1", Authenticated: true})
 
-	result, err := h.HandleToolCall(ctx, "list_tools", map[string]any{})
+	result, err := h.HandleToolCall(ctx, "discover_tools", map[string]any{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -70,7 +70,7 @@ func TestListTools_InvalidRegex(t *testing.T) {
 	h := newHandlerWithTools(t, nil)
 	ctx := userctx.WithUserContext(context.Background(), &userctx.UserContext{UserID: "u1", Authenticated: true})
 
-	result, err := h.HandleToolCall(ctx, "list_tools", map[string]any{"pattern": "[invalid"})
+	result, err := h.HandleToolCall(ctx, "discover_tools", map[string]any{"pattern": "[invalid"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -123,7 +123,7 @@ func TestListTools_FilterByName(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result, err := h.HandleToolCall(ctx, "list_tools", map[string]any{"pattern": tt.pattern})
+			result, err := h.HandleToolCall(ctx, "discover_tools", map[string]any{"pattern": tt.pattern})
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -161,7 +161,7 @@ func TestListTools_MatchesDescription(t *testing.T) {
 	ctx := userctx.WithUserContext(context.Background(), &userctx.UserContext{UserID: "u1", Authenticated: true})
 
 	// "repository" only appears in the description of github_list_issues
-	result, err := h.HandleToolCall(ctx, "list_tools", map[string]any{"pattern": "repository"})
+	result, err := h.HandleToolCall(ctx, "discover_tools", map[string]any{"pattern": "repository"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -182,26 +182,26 @@ func TestBuildToolList_PatternInSchema(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	var listTool *ToolDefinition
+	var discoverTool *ToolDefinition
 	for i := range tools {
-		if tools[i].Name == "list_tools" {
-			listTool = &tools[i]
+		if tools[i].Name == "discover_tools" {
+			discoverTool = &tools[i]
 			break
 		}
 	}
-	if listTool == nil {
-		t.Fatal("list_tools not found in tool list")
+	if discoverTool == nil {
+		t.Fatal("discover_tools not found in tool list")
 	}
 
-	props, ok := listTool.InputSchema["properties"].(map[string]any)
+	props, ok := discoverTool.InputSchema["properties"].(map[string]any)
 	if !ok {
 		t.Fatal("expected properties in input schema")
 	}
 	if _, ok := props["pattern"]; !ok {
-		t.Error("expected 'pattern' property in list_tools schema")
+		t.Error("expected 'pattern' property in discover_tools schema")
 	}
 
-	required, ok := listTool.InputSchema["required"].([]string)
+	required, ok := discoverTool.InputSchema["required"].([]string)
 	if !ok {
 		t.Fatal("expected required array in input schema")
 	}

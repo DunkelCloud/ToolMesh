@@ -295,7 +295,7 @@ For the full spec, examples, and the community registry, see [dadl.ai](https://d
 
 Connect 15 MCP servers to a single AI agent? Without ToolMesh, that simply does not work — the context window fills up, the client chokes. Code Mode makes it possible.
 
-Instead of exposing hundreds of individual tool definitions (50,000+ tokens), ToolMesh exposes two meta-tools: `list_tools` and `execute_code`. The LLM gets compact TypeScript interfaces (~1,000 tokens) and writes JavaScript against them:
+Instead of exposing hundreds of individual tool definitions (50,000+ tokens), ToolMesh exposes two meta-tools: `discover_tools` and `execute_code`. The LLM gets compact TypeScript interfaces (~1,000 tokens) and writes JavaScript against them:
 
 ```javascript
 const repos = await toolmesh.github_list_repos({ sort: "updated" });

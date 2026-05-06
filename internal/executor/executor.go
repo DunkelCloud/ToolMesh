@@ -417,7 +417,7 @@ func (e *Executor) FilterAuthorizedTools(ctx context.Context, userID string, too
 	for _, t := range tools {
 		allowed, err := e.authorizer.Check(ctx, userID, t.Name)
 		if err != nil {
-			e.logger.DebugContext(ctx, "authz check failed during list_tools filter", "tool", t.Name, "error", err)
+			e.logger.DebugContext(ctx, "authz check failed during discover_tools filter", "tool", t.Name, "error", err)
 			continue
 		}
 		if allowed {

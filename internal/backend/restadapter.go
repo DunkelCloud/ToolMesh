@@ -376,11 +376,14 @@ func (a *RESTAdapter) LookupTool(toolName string) (ToolDescriptor, bool) {
 	return ToolDescriptor{}, false
 }
 
-// BackendSummaries returns metadata for this REST backend.
+// BackendSummaries returns metadata for this REST backend. SpecID is set to
+// the parsed spec's ContentHash so that the description builder can collapse
+// multiple instances of the same DADL spec into one line.
 func (a *RESTAdapter) BackendSummaries() []BackendInfo {
 	return []BackendInfo{{
-		Name: a.spec.Backend.Name,
-		Hint: a.spec.Backend.Description,
+		Name:   a.spec.Backend.Name,
+		Hint:   a.spec.Backend.Description,
+		SpecID: a.spec.ContentHash,
 	}}
 }
 

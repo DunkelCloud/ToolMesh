@@ -55,7 +55,7 @@ func LoadDir(dir string) ([]ToolDef, error) {
 }
 
 // LoadRawTS reads all .ts files from a directory and returns their
-// concatenated source code. This is served as-is for Code Mode list_tools.
+// concatenated source code. This is served as-is for Code Mode discover_tools.
 func LoadRawTS(dir string) (string, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {

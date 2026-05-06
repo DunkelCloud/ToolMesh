@@ -10,7 +10,7 @@ ToolMesh is a secure, durable execution layer (middleware) between AI agents and
 
 LLMs can write typed JavaScript instead of error-prone JSON for tool calls. ToolMesh exposes two special tools:
 
-- `list_tools` — returns TypeScript interface definitions for all available tools
+- `discover_tools` — returns TypeScript interface definitions for all available tools
 - `execute_code` — accepts JavaScript code, extracts tool calls, and executes them through the pipeline
 
 The JavaScript is parsed (not executed) to extract function names and parameters.

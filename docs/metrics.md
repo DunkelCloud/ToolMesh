@@ -48,12 +48,12 @@ that originate from the credential are counted.
 Tool invocations recorded by the executor, so individual backend calls made
 from inside `execute_code`'s JS body are counted with their real backend/tool
 labels rather than collapsed under `execute_code`. The two MCP meta-tools
-(`list_tools`, `execute_code`) are recorded at the handler under the synthetic
-`builtin` backend so they remain visible in their own right.
+(`discover_tools`, `execute_code`) are recorded at the handler under the
+synthetic `builtin` backend so they remain visible in their own right.
 
 | Label     | Values                                                              |
 | --------- | ------------------------------------------------------------------- |
-| `backend` | Backend name (e.g., `hetzner`, `deepl`), `builtin` for `list_tools`/`execute_code`, or `unknown` for tools without a backend prefix. |
+| `backend` | Backend name (e.g., `hetzner`, `deepl`), `builtin` for `discover_tools`/`execute_code`, or `unknown` for tools without a backend prefix. |
 | `tool`    | Tool name without the backend prefix, or `*` if `TOOLMESH_METRICS_LABEL_TOOL=false`. |
 | `result`  | `success`, `error`, `denied`                                        |
 
@@ -65,7 +65,7 @@ labels rather than collapsed under `execute_code`. The two MCP meta-tools
 
 End-to-end pipeline latency, from executor entry to result return (covers
 AuthZ → credential injection → pre-gate → backend → post-gate). The
-`list_tools` and `execute_code` meta-tools are timed at the MCP handler level.
+`discover_tools` and `execute_code` meta-tools are timed at the MCP handler level.
 
 Buckets are tuned to typical REST-backend latencies:
 `10ms, 50ms, 100ms, 500ms, 1s, 5s, 30s` plus `+Inf`.

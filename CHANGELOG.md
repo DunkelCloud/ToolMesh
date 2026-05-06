@@ -9,6 +9,27 @@ Entries here are kept short; see the corresponding
 [GitHub Release](https://github.com/DunkelCloud/ToolMesh/releases)
 for the full narrative and details.
 
+## [Unreleased]
+
+### Changed (BREAKING)
+
+- The `list_tools` MCP meta-tool was renamed to `discover_tools`. There is no
+  backwards-compatible alias — clients that hard-code the old name must be
+  updated. The rename is harness-stable: clients that sort tool listings
+  alphabetically now show `discover_tools` before `execute_code`, matching the
+  intended discover-then-execute workflow. Affected: tool name, the `tool`
+  label on `toolmesh_tool_calls_total` / `toolmesh_tool_call_duration_seconds`,
+  and the structured-log message key when discovery is invoked.
+- The `discover_tools` description shrank from a few thousand tokens (it
+  duplicated the per-backend hint block) to under 100 tokens. The hint block
+  remains on `execute_code`, which is the tool LLMs reach for when they want
+  the discovery surface in front of them.
+- Backend instances that share a DADL spec are now collapsed into a single
+  hint line in the `execute_code` description (e.g.
+  `dokuwiki-prod, dokuwiki-staging: DokuWiki JSON-RPC API` instead of two
+  identical lines). Native backends without a DADL spec continue to render
+  individually.
+
 ## [0.1.3] - 2026-04-06
 
 ### Added

@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"log/slog"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -32,7 +33,7 @@ import (
 // Built-in MCP meta-tool names. These do not pass through the executor and
 // are dispatched directly inside [Handler.HandleToolCall].
 const (
-	toolListTools     = "list_tools"
+	toolDiscoverTools = "discover_tools"
 	toolExecuteCode   = "execute_code"
 	toolDebugEcho     = "debug_echo"
 	toolDebugGenerate = "debug_generate"
@@ -42,7 +43,7 @@ const (
 type Handler struct {
 	executor   *executor.Executor
 	backend    backend.ToolBackend
-	codeParser *CodeModeParser // kept for GenerateToolDefinitions / list_tools
+	codeParser *CodeModeParser // kept for GenerateToolDefinitions / discover_tools
 	codeRunner *CodeRunner
 	coercer    *tsdef.Coercer
 	rawTS      string // raw TypeScript content for built-in tools
@@ -82,7 +83,7 @@ func NewHandler(exec *executor.Executor, back backend.ToolBackend, coercer *tsde
 // handler instead of through the executor.
 func (h *Handler) isBuiltinTool(name string) bool {
 	switch name {
-	case toolListTools, toolExecuteCode:
+	case toolDiscoverTools, toolExecuteCode:
 		return true
 	case toolDebugEcho, toolDebugGenerate:
 		return h.debugTools
@@ -111,8 +112,8 @@ func (h *Handler) HandleToolCall(ctx context.Context, toolName string, params ma
 	}
 
 	switch toolName {
-	case toolListTools:
-		return h.handleListTools(ctx, params)
+	case toolDiscoverTools:
+		return h.handleDiscoverTools(ctx, params)
 	case toolExecuteCode:
 		return h.handleExecuteCode(ctx, params), nil
 	case toolDebugEcho:
@@ -158,7 +159,7 @@ func (h *Handler) HandleToolCall(ctx context.Context, toolName string, params ma
 	}
 }
 
-func (h *Handler) handleListTools(ctx context.Context, params map[string]any) (*backend.ToolResult, error) {
+func (h *Handler) handleDiscoverTools(ctx context.Context, params map[string]any) (*backend.ToolResult, error) {
 	patternStr, _ := params["pattern"].(string)
 	if patternStr == "" {
 		return &backend.ToolResult{
@@ -209,7 +210,7 @@ func (h *Handler) handleListTools(ctx context.Context, params map[string]any) (*
 	}
 	definitions += GenerateToolDefinitions(filtered)
 
-	h.logger.InfoContext(ctx, "list_tools",
+	h.logger.InfoContext(ctx, "discover_tools",
 		"pattern", patternStr,
 		"matched", len(filtered),
 		"total", len(tools),
@@ -275,21 +276,25 @@ func (h *Handler) handleExecuteCode(ctx context.Context, params map[string]any) 
 }
 
 // BuildToolList returns all tools including Code Mode tools.
-// Tool descriptions are dynamically enriched with available backend names and hints.
+// The execute_code description is dynamically enriched with available backend
+// names and hints so an LLM scanning the MCP tool list sees the discovery
+// surface immediately. The discover_tools description stays intentionally
+// short: duplicating the backend block in both descriptions wastes thousands
+// of context tokens for no information gain — the same content is reachable
+// by calling discover_tools itself.
 func (h *Handler) BuildToolList(ctx context.Context) ([]ToolDefinition, error) {
 	backendDesc := h.buildBackendDescription()
 
-	listToolsDesc := "Returns a machine-readable list of all available tools with TypeScript interface definitions. Call this BEFORE execute_code to discover the correct function names and parameter types — without it you will not know the correct API signatures and your calls will fail. The pattern parameter is a regex matched against tool names and descriptions (case-insensitive). Use \".*\" for all tools, or a specific pattern like \"github\" or \"pull\" to filter"
-	executeCodeDesc := "Accepts JavaScript code containing tool calls and executes them through the ToolMesh pipeline. IMPORTANT: You MUST call list_tools first to discover available function signatures before using this tool. Do not guess function names or parameters from the hints below"
+	discoverToolsDesc := "Discovery tool for ToolMesh. Pattern is a case-insensitive regex matched against tool names and descriptions. Use \".*\" for all tools, or a specific pattern like \"github\" or \"dokuwiki\" to filter. Returns TypeScript namespace declarations with full function signatures. Call this before execute_code to discover correct function names and parameter types."
+	executeCodeDesc := "Accepts JavaScript code containing tool calls and executes them through the ToolMesh pipeline. IMPORTANT: You MUST call discover_tools first to discover available function signatures before using this tool. Do not guess function names or parameters from the hints below"
 	if backendDesc != "" {
-		listToolsDesc += ". " + backendDesc
 		executeCodeDesc += ". " + backendDesc
 	}
 
 	tools := []ToolDefinition{
 		{
-			Name:        "list_tools",
-			Description: listToolsDesc,
+			Name:        "discover_tools",
+			Description: discoverToolsDesc,
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -318,7 +323,7 @@ func (h *Handler) BuildToolList(ctx context.Context) ([]ToolDefinition, error) {
 	}
 
 	// Backend tools are intentionally NOT exposed as individual MCP tools.
-	// They are only accessible via execute_code (Code Mode) and list_tools.
+	// They are only accessible via execute_code (Code Mode) and discover_tools.
 	// This keeps the MCP surface minimal and avoids tool name validation issues.
 
 	if h.debugTools {
@@ -329,7 +334,10 @@ func (h *Handler) BuildToolList(ctx context.Context) ([]ToolDefinition, error) {
 }
 
 // buildBackendDescription generates a summary of available backends and their hints
-// for inclusion in MCP tool descriptions.
+// for inclusion in the execute_code tool description. Backends that share a
+// DADL spec (matched by BackendInfo.SpecID) are grouped into a single hint
+// line so multiple instances of one API do not bloat the description with
+// duplicate text.
 func (h *Handler) buildBackendDescription() string {
 	summarizer, ok := h.backend.(backend.BackendSummarizer)
 	if !ok {
@@ -341,25 +349,64 @@ func (h *Handler) buildBackendDescription() string {
 		return ""
 	}
 
-	// Build "Available backends: name1, name2, ..." line
+	// "Available backends" line keeps every instance name — the grouping is
+	// only an optimization for the hints block. Listing every name here is
+	// what lets the LLM address each instance individually via execute_code.
 	names := make([]string, 0, len(infos))
 	for _, info := range infos {
 		names = append(names, info.Name)
 	}
-	desc := "Available backends: " + strings.Join(names, ", ") + ", and more — call list_tools to discover all current backends and their tool signatures"
+	desc := "Available backends: " + strings.Join(names, ", ") + ", and more — call discover_tools to discover all current backends and their tool signatures"
 
-	// Collect hints from backends that have them
-	var hints []string
-	for _, info := range infos {
-		if info.Hint != "" {
-			hints = append(hints, info.Name+": "+info.Hint)
-		}
-	}
-	if len(hints) > 0 {
-		desc += ". Hints: " + strings.Join(hints, "; ")
+	hints := buildGroupedHints(infos)
+	if hints != "" {
+		desc += ". Hints: " + hints
 	}
 
 	return desc
+}
+
+// buildGroupedHints renders a "name1: hint; name2, name3: hint; ..." line by
+// collapsing infos that share a non-empty SpecID into one entry. Backends with
+// an empty SpecID are rendered individually. Group ordering follows the
+// position of the first member in the input slice; instance names within a
+// group are sorted alphabetically. Infos with no hint are skipped entirely.
+func buildGroupedHints(infos []backend.BackendInfo) string {
+	type hintGroup struct {
+		names []string
+		hint  string
+	}
+
+	groups := make([]*hintGroup, 0, len(infos))
+	groupBySpec := make(map[string]*hintGroup) // populated only for non-empty SpecID
+
+	for _, info := range infos {
+		if info.Hint == "" {
+			continue
+		}
+		if info.SpecID != "" {
+			if g, ok := groupBySpec[info.SpecID]; ok {
+				g.names = append(g.names, info.Name)
+				continue
+			}
+			g := &hintGroup{names: []string{info.Name}, hint: info.Hint}
+			groupBySpec[info.SpecID] = g
+			groups = append(groups, g)
+			continue
+		}
+		groups = append(groups, &hintGroup{names: []string{info.Name}, hint: info.Hint})
+	}
+
+	if len(groups) == 0 {
+		return ""
+	}
+
+	parts := make([]string, 0, len(groups))
+	for _, g := range groups {
+		sort.Strings(g.names)
+		parts = append(parts, strings.Join(g.names, ", ")+": "+g.hint)
+	}
+	return strings.Join(parts, "; ")
 }
 
 // ToolDefinition represents a tool exposed by the MCP server.

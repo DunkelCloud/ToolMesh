@@ -313,7 +313,9 @@ func TestRestAuth_SessionCookieForward(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/login" {
 			loginCalled++
+			//nolint:gosec // test cookie over plain HTTP httptest server; Secure/HttpOnly intentionally omitted
 			http.SetCookie(w, &http.Cookie{Name: "session_id", Value: testTokenABC123, Path: "/"})
+			//nolint:gosec // test cookie over plain HTTP httptest server; Secure/HttpOnly intentionally omitted
 			http.SetCookie(w, &http.Cookie{Name: "csrf_token", Value: "xyz789", Path: "/"})
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{}`))
@@ -371,6 +373,7 @@ func TestRestAuth_SessionCookieForward_ResetOnReLogin(t *testing.T) {
 	loginCount := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		loginCount++
+		//nolint:gosec // test cookie over plain HTTP httptest server; Secure/HttpOnly intentionally omitted
 		http.SetCookie(w, &http.Cookie{
 			Name:  "sid",
 			Value: "session-" + strings.Repeat("x", loginCount),

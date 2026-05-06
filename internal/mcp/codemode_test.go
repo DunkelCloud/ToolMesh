@@ -63,7 +63,7 @@ func TestGenerateToolDefinitions(t *testing.T) {
 func TestSchemaToTypeScript_RequiredStringSlice(t *testing.T) {
 	// Regression: buildInputSchema produces []string for the required array,
 	// but schemaToTypeScript only handled []any. This caused all params to
-	// appear optional in list_tools output.
+	// appear optional in discover_tools output.
 	schema := map[string]any{
 		"type": "object",
 		"properties": map[string]any{

@@ -41,10 +41,10 @@ type summarizingBackend struct {
 
 func (s *summarizingBackend) BackendSummaries() []backend.BackendInfo { return s.infos }
 
-func TestHandleToolCall_ListTools(t *testing.T) {
+func TestHandleToolCall_DiscoverTools(t *testing.T) {
 	_, mux := newTestServer(t, &config.Config{})
 
-	body := `{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "list_tools", "arguments": {"pattern": ".*"}}}`
+	body := `{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "discover_tools", "arguments": {"pattern": ".*"}}}`
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -57,10 +57,10 @@ func TestHandleToolCall_ListTools(t *testing.T) {
 	}
 }
 
-func TestHandleToolCall_ListToolsMissingPattern(t *testing.T) {
+func TestHandleToolCall_DiscoverToolsMissingPattern(t *testing.T) {
 	_, mux := newTestServer(t, &config.Config{})
 
-	body := `{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "list_tools", "arguments": {}}}`
+	body := `{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "discover_tools", "arguments": {}}}`
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -74,10 +74,10 @@ func TestHandleToolCall_ListToolsMissingPattern(t *testing.T) {
 	}
 }
 
-func TestHandleToolCall_ListToolsInvalidRegex(t *testing.T) {
+func TestHandleToolCall_DiscoverToolsInvalidRegex(t *testing.T) {
 	_, mux := newTestServer(t, &config.Config{})
 
-	body := `{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "list_tools", "arguments": {"pattern": "[invalid"}}}`
+	body := `{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "discover_tools", "arguments": {"pattern": "[invalid"}}}`
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()

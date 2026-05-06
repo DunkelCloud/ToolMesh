@@ -36,7 +36,7 @@ const (
 
 // CodeModeParser maintains a reverse lookup from sanitized JS names back to
 // canonical tool names. Used by CodeRunner for name resolution and by
-// GenerateToolDefinitions for list_tools output.
+// GenerateToolDefinitions for discover_tools output.
 type CodeModeParser struct {
 	// nameMap maps sanitized names (e.g. "memorizer_knowledge_status")
 	// back to canonical tool names (e.g. "memorizer:knowledge_status").
@@ -53,7 +53,7 @@ func NewCodeModeParser(tools []backend.ToolDescriptor) *CodeModeParser {
 	return &CodeModeParser{nameMap: m}
 }
 
-// GenerateToolDefinitions creates TypeScript-like interface definitions for list_tools.
+// GenerateToolDefinitions creates TypeScript-like interface definitions for discover_tools.
 func GenerateToolDefinitions(tools []backend.ToolDescriptor) string {
 	var sb strings.Builder
 	sb.WriteString("// Available ToolMesh tools\n")

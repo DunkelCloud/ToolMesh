@@ -32,7 +32,7 @@ import (
 // Built-in MCP meta-tool names. These do not pass through the executor and
 // are dispatched directly inside [Handler.HandleToolCall].
 const (
-	toolListTools     = "list_tools"
+	toolDiscoverTools = "discover_tools"
 	toolExecuteCode   = "execute_code"
 	toolDebugEcho     = "debug_echo"
 	toolDebugGenerate = "debug_generate"
@@ -42,7 +42,7 @@ const (
 type Handler struct {
 	executor   *executor.Executor
 	backend    backend.ToolBackend
-	codeParser *CodeModeParser // kept for GenerateToolDefinitions / list_tools
+	codeParser *CodeModeParser // kept for GenerateToolDefinitions / discover_tools
 	codeRunner *CodeRunner
 	coercer    *tsdef.Coercer
 	rawTS      string // raw TypeScript content for built-in tools
@@ -82,7 +82,7 @@ func NewHandler(exec *executor.Executor, back backend.ToolBackend, coercer *tsde
 // handler instead of through the executor.
 func (h *Handler) isBuiltinTool(name string) bool {
 	switch name {
-	case toolListTools, toolExecuteCode:
+	case toolDiscoverTools, toolExecuteCode:
 		return true
 	case toolDebugEcho, toolDebugGenerate:
 		return h.debugTools
@@ -111,8 +111,8 @@ func (h *Handler) HandleToolCall(ctx context.Context, toolName string, params ma
 	}
 
 	switch toolName {
-	case toolListTools:
-		return h.handleListTools(ctx, params)
+	case toolDiscoverTools:
+		return h.handleDiscoverTools(ctx, params)
 	case toolExecuteCode:
 		return h.handleExecuteCode(ctx, params), nil
 	case toolDebugEcho:
@@ -158,7 +158,7 @@ func (h *Handler) HandleToolCall(ctx context.Context, toolName string, params ma
 	}
 }
 
-func (h *Handler) handleListTools(ctx context.Context, params map[string]any) (*backend.ToolResult, error) {
+func (h *Handler) handleDiscoverTools(ctx context.Context, params map[string]any) (*backend.ToolResult, error) {
 	patternStr, _ := params["pattern"].(string)
 	if patternStr == "" {
 		return &backend.ToolResult{
@@ -209,7 +209,7 @@ func (h *Handler) handleListTools(ctx context.Context, params map[string]any) (*
 	}
 	definitions += GenerateToolDefinitions(filtered)
 
-	h.logger.InfoContext(ctx, "list_tools",
+	h.logger.InfoContext(ctx, "discover_tools",
 		"pattern", patternStr,
 		"matched", len(filtered),
 		"total", len(tools),
@@ -279,17 +279,17 @@ func (h *Handler) handleExecuteCode(ctx context.Context, params map[string]any) 
 func (h *Handler) BuildToolList(ctx context.Context) ([]ToolDefinition, error) {
 	backendDesc := h.buildBackendDescription()
 
-	listToolsDesc := "Returns a machine-readable list of all available tools with TypeScript interface definitions. Call this BEFORE execute_code to discover the correct function names and parameter types — without it you will not know the correct API signatures and your calls will fail. The pattern parameter is a regex matched against tool names and descriptions (case-insensitive). Use \".*\" for all tools, or a specific pattern like \"github\" or \"pull\" to filter"
-	executeCodeDesc := "Accepts JavaScript code containing tool calls and executes them through the ToolMesh pipeline. IMPORTANT: You MUST call list_tools first to discover available function signatures before using this tool. Do not guess function names or parameters from the hints below"
+	discoverToolsDesc := "Returns a machine-readable list of all available tools with TypeScript interface definitions. Call this BEFORE execute_code to discover the correct function names and parameter types — without it you will not know the correct API signatures and your calls will fail. The pattern parameter is a regex matched against tool names and descriptions (case-insensitive). Use \".*\" for all tools, or a specific pattern like \"github\" or \"pull\" to filter"
+	executeCodeDesc := "Accepts JavaScript code containing tool calls and executes them through the ToolMesh pipeline. IMPORTANT: You MUST call discover_tools first to discover available function signatures before using this tool. Do not guess function names or parameters from the hints below"
 	if backendDesc != "" {
-		listToolsDesc += ". " + backendDesc
+		discoverToolsDesc += ". " + backendDesc
 		executeCodeDesc += ". " + backendDesc
 	}
 
 	tools := []ToolDefinition{
 		{
-			Name:        "list_tools",
-			Description: listToolsDesc,
+			Name:        "discover_tools",
+			Description: discoverToolsDesc,
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -318,7 +318,7 @@ func (h *Handler) BuildToolList(ctx context.Context) ([]ToolDefinition, error) {
 	}
 
 	// Backend tools are intentionally NOT exposed as individual MCP tools.
-	// They are only accessible via execute_code (Code Mode) and list_tools.
+	// They are only accessible via execute_code (Code Mode) and discover_tools.
 	// This keeps the MCP surface minimal and avoids tool name validation issues.
 
 	if h.debugTools {
@@ -346,7 +346,7 @@ func (h *Handler) buildBackendDescription() string {
 	for _, info := range infos {
 		names = append(names, info.Name)
 	}
-	desc := "Available backends: " + strings.Join(names, ", ") + ", and more — call list_tools to discover all current backends and their tool signatures"
+	desc := "Available backends: " + strings.Join(names, ", ") + ", and more — call discover_tools to discover all current backends and their tool signatures"
 
 	// Collect hints from backends that have them
 	var hints []string

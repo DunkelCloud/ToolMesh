@@ -9,6 +9,18 @@ Entries here are kept short; see the corresponding
 [GitHub Release](https://github.com/DunkelCloud/ToolMesh/releases)
 for the full narrative and details.
 
+## [Unreleased]
+
+### Changed (BREAKING)
+
+- The `list_tools` MCP meta-tool was renamed to `discover_tools`. There is no
+  backwards-compatible alias — clients that hard-code the old name must be
+  updated. The rename is harness-stable: clients that sort tool listings
+  alphabetically now show `discover_tools` before `execute_code`, matching the
+  intended discover-then-execute workflow. Affected: tool name, the `tool`
+  label on `toolmesh_tool_calls_total` / `toolmesh_tool_call_duration_seconds`,
+  and the structured-log message key when discovery is invoked.
+
 ## [0.1.3] - 2026-04-06
 
 ### Added

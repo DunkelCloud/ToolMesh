@@ -661,3 +661,90 @@ func TestCodeRunner_ErrorReturnedToJS(t *testing.T) {
 		t.Errorf("msg = %q, want to contain \"something broke\"", msg)
 	}
 }
+
+// TestCodeRunner_DiscoverToolsGuard verifies the JS sandbox installs an
+// explicit guard for toolmesh.discover_tools and toolmesh.execute_code so a
+// caller using them inline gets a clear "this is a separate MCP tool" message
+// instead of the generic goja TypeError "Object has no member 'discover_tools'".
+func TestCodeRunner_DiscoverToolsGuard(t *testing.T) {
+	mb := &codeRunnerTestBackend{}
+	runner := newTestCodeRunner(t, mb)
+
+	cases := []struct {
+		name string
+		code string
+	}{
+		{name: "discover_tools", code: `await toolmesh.discover_tools({pattern: ".*"});`},
+		{name: "execute_code", code: `await toolmesh.execute_code({code: "1"});`},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			result, err := runner.Execute(testCtx(), tc.code)
+			if err == nil {
+				t.Fatalf("expected guard error, got nil (result=%v)", result)
+			}
+			msg := err.Error()
+			if !strings.Contains(msg, "toolmesh."+tc.name+" is not a backend tool") {
+				t.Errorf("expected guard to name toolmesh.%s, got: %s", tc.name, msg)
+			}
+			if !strings.Contains(msg, "separate MCP tool") {
+				t.Errorf("expected guard to point at separate MCP tool semantics, got: %s", msg)
+			}
+			// No partial result expected — the call short-circuits before any
+			// real tool runs, so handler.go falls through to the "no partial
+			// result" branch and emits only the real error.
+			if result != nil {
+				t.Errorf("expected nil result on pure guard error (no preceding tool calls), got: %v", result)
+			}
+			if len(mb.calls) != 0 {
+				t.Errorf("expected no backend calls, got %d", len(mb.calls))
+			}
+		})
+	}
+}
+
+// TestCodeRunner_DiscoverToolsGuard_NotShadowedByRealTool verifies that the
+// guard does NOT overwrite a real backend tool that happens to share the
+// reserved name. If a backend ever exposes a tool named "discover_tools", the
+// real tool wins — the guard only installs into otherwise empty slots.
+func TestCodeRunner_DiscoverToolsGuard_NotShadowedByRealTool(t *testing.T) {
+	mb := &codeRunnerTestBackend{}
+	logger := handlerTestLogger()
+	exec := executor.New(nil, nil, mb, nil, nil, 120*time.Second, logger, nil, nil)
+	nameMap := map[string]string{
+		"discover_tools": "test:discover_tools",
+	}
+	runner := NewCodeRunner(nameMap, exec, nil, logger)
+
+	result, err := runner.Execute(testCtx(), `await toolmesh.discover_tools({foo: "bar"});`)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected IsError: %v", result.Content)
+	}
+	if len(mb.calls) != 1 || mb.calls[0].ToolName != "test:discover_tools" {
+		t.Errorf("expected 1 call to test:discover_tools, got %d calls: %v", len(mb.calls), mb.calls)
+	}
+}
+
+// TestCodeRunner_NoToolCalls_NoDuplicatePlaceholderOnError verifies that a
+// runtime error in code with no preceding tool calls returns nil result +
+// the real error. handler.go then emits only the real error message instead
+// of also surfacing the misleading "no tool calls found in code" placeholder.
+func TestCodeRunner_NoToolCalls_NoDuplicatePlaceholderOnError(t *testing.T) {
+	mb := &codeRunnerTestBackend{}
+	runner := newTestCodeRunner(t, mb)
+
+	// Reference an undefined member so goja raises a TypeError, mirroring the
+	// real-world "toolmesh.discover_tools" mistake before the guard would have
+	// fired (e.g. if a typo lands on a totally unknown name).
+	result, err := runner.Execute(testCtx(), `await toolmesh.totally_not_a_tool({});`)
+	if err == nil {
+		t.Fatalf("expected runtime error, got nil")
+	}
+	if result != nil {
+		t.Errorf("expected nil result on pure runtime error (no preceding tool calls), got: %v", result)
+	}
+}

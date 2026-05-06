@@ -53,16 +53,41 @@ func (m *mockToolBackend) ListTools(_ context.Context) ([]backend.ToolDescriptor
 
 func (m *mockToolBackend) Healthy(_ context.Context) error { return nil }
 
-func TestListTools_PatternRequired(t *testing.T) {
-	h := newHandlerWithTools(t, nil)
+// TestListTools_PatternOptional verifies that an omitted or empty pattern is
+// treated as ".*" and lists every authorized tool. Requiring callers to pass
+// the magic string ".*" for the common "list everything" case was friction.
+func TestListTools_PatternOptional(t *testing.T) {
+	tools := []backend.ToolDescriptor{
+		{Name: "github_list_issues", Description: "List issues"},
+		{Name: "vikunja_list_tasks", Description: "List tasks"},
+	}
+	h := newHandlerWithTools(t, tools)
 	ctx := userctx.WithUserContext(context.Background(), &userctx.UserContext{UserID: "u1", Authenticated: true})
 
-	result, err := h.HandleToolCall(ctx, "discover_tools", map[string]any{})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	cases := []struct {
+		name   string
+		params map[string]any
+	}{
+		{name: "missing pattern", params: map[string]any{}},
+		{name: "empty pattern", params: map[string]any{"pattern": ""}},
 	}
-	if !result.IsError {
-		t.Fatal("expected error when pattern is missing")
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			result, err := h.HandleToolCall(ctx, "discover_tools", tc.params)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if result.IsError {
+				t.Fatalf("expected non-error result for %s, got: %v", tc.name, result.Content)
+			}
+			text := extractText(t, result)
+			for _, name := range []string{"github_list_issues", "vikunja_list_tasks"} {
+				if !strings.Contains(text, name) {
+					t.Errorf("expected %s in output for %s, got: %s", name, tc.name, text)
+				}
+			}
+		})
 	}
 }
 
@@ -175,6 +200,10 @@ func TestListTools_MatchesDescription(t *testing.T) {
 	}
 }
 
+// TestBuildToolList_PatternInSchema verifies that the schema for discover_tools
+// declares the pattern property but does NOT mark it required. The default-to-".*"
+// behavior is implemented in handleDiscoverTools, so listing pattern as required
+// would force callers to pass the magic string for the common "list all" case.
 func TestBuildToolList_PatternInSchema(t *testing.T) {
 	h := newHandlerWithTools(t, nil)
 	tools, err := h.BuildToolList(context.Background())
@@ -201,12 +230,11 @@ func TestBuildToolList_PatternInSchema(t *testing.T) {
 		t.Error("expected 'pattern' property in discover_tools schema")
 	}
 
-	required, ok := discoverTool.InputSchema["required"].([]string)
-	if !ok {
-		t.Fatal("expected required array in input schema")
-	}
-	if len(required) != 1 || required[0] != "pattern" {
-		t.Errorf("expected required=[\"pattern\"], got %v", required)
+	// pattern must NOT appear in required — it has a sensible default (".*").
+	if required, present := discoverTool.InputSchema["required"]; present {
+		if list, ok := required.([]string); ok && len(list) > 0 {
+			t.Errorf("discover_tools must not list any required fields (pattern has a default), got %v", list)
+		}
 	}
 }
 

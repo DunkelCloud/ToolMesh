@@ -275,14 +275,18 @@ func (h *Handler) handleExecuteCode(ctx context.Context, params map[string]any) 
 }
 
 // BuildToolList returns all tools including Code Mode tools.
-// Tool descriptions are dynamically enriched with available backend names and hints.
+// The execute_code description is dynamically enriched with available backend
+// names and hints so an LLM scanning the MCP tool list sees the discovery
+// surface immediately. The discover_tools description stays intentionally
+// short: duplicating the backend block in both descriptions wastes thousands
+// of context tokens for no information gain — the same content is reachable
+// by calling discover_tools itself.
 func (h *Handler) BuildToolList(ctx context.Context) ([]ToolDefinition, error) {
 	backendDesc := h.buildBackendDescription()
 
-	discoverToolsDesc := "Returns a machine-readable list of all available tools with TypeScript interface definitions. Call this BEFORE execute_code to discover the correct function names and parameter types — without it you will not know the correct API signatures and your calls will fail. The pattern parameter is a regex matched against tool names and descriptions (case-insensitive). Use \".*\" for all tools, or a specific pattern like \"github\" or \"pull\" to filter"
+	discoverToolsDesc := "Discovery tool for ToolMesh. Pattern is a case-insensitive regex matched against tool names and descriptions. Use \".*\" for all tools, or a specific pattern like \"github\" or \"dokuwiki\" to filter. Returns TypeScript namespace declarations with full function signatures. Call this before execute_code to discover correct function names and parameter types."
 	executeCodeDesc := "Accepts JavaScript code containing tool calls and executes them through the ToolMesh pipeline. IMPORTANT: You MUST call discover_tools first to discover available function signatures before using this tool. Do not guess function names or parameters from the hints below"
 	if backendDesc != "" {
-		discoverToolsDesc += ". " + backendDesc
 		executeCodeDesc += ". " + backendDesc
 	}
 

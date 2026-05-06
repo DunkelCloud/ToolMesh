@@ -198,3 +198,59 @@ func TestBuildBackendDescription_NoSummarizer(t *testing.T) {
 		t.Errorf("expected empty, got %q", desc)
 	}
 }
+
+// TestBuildToolList_BackendHintsOnExecuteCodeOnly verifies that the per-backend
+// "Available backends: ... Hints: ..." block is appended to the execute_code
+// description but not to discover_tools. Duplicating that block on both tools
+// costs thousands of context tokens for no information gain, so discover_tools
+// must stay minimal. Backend names use a unique prefix so the assertion does
+// not collide with example patterns ("github", "dokuwiki") that legitimately
+// appear in the discover_tools description.
+func TestBuildToolList_BackendHintsOnExecuteCodeOnly(t *testing.T) {
+	mb := &summarizingBackend{
+		infos: []backend.BackendInfo{
+			{Name: "tmtest_alpha", Hint: "tmtest backend alpha"},
+			{Name: "tmtest_beta", Hint: "tmtest backend beta"},
+		},
+	}
+	h := NewHandler(nil, mb, nil, "", nil, newQuietMCPLogger(), false)
+	tools, err := h.BuildToolList(context.Background())
+	if err != nil {
+		t.Fatalf("BuildToolList: %v", err)
+	}
+
+	var discoverDesc, execDesc string
+	for _, td := range tools {
+		switch td.Name {
+		case "discover_tools":
+			discoverDesc = td.Description
+		case "execute_code":
+			execDesc = td.Description
+		}
+	}
+	if discoverDesc == "" || execDesc == "" {
+		t.Fatalf("missing tool descriptions: discover=%q exec=%q", discoverDesc, execDesc)
+	}
+
+	// discover_tools must not carry the backend block.
+	for _, marker := range []string{"Available backends", "Hints:", "tmtest_alpha", "tmtest_beta", "tmtest backend alpha", "tmtest backend beta"} {
+		if strings.Contains(discoverDesc, marker) {
+			t.Errorf("discover_tools description should not contain %q, got: %s", marker, discoverDesc)
+		}
+	}
+
+	// execute_code must carry the backend block.
+	for _, marker := range []string{"Available backends", "Hints:", "tmtest_alpha", "tmtest_beta", "tmtest backend alpha", "tmtest backend beta"} {
+		if !strings.Contains(execDesc, marker) {
+			t.Errorf("execute_code description should contain %q, got: %s", marker, execDesc)
+		}
+	}
+
+	// discover_tools must be no longer than execute_code: the whole point of
+	// stripping the backend block from discover_tools is to make it materially
+	// smaller, and execute_code grows linearly with the number of backends.
+	if len(discoverDesc) > len(execDesc) {
+		t.Errorf("discover_tools description (%d chars) is longer than execute_code (%d chars) — backend block may have leaked back in",
+			len(discoverDesc), len(execDesc))
+	}
+}

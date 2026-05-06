@@ -20,6 +20,10 @@ for the full narrative and details.
   intended discover-then-execute workflow. Affected: tool name, the `tool`
   label on `toolmesh_tool_calls_total` / `toolmesh_tool_call_duration_seconds`,
   and the structured-log message key when discovery is invoked.
+- The `discover_tools` description shrank from a few thousand tokens (it
+  duplicated the per-backend hint block) to under 100 tokens. The hint block
+  remains on `execute_code`, which is the tool LLMs reach for when they want
+  the discovery surface in front of them.
 
 ## [0.1.3] - 2026-04-06
 

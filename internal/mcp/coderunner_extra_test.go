@@ -36,7 +36,7 @@ func TestExtractJSValue(t *testing.T) {
 
 	// JSON text → parsed object.
 	r := &backend.ToolResult{
-		Content: []any{map[string]any{"type": "text", "text": `{"x": 1}`}},
+		Content: []any{map[string]any{contentKeyType: contentKeyText, contentKeyText: `{"x": 1}`}},
 	}
 	v := extractJSValue(rt, r)
 	exp := v.Export()
@@ -47,7 +47,7 @@ func TestExtractJSValue(t *testing.T) {
 
 	// Non-JSON text → raw string.
 	r2 := &backend.ToolResult{
-		Content: []any{map[string]any{"type": "text", "text": "plain text"}},
+		Content: []any{map[string]any{contentKeyType: contentKeyText, contentKeyText: "plain text"}},
 	}
 	if v := extractJSValue(rt, r2); v.Export() != "plain text" {
 		t.Errorf("non-json: got %v", v)
@@ -55,7 +55,7 @@ func TestExtractJSValue(t *testing.T) {
 
 	// Non-text content type → fall through.
 	r3 := &backend.ToolResult{
-		Content: []any{map[string]any{"type": "image", "data": "abc"}},
+		Content: []any{map[string]any{contentKeyType: "image", "data": "abc"}},
 	}
 	v3 := extractJSValue(rt, r3)
 	if v3 == goja.Undefined() {

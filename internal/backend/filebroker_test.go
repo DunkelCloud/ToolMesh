@@ -38,13 +38,13 @@ func TestFileBrokerClient_Upload_Failure(t *testing.T) {
 
 func TestFileBrokerClient_Upload_Success(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set(testHeaderContentType, testContentTypeJSON)
 		_, _ = w.Write([]byte(`{"file_id": "f1", "url": "https://broker/f1"}`))
 	}))
 	defer srv.Close()
 
 	c := &FileBrokerClient{BaseURL: srv.URL, HTTPClient: &http.Client{Timeout: 5 * time.Second}}
-	r, err := c.Upload(context.Background(), "name.bin", "application/octet-stream", strings.NewReader("hello"), time.Hour)
+	r, err := c.Upload(context.Background(), "name.bin", "application/octet-stream", strings.NewReader(testHelloLiteral), time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}

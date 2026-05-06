@@ -48,7 +48,7 @@ func (b *codeRunnerTestBackend) Execute(_ context.Context, toolName string, para
 		return b.handler(toolName, params)
 	}
 	return &backend.ToolResult{
-		Content: []any{map[string]any{"type": "text", "text": "ok"}},
+		Content: []any{map[string]any{contentKeyType: contentKeyText, contentKeyText: "ok"}},
 	}, nil
 }
 
@@ -185,8 +185,8 @@ func TestCodeRunner_SequentialCallsWithDataFlow(t *testing.T) {
 			// Return a JSON result — extractJSValue will parse it for JS
 			return &backend.ToolResult{
 				Content: []any{map[string]any{
-					"type": "text",
-					"text": `{"source": "` + toolName + `", "id": 42}`,
+					contentKeyType: contentKeyText,
+					contentKeyText: `{"source": "` + toolName + `", "id": 42}`,
 				}},
 			}, nil
 		},
@@ -219,8 +219,8 @@ func TestCodeRunner_SequentialCallsWithDataFlow_PlainText(t *testing.T) {
 			// Return a non-JSON result — extractJSValue returns raw string
 			return &backend.ToolResult{
 				Content: []any{map[string]any{
-					"type": "text",
-					"text": "result from " + toolName,
+					contentKeyType: contentKeyText,
+					contentKeyText: "result from " + toolName,
 				}},
 			}, nil
 		},
@@ -252,8 +252,8 @@ func TestCodeRunner_ReturnValue(t *testing.T) {
 		handler: func(_ string, _ map[string]any) (*backend.ToolResult, error) {
 			return &backend.ToolResult{
 				Content: []any{map[string]any{
-					"type": "text",
-					"text": `{"id": 123, "name": "test"}`,
+					contentKeyType: contentKeyText,
+					contentKeyText: `{"id": 123, "name": "test"}`,
 				}},
 			}, nil
 		},
@@ -485,8 +485,8 @@ func TestCodeRunner_ToolIsError_Catchable(t *testing.T) {
 			return &backend.ToolResult{
 				IsError: true,
 				Content: []any{map[string]any{
-					"type": "text",
-					"text": `{"error": "page not found"}`,
+					contentKeyType: contentKeyText,
+					contentKeyText: `{"error": "page not found"}`,
 				}},
 			}, nil
 		},
@@ -527,8 +527,8 @@ func TestCodeRunner_ReturnValueFromJSON(t *testing.T) {
 		handler: func(_ string, _ map[string]any) (*backend.ToolResult, error) {
 			return &backend.ToolResult{
 				Content: []any{map[string]any{
-					"type": "text",
-					"text": `{"items": [{"name": "a"}, {"name": "b"}], "total": 2}`,
+					contentKeyType: contentKeyText,
+					contentKeyText: `{"items": [{"name": "a"}, {"name": "b"}], "total": 2}`,
 				}},
 			}, nil
 		},
@@ -584,7 +584,7 @@ func TestCodeRunner_LoopWithFailingCalls(t *testing.T) {
 				return nil, &testError{msg: "transient failure"}
 			}
 			return &backend.ToolResult{
-				Content: []any{map[string]any{"type": "text", "text": `{"ok": true}`}},
+				Content: []any{map[string]any{contentKeyType: contentKeyText, contentKeyText: `{"ok": true}`}},
 			}, nil
 		},
 	}
@@ -674,8 +674,8 @@ func TestCodeRunner_DiscoverToolsGuard(t *testing.T) {
 		name string
 		code string
 	}{
-		{name: "discover_tools", code: `await toolmesh.discover_tools({pattern: ".*"});`},
-		{name: "execute_code", code: `await toolmesh.execute_code({code: "1"});`},
+		{name: toolDiscoverTools, code: `await toolmesh.discover_tools({pattern: ".*"});`},
+		{name: toolExecuteCode, code: `await toolmesh.execute_code({code: "1"});`},
 	}
 
 	for _, tc := range cases {

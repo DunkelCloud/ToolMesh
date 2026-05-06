@@ -60,7 +60,7 @@ func (r *recordingAudit) Query(_ context.Context, _ audit.AuditFilter) ([]audit.
 func (r *recordingAudit) Healthy(_ context.Context) error { return nil }
 
 // TestExecuteTool_PropagatesToolAccess wires the executor with a backend that
-// declares "github_list_repos" as access: read and a write tool, then asserts
+// declares testGitHubListRepos as access: read and a write tool, then asserts
 // that the audit entry carries the classification on every code path.
 func TestExecuteTool_PropagatesToolAccess(t *testing.T) {
 	cases := []struct {
@@ -68,8 +68,8 @@ func TestExecuteTool_PropagatesToolAccess(t *testing.T) {
 		toolName   string
 		wantAccess string
 	}{
-		{name: "read tool", toolName: "github_list_repos", wantAccess: "read"},
-		{name: "write tool", toolName: "github_create_repo", wantAccess: "write"},
+		{name: "read tool", toolName: testGitHubListRepos, wantAccess: testAccessRead},
+		{name: "write tool", toolName: testGitHubCreateRepo, wantAccess: testAccessWrite},
 		{name: "unknown tool stays empty", toolName: "github_unknown", wantAccess: ""},
 	}
 
@@ -77,8 +77,8 @@ func TestExecuteTool_PropagatesToolAccess(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			be := &accessAwareBackend{
 				access: map[string]string{
-					"github_list_repos":  "read",
-					"github_create_repo": "write",
+					testGitHubListRepos:  testAccessRead,
+					testGitHubCreateRepo: testAccessWrite,
 				},
 			}
 			rec := &recordingAudit{}
@@ -107,8 +107,8 @@ func TestExecuteTool_PropagatesToolAccess(t *testing.T) {
 func TestExecuteTool_GateSeesToolAccess(t *testing.T) {
 	be := &accessAwareBackend{
 		access: map[string]string{
-			"github_list_repos":  "read",
-			"github_create_repo": "write",
+			testGitHubListRepos:  testAccessRead,
+			testGitHubCreateRepo: testAccessWrite,
 		},
 	}
 
@@ -134,7 +134,7 @@ func TestExecuteTool_GateSeesToolAccess(t *testing.T) {
 	})
 
 	// Read tool passes the gate.
-	read, err := exec.ExecuteTool(ctx, ExecuteToolRequest{ToolName: "github_list_repos"})
+	read, err := exec.ExecuteTool(ctx, ExecuteToolRequest{ToolName: testGitHubListRepos})
 	if err != nil {
 		t.Fatalf("read tool: ExecuteTool: %v", err)
 	}
@@ -143,7 +143,7 @@ func TestExecuteTool_GateSeesToolAccess(t *testing.T) {
 	}
 
 	// Write tool is blocked at the pre-execution gate before backend runs.
-	write, err := exec.ExecuteTool(ctx, ExecuteToolRequest{ToolName: "github_create_repo"})
+	write, err := exec.ExecuteTool(ctx, ExecuteToolRequest{ToolName: testGitHubCreateRepo})
 	if err != nil {
 		t.Fatalf("write tool: ExecuteTool: %v", err)
 	}

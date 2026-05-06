@@ -39,8 +39,8 @@ func debugDisabledResult(name string) *backend.ToolResult {
 	return &backend.ToolResult{
 		IsError: true,
 		Content: []any{map[string]any{
-			"type": "text",
-			"text": fmt.Sprintf("%s is disabled (set TOOLMESH_DEBUG_TOOLS=true to enable diagnostic tools)", name),
+			contentKeyType: contentKeyText,
+			contentKeyText: fmt.Sprintf("%s is disabled (set TOOLMESH_DEBUG_TOOLS=true to enable diagnostic tools)", name),
 		}},
 	}
 }
@@ -50,8 +50,8 @@ func debugErrorResult(msg string) *backend.ToolResult {
 	return &backend.ToolResult{
 		IsError: true,
 		Content: []any{map[string]any{
-			"type": "text",
-			"text": msg,
+			contentKeyType: contentKeyText,
+			contentKeyText: msg,
 		}},
 	}
 }
@@ -64,8 +64,8 @@ func debugTextResult(payload map[string]any) *backend.ToolResult {
 	}
 	return &backend.ToolResult{
 		Content: []any{map[string]any{
-			"type": "text",
-			"text": string(body),
+			contentKeyType: contentKeyText,
+			contentKeyText: string(body),
 		}},
 	}
 }
@@ -74,7 +74,7 @@ func debugTextResult(payload map[string]any) *backend.ToolResult {
 // payload. It does not call any backend, so the round-trip measures only the
 // LLM-client → MCP server path plus minimal handler overhead.
 func (h *Handler) handleDebugEcho(params map[string]any) *backend.ToolResult {
-	payload, ok := params["payload"]
+	payload, ok := params[argNamePayload]
 	if !ok {
 		return debugErrorResult("Missing required parameter: payload")
 	}
@@ -84,10 +84,10 @@ func (h *Handler) handleDebugEcho(params map[string]any) *backend.ToolResult {
 
 	out := map[string]any{
 		"received_bytes": bytes,
-		"type":           ptype,
+		contentKeyType:   ptype,
 		"sha256":         hex.EncodeToString(sum[:]),
 	}
-	if ptype == "string" {
+	if ptype == jsonTypeString {
 		out["received_chars"] = chars
 	}
 	return debugTextResult(out)
@@ -134,8 +134,8 @@ func (h *Handler) handleDebugGenerate(params map[string]any) *backend.ToolResult
 		return debugErrorResult(fmt.Sprintf("Parameter 'size_bytes' exceeds maximum (%d > %d)", size, debugMaxGenerateBytes))
 	}
 
-	pattern := "ascii"
-	if p, ok := params["pattern"].(string); ok && p != "" {
+	pattern := debugPatternASCII
+	if p, ok := params[argNamePattern].(string); ok && p != "" {
 		pattern = p
 	}
 
@@ -146,10 +146,10 @@ func (h *Handler) handleDebugGenerate(params map[string]any) *backend.ToolResult
 
 	sum := sha256.Sum256(text)
 	return debugTextResult(map[string]any{
-		"text":            string(text),
+		contentKeyText:    string(text),
 		"requested_bytes": size,
 		"returned_bytes":  len(text),
-		"pattern":         pattern,
+		argNamePattern:    pattern,
 		"sha256":          hex.EncodeToString(sum[:]),
 	})
 }
@@ -158,7 +158,7 @@ func (h *Handler) handleDebugGenerate(params map[string]any) *backend.ToolResult
 // patterns produce printable ASCII so the result fits cleanly into JSON.
 func generateDebugPayload(size int, pattern string) ([]byte, error) {
 	switch pattern {
-	case "ascii":
+	case debugPatternASCII:
 		out := make([]byte, size)
 		for i := 0; i < size; i++ {
 			out[i] = debugAsciiCharset[i%len(debugAsciiCharset)]
@@ -206,32 +206,32 @@ func debugToolDefinitions() []ToolDefinition {
 			Name:        toolDebugEcho,
 			Description: "Diagnostic tool: returns size and SHA-256 of the supplied payload without touching any backend. Use to probe the per-call argument-size limit of the calling transport (e.g. binary-search the largest payload a client can send) and to verify round-trip byte integrity. Disabled unless TOOLMESH_DEBUG_TOOLS=true.",
 			InputSchema: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"payload": map[string]any{
-						"description": "Arbitrary JSON value to echo (string, object, array, number, boolean, null).",
+				contentKeyType: jsonTypeObject,
+				schemaKeyProperties: map[string]any{
+					argNamePayload: map[string]any{
+						schemaKeyDescription: "Arbitrary JSON value to echo (string, object, array, number, boolean, null).",
 					},
 				},
-				"required": []string{"payload"},
+				schemaKeyRequired: []string{argNamePayload},
 			},
 		},
 		{
 			Name:        toolDebugGenerate,
 			Description: "Diagnostic tool: generates a printable string of exactly size_bytes characters and returns it together with its SHA-256. Use to probe the maximum response size the calling transport will accept from ToolMesh. Capped at 10 MB. Disabled unless TOOLMESH_DEBUG_TOOLS=true.",
 			InputSchema: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
+				contentKeyType: jsonTypeObject,
+				schemaKeyProperties: map[string]any{
 					"size_bytes": map[string]any{
-						"type":        "integer",
-						"description": "Number of bytes to return (0 to 10485760).",
+						contentKeyType:       jsonTypeInteger,
+						schemaKeyDescription: "Number of bytes to return (0 to 10485760).",
 					},
-					"pattern": map[string]any{
-						"type":        "string",
-						"enum":        []string{"ascii", "random"},
-						"description": "ascii (default) = deterministic alphanumeric cycle; random = printable random.",
+					argNamePattern: map[string]any{
+						contentKeyType:       jsonTypeString,
+						"enum":               []string{debugPatternASCII, "random"},
+						schemaKeyDescription: "ascii (default) = deterministic alphanumeric cycle; random = printable random.",
 					},
 				},
-				"required": []string{"size_bytes"},
+				schemaKeyRequired: []string{"size_bytes"},
 			},
 		},
 	}

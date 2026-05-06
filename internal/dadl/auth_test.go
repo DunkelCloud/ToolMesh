@@ -41,27 +41,23 @@ func (m *mockCredStore) Get(_ context.Context, name string, _ interface { /* Ten
 
 func (m *mockCredStore) Healthy(_ context.Context) error { return nil }
 
-// Auth type constants for test readability.
-const (
-	authTypeBearer = "bearer"
-	authTypeOAuth2 = "oauth2"
-	bearerPrefix   = "Bearer "
-)
+// bearerPrefix is the standard "Bearer " prefix used for Authorization headers.
+const bearerPrefix = "Bearer "
 
 func TestRestAuth_Bearer(t *testing.T) {
 	creds := &mockCredStore{creds: map[string]string{"my-token": "secret123"}}
 	auth := newTestRestAuth(AuthConfig{
 		Type:       authTypeBearer,
 		Credential: "my-token",
-		HeaderName: "Authorization",
+		HeaderName: headerAuthorization,
 		Prefix:     bearerPrefix,
 	}, creds)
 
-	req, _ := http.NewRequestWithContext(context.Background(), "GET", "https://api.example.com/test", nil)
+	req, _ := http.NewRequestWithContext(context.Background(), httpMethodGET, "https://api.example.com/test", nil)
 	if err := auth.InjectAuth(context.Background(), req); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	got := req.Header.Get("Authorization")
+	got := req.Header.Get(headerAuthorization)
 	if got != "Bearer secret123" {
 		t.Errorf("Authorization = %q, want %q", got, "Bearer secret123")
 	}
@@ -72,15 +68,15 @@ func TestRestAuth_Basic(t *testing.T) {
 		"bd-api-key": "myapikey123",
 	}}
 	auth := newTestRestAuth(AuthConfig{ //nolint:gosec // test data, not real credentials
-		Type:               "basic",
+		Type:               authTypeBasic,
 		UsernameCredential: "bd-api-key",
 	}, creds)
 
-	req, _ := http.NewRequestWithContext(context.Background(), "GET", "https://api.example.com/test", nil)
+	req, _ := http.NewRequestWithContext(context.Background(), httpMethodGET, "https://api.example.com/test", nil)
 	if err := auth.InjectAuth(context.Background(), req); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	got := req.Header.Get("Authorization")
+	got := req.Header.Get(headerAuthorization)
 	want := "Basic " + base64.StdEncoding.EncodeToString([]byte("myapikey123:"))
 	if got != want {
 		t.Errorf("Authorization = %q, want %q", got, want)
@@ -89,20 +85,20 @@ func TestRestAuth_Basic(t *testing.T) {
 
 func TestRestAuth_Basic_WithPassword(t *testing.T) {
 	creds := &mockCredStore{creds: map[string]string{
-		"my-user": "admin",
+		"my-user": testAccessAdmin,
 		"my-pass": "secret",
 	}}
 	auth := newTestRestAuth(AuthConfig{
-		Type:               "basic",
+		Type:               authTypeBasic,
 		UsernameCredential: "my-user",
 		PasswordCredential: "my-pass",
 	}, creds)
 
-	req, _ := http.NewRequestWithContext(context.Background(), "GET", "https://api.example.com/test", nil)
+	req, _ := http.NewRequestWithContext(context.Background(), httpMethodGET, "https://api.example.com/test", nil)
 	if err := auth.InjectAuth(context.Background(), req); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	got := req.Header.Get("Authorization")
+	got := req.Header.Get(headerAuthorization)
 	want := "Basic " + base64.StdEncoding.EncodeToString([]byte("admin:secret"))
 	if got != want {
 		t.Errorf("Authorization = %q, want %q", got, want)
@@ -110,38 +106,38 @@ func TestRestAuth_Basic_WithPassword(t *testing.T) {
 }
 
 func TestRestAuth_APIKey_Header(t *testing.T) {
-	creds := &mockCredStore{creds: map[string]string{"api-key": "key123"}}
+	creds := &mockCredStore{creds: map[string]string{testCredAPIKey: testKey123}}
 	auth := newTestRestAuth(AuthConfig{
-		Type:       "apikey",
-		Credential: "api-key",
+		Type:       authTypeAPIKey,
+		Credential: testCredAPIKey,
 		InjectInto: "header",
-		HeaderName: "X-API-Key",
+		HeaderName: headerXAPIKey,
 	}, creds)
 
-	req, _ := http.NewRequestWithContext(context.Background(), "GET", "https://api.example.com/test", nil)
+	req, _ := http.NewRequestWithContext(context.Background(), httpMethodGET, "https://api.example.com/test", nil)
 	if err := auth.InjectAuth(context.Background(), req); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if req.Header.Get("X-API-Key") != "key123" {
-		t.Errorf("X-API-Key = %q, want %q", req.Header.Get("X-API-Key"), "key123")
+	if req.Header.Get(headerXAPIKey) != testKey123 {
+		t.Errorf("X-API-Key = %q, want %q", req.Header.Get(headerXAPIKey), testKey123)
 	}
 }
 
 func TestRestAuth_APIKey_Query(t *testing.T) {
-	creds := &mockCredStore{creds: map[string]string{"api-key": "key123"}}
+	creds := &mockCredStore{creds: map[string]string{testCredAPIKey: testKey123}}
 	auth := newTestRestAuth(AuthConfig{
-		Type:       "apikey",
-		Credential: "api-key",
-		InjectInto: "query",
+		Type:       authTypeAPIKey,
+		Credential: testCredAPIKey,
+		InjectInto: authInjectQuery,
 		QueryParam: "api_key",
 	}, creds)
 
-	req, _ := http.NewRequestWithContext(context.Background(), "GET", "https://api.example.com/test", nil)
+	req, _ := http.NewRequestWithContext(context.Background(), httpMethodGET, "https://api.example.com/test", nil)
 	if err := auth.InjectAuth(context.Background(), req); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if req.URL.Query().Get("api_key") != "key123" {
-		t.Errorf("api_key = %q, want %q", req.URL.Query().Get("api_key"), "key123")
+	if req.URL.Query().Get("api_key") != testKey123 {
+		t.Errorf("api_key = %q, want %q", req.URL.Query().Get("api_key"), testKey123)
 	}
 }
 
@@ -159,38 +155,38 @@ func TestRestAuth_OAuth2(t *testing.T) {
 	}}
 	auth := newTestRestAuth(AuthConfig{
 		Type:                   authTypeOAuth2,
-		Flow:                   "client_credentials",
+		Flow:                   oauth2GrantType,
 		TokenURL:               server.URL,
 		ClientIDCredential:     "client-id",
 		ClientSecretCredential: "client-secret",
 	}, creds)
 
-	req, _ := http.NewRequestWithContext(context.Background(), "GET", "https://api.example.com/test", nil)
+	req, _ := http.NewRequestWithContext(context.Background(), httpMethodGET, "https://api.example.com/test", nil)
 	if err := auth.InjectAuth(context.Background(), req); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	got := req.Header.Get("Authorization")
+	got := req.Header.Get(headerAuthorization)
 	if got != "Bearer oauth-token-123" {
 		t.Errorf("Authorization = %q, want %q", got, "Bearer oauth-token-123")
 	}
 
 	// Second call should use cached token
-	req2, _ := http.NewRequestWithContext(context.Background(), "GET", "https://api.example.com/test2", nil)
+	req2, _ := http.NewRequestWithContext(context.Background(), httpMethodGET, "https://api.example.com/test2", nil)
 	if err := auth.InjectAuth(context.Background(), req2); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if req2.Header.Get("Authorization") != "Bearer oauth-token-123" {
+	if req2.Header.Get(headerAuthorization) != "Bearer oauth-token-123" {
 		t.Error("expected cached token on second call")
 	}
 }
 
 func TestRestAuth_NoAuth(t *testing.T) {
 	auth := newTestRestAuth(AuthConfig{}, &mockCredStore{})
-	req, _ := http.NewRequestWithContext(context.Background(), "GET", "https://api.example.com/test", nil)
+	req, _ := http.NewRequestWithContext(context.Background(), httpMethodGET, "https://api.example.com/test", nil)
 	if err := auth.InjectAuth(context.Background(), req); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if req.Header.Get("Authorization") != "" {
+	if req.Header.Get(headerAuthorization) != "" {
 		t.Error("expected no Authorization header for empty auth type")
 	}
 }
@@ -224,14 +220,14 @@ func (a *testRestAuth) InjectAuth(ctx context.Context, req *http.Request) error 
 		}
 		headerName := a.config.HeaderName
 		if headerName == "" {
-			headerName = "Authorization"
+			headerName = headerAuthorization
 		}
 		prefix := a.config.Prefix
 		if prefix == "" {
 			prefix = bearerPrefix
 		}
 		req.Header.Set(headerName, prefix+token)
-	case "basic":
+	case authTypeBasic:
 		username, err := a.creds.Get(ctx, a.config.UsernameCredential, nil)
 		if err != nil {
 			return err
@@ -244,20 +240,20 @@ func (a *testRestAuth) InjectAuth(ctx context.Context, req *http.Request) error 
 			}
 		}
 		encoded := base64.StdEncoding.EncodeToString([]byte(username + ":" + password))
-		req.Header.Set("Authorization", "Basic "+encoded)
-	case "apikey":
+		req.Header.Set(headerAuthorization, "Basic "+encoded)
+	case authTypeAPIKey:
 		key, err := a.creds.Get(ctx, a.config.Credential, nil)
 		if err != nil {
 			return err
 		}
-		if a.config.InjectInto == "query" {
+		if a.config.InjectInto == authInjectQuery {
 			q := req.URL.Query()
 			q.Set(a.config.QueryParam, key)
 			req.URL.RawQuery = q.Encode()
 		} else {
 			headerName := a.config.HeaderName
 			if headerName == "" {
-				headerName = "X-API-Key"
+				headerName = headerXAPIKey
 			}
 			req.Header.Set(headerName, a.config.Prefix+key)
 		}
@@ -271,7 +267,7 @@ func (a *testRestAuth) InjectAuth(ctx context.Context, req *http.Request) error 
 
 func (a *testRestAuth) injectOAuth2(ctx context.Context, req *http.Request) error {
 	if a.cachedToken != "" {
-		req.Header.Set("Authorization", bearerPrefix+a.cachedToken)
+		req.Header.Set(headerAuthorization, bearerPrefix+a.cachedToken)
 		return nil
 	}
 
@@ -279,11 +275,11 @@ func (a *testRestAuth) injectOAuth2(ctx context.Context, req *http.Request) erro
 	clientSecret, _ := a.creds.Get(ctx, a.config.ClientSecretCredential, nil)
 
 	data := url.Values{
-		"grant_type":    {"client_credentials"},
+		"grant_type":    {oauth2GrantType},
 		"client_id":     {clientID},
 		"client_secret": {clientSecret},
 	}
-	tokenReq, err := http.NewRequestWithContext(ctx, "POST", a.config.TokenURL, strings.NewReader(data.Encode()))
+	tokenReq, err := http.NewRequestWithContext(ctx, httpMethodPOST, a.config.TokenURL, strings.NewReader(data.Encode()))
 	if err != nil {
 		return err
 	}
@@ -303,7 +299,7 @@ func (a *testRestAuth) injectOAuth2(ctx context.Context, req *http.Request) erro
 		return err
 	}
 	a.cachedToken = tokenResp.AccessToken
-	req.Header.Set("Authorization", bearerPrefix+a.cachedToken)
+	req.Header.Set(headerAuthorization, bearerPrefix+a.cachedToken)
 	return nil
 }
 

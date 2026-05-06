@@ -145,12 +145,12 @@ func TestHybridStore_ClientFallback(t *testing.T) {
 func TestHybridStore_AuthCode(t *testing.T) {
 	h, _, _ := newHybridTestStore(t)
 	ctx := context.Background()
-	ac := &AuthCode{Code: "abc", ClientID: "c"}
+	ac := &AuthCode{Code: testTokenABC, ClientID: "c"}
 	if err := h.SaveAuthCode(ctx, ac); err != nil {
 		t.Fatal(err)
 	}
-	got, err := h.ConsumeAuthCode(ctx, "abc")
-	if err != nil || got.Code != "abc" {
+	got, err := h.ConsumeAuthCode(ctx, testTokenABC)
+	if err != nil || got.Code != testTokenABC {
 		t.Errorf("consume: %v %v", got, err)
 	}
 }
@@ -159,10 +159,10 @@ func TestHybridStore_AuthCodeFallback(t *testing.T) {
 	h, p, _ := newHybridTestStore(t)
 	ctx := context.Background()
 
-	_ = h.SaveAuthCode(ctx, &AuthCode{Code: "abc", ClientID: "c"})
+	_ = h.SaveAuthCode(ctx, &AuthCode{Code: testTokenABC, ClientID: "c"})
 	p.failConsume = true
 
-	got, err := h.ConsumeAuthCode(ctx, "abc")
+	got, err := h.ConsumeAuthCode(ctx, testTokenABC)
 	if err != nil || got == nil {
 		t.Errorf("fallback consume: %v", err)
 	}

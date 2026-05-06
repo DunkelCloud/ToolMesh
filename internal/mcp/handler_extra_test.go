@@ -197,8 +197,8 @@ func TestHandleToolCall_ExecuteCodeDiscoverToolsGuard(t *testing.T) {
 		name string
 		code string
 	}{
-		{name: "discover_tools", code: `await toolmesh.discover_tools({pattern: ".*"});`},
-		{name: "execute_code", code: `await toolmesh.execute_code({code: "1"});`},
+		{name: toolDiscoverTools, code: `await toolmesh.discover_tools({pattern: ".*"});`},
+		{name: toolExecuteCode, code: `await toolmesh.execute_code({code: "1"});`},
 	}
 
 	for _, tc := range cases {
@@ -243,14 +243,14 @@ func jsonString(s string) string {
 func TestBuildBackendDescription(t *testing.T) {
 	mb := &summarizingBackend{
 		infos: []backend.BackendInfo{
-			{Name: "github", Hint: "GitHub API"},
+			{Name: testBackendNameGitHub, Hint: "GitHub API"},
 			{Name: "jira", Hint: "Jira API"},
 			{Name: "nohint"},
 		},
 	}
 	h := NewHandler(nil, mb, nil, "", nil, newQuietMCPLogger(), false)
 	desc := h.buildBackendDescription()
-	if !strings.Contains(desc, "github") || !strings.Contains(desc, "jira") {
+	if !strings.Contains(desc, testBackendNameGitHub) || !strings.Contains(desc, "jira") {
 		t.Errorf("desc missing backend names: %s", desc)
 	}
 	if !strings.Contains(desc, "GitHub API") {
@@ -284,31 +284,31 @@ func TestBuildGroupedHints(t *testing.T) {
 		{
 			name: "single instance, no SpecID — renders individually",
 			infos: []backend.BackendInfo{
-				{Name: "memorizer", Hint: "Local memory store"},
+				{Name: testBackendMemorizer, Hint: testHintLocalMemory},
 			},
 			want: "memorizer: Local memory store",
 		},
 		{
 			name: "two instances of one DADL spec — collapsed to one line",
 			infos: []backend.BackendInfo{
-				{Name: "dokuwiki-dunkel.cloud", Hint: "DokuWiki JSON-RPC API", SpecID: "sha-doku"},
-				{Name: "dokuwiki-dunkel.io", Hint: "DokuWiki JSON-RPC API", SpecID: "sha-doku"},
+				{Name: testHostDokuWikiCloud, Hint: testHintDokuWiki, SpecID: testCredDokuWiki},
+				{Name: testHostnameDokuWiki, Hint: testHintDokuWiki, SpecID: testCredDokuWiki},
 			},
 			want: "dokuwiki-dunkel.cloud, dokuwiki-dunkel.io: DokuWiki JSON-RPC API",
 		},
 		{
 			name: "three instances of one DADL spec — alphabetical names",
 			infos: []backend.BackendInfo{
-				{Name: "opnsense_primary", Hint: "OPNsense REST API", SpecID: "sha-opn"},
-				{Name: "opnsense_backup", Hint: "OPNsense REST API", SpecID: "sha-opn"},
-				{Name: "opnsense_edge", Hint: "OPNsense REST API", SpecID: "sha-opn"},
+				{Name: "opnsense_primary", Hint: testHintOPNsense, SpecID: testCredOPNsense},
+				{Name: "opnsense_backup", Hint: testHintOPNsense, SpecID: testCredOPNsense},
+				{Name: "opnsense_edge", Hint: testHintOPNsense, SpecID: testCredOPNsense},
 			},
 			want: "opnsense_backup, opnsense_edge, opnsense_primary: OPNsense REST API",
 		},
 		{
 			name: "two distinct DADL specs — two groups in input order",
 			infos: []backend.BackendInfo{
-				{Name: "github", Hint: "GitHub REST API", SpecID: "sha-gh"},
+				{Name: testBackendNameGitHub, Hint: "GitHub REST API", SpecID: "sha-gh"},
 				{Name: "jira", Hint: "Jira API", SpecID: "sha-jira"},
 			},
 			want: "github: GitHub REST API; jira: Jira API",
@@ -316,9 +316,9 @@ func TestBuildGroupedHints(t *testing.T) {
 		{
 			name: "mix of DADL and native backends",
 			infos: []backend.BackendInfo{
-				{Name: "dokuwiki-dunkel.cloud", Hint: "DokuWiki JSON-RPC API", SpecID: "sha-doku"},
-				{Name: "memorizer", Hint: "Local memory store"},
-				{Name: "dokuwiki-dunkel.io", Hint: "DokuWiki JSON-RPC API", SpecID: "sha-doku"},
+				{Name: testHostDokuWikiCloud, Hint: testHintDokuWiki, SpecID: testCredDokuWiki},
+				{Name: testBackendMemorizer, Hint: testHintLocalMemory},
+				{Name: testHostnameDokuWiki, Hint: testHintDokuWiki, SpecID: testCredDokuWiki},
 				{Name: "web_search", Hint: "Web search"},
 			},
 			want: "dokuwiki-dunkel.cloud, dokuwiki-dunkel.io: DokuWiki JSON-RPC API; memorizer: Local memory store; web_search: Web search",
@@ -326,18 +326,18 @@ func TestBuildGroupedHints(t *testing.T) {
 		{
 			name: "group position follows first instance — second spec appears between native entries",
 			infos: []backend.BackendInfo{
-				{Name: "memorizer", Hint: "Local memory store"},
-				{Name: "opnsense_a", Hint: "OPNsense REST API", SpecID: "sha-opn"},
+				{Name: testBackendMemorizer, Hint: testHintLocalMemory},
+				{Name: "opnsense_a", Hint: testHintOPNsense, SpecID: testCredOPNsense},
 				{Name: "web_search", Hint: "Web search"},
-				{Name: "opnsense_b", Hint: "OPNsense REST API", SpecID: "sha-opn"},
+				{Name: "opnsense_b", Hint: testHintOPNsense, SpecID: testCredOPNsense},
 			},
 			want: "memorizer: Local memory store; opnsense_a, opnsense_b: OPNsense REST API; web_search: Web search",
 		},
 		{
 			name: "infos without hints are skipped",
 			infos: []backend.BackendInfo{
-				{Name: "github", Hint: "GitHub REST API", SpecID: "sha-gh"},
-				{Name: "anonymous", Hint: ""},
+				{Name: testBackendNameGitHub, Hint: "GitHub REST API", SpecID: "sha-gh"},
+				{Name: userAnonymous, Hint: ""},
 				{Name: "another", Hint: "", SpecID: "sha-anon"},
 			},
 			want: "github: GitHub REST API",
@@ -369,16 +369,16 @@ func TestBuildGroupedHints(t *testing.T) {
 func TestBuildBackendDescription_GroupsSharedSpecs(t *testing.T) {
 	mb := &summarizingBackend{
 		infos: []backend.BackendInfo{
-			{Name: "dokuwiki-dunkel.cloud", Hint: "DokuWiki JSON-RPC API", SpecID: "sha-doku"},
-			{Name: "dokuwiki-dunkel.io", Hint: "DokuWiki JSON-RPC API", SpecID: "sha-doku"},
-			{Name: "memorizer", Hint: "Local memory store"},
+			{Name: testHostDokuWikiCloud, Hint: testHintDokuWiki, SpecID: testCredDokuWiki},
+			{Name: testHostnameDokuWiki, Hint: testHintDokuWiki, SpecID: testCredDokuWiki},
+			{Name: testBackendMemorizer, Hint: testHintLocalMemory},
 		},
 	}
 	h := NewHandler(nil, mb, nil, "", nil, newQuietMCPLogger(), false)
 	desc := h.buildBackendDescription()
 
 	// Every instance name must appear in the "Available backends" line.
-	for _, name := range []string{"dokuwiki-dunkel.cloud", "dokuwiki-dunkel.io", "memorizer"} {
+	for _, name := range []string{testHostDokuWikiCloud, testHostnameDokuWiki, testBackendMemorizer} {
 		if !strings.Contains(desc, name) {
 			t.Errorf("description missing backend name %q: %s", name, desc)
 		}
@@ -389,9 +389,9 @@ func TestBuildBackendDescription_GroupsSharedSpecs(t *testing.T) {
 	if !strings.Contains(desc, wantHint) {
 		t.Errorf("description missing grouped hint %q: %s", wantHint, desc)
 	}
-	if strings.Count(desc, "DokuWiki JSON-RPC API") != 1 {
+	if strings.Count(desc, testHintDokuWiki) != 1 {
 		t.Errorf("DokuWiki hint should appear exactly once, got %d occurrences in: %s",
-			strings.Count(desc, "DokuWiki JSON-RPC API"), desc)
+			strings.Count(desc, testHintDokuWiki), desc)
 	}
 }
 
@@ -400,13 +400,13 @@ func TestBuildBackendDescription_GroupsSharedSpecs(t *testing.T) {
 // description but not to discover_tools. Duplicating that block on both tools
 // costs thousands of context tokens for no information gain, so discover_tools
 // must stay minimal. Backend names use a unique prefix so the assertion does
-// not collide with example patterns ("github", "dokuwiki") that legitimately
+// not collide with example patterns (testBackendNameGitHub, "dokuwiki") that legitimately
 // appear in the discover_tools description.
 func TestBuildToolList_BackendHintsOnExecuteCodeOnly(t *testing.T) {
 	mb := &summarizingBackend{
 		infos: []backend.BackendInfo{
-			{Name: "tmtest_alpha", Hint: "tmtest backend alpha"},
-			{Name: "tmtest_beta", Hint: "tmtest backend beta"},
+			{Name: testToolTmtestAlpha, Hint: testHintBackendAlpha},
+			{Name: testToolTmtestBeta, Hint: testHintBackendBeta},
 		},
 	}
 	h := NewHandler(nil, mb, nil, "", nil, newQuietMCPLogger(), false)
@@ -429,14 +429,14 @@ func TestBuildToolList_BackendHintsOnExecuteCodeOnly(t *testing.T) {
 	}
 
 	// discover_tools must not carry the backend block.
-	for _, marker := range []string{"Available backends", "Hints:", "tmtest_alpha", "tmtest_beta", "tmtest backend alpha", "tmtest backend beta"} {
+	for _, marker := range []string{"Available backends", "Hints:", testToolTmtestAlpha, testToolTmtestBeta, testHintBackendAlpha, testHintBackendBeta} {
 		if strings.Contains(discoverDesc, marker) {
 			t.Errorf("discover_tools description should not contain %q, got: %s", marker, discoverDesc)
 		}
 	}
 
 	// execute_code must carry the backend block.
-	for _, marker := range []string{"Available backends", "Hints:", "tmtest_alpha", "tmtest_beta", "tmtest backend alpha", "tmtest backend beta"} {
+	for _, marker := range []string{"Available backends", "Hints:", testToolTmtestAlpha, testToolTmtestBeta, testHintBackendAlpha, testHintBackendBeta} {
 		if !strings.Contains(execDesc, marker) {
 			t.Errorf("execute_code description should contain %q, got: %s", marker, execDesc)
 		}

@@ -325,9 +325,9 @@ func (a *RESTAdapter) Execute(ctx context.Context, toolName string, params map[s
 	return &ToolResult{
 		Content: []any{textContent(string(body))},
 		Metadata: map[string]any{
-			"backend":    a.spec.Backend.Name,
-			"transport":  "rest",
-			"statusCode": resp.StatusCode,
+			metadataKeyBackend:    a.spec.Backend.Name,
+			metadataKeyTransport:  transportTypeREST,
+			metadataKeyStatusCode: resp.StatusCode,
 		},
 	}, nil
 }
@@ -524,7 +524,7 @@ func joinURL(baseURL, toolPath string) (string, error) {
 func (a *RESTAdapter) buildPath(tool *dadl.ToolDef, params map[string]any) (string, error) {
 	path := tool.Path
 	for name, def := range tool.Params {
-		if def.In != "path" {
+		if def.In != paramInPath {
 			continue
 		}
 		val, ok := params[name]
@@ -543,7 +543,7 @@ func (a *RESTAdapter) buildPath(tool *dadl.ToolDef, params map[string]any) (stri
 func (a *RESTAdapter) buildQuery(tool *dadl.ToolDef, params map[string]any) string {
 	var parts []string
 	for name, def := range tool.Params {
-		if def.In != "query" {
+		if def.In != paramInQuery {
 			continue
 		}
 		val, ok := params[name]
@@ -563,7 +563,7 @@ func (a *RESTAdapter) buildQuery(tool *dadl.ToolDef, params map[string]any) stri
 func (a *RESTAdapter) buildBody(tool *dadl.ToolDef, params map[string]any) map[string]any {
 	body := make(map[string]any)
 	for name, def := range tool.Params {
-		if def.In != "body" {
+		if def.In != paramInBody {
 			continue
 		}
 		if val, ok := params[name]; ok && val != nil {
@@ -598,7 +598,7 @@ var reservedHeaderParams = map[string]struct{}{
 // matching reservedHeaderParams are skipped case-insensitively.
 func (a *RESTAdapter) applyHeaderParams(req *http.Request, tool *dadl.ToolDef, params map[string]any) error {
 	for name, def := range tool.Params {
-		if def.In != "header" {
+		if def.In != paramInHeader {
 			continue
 		}
 		if _, reserved := reservedHeaderParams[strings.ToLower(name)]; reserved {
@@ -677,7 +677,7 @@ func flattenFormValues(vals url.Values, prefix string, v any) {
 // hasFileParams returns true if the tool has any parameters with type "file".
 func (a *RESTAdapter) hasFileParams(tool *dadl.ToolDef) bool {
 	for _, def := range tool.Params {
-		if def.Type == "file" {
+		if def.Type == paramTypeFile {
 			return true
 		}
 	}
@@ -693,7 +693,7 @@ func (a *RESTAdapter) buildMultipartBody(tool *dadl.ToolDef, params map[string]a
 	writer := multipart.NewWriter(&buf)
 
 	for name, def := range tool.Params {
-		if def.In != "body" {
+		if def.In != paramInBody {
 			continue
 		}
 		val, ok := params[name]
@@ -701,7 +701,7 @@ func (a *RESTAdapter) buildMultipartBody(tool *dadl.ToolDef, params map[string]a
 			continue
 		}
 
-		if def.Type == "file" {
+		if def.Type == paramTypeFile {
 			filePath, ok := val.(string)
 			if !ok {
 				return nil, "", fmt.Errorf("file param %q: expected string path, got %T", name, val)
@@ -791,10 +791,10 @@ func (a *RESTAdapter) handleBinaryResponse(ctx context.Context, _ *dadl.ToolDef,
 	)
 
 	metadata := map[string]any{
-		"backend":    a.spec.Backend.Name,
-		"transport":  "rest",
-		"statusCode": resp.StatusCode,
-		"binary":     true,
+		metadataKeyBackend:    a.spec.Backend.Name,
+		metadataKeyTransport:  transportTypeREST,
+		metadataKeyStatusCode: resp.StatusCode,
+		"binary":              true,
 	}
 
 	// Try file broker first
@@ -810,11 +810,11 @@ func (a *RESTAdapter) handleBinaryResponse(ctx context.Context, _ *dadl.ToolDef,
 			// Fall through to base64
 		} else {
 			resultJSON, _ := json.Marshal(map[string]any{
-				"file_id":      result.FileID,
-				"url":          result.URL,
-				"expires":      result.Expires.Format(time.RFC3339),
-				"content_type": contentType,
-				"size_bytes":   sizeBytes,
+				fileKeyID:          result.FileID,
+				fileKeyURL:         result.URL,
+				fileKeyExpires:     result.Expires.Format(time.RFC3339),
+				fileKeyContentType: contentType,
+				fileKeySizeBytes:   sizeBytes,
 			})
 			return &ToolResult{
 				Content:  []any{textContent(string(resultJSON))},
@@ -843,10 +843,10 @@ func (a *RESTAdapter) handleBinaryResponse(ctx context.Context, _ *dadl.ToolDef,
 
 		expires := time.Now().Add(ttl)
 		resultJSON, _ := json.Marshal(map[string]any{
-			"url":          blobURL,
-			"content_type": contentType,
-			"size_bytes":   sizeBytes,
-			"expires":      expires.Format(time.RFC3339),
+			fileKeyURL:         blobURL,
+			fileKeyContentType: contentType,
+			fileKeySizeBytes:   sizeBytes,
+			fileKeyExpires:     expires.Format(time.RFC3339),
 		})
 		return &ToolResult{
 			Content:  []any{textContent(string(resultJSON))},
@@ -907,20 +907,20 @@ func (a *RESTAdapter) executeStreamingBinary(ctx context.Context, tool *dadl.Too
 	)
 
 	resultJSON, _ := json.Marshal(map[string]any{
-		"file_id":      result.FileID,
-		"url":          result.URL,
-		"expires":      result.Expires.Format(time.RFC3339),
-		"content_type": contentType,
-		"size_bytes":   counter.N,
+		fileKeyID:          result.FileID,
+		fileKeyURL:         result.URL,
+		fileKeyExpires:     result.Expires.Format(time.RFC3339),
+		fileKeyContentType: contentType,
+		fileKeySizeBytes:   counter.N,
 	})
 	return &ToolResult{
 		Content: []any{textContent(string(resultJSON))},
 		Metadata: map[string]any{
-			"backend":    a.spec.Backend.Name,
-			"transport":  "rest",
-			"statusCode": resp.StatusCode,
-			"binary":     true,
-			"streaming":  true,
+			metadataKeyBackend:    a.spec.Backend.Name,
+			metadataKeyTransport:  transportTypeREST,
+			metadataKeyStatusCode: resp.StatusCode,
+			"binary":              true,
+			"streaming":           true,
 		},
 	}, nil
 }
@@ -1022,7 +1022,7 @@ func (a *RESTAdapter) paginateResults(ctx context.Context, tool *dadl.ToolDef, p
 	// Build current query params
 	currentParams := make(map[string]string)
 	for name, def := range tool.Params {
-		if def.In == "query" {
+		if def.In == paramInQuery {
 			if val, ok := params[name]; ok {
 				currentParams[name] = fmt.Sprintf("%v", val)
 			}
@@ -1146,18 +1146,18 @@ func buildInputSchema(tool dadl.ToolDef) map[string]any {
 	for _, name := range names {
 		def := tool.Params[name]
 		prop := map[string]any{
-			"type": jsonSchemaType(def.Type),
+			schemaKeyType: jsonSchemaType(def.Type),
 		}
 		properties[name] = prop
 
-		if def.Required || def.In == "path" {
+		if def.Required || def.In == paramInPath {
 			required = append(required, name)
 		}
 	}
 
 	schema := map[string]any{
-		"type":       schemaTypeObject,
-		"properties": properties,
+		schemaKeyType:       schemaTypeObject,
+		schemaKeyProperties: properties,
 	}
 	if len(required) > 0 {
 		schema["required"] = required
@@ -1165,25 +1165,19 @@ func buildInputSchema(tool dadl.ToolDef) map[string]any {
 	return schema
 }
 
-// JSON Schema type constants used in buildInputSchema.
-const (
-	schemaTypeInteger = "integer"
-	schemaTypeObject  = "object"
-)
-
 func jsonSchemaType(t string) string {
 	switch t {
-	case schemaTypeInteger, "number", "boolean", "array", schemaTypeObject:
+	case schemaTypeInteger, schemaTypeNumber, schemaTypeBoolean, "array", schemaTypeObject:
 		return t
 	default:
-		return "string"
+		return schemaTypeString
 	}
 }
 
 func textContent(text string) map[string]any {
 	return map[string]any{
-		"type": "text",
-		"text": text,
+		schemaKeyType:   contentTypeText,
+		contentTypeText: text,
 	}
 }
 
@@ -1284,7 +1278,7 @@ func buildCompositeInputSchema(comp dadl.CompositeDef) map[string]any {
 	for _, name := range names {
 		def := comp.Params[name]
 		prop := map[string]any{
-			"type": jsonSchemaType(def.Type),
+			schemaKeyType: jsonSchemaType(def.Type),
 		}
 		if def.Default != nil {
 			prop["default"] = def.Default
@@ -1297,8 +1291,8 @@ func buildCompositeInputSchema(comp dadl.CompositeDef) map[string]any {
 	}
 
 	schema := map[string]any{
-		"type":       schemaTypeObject,
-		"properties": properties,
+		schemaKeyType:       schemaTypeObject,
+		schemaKeyProperties: properties,
 	}
 	if len(required) > 0 {
 		schema["required"] = required

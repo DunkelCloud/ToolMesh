@@ -19,7 +19,7 @@ import "github.com/DunkelCloud/ToolMesh/internal/backend"
 // ToInputSchema converts a ToolDef to a JSON Schema map.
 func (t ToolDef) ToInputSchema() map[string]any {
 	schema := map[string]any{
-		"type": "object",
+		schemaKeyType: kindObject,
 	}
 
 	if len(t.Params) == 0 {
@@ -63,7 +63,7 @@ func paramToSchema(p ParamDef) map[string]any {
 	}
 
 	if len(p.Enum) > 0 {
-		s["type"] = kindString
+		s[schemaKeyType] = kindString
 		enumVals := make([]any, len(p.Enum))
 		for i, v := range p.Enum {
 			enumVals[i] = v
@@ -74,18 +74,18 @@ func paramToSchema(p ParamDef) map[string]any {
 
 	switch p.Type.Kind {
 	case kindString:
-		s["type"] = kindString
+		s[schemaKeyType] = kindString
 	case kindNumber:
-		s["type"] = kindNumber
+		s[schemaKeyType] = kindNumber
 	case kindBoolean:
-		s["type"] = kindBoolean
+		s[schemaKeyType] = kindBoolean
 	case kindArray:
-		s["type"] = kindArray
+		s[schemaKeyType] = kindArray
 		if p.Type.ItemKind != "" && p.Type.ItemKind != kindAny {
-			s["items"] = map[string]any{"type": p.Type.ItemKind}
+			s["items"] = map[string]any{schemaKeyType: p.Type.ItemKind}
 		}
 	case kindObject:
-		s["type"] = kindObject
+		s[schemaKeyType] = kindObject
 		if len(p.Type.Properties) > 0 {
 			nested := make(map[string]any)
 			var req []any
@@ -158,7 +158,7 @@ func ToolDefFromSchema(name, description string, schema map[string]any) ToolDef 
 }
 
 func schemaTypeToParamType(schema map[string]any) ParamType {
-	t, _ := schema["type"].(string)
+	t, _ := schema[schemaKeyType].(string)
 	switch t {
 	case kindString:
 		return ParamType{Kind: kindString}
@@ -169,7 +169,7 @@ func schemaTypeToParamType(schema map[string]any) ParamType {
 	case kindArray:
 		itemKind := kindAny
 		if items, ok := schema["items"].(map[string]any); ok {
-			if it, ok := items["type"].(string); ok {
+			if it, ok := items[schemaKeyType].(string); ok {
 				itemKind = it
 			}
 		}

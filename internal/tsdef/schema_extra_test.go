@@ -20,17 +20,17 @@ import (
 
 func TestToToolDescriptor(t *testing.T) {
 	td := ToolDef{
-		Name:        "test",
+		Name:        testToolName,
 		Description: "A test",
 		Params: []ParamDef{
-			{Name: "x", Type: ParamType{Kind: "string"}, Required: true},
+			{Name: "x", Type: ParamType{Kind: kindString}, Required: true},
 		},
 	}
 	desc := td.ToToolDescriptor("builtin")
-	if desc.Name != "test" || desc.Backend != "builtin" {
+	if desc.Name != testToolName || desc.Backend != "builtin" {
 		t.Errorf("unexpected: %+v", desc)
 	}
-	if desc.InputSchema["type"] != "object" {
+	if desc.InputSchema["type"] != kindObject {
 		t.Error("missing object type")
 	}
 }
@@ -40,47 +40,47 @@ func TestSchemaTypeToParamType(t *testing.T) {
 		t    string
 		want string
 	}{
-		{"string", "string"},
-		{"number", "number"},
-		{"integer", "number"},
-		{"boolean", "boolean"},
-		{"array", "array"},
-		{"object", "object"},
+		{kindString, kindString},
+		{kindNumber, kindNumber},
+		{"integer", kindNumber},
+		{kindBoolean, kindBoolean},
+		{kindArray, kindArray},
+		{kindObject, kindObject},
 		{"unknown", "any"},
 	}
 	for _, c := range cases {
-		got := schemaTypeToParamType(map[string]any{"type": c.t})
+		got := schemaTypeToParamType(map[string]any{schemaKeyType: c.t})
 		if got.Kind != c.want {
 			t.Errorf("type=%q got %q, want %q", c.t, got.Kind, c.want)
 		}
 	}
 
 	// array with items.
-	got := schemaTypeToParamType(map[string]any{"type": "array", "items": map[string]any{"type": "string"}})
-	if got.Kind != "array" || got.ItemKind != "string" {
+	got := schemaTypeToParamType(map[string]any{schemaKeyType: kindArray, "items": map[string]any{schemaKeyType: kindString}})
+	if got.Kind != kindArray || got.ItemKind != kindString {
 		t.Errorf("array items: %+v", got)
 	}
 }
 
 func TestToolDefFromSchema_WithEnum(t *testing.T) {
 	schema := map[string]any{
-		"type": "object",
+		schemaKeyType: kindObject,
 		"properties": map[string]any{
-			"color": map[string]any{
-				"type":        "string",
+			testParamColor: map[string]any{
+				schemaKeyType: kindString,
 				"enum":        []any{"red", "green", "blue"},
 				"description": "pick a color",
 			},
-			"count": map[string]any{"type": "number"},
+			"count": map[string]any{schemaKeyType: kindNumber},
 		},
-		"required": []any{"color"},
+		"required": []any{testParamColor},
 	}
 	td := ToolDefFromSchema("paint", "", schema)
 	if len(td.Params) != 2 {
 		t.Errorf("expected 2 params, got %d", len(td.Params))
 	}
 	for _, p := range td.Params {
-		if p.Name == "color" {
+		if p.Name == testParamColor {
 			if len(p.Enum) != 3 {
 				t.Errorf("enum len = %d", len(p.Enum))
 			}
@@ -95,15 +95,15 @@ func TestParamToSchema_ObjectWithProperties(t *testing.T) {
 	p := ParamDef{
 		Name: "config",
 		Type: ParamType{
-			Kind: "object",
+			Kind: kindObject,
 			Properties: []ParamDef{
-				{Name: "host", Type: ParamType{Kind: "string"}, Required: true},
-				{Name: "port", Type: ParamType{Kind: "number"}},
+				{Name: "host", Type: ParamType{Kind: kindString}, Required: true},
+				{Name: "port", Type: ParamType{Kind: kindNumber}},
 			},
 		},
 	}
 	s := paramToSchema(p)
-	if s["type"] != "object" {
+	if s["type"] != kindObject {
 		t.Error("type not object")
 	}
 	nested, _ := s["properties"].(map[string]any)
@@ -118,12 +118,12 @@ func TestParamToSchema_ObjectWithProperties(t *testing.T) {
 
 func TestParamToSchema_ArrayWithItems(t *testing.T) {
 	p := ParamDef{
-		Name: "tags",
-		Type: ParamType{Kind: "array", ItemKind: "string"},
+		Name: testParamTags,
+		Type: ParamType{Kind: kindArray, ItemKind: kindString},
 	}
 	s := paramToSchema(p)
 	items, _ := s["items"].(map[string]any)
-	if items["type"] != "string" {
+	if items["type"] != kindString {
 		t.Errorf("items = %v", items)
 	}
 }

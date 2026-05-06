@@ -51,15 +51,15 @@ func newQuietLogger() *slog.Logger {
 func TestRestAuth_InjectBearer(t *testing.T) {
 	creds := &realMockCreds{creds: map[string]string{"API_TOKEN": "tok123"}}
 	auth := NewRestAuth(AuthConfig{
-		Type:       "bearer",
+		Type:       authTypeBearer,
 		Credential: "API_TOKEN",
 	}, "https://example.com", creds, newQuietLogger())
 
-	req, _ := http.NewRequestWithContext(context.Background(), "GET", "https://example.com/", nil)
+	req, _ := http.NewRequestWithContext(context.Background(), httpMethodGET, "https://example.com/", nil)
 	if err := auth.InjectAuth(context.Background(), req); err != nil {
 		t.Fatal(err)
 	}
-	if got := req.Header.Get("Authorization"); got != "Bearer tok123" {
+	if got := req.Header.Get(headerAuthorization); got != "Bearer tok123" {
 		t.Errorf("Authorization = %q", got)
 	}
 }
@@ -67,59 +67,59 @@ func TestRestAuth_InjectBearer(t *testing.T) {
 func TestRestAuth_InjectBearer_MissingCredSkipped(t *testing.T) {
 	creds := &realMockCreds{creds: map[string]string{}}
 	auth := NewRestAuth(AuthConfig{
-		Type:       "bearer",
-		Credential: "MISSING",
+		Type:       authTypeBearer,
+		Credential: testCredMissing,
 	}, "", creds, newQuietLogger())
 
-	req, _ := http.NewRequestWithContext(context.Background(), "GET", "http://example.com/", nil)
+	req, _ := http.NewRequestWithContext(context.Background(), httpMethodGET, "http://example.com/", nil)
 	if err := auth.InjectAuth(context.Background(), req); err != nil {
 		t.Errorf("missing credential should be skipped without error, got %v", err)
 	}
-	if req.Header.Get("Authorization") != "" {
+	if req.Header.Get(headerAuthorization) != "" {
 		t.Error("no auth header should be set when credential is missing")
 	}
 }
 
 func TestRestAuth_InjectBasic(t *testing.T) {
-	creds := &realMockCreds{creds: map[string]string{"U": "alice", "P": "pw"}}
+	creds := &realMockCreds{creds: map[string]string{"U": testUserAlice, "P": "pw"}}
 	auth := NewRestAuth(AuthConfig{
-		Type:               "basic",
+		Type:               authTypeBasic,
 		UsernameCredential: "U",
 		PasswordCredential: "P",
 	}, "", creds, newQuietLogger())
 
-	req, _ := http.NewRequestWithContext(context.Background(), "GET", "http://example.com/", nil)
+	req, _ := http.NewRequestWithContext(context.Background(), httpMethodGET, "http://example.com/", nil)
 	if err := auth.InjectAuth(context.Background(), req); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(req.Header.Get("Authorization"), "Basic ") {
-		t.Errorf("Authorization = %q", req.Header.Get("Authorization"))
+	if !strings.HasPrefix(req.Header.Get(headerAuthorization), "Basic ") {
+		t.Errorf("Authorization = %q", req.Header.Get(headerAuthorization))
 	}
 }
 
 func TestRestAuth_InjectBasic_MissingUsername(t *testing.T) {
 	creds := &realMockCreds{creds: map[string]string{}}
 	auth := NewRestAuth(AuthConfig{
-		Type:               "basic",
-		UsernameCredential: "MISSING",
+		Type:               authTypeBasic,
+		UsernameCredential: testCredMissing,
 	}, "", creds, newQuietLogger())
 
-	req, _ := http.NewRequestWithContext(context.Background(), "GET", "http://example.com/", nil)
+	req, _ := http.NewRequestWithContext(context.Background(), httpMethodGET, "http://example.com/", nil)
 	if err := auth.InjectAuth(context.Background(), req); err != nil {
 		t.Errorf("missing username should be skipped, got %v", err)
 	}
 }
 
 func TestRestAuth_InjectAPIKey_Header(t *testing.T) {
-	creds := &realMockCreds{creds: map[string]string{"K": "key-value"}}
+	creds := &realMockCreds{creds: map[string]string{"K": testKeyValue}}
 	auth := NewRestAuth(AuthConfig{
-		Type:       "apikey",
+		Type:       authTypeAPIKey,
 		Credential: "K",
 		HeaderName: "X-Custom",
 		Prefix:     "p-",
 	}, "", creds, newQuietLogger())
 
-	req, _ := http.NewRequestWithContext(context.Background(), "GET", "http://example.com/", nil)
+	req, _ := http.NewRequestWithContext(context.Background(), httpMethodGET, "http://example.com/", nil)
 	if err := auth.InjectAuth(context.Background(), req); err != nil {
 		t.Fatal(err)
 	}
@@ -129,19 +129,19 @@ func TestRestAuth_InjectAPIKey_Header(t *testing.T) {
 }
 
 func TestRestAuth_InjectAPIKey_Query(t *testing.T) {
-	creds := &realMockCreds{creds: map[string]string{"K": "key-value"}}
+	creds := &realMockCreds{creds: map[string]string{"K": testKeyValue}}
 	auth := NewRestAuth(AuthConfig{
-		Type:       "apikey",
+		Type:       authTypeAPIKey,
 		Credential: "K",
-		InjectInto: "query",
+		InjectInto: authInjectQuery,
 		QueryParam: "api_key",
 	}, "", creds, newQuietLogger())
 
-	req, _ := http.NewRequestWithContext(context.Background(), "GET", "http://example.com/path", nil)
+	req, _ := http.NewRequestWithContext(context.Background(), httpMethodGET, "http://example.com/path", nil)
 	if err := auth.InjectAuth(context.Background(), req); err != nil {
 		t.Fatal(err)
 	}
-	if got := req.URL.Query().Get("api_key"); got != "key-value" {
+	if got := req.URL.Query().Get("api_key"); got != testKeyValue {
 		t.Errorf("query api_key = %q", got)
 	}
 }
@@ -157,29 +157,29 @@ func TestRestAuth_InjectOAuth2(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	creds := &realMockCreds{creds: map[string]string{"CID": "cid", "SEC": "sec"}}
+	creds := &realMockCreds{creds: map[string]string{testCredOAuth2ClientID: "cid", testCredOAuth2ClientSecret: "sec"}}
 	auth := NewRestAuth(AuthConfig{
-		Type:                   "oauth2",
-		ClientIDCredential:     "CID",
-		ClientSecretCredential: "SEC",
+		Type:                   authTypeOAuth2,
+		ClientIDCredential:     testCredOAuth2ClientID,
+		ClientSecretCredential: testCredOAuth2ClientSecret,
 		TokenURL:               srv.URL,
 		Scopes:                 []string{"read", "write"},
 	}, "", creds, newQuietLogger())
 
-	req, _ := http.NewRequestWithContext(context.Background(), "GET", "http://example.com/", nil)
+	req, _ := http.NewRequestWithContext(context.Background(), httpMethodGET, "http://example.com/", nil)
 	if err := auth.InjectAuth(context.Background(), req); err != nil {
 		t.Fatal(err)
 	}
-	if got := req.Header.Get("Authorization"); got != "Bearer o2-tok" {
+	if got := req.Header.Get(headerAuthorization); got != "Bearer o2-tok" {
 		t.Errorf("Authorization = %q", got)
 	}
 
 	// Second call should use the cache.
-	req2, _ := http.NewRequestWithContext(context.Background(), "GET", "http://example.com/", nil)
+	req2, _ := http.NewRequestWithContext(context.Background(), httpMethodGET, "http://example.com/", nil)
 	if err := auth.InjectAuth(context.Background(), req2); err != nil {
 		t.Fatal(err)
 	}
-	if got := req2.Header.Get("Authorization"); got != "Bearer o2-tok" {
+	if got := req2.Header.Get(headerAuthorization); got != "Bearer o2-tok" {
 		t.Errorf("cached Authorization = %q", got)
 	}
 
@@ -195,15 +195,15 @@ func TestRestAuth_InjectOAuth2_TokenEndpointFails(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	creds := &realMockCreds{creds: map[string]string{"CID": "cid", "SEC": "sec"}}
+	creds := &realMockCreds{creds: map[string]string{testCredOAuth2ClientID: "cid", testCredOAuth2ClientSecret: "sec"}}
 	auth := NewRestAuth(AuthConfig{
-		Type:                   "oauth2",
-		ClientIDCredential:     "CID",
-		ClientSecretCredential: "SEC",
+		Type:                   authTypeOAuth2,
+		ClientIDCredential:     testCredOAuth2ClientID,
+		ClientSecretCredential: testCredOAuth2ClientSecret,
 		TokenURL:               srv.URL,
 	}, "", creds, newQuietLogger())
 
-	req, _ := http.NewRequestWithContext(context.Background(), "GET", "http://example.com/", nil)
+	req, _ := http.NewRequestWithContext(context.Background(), httpMethodGET, "http://example.com/", nil)
 	if err := auth.InjectAuth(context.Background(), req); err == nil {
 		t.Error("expected token endpoint failure")
 	}
@@ -212,13 +212,13 @@ func TestRestAuth_InjectOAuth2_TokenEndpointFails(t *testing.T) {
 func TestRestAuth_InjectOAuth2_MissingClientID(t *testing.T) {
 	creds := &realMockCreds{creds: map[string]string{}}
 	auth := NewRestAuth(AuthConfig{ //nolint:gosec // test credentials, not real
-		Type:                   "oauth2",
-		ClientIDCredential:     "MISSING",
+		Type:                   authTypeOAuth2,
+		ClientIDCredential:     testCredMissing,
 		ClientSecretCredential: "MISSING2",
 		TokenURL:               "http://example.com/token",
 	}, "", creds, newQuietLogger())
 
-	req, _ := http.NewRequestWithContext(context.Background(), "GET", "http://example.com/", nil)
+	req, _ := http.NewRequestWithContext(context.Background(), httpMethodGET, "http://example.com/", nil)
 	if err := auth.InjectAuth(context.Background(), req); err != nil {
 		t.Errorf("missing client creds should be skipped, got %v", err)
 	}
@@ -234,11 +234,11 @@ func TestRestAuth_InjectSession(t *testing.T) {
 
 	creds := &realMockCreds{creds: map[string]string{"PW": "pw-value"}}
 	auth := NewRestAuth(AuthConfig{
-		Type: "session",
+		Type: authTypeSession,
 		Login: &SessionLogin{
 			Path:    "/",
-			Method:  "POST",
-			Body:    map[string]string{"username": "alice", "password": "credential:PW"}, //nolint:gosec // test credential reference
+			Method:  httpMethodPOST,
+			Body:    map[string]string{"username": testUserAlice, "password": "credential:PW"}, //nolint:gosec // test credential reference
 			Extract: map[string]string{"tok": "$.token"},
 		},
 		Inject: []InjectRule{
@@ -246,7 +246,7 @@ func TestRestAuth_InjectSession(t *testing.T) {
 		},
 	}, srv.URL, creds, newQuietLogger())
 
-	req, _ := http.NewRequestWithContext(context.Background(), "GET", "http://example.com/", nil)
+	req, _ := http.NewRequestWithContext(context.Background(), httpMethodGET, "http://example.com/", nil)
 	if err := auth.InjectAuth(context.Background(), req); err != nil {
 		t.Fatal(err)
 	}
@@ -255,7 +255,7 @@ func TestRestAuth_InjectSession(t *testing.T) {
 	}
 
 	// HandleUnauthorized with re_login should succeed.
-	auth.config.Refresh = &RefreshConfig{Action: "re_login"}
+	auth.config.Refresh = &RefreshConfig{Action: sessionRefreshLogin}
 	if err := auth.HandleUnauthorized(context.Background()); err != nil {
 		t.Errorf("HandleUnauthorized: %v", err)
 	}
@@ -269,16 +269,16 @@ func TestRestAuth_InjectSession_LoginFailure(t *testing.T) {
 
 	creds := &realMockCreds{creds: map[string]string{}}
 	auth := NewRestAuth(AuthConfig{
-		Type: "session",
+		Type: authTypeSession,
 		Login: &SessionLogin{
 			Path:   "/",
-			Method: "POST",
+			Method: httpMethodPOST,
 			Body:   map[string]string{"u": "v"},
 		},
 		Inject: []InjectRule{{Header: "X-Token", Value: "{{tok}}"}},
 	}, srv.URL, creds, newQuietLogger())
 
-	req, _ := http.NewRequestWithContext(context.Background(), "GET", "http://example.com/", nil)
+	req, _ := http.NewRequestWithContext(context.Background(), httpMethodGET, "http://example.com/", nil)
 	if err := auth.InjectAuth(context.Background(), req); err == nil {
 		t.Error("expected login failure")
 	}
@@ -286,7 +286,7 @@ func TestRestAuth_InjectSession_LoginFailure(t *testing.T) {
 
 func TestRestAuth_Unsupported(t *testing.T) {
 	auth := NewRestAuth(AuthConfig{Type: "invalid"}, "", &realMockCreds{}, newQuietLogger())
-	req, _ := http.NewRequestWithContext(context.Background(), "GET", "http://example.com/", nil)
+	req, _ := http.NewRequestWithContext(context.Background(), httpMethodGET, "http://example.com/", nil)
 	if err := auth.InjectAuth(context.Background(), req); err == nil {
 		t.Error("expected error for unsupported auth type")
 	}
@@ -294,14 +294,14 @@ func TestRestAuth_Unsupported(t *testing.T) {
 
 func TestRestAuth_NoAuth_Real(t *testing.T) {
 	auth := NewRestAuth(AuthConfig{Type: ""}, "", &realMockCreds{}, newQuietLogger())
-	req, _ := http.NewRequestWithContext(context.Background(), "GET", "http://example.com/", nil)
+	req, _ := http.NewRequestWithContext(context.Background(), httpMethodGET, "http://example.com/", nil)
 	if err := auth.InjectAuth(context.Background(), req); err != nil {
 		t.Errorf("no auth should succeed, got %v", err)
 	}
 }
 
 func TestRestAuth_HandleUnauthorized_NoOp(t *testing.T) {
-	auth := NewRestAuth(AuthConfig{Type: "bearer"}, "", &realMockCreds{}, newQuietLogger())
+	auth := NewRestAuth(AuthConfig{Type: authTypeBearer}, "", &realMockCreds{}, newQuietLogger())
 	if err := auth.HandleUnauthorized(context.Background()); err != nil {
 		t.Errorf("bearer HandleUnauthorized: %v", err)
 	}
@@ -313,7 +313,9 @@ func TestRestAuth_SessionCookieForward(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/login" {
 			loginCalled++
-			http.SetCookie(w, &http.Cookie{Name: "session_id", Value: "abc123", Path: "/"})
+			//nolint:gosec // test cookie over plain HTTP httptest server; Secure/HttpOnly intentionally omitted
+			http.SetCookie(w, &http.Cookie{Name: "session_id", Value: testTokenABC123, Path: "/"})
+			//nolint:gosec // test cookie over plain HTTP httptest server; Secure/HttpOnly intentionally omitted
 			http.SetCookie(w, &http.Cookie{Name: "csrf_token", Value: "xyz789", Path: "/"})
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{}`))
@@ -324,11 +326,11 @@ func TestRestAuth_SessionCookieForward(t *testing.T) {
 	defer srv.Close()
 
 	auth := NewRestAuth(AuthConfig{
-		Type: "session",
+		Type: authTypeSession,
 		Login: &SessionLogin{
 			Path:   "/login",
-			Method: "POST",
-			Body:   map[string]string{"user": "admin"},
+			Method: httpMethodPOST,
+			Body:   map[string]string{"user": testAccessAdmin},
 		},
 	}, srv.URL, &realMockCreds{}, newQuietLogger())
 
@@ -339,7 +341,7 @@ func TestRestAuth_SessionCookieForward(t *testing.T) {
 	}
 
 	// Trigger login via InjectAuth.
-	req, _ := http.NewRequestWithContext(context.Background(), "GET", srv.URL+"/api/data", nil)
+	req, _ := http.NewRequestWithContext(context.Background(), httpMethodGET, srv.URL+"/api/data", nil)
 	if err := auth.InjectAuth(context.Background(), req); err != nil {
 		t.Fatal(err)
 	}
@@ -359,7 +361,7 @@ func TestRestAuth_SessionCookieForward(t *testing.T) {
 	for _, c := range cookies {
 		cookieMap[c.Name] = c.Value
 	}
-	if cookieMap["session_id"] != "abc123" {
+	if cookieMap["session_id"] != testTokenABC123 {
 		t.Errorf("session_id = %q, want abc123", cookieMap["session_id"])
 	}
 	if cookieMap["csrf_token"] != "xyz789" {
@@ -371,6 +373,7 @@ func TestRestAuth_SessionCookieForward_ResetOnReLogin(t *testing.T) {
 	loginCount := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		loginCount++
+		//nolint:gosec // test cookie over plain HTTP httptest server; Secure/HttpOnly intentionally omitted
 		http.SetCookie(w, &http.Cookie{
 			Name:  "sid",
 			Value: "session-" + strings.Repeat("x", loginCount),
@@ -382,17 +385,17 @@ func TestRestAuth_SessionCookieForward_ResetOnReLogin(t *testing.T) {
 	defer srv.Close()
 
 	auth := NewRestAuth(AuthConfig{
-		Type: "session",
+		Type: authTypeSession,
 		Login: &SessionLogin{
 			Path:   "/",
-			Method: "POST",
+			Method: httpMethodPOST,
 			Body:   map[string]string{},
 		},
-		Refresh: &RefreshConfig{Action: "re_login"},
+		Refresh: &RefreshConfig{Action: sessionRefreshLogin},
 	}, srv.URL, &realMockCreds{}, newQuietLogger())
 
 	// First login.
-	req, _ := http.NewRequestWithContext(context.Background(), "GET", srv.URL+"/", nil)
+	req, _ := http.NewRequestWithContext(context.Background(), httpMethodGET, srv.URL+"/", nil)
 	if err := auth.InjectAuth(context.Background(), req); err != nil {
 		t.Fatal(err)
 	}
@@ -417,7 +420,7 @@ func TestRestAuth_SessionCookieForward_ResetOnReLogin(t *testing.T) {
 
 func TestRestAuth_CookieJar_NilForNonSession(t *testing.T) {
 	auth := NewRestAuth(AuthConfig{
-		Type:       "bearer",
+		Type:       authTypeBearer,
 		Credential: "tok",
 	}, "http://example.com", &realMockCreds{}, newQuietLogger())
 

@@ -44,7 +44,7 @@ type mockToolBackend struct {
 }
 
 func (m *mockToolBackend) Execute(_ context.Context, _ string, _ map[string]any) (*backend.ToolResult, error) {
-	return &backend.ToolResult{Content: []any{map[string]any{"type": "text", "text": "ok"}}}, nil
+	return &backend.ToolResult{Content: []any{map[string]any{contentKeyType: contentKeyText, contentKeyText: "ok"}}}, nil
 }
 
 func (m *mockToolBackend) ListTools(_ context.Context) ([]backend.ToolDescriptor, error) {
@@ -95,7 +95,7 @@ func TestListTools_InvalidRegex(t *testing.T) {
 	h := newHandlerWithTools(t, nil)
 	ctx := userctx.WithUserContext(context.Background(), &userctx.UserContext{UserID: "u1", Authenticated: true})
 
-	result, err := h.HandleToolCall(ctx, "discover_tools", map[string]any{"pattern": "[invalid"})
+	result, err := h.HandleToolCall(ctx, "discover_tools", map[string]any{argNamePattern: "[invalid"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -106,10 +106,10 @@ func TestListTools_InvalidRegex(t *testing.T) {
 
 func TestListTools_FilterByName(t *testing.T) {
 	tools := []backend.ToolDescriptor{
-		{Name: "github_list_issues", Description: "List issues"},
-		{Name: "github_create_pull", Description: "Create a pull request"},
-		{Name: "vikunja_list_tasks", Description: "List tasks"},
-		{Name: "vikunja_create_task", Description: "Create a task"},
+		{Name: testToolGithubListIss, Description: "List issues"},
+		{Name: testToolGithubCreatePR, Description: "Create a pull request"},
+		{Name: testToolVikunjaList, Description: "List tasks"},
+		{Name: testToolVikunjaCreate, Description: "Create a task"},
 	}
 	h := newHandlerWithTools(t, tools)
 	ctx := userctx.WithUserContext(context.Background(), &userctx.UserContext{UserID: "u1", Authenticated: true})
@@ -121,18 +121,18 @@ func TestListTools_FilterByName(t *testing.T) {
 	}{
 		{
 			name:      "filter by backend prefix",
-			pattern:   "github",
-			wantNames: []string{"github_list_issues", "github_create_pull"},
+			pattern:   testBackendNameGitHub,
+			wantNames: []string{testToolGithubListIss, testToolGithubCreatePR},
 		},
 		{
 			name:      "filter by tool name substring",
 			pattern:   "pull",
-			wantNames: []string{"github_create_pull"},
+			wantNames: []string{testToolGithubCreatePR},
 		},
 		{
 			name:      "match all",
 			pattern:   ".*",
-			wantNames: []string{"github_list_issues", "github_create_pull", "vikunja_list_tasks", "vikunja_create_task"},
+			wantNames: []string{testToolGithubListIss, testToolGithubCreatePR, testToolVikunjaList, testToolVikunjaCreate},
 		},
 		{
 			name:      "no matches",
@@ -142,13 +142,13 @@ func TestListTools_FilterByName(t *testing.T) {
 		{
 			name:      "case insensitive",
 			pattern:   "GITHUB",
-			wantNames: []string{"github_list_issues", "github_create_pull"},
+			wantNames: []string{testToolGithubListIss, testToolGithubCreatePR},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result, err := h.HandleToolCall(ctx, "discover_tools", map[string]any{"pattern": tt.pattern})
+			result, err := h.HandleToolCall(ctx, "discover_tools", map[string]any{argNamePattern: tt.pattern})
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -164,7 +164,7 @@ func TestListTools_FilterByName(t *testing.T) {
 			}
 
 			// Verify excluded tools are not present
-			allNames := []string{"github_list_issues", "github_create_pull", "vikunja_list_tasks", "vikunja_create_task"}
+			allNames := []string{testToolGithubListIss, testToolGithubCreatePR, testToolVikunjaList, testToolVikunjaCreate}
 			for _, name := range allNames {
 				if contains(tt.wantNames, name) {
 					continue
@@ -179,20 +179,20 @@ func TestListTools_FilterByName(t *testing.T) {
 
 func TestListTools_MatchesDescription(t *testing.T) {
 	tools := []backend.ToolDescriptor{
-		{Name: "github_list_issues", Description: "List issues for a repository"},
-		{Name: "vikunja_create_task", Description: "Create a new task in a project"},
+		{Name: testToolGithubListIss, Description: "List issues for a repository"},
+		{Name: testToolVikunjaCreate, Description: "Create a new task in a project"},
 	}
 	h := newHandlerWithTools(t, tools)
 	ctx := userctx.WithUserContext(context.Background(), &userctx.UserContext{UserID: "u1", Authenticated: true})
 
 	// "repository" only appears in the description of github_list_issues
-	result, err := h.HandleToolCall(ctx, "discover_tools", map[string]any{"pattern": "repository"})
+	result, err := h.HandleToolCall(ctx, "discover_tools", map[string]any{argNamePattern: "repository"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
 	text := extractText(t, result)
-	if !strings.Contains(text, "github_list_issues") {
+	if !strings.Contains(text, testToolGithubListIss) {
 		t.Error("expected github_list_issues to match via description")
 	}
 	if strings.Contains(text, "function vikunja_create_task(") {
@@ -213,7 +213,7 @@ func TestBuildToolList_PatternInSchema(t *testing.T) {
 
 	var discoverTool *ToolDefinition
 	for i := range tools {
-		if tools[i].Name == "discover_tools" {
+		if tools[i].Name == toolDiscoverTools {
 			discoverTool = &tools[i]
 			break
 		}
@@ -222,16 +222,16 @@ func TestBuildToolList_PatternInSchema(t *testing.T) {
 		t.Fatal("discover_tools not found in tool list")
 	}
 
-	props, ok := discoverTool.InputSchema["properties"].(map[string]any)
+	props, ok := discoverTool.InputSchema[schemaKeyProperties].(map[string]any)
 	if !ok {
 		t.Fatal("expected properties in input schema")
 	}
-	if _, ok := props["pattern"]; !ok {
+	if _, ok := props[argNamePattern]; !ok {
 		t.Error("expected 'pattern' property in discover_tools schema")
 	}
 
 	// pattern must NOT appear in required — it has a sensible default (".*").
-	if required, present := discoverTool.InputSchema["required"]; present {
+	if required, present := discoverTool.InputSchema[schemaKeyRequired]; present {
 		if list, ok := required.([]string); ok && len(list) > 0 {
 			t.Errorf("discover_tools must not list any required fields (pattern has a default), got %v", list)
 		}
@@ -247,7 +247,7 @@ func extractText(t *testing.T, result *backend.ToolResult) string {
 	if !ok {
 		t.Fatal("unexpected content type")
 	}
-	text, ok := item["text"].(string)
+	text, ok := item[contentKeyText].(string)
 	if !ok {
 		t.Fatal("missing text in content")
 	}

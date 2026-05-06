@@ -121,7 +121,7 @@ func NewMCPAdapter(configPath string, creds credentials.CredentialStore, logger 
 			continue
 		}
 		// Skip REST Proxy backends — they are handled by RESTAdapter, not MCPAdapter
-		if entry.Transport == "rest" {
+		if entry.Transport == transportTypeREST {
 			continue
 		}
 		adapter.backends[entry.Name] = &backendConn{
@@ -187,7 +187,7 @@ func (a *MCPAdapter) connectBackend(ctx context.Context, name string, conn *back
 
 func (a *MCPAdapter) createTransport(ctx context.Context, entry BackendEntry) (mcp.Transport, error) {
 	switch entry.Transport {
-	case "http":
+	case transportTypeHTTP:
 		return a.createHTTPTransport(ctx, entry)
 	case "stdio":
 		return a.createSTDIOTransport(ctx, entry)
@@ -372,8 +372,8 @@ func (a *MCPAdapter) Execute(ctx context.Context, toolName string, params map[st
 		Content: content,
 		IsError: result.IsError,
 		Metadata: map[string]any{
-			"backend":   backendName,
-			"transport": conn.entry.Transport,
+			metadataKeyBackend:   backendName,
+			metadataKeyTransport: conn.entry.Transport,
 		},
 	}, nil
 }
@@ -546,11 +546,11 @@ func (a *MCPAdapter) matchBackend(toolName string) (name, realTool string, conn 
 func contentToMap(c mcp.Content) map[string]any {
 	data, err := json.Marshal(c)
 	if err != nil {
-		return map[string]any{"type": "text", "text": fmt.Sprintf("[marshal error: %s]", err)}
+		return map[string]any{schemaKeyType: contentTypeText, contentTypeText: fmt.Sprintf("[marshal error: %s]", err)}
 	}
 	var m map[string]any
 	if err := json.Unmarshal(data, &m); err != nil {
-		return map[string]any{"type": "text", "text": string(data)}
+		return map[string]any{schemaKeyType: contentTypeText, contentTypeText: string(data)}
 	}
 	return m
 }

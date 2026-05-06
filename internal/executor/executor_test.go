@@ -41,7 +41,7 @@ func (m *mockBackend) Execute(ctx context.Context, toolName string, params map[s
 		return m.executeFunc(ctx, toolName, params)
 	}
 	return &backend.ToolResult{
-		Content: []any{map[string]any{"type": "text", "text": "ok"}},
+		Content: []any{map[string]any{contentKeyType: contentKeyText, contentKeyText: "ok"}},
 	}, nil
 }
 
@@ -70,7 +70,7 @@ func TestExecuteTool_Success(t *testing.T) {
 	})
 
 	result, err := exec.ExecuteTool(ctx, ExecuteToolRequest{
-		ToolName: "test:tool",
+		ToolName: testToolDirect,
 		Params:   map[string]any{"key": "value"},
 	})
 	if err != nil {
@@ -97,7 +97,7 @@ func TestExecuteTool_NoUserContext(t *testing.T) {
 	exec := New(nil, nil, mb, nil, nil, 120*time.Second, logger, nil, nil)
 
 	_, err := exec.ExecuteTool(context.Background(), ExecuteToolRequest{
-		ToolName: "test:tool",
+		ToolName: testToolDirect,
 	})
 	if err == nil {
 		t.Fatal("expected error for missing user context, got nil")
@@ -120,7 +120,7 @@ func TestExecuteTool_BackendError(t *testing.T) {
 	})
 
 	_, err := exec.ExecuteTool(ctx, ExecuteToolRequest{
-		ToolName: "test:tool",
+		ToolName: testToolDirect,
 	})
 	if err == nil {
 		t.Fatal("expected error from backend, got nil")
@@ -152,7 +152,7 @@ func TestExecuteTool_GateRejects(t *testing.T) {
 	})
 
 	result, err := exec.ExecuteTool(ctx, ExecuteToolRequest{
-		ToolName: "test:tool",
+		ToolName: testToolDirect,
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -186,7 +186,7 @@ func TestExecuteTool_GatePasses(t *testing.T) {
 	})
 
 	result, err := exec.ExecuteTool(ctx, ExecuteToolRequest{
-		ToolName: "test:tool",
+		ToolName: testToolDirect,
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -202,7 +202,7 @@ func TestExecuteTool_PreGateBlocksBeforeBackend(t *testing.T) {
 		executeFunc: func(_ context.Context, _ string, _ map[string]any) (*backend.ToolResult, error) {
 			backendCalled = true
 			return &backend.ToolResult{
-				Content: []any{map[string]any{"type": "text", "text": "ok"}},
+				Content: []any{map[string]any{contentKeyType: contentKeyText, contentKeyText: "ok"}},
 			}, nil
 		},
 	}
@@ -266,7 +266,7 @@ func TestExecuteTool_PostGateFiltersResponse(t *testing.T) {
 	mb := &mockBackend{
 		executeFunc: func(_ context.Context, _ string, _ map[string]any) (*backend.ToolResult, error) {
 			return &backend.ToolResult{
-				Content: []any{map[string]any{"type": "text", "text": "sensitive data here"}},
+				Content: []any{map[string]any{contentKeyType: contentKeyText, contentKeyText: "sensitive data here"}},
 			}, nil
 		},
 	}
@@ -307,8 +307,8 @@ func TestExecuteTool_BackendResultWithExistingMetadata(t *testing.T) {
 	mb := &mockBackend{
 		executeFunc: func(_ context.Context, _ string, _ map[string]any) (*backend.ToolResult, error) {
 			return &backend.ToolResult{
-				Content:  []any{map[string]any{"type": "text", "text": "ok"}},
-				Metadata: map[string]any{"backend": "test"},
+				Content:  []any{map[string]any{contentKeyType: contentKeyText, contentKeyText: "ok"}},
+				Metadata: map[string]any{"backend": testToolBaseName},
 			}, nil
 		},
 	}
@@ -321,13 +321,13 @@ func TestExecuteTool_BackendResultWithExistingMetadata(t *testing.T) {
 		Authenticated: true,
 	})
 
-	result, err := exec.ExecuteTool(ctx, ExecuteToolRequest{ToolName: "test:tool"})
+	result, err := exec.ExecuteTool(ctx, ExecuteToolRequest{ToolName: testToolDirect})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
 	// Should preserve existing metadata and add latencyMs + user
-	if result.Metadata["backend"] != "test" {
+	if result.Metadata["backend"] != testToolBaseName {
 		t.Error("expected existing metadata to be preserved")
 	}
 	if result.Metadata["user"] != testUserID {
@@ -351,7 +351,7 @@ func TestCallerCredentialDurchstich(t *testing.T) {
 		executeFunc: func(ctx context.Context, toolName string, params map[string]any) (*backend.ToolResult, error) {
 			receivedCreds = credentials.CredentialsFromContext(ctx)
 			return &backend.ToolResult{
-				Content: []any{map[string]any{"type": "text", "text": "executed " + toolName}},
+				Content: []any{map[string]any{contentKeyType: contentKeyText, contentKeyText: "executed " + toolName}},
 			}, nil
 		},
 	}
@@ -407,15 +407,15 @@ func TestCallerCredentialDurchstich(t *testing.T) {
 		},
 		{
 			name:        "untrusted caller blocked on destructive tool by pre-gate",
-			callerID:    "anonymous",
-			callerClass: "untrusted",
+			callerID:    testUserAnonymous,
+			callerClass: testCallerUntrusted,
 			tool:        "github_delete_repo",
 			wantError:   true,
 		},
 		{
 			name:        "untrusted caller allowed on read tool",
-			callerID:    "anonymous",
-			callerClass: "untrusted",
+			callerID:    testUserAnonymous,
+			callerClass: testCallerUntrusted,
 			tool:        "github_get_repo",
 			wantError:   false,
 			wantCount:   2,
@@ -446,7 +446,7 @@ func TestCallerCredentialDurchstich(t *testing.T) {
 
 			req := ExecuteToolRequest{
 				ToolName: tt.tool,
-				Params:   map[string]any{"repo": "test"},
+				Params:   map[string]any{"repo": testToolBaseName},
 			}
 
 			result, err := exec.ExecuteTool(ctx, req)
@@ -495,7 +495,7 @@ func TestCallerCredentialDurchstich_PostGateWithCallerClass(t *testing.T) {
 	mb := &mockBackend{
 		executeFunc: func(_ context.Context, _ string, _ map[string]any) (*backend.ToolResult, error) {
 			return &backend.ToolResult{
-				Content: []any{map[string]any{"type": "text", "text": "secret internal data"}},
+				Content: []any{map[string]any{contentKeyType: contentKeyText, contentKeyText: "secret internal data"}},
 			}, nil
 		},
 	}
@@ -533,8 +533,8 @@ func TestCallerCredentialDurchstich_PostGateWithCallerClass(t *testing.T) {
 	ctx = userctx.WithUserContext(context.Background(), &userctx.UserContext{
 		UserID:        "user-2",
 		Authenticated: true,
-		CallerID:      "anonymous",
-		CallerClass:   "untrusted",
+		CallerID:      testUserAnonymous,
+		CallerClass:   testCallerUntrusted,
 	})
 	result, err = exec.ExecuteTool(ctx, ExecuteToolRequest{ToolName: "internal_data"})
 	if err != nil {

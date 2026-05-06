@@ -61,7 +61,23 @@ func (r *resettableJar) Reset() {
 	r.jar, _ = cookiejar.New(nil)
 }
 
-const authTypeSession = "session"
+// AuthConfig.Type values.
+const (
+	authTypeBearer  = "bearer"
+	authTypeBasic   = "basic"
+	authTypeAPIKey  = "apikey"
+	authTypeOAuth2  = "oauth2"
+	authTypeSession = "session"
+)
+
+// Common HTTP header names and OAuth2 / API-key auth literals.
+const (
+	headerAuthorization = "Authorization"
+	headerXAPIKey       = "X-API-Key" //nolint:gosec // header name, not a credential
+	authInjectQuery     = "query"
+	oauth2GrantType     = "client_credentials" //nolint:gosec // OAuth2 grant_type value, not a credential
+	sessionRefreshLogin = "re_login"
+)
 
 // RestAuth manages authentication token lifecycle for REST API calls.
 type RestAuth struct {
@@ -114,13 +130,13 @@ func (a *RestAuth) CookieJar() http.CookieJar {
 // InjectAuth adds authentication credentials to an HTTP request.
 func (a *RestAuth) InjectAuth(ctx context.Context, req *http.Request) error {
 	switch a.config.Type {
-	case "bearer":
+	case authTypeBearer:
 		return a.injectBearer(ctx, req)
-	case "basic":
+	case authTypeBasic:
 		return a.injectBasic(ctx, req)
-	case "apikey":
+	case authTypeAPIKey:
 		return a.injectAPIKey(ctx, req)
-	case "oauth2":
+	case authTypeOAuth2:
 		return a.injectOAuth2(ctx, req)
 	case authTypeSession:
 		return a.injectSession(ctx, req)
@@ -134,7 +150,7 @@ func (a *RestAuth) InjectAuth(ctx context.Context, req *http.Request) error {
 // HandleUnauthorized is called when a 401 response is received.
 // For session auth, it triggers re-login.
 func (a *RestAuth) HandleUnauthorized(ctx context.Context) error {
-	if a.config.Type == authTypeSession && a.config.Refresh != nil && a.config.Refresh.Action == "re_login" {
+	if a.config.Type == authTypeSession && a.config.Refresh != nil && a.config.Refresh.Action == sessionRefreshLogin {
 		a.mu.Lock()
 		a.sessionTokens = make(map[string]string)
 		a.mu.Unlock()
@@ -143,7 +159,7 @@ func (a *RestAuth) HandleUnauthorized(ctx context.Context) error {
 		}
 		return a.doSessionLogin(ctx)
 	}
-	if a.config.Type == "oauth2" {
+	if a.config.Type == authTypeOAuth2 {
 		a.mu.Lock()
 		a.cachedToken = ""
 		a.tokenExpiry = time.Time{}
@@ -165,7 +181,7 @@ func (a *RestAuth) injectBearer(ctx context.Context, req *http.Request) error {
 
 	headerName := a.config.HeaderName
 	if headerName == "" {
-		headerName = "Authorization"
+		headerName = headerAuthorization
 	}
 	prefix := a.config.Prefix
 	if prefix == "" {
@@ -198,7 +214,7 @@ func (a *RestAuth) injectBasic(ctx context.Context, req *http.Request) error {
 	}
 
 	encoded := base64.StdEncoding.EncodeToString([]byte(username + ":" + password))
-	req.Header.Set("Authorization", "Basic "+encoded)
+	req.Header.Set(headerAuthorization, "Basic "+encoded)
 	return nil
 }
 
@@ -212,14 +228,14 @@ func (a *RestAuth) injectAPIKey(ctx context.Context, req *http.Request) error {
 		return fmt.Errorf("get apikey credential %q: %w", a.config.Credential, err)
 	}
 
-	if a.config.InjectInto == "query" {
+	if a.config.InjectInto == authInjectQuery {
 		q := req.URL.Query()
 		q.Set(a.config.QueryParam, key)
 		req.URL.RawQuery = q.Encode()
 	} else {
 		headerName := a.config.HeaderName
 		if headerName == "" {
-			headerName = "X-API-Key"
+			headerName = headerXAPIKey
 		}
 		prefix := a.config.Prefix
 		req.Header.Set(headerName, prefix+key)
@@ -236,7 +252,7 @@ func (a *RestAuth) injectOAuth2(ctx context.Context, req *http.Request) error {
 		a.logger.InfoContext(ctx, "oauth2 credentials not found, skipping auth header")
 		return nil
 	}
-	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set(headerAuthorization, "Bearer "+token)
 	return nil
 }
 
@@ -267,7 +283,7 @@ func (a *RestAuth) getOAuth2Token(ctx context.Context) (string, error) {
 	}
 
 	data := url.Values{
-		"grant_type":    {"client_credentials"},
+		"grant_type":    {oauth2GrantType},
 		"client_id":     {clientID},
 		"client_secret": {clientSecret},
 	}

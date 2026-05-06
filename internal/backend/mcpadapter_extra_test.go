@@ -62,11 +62,11 @@ func TestMCPAdapter_BackendSummaries_WithBackends(t *testing.T) {
 func TestMCPAdapter_MatchBackend(t *testing.T) {
 	a := &MCPAdapter{
 		backends: map[string]*backendConn{
-			"github": {entry: BackendEntry{Name: "github"}},
+			testBackendNameGitHub: {entry: BackendEntry{Name: testBackendNameGitHub}},
 		},
 	}
 	name, tool, conn := a.matchBackend("github_create_issue")
-	if name != "github" || tool != "create_issue" || conn == nil {
+	if name != testBackendNameGitHub || tool != "create_issue" || conn == nil {
 		t.Errorf("match failed: %s %s %v", name, tool, conn)
 	}
 
@@ -92,7 +92,7 @@ func TestMCPAdapter_RegisterTools_Extra(t *testing.T) {
 func TestBearerTransport_RoundTrip(t *testing.T) {
 	var gotAuth string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotAuth = r.Header.Get("Authorization")
+		gotAuth = r.Header.Get(testHeaderAuth)
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
@@ -182,8 +182,8 @@ func TestMCPAdapter_HTTPTransport_BuiltWithAPIKey(t *testing.T) {
 		creds:  credentials.NewEmbeddedStore(),
 	}
 	_, err := a.createHTTPTransport(context.Background(), BackendEntry{
-		Transport: "http",
-		URL:       "https://example.com/mcp",
+		Transport: transportTypeHTTP,
+		URL:       testMCPURLExample,
 		APIKeyEnv: "MY_KEY",
 	})
 	if err != nil {
@@ -207,7 +207,7 @@ func TestMCPAdapter_HTTPTransport_SSE(t *testing.T) {
 func TestMCPAdapter_HTTPTransport_MissingCredential(t *testing.T) {
 	a := &MCPAdapter{logger: slog.Default(), creds: credentials.NewEmbeddedStore()}
 	_, err := a.createHTTPTransport(context.Background(), BackendEntry{
-		URL:       "https://example.com/mcp",
+		URL:       testMCPURLExample,
 		APIKeyEnv: "NONEXISTENT_KEY_XYZ",
 	})
 	if err == nil {
@@ -252,11 +252,11 @@ func TestMCPAdapter_ReconnectBackend_ClosesOldSession(t *testing.T) {
 	ctx := context.Background()
 
 	// Create a real in-memory MCP session so we have a non-nil session to close.
-	server := mcp.NewServer(&mcp.Implementation{Name: "srv", Version: "0.1"}, nil)
+	server := mcp.NewServer(&mcp.Implementation{Name: "srv", Version: testVersion01}, nil)
 	ct, st := mcp.NewInMemoryTransports()
 	go server.Connect(ctx, st, nil) //nolint:errcheck
 
-	client := mcp.NewClient(&mcp.Implementation{Name: "tm", Version: "0.1"}, nil)
+	client := mcp.NewClient(&mcp.Implementation{Name: "tm", Version: testVersion01}, nil)
 	session, err := client.Connect(ctx, ct, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -264,10 +264,10 @@ func TestMCPAdapter_ReconnectBackend_ClosesOldSession(t *testing.T) {
 
 	adapter := &MCPAdapter{
 		backends: map[string]*backendConn{
-			"test": {
+			testBackendNameTest: {
 				entry: BackendEntry{
-					Name:      "test",
-					Transport: "http",
+					Name:      testBackendNameTest,
+					Transport: transportTypeHTTP,
 					URL:       "https://192.0.2.1/mcp", // unroutable, connect will fail
 				},
 				session: session,
@@ -281,12 +281,12 @@ func TestMCPAdapter_ReconnectBackend_ClosesOldSession(t *testing.T) {
 	// reconnectBackend should close the old session and attempt a new connection.
 	// The new connection will fail (unroutable URL), but the old session should
 	// be nil'd out, proving the stale session was cleaned up.
-	err = adapter.reconnectBackend(ctx, "test")
+	err = adapter.reconnectBackend(ctx, testBackendNameTest)
 	if err == nil {
 		t.Fatal("expected error from unroutable URL, got nil")
 	}
 
-	if adapter.backends["test"].session != nil {
+	if adapter.backends[testBackendNameTest].session != nil {
 		t.Error("expected old session to be nil after failed reconnect")
 	}
 }

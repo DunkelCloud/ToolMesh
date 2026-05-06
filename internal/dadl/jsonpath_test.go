@@ -22,12 +22,12 @@ import (
 func TestJSONPath_Extract(t *testing.T) {
 	data := map[string]any{
 		"data": []any{
-			map[string]any{"id": float64(1), "name": "first"},
-			map[string]any{"id": float64(2), "name": "second"},
-			map[string]any{"id": float64(3), "name": "third"},
+			map[string]any{"id": float64(1), testFieldName: "first"},
+			map[string]any{"id": float64(2), testFieldName: "second"},
+			map[string]any{"id": float64(3), testFieldName: "third"},
 		},
 		"meta": map[string]any{
-			"next_cursor": "abc123",
+			"next_cursor": testTokenABC123,
 			"total":       float64(100),
 		},
 		"message": "success",
@@ -39,8 +39,8 @@ func TestJSONPath_Extract(t *testing.T) {
 		want    any
 		wantErr bool
 	}{
-		{name: "simple field", expr: "$.message", want: "success"},
-		{name: "nested field", expr: "$.meta.next_cursor", want: "abc123"},
+		{name: "simple field", expr: testJSONPathMessage, want: "success"},
+		{name: "nested field", expr: "$.meta.next_cursor", want: testTokenABC123},
 		{name: "nested number", expr: "$.meta.total", want: float64(100)},
 		{name: "array first", expr: "$.data[0].name", want: "first"},
 		{name: "array last", expr: "$.data[-1].name", want: "third"},

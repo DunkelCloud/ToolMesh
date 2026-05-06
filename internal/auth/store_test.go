@@ -25,8 +25,16 @@ import (
 )
 
 const (
-	testUserAdmin = "admin"
-	testPlanPro   = "pro"
+	testUserAdmin       = "admin"
+	testPlanPro         = "pro"
+	testPlanFree        = "free"
+	testUser1           = "user1"
+	testCompany1        = "company1"
+	testScopeClaudeAI   = "claudeai"
+	testCompanyDunkel   = "dunkelcloud"
+	testRedirectExample = "https://example.com/callback"
+	testTokenSec        = "sec" //nolint:gosec // test fixture, not a real credential
+	testTokenABC        = "abc" //nolint:gosec // test fixture, not a real credential
 )
 
 //nolint:unparam // miniredis returned for callers that need direct Redis access
@@ -45,7 +53,7 @@ func TestRedisTokenStore_Client(t *testing.T) {
 	client := &OAuthClient{
 		ClientID:     "test-client",
 		ClientSecret: "test-secret",
-		RedirectURIs: []string{"https://example.com/callback"},
+		RedirectURIs: []string{testRedirectExample},
 		CreatedAt:    time.Now().Truncate(time.Second),
 	}
 
@@ -63,7 +71,7 @@ func TestRedisTokenStore_Client(t *testing.T) {
 	if got.ClientSecret != client.ClientSecret {
 		t.Errorf("ClientSecret = %q, want %q", got.ClientSecret, client.ClientSecret)
 	}
-	if len(got.RedirectURIs) != 1 || got.RedirectURIs[0] != "https://example.com/callback" {
+	if len(got.RedirectURIs) != 1 || got.RedirectURIs[0] != testRedirectExample {
 		t.Errorf("RedirectURIs = %v", got.RedirectURIs)
 	}
 
@@ -81,11 +89,11 @@ func TestRedisTokenStore_AuthCode(t *testing.T) {
 	ac := &AuthCode{
 		Code:          "test-code",
 		ClientID:      "c1",
-		RedirectURI:   "https://example.com/callback",
+		RedirectURI:   testRedirectExample,
 		CodeChallenge: "challenge",
-		Scope:         "claudeai",
+		Scope:         testScopeClaudeAI,
 		UserID:        testUserAdmin,
-		CompanyID:     "dunkelcloud",
+		CompanyID:     testCompanyDunkel,
 		Plan:          testPlanPro,
 		Roles:         []string{testUserAdmin},
 		ExpiresAt:     time.Now().Add(5 * time.Minute),
@@ -126,10 +134,10 @@ func TestRedisTokenStore_Token(t *testing.T) {
 		RefreshToken: "rt-123",
 		ClientID:     "c1",
 		UserID:       testUserAdmin,
-		CompanyID:    "dunkelcloud",
+		CompanyID:    testCompanyDunkel,
 		Plan:         testPlanPro,
 		Roles:        []string{testUserAdmin},
-		Scope:        "claudeai",
+		Scope:        testScopeClaudeAI,
 		ExpiresAt:    time.Now().Add(time.Hour),
 	}
 
@@ -147,8 +155,8 @@ func TestRedisTokenStore_Token(t *testing.T) {
 	if got.UserID != testUserAdmin {
 		t.Errorf("UserID = %q, want %q", got.UserID, testUserAdmin)
 	}
-	if got.CompanyID != "dunkelcloud" {
-		t.Errorf("CompanyID = %q, want %q", got.CompanyID, "dunkelcloud")
+	if got.CompanyID != testCompanyDunkel {
+		t.Errorf("CompanyID = %q, want %q", got.CompanyID, testCompanyDunkel)
 	}
 	if got.Plan != testPlanPro {
 		t.Errorf("Plan = %q, want %q", got.Plan, testPlanPro)
@@ -174,9 +182,9 @@ func TestRedisTokenStore_RefreshToken(t *testing.T) {
 		ClientID:     "c1",
 		UserID:       "demo",
 		CompanyID:    "demo-corp",
-		Plan:         "free",
+		Plan:         testPlanFree,
 		Roles:        []string{"viewer"},
-		Scope:        "claudeai",
+		Scope:        testScopeClaudeAI,
 		ExpiresAt:    time.Now().Add(time.Hour),
 	}
 
@@ -214,10 +222,10 @@ func TestRedisTokenStore_Persistence(t *testing.T) {
 		RefreshToken: "persistent-refresh",
 		ClientID:     "c1",
 		UserID:       testUserAdmin,
-		CompanyID:    "dunkelcloud",
+		CompanyID:    testCompanyDunkel,
 		Plan:         testPlanPro,
 		Roles:        []string{testUserAdmin},
-		Scope:        "claudeai",
+		Scope:        testScopeClaudeAI,
 		ExpiresAt:    time.Now().Add(time.Hour),
 	}
 

@@ -29,31 +29,31 @@ func TestGenerateTypeScript(t *testing.T) {
 			Description: "Test API service",
 			Tools: map[string]ToolDef{
 				"get_item": {
-					Method:      "GET",
+					Method:      httpMethodGET,
 					Path:        "/items/{id}",
 					Description: "Get a single item by ID",
 					Params: map[string]ParamDef{
-						"id": {Type: "integer", In: "path", Required: true},
+						"id": {Type: jsTypeInteger, In: "path", Required: true},
 					},
 				},
 				"list_items": {
-					Method:      "GET",
+					Method:      httpMethodGET,
 					Path:        "/items",
 					Description: "List all items with optional filtering",
 					Params: map[string]ParamDef{
-						"page":     {Type: "integer", In: "query"},
-						"per_page": {Type: "integer", In: "query"},
-						"search":   {Type: "string", In: "query"},
+						paginationStrategyPage: {Type: jsTypeInteger, In: authInjectQuery},
+						"per_page":             {Type: jsTypeInteger, In: authInjectQuery},
+						"search":               {Type: jsTypeString, In: authInjectQuery},
 					},
 				},
 				"create_item": {
-					Method:      "POST",
+					Method:      httpMethodPOST,
 					Path:        "/items",
 					Description: "Create a new item",
 					Params: map[string]ParamDef{
-						"name":   {Type: "string", In: "body", Required: true},
-						"tags":   {Type: "array", In: "body"},
-						"active": {Type: "boolean", In: "body"},
+						"name":   {Type: jsTypeString, In: testParamBody, Required: true},
+						"tags":   {Type: jsTypeArray, In: testParamBody},
+						"active": {Type: jsTypeBoolean, In: testParamBody},
 					},
 				},
 			},
@@ -108,12 +108,12 @@ func TestDadlTypeToTS(t *testing.T) {
 		dadl string
 		want string
 	}{
-		{"string", "string"},
-		{"integer", "number"},
-		{"number", "number"},
-		{"boolean", "boolean"},
-		{"array", "any[]"},
-		{"object", "Record<string, any>"},
+		{jsTypeString, jsTypeString},
+		{jsTypeInteger, jsTypeNumber},
+		{jsTypeNumber, jsTypeNumber},
+		{jsTypeBoolean, jsTypeBoolean},
+		{jsTypeArray, "any[]"},
+		{jsTypeObject, "Record<string, any>"},
 		{"unknown", "any"},
 	}
 	for _, tt := range tests {

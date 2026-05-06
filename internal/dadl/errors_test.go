@@ -21,8 +21,8 @@ import (
 
 func TestErrorMapper_CheckResponse(t *testing.T) {
 	m := NewErrorMapper(ErrorConfig{
-		Format:      "json",
-		MessagePath: "$.message",
+		Format:      testJSONFormat,
+		MessagePath: testJSONPathMessage,
 		RetryOn:     []int{429, 502, 503},
 		Terminal:    []int{400, 404},
 	})

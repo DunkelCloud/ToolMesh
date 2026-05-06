@@ -27,12 +27,12 @@ func TestGenerateToolDefinitions(t *testing.T) {
 			Name:        "search",
 			Description: "Search for things",
 			InputSchema: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"query": map[string]any{"type": "string"},
-					"limit": map[string]any{"type": "integer"},
+				contentKeyType: jsonTypeObject,
+				schemaKeyProperties: map[string]any{
+					paramInQuery:   map[string]any{contentKeyType: jsonTypeString},
+					testParamLimit: map[string]any{contentKeyType: jsonTypeInteger},
 				},
-				"required": []any{"query"},
+				schemaKeyRequired: []any{paramInQuery},
 			},
 		},
 		{
@@ -65,12 +65,12 @@ func TestSchemaToTypeScript_RequiredStringSlice(t *testing.T) {
 	// but schemaToTypeScript only handled []any. This caused all params to
 	// appear optional in discover_tools output.
 	schema := map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"query": map[string]any{"type": "string"},
-			"limit": map[string]any{"type": "integer"},
+		contentKeyType: jsonTypeObject,
+		schemaKeyProperties: map[string]any{
+			paramInQuery:   map[string]any{contentKeyType: jsonTypeString},
+			testParamLimit: map[string]any{contentKeyType: jsonTypeInteger},
 		},
-		"required": []string{"query"},
+		schemaKeyRequired: []string{paramInQuery},
 	}
 
 	got := schemaToTypeScript(schema)
@@ -88,13 +88,13 @@ func TestSchemaToTypeScript_RequiredStringSlice(t *testing.T) {
 
 func TestSchemaToTypeScript_RequiredAnySlice(t *testing.T) {
 	schema := map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"page":  map[string]any{"type": "string"},
-			"text":  map[string]any{"type": "string"},
-			"minor": map[string]any{"type": "boolean"},
+		contentKeyType: jsonTypeObject,
+		schemaKeyProperties: map[string]any{
+			"page":         map[string]any{contentKeyType: jsonTypeString},
+			contentKeyText: map[string]any{contentKeyType: jsonTypeString},
+			"minor":        map[string]any{contentKeyType: jsonTypeBoolean},
 		},
-		"required": []any{"page", "text"},
+		schemaKeyRequired: []any{"page", contentKeyText},
 	}
 
 	got := schemaToTypeScript(schema)
@@ -112,9 +112,9 @@ func TestSchemaToTypeScript_RequiredAnySlice(t *testing.T) {
 
 func TestSchemaToTypeScript_NoRequired(t *testing.T) {
 	schema := map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"limit": map[string]any{"type": "integer"},
+		contentKeyType: jsonTypeObject,
+		schemaKeyProperties: map[string]any{
+			testParamLimit: map[string]any{contentKeyType: jsonTypeInteger},
 		},
 	}
 

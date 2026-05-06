@@ -47,14 +47,14 @@ func TestCallerClasses_Resolve(t *testing.T) {
 		callerID string
 		want     string
 	}{
-		{"claude-code", "trusted"},
-		{"claude-desktop", "trusted"},
-		{"local-llm", "trusted"},
+		{"claude-code", testCallerTrusted},
+		{"claude-desktop", testCallerTrusted},
+		{"local-llm", testCallerTrusted},
 		{"partner-acme", "standard"},
 		{"partner-xyz", "standard"},
-		{"unknown-bot", "untrusted"},
-		{"", "untrusted"},
-		{"random", "untrusted"},
+		{"unknown-bot", CallerClassUntrusted},
+		{"", CallerClassUntrusted},
+		{"random", CallerClassUntrusted},
 	}
 
 	for _, tt := range tests {
@@ -69,7 +69,7 @@ func TestCallerClasses_Resolve(t *testing.T) {
 
 func TestCallerClasses_NilResolve(t *testing.T) {
 	var cc *CallerClasses
-	if got := cc.Resolve("anything"); got != "untrusted" {
+	if got := cc.Resolve("anything"); got != CallerClassUntrusted {
 		t.Errorf("nil Resolve = %q, want untrusted", got)
 	}
 }

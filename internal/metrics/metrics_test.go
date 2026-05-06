@@ -31,11 +31,11 @@ func TestRecordLogin_IncrementsByLabel(t *testing.T) {
 		method, result string
 		times          int
 	}{
-		{"oauth_code", "success", 3},
-		{"oauth_code", "failure", 1},
-		{"oauth_refresh", "success", 2},
-		{"api_key", "success", 5},
-		{"oauth_bearer", "failure", 4},
+		{testLoginMethodOAuthCode, testLoginResultSuccess, 3},
+		{testLoginMethodOAuthCode, testLoginResultFailure, 1},
+		{"oauth_refresh", testLoginResultSuccess, 2},
+		{"api_key", testLoginResultSuccess, 5},
+		{"oauth_bearer", testLoginResultFailure, 4},
 	}
 	for _, c := range cases {
 		for i := 0; i < c.times; i++ {
@@ -53,8 +53,8 @@ func TestRecordLogin_IncrementsByLabel(t *testing.T) {
 func TestRecordToolCall_LabelToolEnabled(t *testing.T) {
 	r := metrics.New(metrics.Options{LabelTool: true})
 
-	r.RecordToolCall("hetzner", "list_servers", "success", 50*time.Millisecond)
-	r.RecordToolCall("hetzner", "list_servers", "success", 80*time.Millisecond)
+	r.RecordToolCall("hetzner", "list_servers", testLoginResultSuccess, 50*time.Millisecond)
+	r.RecordToolCall("hetzner", "list_servers", testLoginResultSuccess, 80*time.Millisecond)
 	r.RecordToolCall("hetzner", "create_server", "error", 200*time.Millisecond)
 
 	body := scrapeMetrics(t, r)
@@ -68,8 +68,8 @@ func TestRecordToolCall_LabelToolEnabled(t *testing.T) {
 func TestRecordToolCall_LabelToolDisabled_CollapsesToPlaceholder(t *testing.T) {
 	r := metrics.New(metrics.Options{LabelTool: false})
 
-	r.RecordToolCall("hetzner", "list_servers", "success", 10*time.Millisecond)
-	r.RecordToolCall("hetzner", "create_server", "success", 10*time.Millisecond)
+	r.RecordToolCall("hetzner", "list_servers", testLoginResultSuccess, 10*time.Millisecond)
+	r.RecordToolCall("hetzner", "create_server", testLoginResultSuccess, 10*time.Millisecond)
 
 	body := scrapeMetrics(t, r)
 
@@ -82,8 +82,8 @@ func TestRecordToolCall_LabelToolDisabled_CollapsesToPlaceholder(t *testing.T) {
 func TestNilRegistry_IsSafe(t *testing.T) {
 	var r *metrics.Registry
 
-	r.RecordLogin("api_key", "success")
-	r.RecordToolCall("any", "thing", "success", time.Second)
+	r.RecordLogin("api_key", testLoginResultSuccess)
+	r.RecordToolCall("any", "thing", testLoginResultSuccess, time.Second)
 
 	srv := httptest.NewServer(r.Handler())
 	t.Cleanup(srv.Close)
@@ -106,8 +106,8 @@ func TestEmptyScrape_LoginsPreinitialized_NoPromhttpSelfMetrics(t *testing.T) {
 	r := metrics.New(metrics.Options{LabelTool: true})
 	body := scrapeMetrics(t, r)
 
-	for _, method := range []string{"oauth_code", "oauth_refresh", "oauth_bearer", "api_key"} {
-		for _, result := range []string{"success", "failure"} {
+	for _, method := range []string{testLoginMethodOAuthCode, "oauth_refresh", "oauth_bearer", "api_key"} {
+		for _, result := range []string{testLoginResultSuccess, testLoginResultFailure} {
 			want := `toolmesh_logins_total{method="` + method + `",result="` + result + `"} 0`
 			mustContain(t, body, want)
 		}
@@ -122,8 +122,8 @@ func TestHandler_ServesPrometheusFormat(t *testing.T) {
 	r := metrics.New(metrics.Options{LabelTool: true})
 	// Record at least one observation per vec — Prometheus does not emit
 	// HELP/TYPE lines for vecs that have never had a label combination set.
-	r.RecordLogin("api_key", "success")
-	r.RecordToolCall("hetzner", "list_servers", "success", 25*time.Millisecond)
+	r.RecordLogin("api_key", testLoginResultSuccess)
+	r.RecordToolCall("hetzner", "list_servers", testLoginResultSuccess, 25*time.Millisecond)
 
 	body := scrapeMetrics(t, r)
 

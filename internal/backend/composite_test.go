@@ -31,7 +31,7 @@ type stubBackend struct {
 }
 
 func (s *stubBackend) Execute(_ context.Context, toolName string, _ map[string]any) (*ToolResult, error) {
-	return &ToolResult{Content: []any{map[string]any{"type": "text", "text": s.name + ":" + toolName}}}, nil
+	return &ToolResult{Content: []any{map[string]any{schemaKeyType: contentTypeText, contentTypeText: s.name + ":" + toolName}}}, nil
 }
 
 func (s *stubBackend) ListTools(_ context.Context) ([]ToolDescriptor, error) {
@@ -50,7 +50,7 @@ func (notFoundPassthrough) ListTools(_ context.Context) ([]ToolDescriptor, error
 func (notFoundPassthrough) Healthy(_ context.Context) error                       { return errors.New("down") }
 
 func TestCompositeBackend_ExecuteByNamedPrefix(t *testing.T) {
-	a := &stubBackend{name: "a", tools: []ToolDescriptor{{Name: "hello"}}}
+	a := &stubBackend{name: "a", tools: []ToolDescriptor{{Name: testHelloLiteral}}}
 	b := &stubBackend{name: "b", tools: []ToolDescriptor{{Name: "world"}}}
 	c := NewCompositeBackend(map[string]ToolBackend{"a": a, "b": b})
 
@@ -59,7 +59,7 @@ func TestCompositeBackend_ExecuteByNamedPrefix(t *testing.T) {
 		t.Fatalf("execute: %v", err)
 	}
 	item := r.Content[0].(map[string]any)
-	if item["text"] != "a:hello" {
+	if item[contentTypeText] != "a:hello" {
 		t.Errorf("routed to wrong backend: %v", item)
 	}
 
@@ -226,8 +226,8 @@ func TestCompositeBackend_Swap(t *testing.T) {
 		t.Fatalf("after swap: %v", err)
 	}
 	item := r.Content[0].(map[string]any)
-	if item["text"] != "b:two" {
-		t.Errorf("got %v, want b:two", item["text"])
+	if item[contentTypeText] != "b:two" {
+		t.Errorf("got %v, want b:two", item[contentTypeText])
 	}
 
 	// ListTools should reflect new state.

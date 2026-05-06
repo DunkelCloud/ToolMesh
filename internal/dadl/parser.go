@@ -30,10 +30,33 @@ import (
 // pathParamRe matches {param} placeholders in URL paths.
 var pathParamRe = regexp.MustCompile(`\{(\w+)\}`)
 
+// dadlSpecV01URL is the canonical URL of the DADL v0.1 specification.
+const dadlSpecV01URL = "https://dadl.ai/spec/dadl-spec-v0.1.md"
+
+// Pagination strategy values used in DADL specs.
+const (
+	paginationStrategyCursor     = "cursor"
+	paginationStrategyOffset     = "offset"
+	paginationStrategyPage       = "page"
+	paginationStrategyLinkHeader = "link_header"
+)
+
+// HTTP method literals used in DADL tool definitions.
+const (
+	httpMethodGET  = "GET"
+	httpMethodPOST = "POST"
+)
+
+// Backend transport / param-location literals used in DADL specs.
+const (
+	backendTypeREST = "rest"
+	paramInPath     = "path"
+)
+
 // supportedSpecs lists spec URLs accepted by this version of ToolMesh.
 // Add new entries when a new DADL spec version is released.
 var supportedSpecs = map[string]bool{
-	"https://dadl.ai/spec/dadl-spec-v0.1.md": true,
+	dadlSpecV01URL: true,
 }
 
 // specVersionRe extracts the version from a DADL spec URL.
@@ -70,29 +93,29 @@ func ParseBytes(data []byte) (*Spec, error) {
 
 // validAuthTypes lists the supported authentication types.
 var validAuthTypes = map[string]bool{
-	"bearer":  true,
-	"oauth2":  true,
-	"session": true,
-	"apikey":  true,
-	"basic":   true,
+	authTypeBearer:  true,
+	authTypeOAuth2:  true,
+	authTypeSession: true,
+	authTypeAPIKey:  true,
+	authTypeBasic:   true,
 }
 
 // validPaginationStrategies lists the supported pagination strategies.
 var validPaginationStrategies = map[string]bool{
-	"cursor":      true,
-	"offset":      true,
-	"page":        true,
-	"link_header": true,
+	paginationStrategyCursor:     true,
+	paginationStrategyOffset:     true,
+	paginationStrategyPage:       true,
+	paginationStrategyLinkHeader: true,
 }
 
 // validMethods lists the supported HTTP methods.
 var validMethods = map[string]bool{
-	"GET":    true,
-	"POST":   true,
-	"PUT":    true,
-	"PATCH":  true,
-	"DELETE": true,
-	"HEAD":   true,
+	httpMethodGET:  true,
+	httpMethodPOST: true,
+	"PUT":          true,
+	"PATCH":        true,
+	"DELETE":       true,
+	"HEAD":         true,
 }
 
 // Validate checks a Spec for structural correctness.
@@ -106,7 +129,7 @@ func Validate(spec *Spec) error {
 	}
 
 	b := &spec.Backend
-	if b.Type != "rest" {
+	if b.Type != backendTypeREST {
 		return fmt.Errorf("backend.type must be \"rest\", got %q", b.Type)
 	}
 	// base_url is optional in the DADL — can be provided via backends.yaml at runtime
@@ -173,7 +196,7 @@ func validateTool(name string, tool *ToolDef) error {
 		if !exists {
 			return fmt.Errorf("tool %q: path parameter {%s} not declared in params", name, paramName)
 		}
-		if param.In != "" && param.In != "path" {
+		if param.In != "" && param.In != paramInPath {
 			return fmt.Errorf("tool %q: parameter %q is used in path but declared as in=%q", name, paramName, param.In)
 		}
 	}

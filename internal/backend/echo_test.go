@@ -31,8 +31,8 @@ func TestEchoBackend_Execute(t *testing.T) {
 			t.Fatal(err)
 		}
 		item := r.Content[0].(map[string]any)
-		if item["text"] != "hi" {
-			t.Errorf("echo text = %v", item["text"])
+		if item[contentTypeText] != "hi" {
+			t.Errorf("echo text = %v", item[contentTypeText])
 		}
 	})
 
@@ -42,8 +42,8 @@ func TestEchoBackend_Execute(t *testing.T) {
 			t.Fatal(err)
 		}
 		item := r.Content[0].(map[string]any)
-		if item["text"] != "(empty)" {
-			t.Errorf("empty echo = %v", item["text"])
+		if item[contentTypeText] != "(empty)" {
+			t.Errorf("empty echo = %v", item[contentTypeText])
 		}
 	})
 
@@ -53,40 +53,40 @@ func TestEchoBackend_Execute(t *testing.T) {
 			t.Fatal(err)
 		}
 		item := r.Content[0].(map[string]any)
-		if item["text"] != "5" {
-			t.Errorf("add = %v", item["text"])
+		if item[contentTypeText] != "5" {
+			t.Errorf("add = %v", item[contentTypeText])
 		}
 	})
 
 	t.Run("add floats", func(t *testing.T) {
 		r, _ := b.Execute(ctx, "add", map[string]any{"a": 1.5, "b": 2.25})
 		item := r.Content[0].(map[string]any)
-		if item["text"] != "3.75" {
-			t.Errorf("add floats = %v", item["text"])
+		if item[contentTypeText] != "3.75" {
+			t.Errorf("add floats = %v", item[contentTypeText])
 		}
 	})
 
 	t.Run("add json.Number", func(t *testing.T) {
 		r, _ := b.Execute(ctx, "add", map[string]any{"a": json.Number("4"), "b": json.Number("6")})
 		item := r.Content[0].(map[string]any)
-		if item["text"] != "10" {
-			t.Errorf("add json.Number = %v", item["text"])
+		if item[contentTypeText] != "10" {
+			t.Errorf("add json.Number = %v", item[contentTypeText])
 		}
 	})
 
 	t.Run("add int64", func(t *testing.T) {
 		r, _ := b.Execute(ctx, "add", map[string]any{"a": int64(1), "b": int64(2)})
 		item := r.Content[0].(map[string]any)
-		if item["text"] != "3" {
-			t.Errorf("add int64 = %v", item["text"])
+		if item[contentTypeText] != "3" {
+			t.Errorf("add int64 = %v", item[contentTypeText])
 		}
 	})
 
 	t.Run("add invalid", func(t *testing.T) {
 		r, _ := b.Execute(ctx, "add", map[string]any{"a": "x", "b": "y"})
 		item := r.Content[0].(map[string]any)
-		if !strings.Contains(item["text"].(string), "error") {
-			t.Errorf("expected error text, got %v", item["text"])
+		if !strings.Contains(item[contentTypeText].(string), "error") {
+			t.Errorf("expected error text, got %v", item[contentTypeText])
 		}
 	})
 
@@ -96,7 +96,7 @@ func TestEchoBackend_Execute(t *testing.T) {
 			t.Fatal(err)
 		}
 		item := r.Content[0].(map[string]any)
-		text, _ := item["text"].(string)
+		text, _ := item[contentTypeText].(string)
 		if text == "" {
 			t.Error("time returned empty")
 		}

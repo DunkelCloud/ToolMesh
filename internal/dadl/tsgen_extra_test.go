@@ -29,8 +29,8 @@ func TestGenerateTypeScript_Composites(t *testing.T) {
 				"do_thing": {
 					Description: "composite",
 					Params: map[string]ParamDef{
-						"id":      {Type: "string", Required: true},
-						"verbose": {Type: "boolean"},
+						"id":      {Type: jsTypeString, Required: true},
+						"verbose": {Type: jsTypeBoolean},
 					},
 					Code: "return 1",
 				},

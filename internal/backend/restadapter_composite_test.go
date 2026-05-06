@@ -28,8 +28,8 @@ import (
 func TestRESTAdapter_ExecuteComposite(t *testing.T) {
 	// Upstream: GET /items returns a JSON array.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/items" {
-			w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == testPathItems {
+			w.Header().Set(testHeaderContentType, testContentTypeJSON)
 			_, _ = w.Write([]byte(`[{"id": 1}, {"id": 2}]`))
 			return
 		}
@@ -38,15 +38,15 @@ func TestRESTAdapter_ExecuteComposite(t *testing.T) {
 	defer srv.Close()
 
 	spec := &dadl.Spec{
-		Spec: "https://dadl.ai/spec/dadl-spec-v0.1.md",
+		Spec: testDADLSpecURL,
 		Backend: dadl.BackendDef{
-			Name:    "api",
-			Type:    "rest",
+			Name:    testBackendNameAPI,
+			Type:    transportTypeREST,
 			BaseURL: srv.URL,
 			Tools: map[string]dadl.ToolDef{
-				"list_items": {
-					Method: "GET",
-					Path:   "/items",
+				testToolListItems: {
+					Method: testMethodGET,
+					Path:   testPathItems,
 				},
 			},
 			Composites: map[string]dadl.CompositeDef{
@@ -85,7 +85,7 @@ func TestRESTAdapter_ExecuteComposite(t *testing.T) {
 	if result.IsError {
 		t.Fatalf("composite returned error: %v", result.Content)
 	}
-	text, _ := result.Content[0].(map[string]any)["text"].(string)
+	text, _ := result.Content[0].(map[string]any)[contentTypeText].(string)
 	if !strings.Contains(text, "2") {
 		t.Errorf("expected count 2, got %s", text)
 	}
@@ -93,10 +93,10 @@ func TestRESTAdapter_ExecuteComposite(t *testing.T) {
 
 func TestRESTAdapter_ExecuteComposite_Error(t *testing.T) {
 	spec := &dadl.Spec{
-		Spec: "https://dadl.ai/spec/dadl-spec-v0.1.md",
+		Spec: testDADLSpecURL,
 		Backend: dadl.BackendDef{
-			Name:    "api",
-			Type:    "rest",
+			Name:    testBackendNameAPI,
+			Type:    transportTypeREST,
 			BaseURL: "https://example.invalid",
 			Composites: map[string]dadl.CompositeDef{
 				"bad": {
@@ -120,15 +120,15 @@ func TestRESTAdapter_ExecuteComposite_Error(t *testing.T) {
 func TestBuildCompositeInputSchema(t *testing.T) {
 	comp := dadl.CompositeDef{
 		Params: map[string]dadl.ParamDef{
-			"id":      {Type: "string", Required: true},
-			"verbose": {Type: "boolean", Default: false},
+			"id":      {Type: schemaTypeString, Required: true},
+			"verbose": {Type: schemaTypeBoolean, Default: false},
 		},
 	}
 	schema := buildCompositeInputSchema(comp)
-	if schema["type"] != "object" {
-		t.Errorf("type = %v", schema["type"])
+	if schema[schemaKeyType] != schemaTypeObject {
+		t.Errorf("type = %v", schema[schemaKeyType])
 	}
-	props := schema["properties"].(map[string]any)
+	props := schema[schemaKeyProperties].(map[string]any)
 	if _, ok := props["id"]; !ok {
 		t.Error("missing id")
 	}
@@ -141,7 +141,7 @@ func TestBuildCompositeInputSchema(t *testing.T) {
 func TestExtractToolResultContent(t *testing.T) {
 	// JSON-parseable text → parsed value.
 	r := &ToolResult{
-		Content: []any{map[string]any{"type": "text", "text": `{"a": 1}`}},
+		Content: []any{map[string]any{schemaKeyType: contentTypeText, contentTypeText: `{"a": 1}`}},
 	}
 	got := extractToolResultContent(r)
 	m, ok := got.(map[string]any)
@@ -151,7 +151,7 @@ func TestExtractToolResultContent(t *testing.T) {
 
 	// Non-JSON text → string.
 	r2 := &ToolResult{
-		Content: []any{map[string]any{"type": "text", "text": "plain"}},
+		Content: []any{map[string]any{schemaKeyType: contentTypeText, contentTypeText: "plain"}},
 	}
 	if got := extractToolResultContent(r2); got != "plain" {
 		t.Errorf("got %v", got)
@@ -169,8 +169,8 @@ func TestExtractToolResultContent(t *testing.T) {
 func TestMarshallResults_Paginated(t *testing.T) {
 	// Unit test for the pagination helpers.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		page := r.URL.Query().Get("page")
-		w.Header().Set("Content-Type", "application/json")
+		page := r.URL.Query().Get(testParamPage)
+		w.Header().Set(testHeaderContentType, testContentTypeJSON)
 		switch page {
 		case "", "1":
 			_, _ = w.Write([]byte(`[{"id": 1}, {"id": 2}]`))
@@ -183,25 +183,25 @@ func TestMarshallResults_Paginated(t *testing.T) {
 	defer srv.Close()
 
 	spec := &dadl.Spec{
-		Spec: "https://dadl.ai/spec/dadl-spec-v0.1.md",
+		Spec: testDADLSpecURL,
 		Backend: dadl.BackendDef{
-			Name:    "api",
-			Type:    "rest",
+			Name:    testBackendNameAPI,
+			Type:    transportTypeREST,
 			BaseURL: srv.URL,
 			Defaults: dadl.DefaultsConfig{
 				Pagination: &dadl.PaginationConfig{
-					Strategy: "page",
-					Request:  dadl.PaginationRequest{PageParam: "page"},
+					Strategy: testParamPage,
+					Request:  dadl.PaginationRequest{PageParam: testParamPage},
 					Behavior: "auto",
 					MaxPages: 5,
 				},
 			},
 			Tools: map[string]dadl.ToolDef{
 				"list": {
-					Method: "GET",
+					Method: testMethodGET,
 					Path:   "/",
 					Params: map[string]dadl.ParamDef{
-						"page": {Type: "integer", In: "query"},
+						testParamPage: {Type: schemaTypeInteger, In: paramInQuery},
 					},
 				},
 			},
@@ -212,14 +212,14 @@ func TestMarshallResults_Paginated(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := adapter.Execute(context.Background(), "list", map[string]any{"page": 1})
+	result, err := adapter.Execute(context.Background(), "list", map[string]any{testParamPage: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if result.IsError {
 		t.Fatalf("error result: %v", result.Content)
 	}
-	text, _ := result.Content[0].(map[string]any)["text"].(string)
+	text, _ := result.Content[0].(map[string]any)[contentTypeText].(string)
 	// Should aggregate pages — contain all 3 ids.
 	if !strings.Contains(text, `"id":1`) && !strings.Contains(text, `"id": 1`) {
 		t.Errorf("missing id=1 in aggregated result: %s", text)

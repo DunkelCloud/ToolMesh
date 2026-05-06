@@ -35,13 +35,13 @@ func TestScanCode(t *testing.T) {
 			name:           "fetch is forbidden",
 			code:           `const data = fetch("http://evil.com");`,
 			wantViolations: 1,
-			wantContains:   "fetch",
+			wantContains:   jsIdentFetch,
 		},
 		{
 			name:           "require is forbidden",
 			code:           `const fs = require("fs");`,
 			wantViolations: 1,
-			wantContains:   "require",
+			wantContains:   jsIdentRequire,
 		},
 		{
 			name:           "eval call is forbidden",
@@ -59,19 +59,19 @@ func TestScanCode(t *testing.T) {
 			name:           "process.env is forbidden",
 			code:           `const secret = process.env.API_KEY;`,
 			wantViolations: 1,
-			wantContains:   "process",
+			wantContains:   jsIdentProcess,
 		},
 		{
 			name:           "globalThis access is forbidden",
 			code:           `const g = globalThis.fetch;`,
 			wantViolations: 1,
-			wantContains:   "globalThis",
+			wantContains:   jsIdentGlobalThis,
 		},
 		{
 			name:           "setTimeout is forbidden",
 			code:           `setTimeout(() => {}, 1000);`,
 			wantViolations: 1,
-			wantContains:   "setTimeout",
+			wantContains:   jsIdentSetTimeout,
 		},
 		{
 			name:           "multiple violations",
@@ -82,13 +82,13 @@ func TestScanCode(t *testing.T) {
 			name:           "window.location is forbidden",
 			code:           `const loc = window.location;`,
 			wantViolations: 1,
-			wantContains:   "window",
+			wantContains:   jsIdentWindow,
 		},
 		{
 			name:           "violations have line numbers",
 			code:           "const a = 1;\nfetch('evil');\nconst b = 2;",
 			wantViolations: 1,
-			wantContains:   "fetch",
+			wantContains:   jsIdentFetch,
 		},
 	}
 

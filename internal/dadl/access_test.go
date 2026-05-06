@@ -76,7 +76,7 @@ backend:
 		}
 	}
 
-	if got := spec.Backend.Composites["refresh_all"].Access; got != "admin" {
-		t.Errorf("composite refresh_all: Access = %q, want %q", got, "admin")
+	if got := spec.Backend.Composites["refresh_all"].Access; got != testAccessAdmin {
+		t.Errorf("composite refresh_all: Access = %q, want %q", got, testAccessAdmin)
 	}
 }

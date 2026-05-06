@@ -40,11 +40,11 @@ func TestFileTokenStore_RefreshTokenSurvivesAccessExpiry(t *testing.T) {
 		AccessToken:      "at-expired",
 		RefreshToken:     "rt-still-valid",
 		ClientID:         "c1",
-		UserID:           "user1",
-		CompanyID:        "company1",
-		Plan:             "pro",
-		Roles:            []string{"admin"},
-		Scope:            "claudeai",
+		UserID:           testUser1,
+		CompanyID:        testCompany1,
+		Plan:             testPlanPro,
+		Roles:            []string{testUserAdmin},
+		Scope:            testScopeClaudeAI,
 		ExpiresAt:        time.Now().Add(-1 * time.Hour), // access token expired 1h ago
 		RefreshExpiresAt: time.Now().Add(7 * 24 * time.Hour),
 	}
@@ -58,8 +58,8 @@ func TestFileTokenStore_RefreshTokenSurvivesAccessExpiry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ConsumeRefreshToken: %v", err)
 	}
-	if got.UserID != "user1" {
-		t.Errorf("UserID = %q, want %q", got.UserID, "user1")
+	if got.UserID != testUser1 {
+		t.Errorf("UserID = %q, want %q", got.UserID, testUser1)
 	}
 }
 
@@ -77,11 +77,11 @@ func TestFileTokenStore_RefreshTokenPersistenceAfterRestart(t *testing.T) {
 		AccessToken:      "at-old",
 		RefreshToken:     "rt-persistent",
 		ClientID:         "c1",
-		UserID:           "user1",
-		CompanyID:        "company1",
-		Plan:             "pro",
-		Roles:            []string{"admin"},
-		Scope:            "claudeai",
+		UserID:           testUser1,
+		CompanyID:        testCompany1,
+		Plan:             testPlanPro,
+		Roles:            []string{testUserAdmin},
+		Scope:            testScopeClaudeAI,
 		ExpiresAt:        time.Now().Add(-2 * time.Hour), // access expired 2h ago
 		RefreshExpiresAt: time.Now().Add(7 * 24 * time.Hour),
 	}
@@ -101,8 +101,8 @@ func TestFileTokenStore_RefreshTokenPersistenceAfterRestart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ConsumeRefreshToken after restart: %v", err)
 	}
-	if got.UserID != "user1" {
-		t.Errorf("UserID = %q, want %q", got.UserID, "user1")
+	if got.UserID != testUser1 {
+		t.Errorf("UserID = %q, want %q", got.UserID, testUser1)
 	}
 }
 
@@ -115,11 +115,11 @@ func TestFileTokenStore_ExpiredRefreshTokenIsCleanedUp(t *testing.T) {
 		AccessToken:      "at-dead",
 		RefreshToken:     "rt-dead",
 		ClientID:         "c1",
-		UserID:           "user1",
-		CompanyID:        "company1",
-		Plan:             "pro",
-		Roles:            []string{"admin"},
-		Scope:            "claudeai",
+		UserID:           testUser1,
+		CompanyID:        testCompany1,
+		Plan:             testPlanPro,
+		Roles:            []string{testUserAdmin},
+		Scope:            testScopeClaudeAI,
 		ExpiresAt:        time.Now().Add(-2 * time.Hour),
 		RefreshExpiresAt: time.Now().Add(-1 * time.Hour), // refresh also expired
 	}

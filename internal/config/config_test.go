@@ -43,7 +43,7 @@ func TestLoad_Defaults(t *testing.T) {
 		{"OpenFGAAPIURL", cfg.OpenFGAAPIURL, "http://localhost:8080"},
 		{"OpenFGAStoreID", cfg.OpenFGAStoreID, ""},
 		{"RedisURL", cfg.RedisURL, "redis://localhost:6379/0"},
-		{"LogLevel", cfg.LogLevel, "debug"},
+		{"LogLevel", cfg.LogLevel, testLogLevelDebug},
 		{"LogFormat", cfg.LogFormat, "json"},
 		{"DebugBackends", cfg.DebugBackends, ""},
 		{"DebugFile", cfg.DebugFile, ""},
@@ -65,7 +65,7 @@ func TestLoad_CustomValues(t *testing.T) {
 	t.Setenv("AUDIT_STORE", "sqlite")
 	t.Setenv("AUDIT_RETENTION_DAYS", "30")
 	t.Setenv("TOOLMESH_EXEC_TIMEOUT", "180")
-	t.Setenv("LOG_LEVEL", "debug")
+	t.Setenv("LOG_LEVEL", testLogLevelDebug)
 	t.Setenv("LOG_FORMAT", "text")
 
 	cfg, err := Load()
@@ -94,7 +94,7 @@ func TestLoad_CustomValues(t *testing.T) {
 	if cfg.ExecTimeout != 180 {
 		t.Errorf("ExecTimeout = %d, want 180", cfg.ExecTimeout)
 	}
-	if cfg.LogLevel != "debug" {
+	if cfg.LogLevel != testLogLevelDebug {
 		t.Errorf("LogLevel = %q, want \"debug\"", cfg.LogLevel)
 	}
 	if cfg.LogFormat != "text" {
@@ -123,9 +123,9 @@ func TestConfig_DebugBackendsList(t *testing.T) {
 		want  []string
 	}{
 		{"", nil},
-		{"github", []string{"github"}},
-		{"github,shellycloud", []string{"github", "shellycloud"}},
-		{"github, shellycloud , vikunja", []string{"github", "shellycloud", "vikunja"}},
+		{testCallerGitHub, []string{testCallerGitHub}},
+		{"github,shellycloud", []string{testCallerGitHub, "shellycloud"}},
+		{"github, shellycloud , vikunja", []string{testCallerGitHub, "shellycloud", "vikunja"}},
 		{",,,", nil},
 	}
 	for _, tt := range tests {

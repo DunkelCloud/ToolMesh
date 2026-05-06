@@ -32,7 +32,7 @@ import (
 func TestFlattenFormValues(t *testing.T) {
 	vals := url.Values{}
 	flattenFormValues(vals, "", map[string]any{
-		"str":  "hello",
+		"str":  testHelloLiteral,
 		"num":  float64(3.14),
 		"int":  42,
 		"i64":  int64(100),
@@ -42,7 +42,7 @@ func TestFlattenFormValues(t *testing.T) {
 		"obj":  map[string]any{"nested": "value"},
 	})
 
-	if vals.Get("str") != "hello" {
+	if vals.Get("str") != testHelloLiteral {
 		t.Errorf("str = %q", vals.Get("str"))
 	}
 	if vals.Get("num") != "3.14" {
@@ -84,18 +84,18 @@ func TestFlattenFormValues_Default(t *testing.T) {
 func TestRESTAdapter_BinaryResponse(t *testing.T) {
 	binaryData := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "image/png")
+		w.Header().Set(testHeaderContentType, "image/png")
 		_, _ = w.Write(binaryData)
 	}))
 	defer srv.Close()
 
 	spec := &dadl.Spec{
-		Spec: "https://dadl.ai/spec/dadl-spec-v0.1.md",
+		Spec: testDADLSpecURL,
 		Backend: dadl.BackendDef{
-			Name: "api", Type: "rest", BaseURL: srv.URL,
+			Name: testBackendNameAPI, Type: transportTypeREST, BaseURL: srv.URL,
 			Tools: map[string]dadl.ToolDef{
 				"get_image": {
-					Method: "GET", Path: "/image",
+					Method: testMethodGET, Path: "/image",
 					Response: &dadl.ResponseConfig{
 						Binary:      true,
 						ContentType: "image/png",
@@ -128,28 +128,28 @@ func TestRESTAdapter_QueryParams(t *testing.T) {
 	var gotQuery string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotQuery = r.URL.RawQuery
-		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set(testHeaderContentType, testContentTypeJSON)
 		_, _ = w.Write([]byte("{}"))
 	}))
 	defer srv.Close()
 
 	spec := &dadl.Spec{
-		Spec: "https://dadl.ai/spec/dadl-spec-v0.1.md",
+		Spec: testDADLSpecURL,
 		Backend: dadl.BackendDef{
-			Name: "api", Type: "rest", BaseURL: srv.URL,
+			Name: testBackendNameAPI, Type: transportTypeREST, BaseURL: srv.URL,
 			Tools: map[string]dadl.ToolDef{
 				"search": {
-					Method: "GET", Path: "/search",
+					Method: testMethodGET, Path: "/search",
 					Params: map[string]dadl.ParamDef{
-						"q":     {Type: "string", In: "query", Required: true},
-						"limit": {Type: "integer", In: "query"},
+						"q":     {Type: schemaTypeString, In: paramInQuery, Required: true},
+						"limit": {Type: schemaTypeInteger, In: paramInQuery},
 					},
 				},
 			},
 		},
 	}
 	a, _ := NewRESTAdapter(spec, &testCredStore{}, slog.Default(), testRESTOpts)
-	_, err := a.Execute(context.Background(), "search", map[string]any{"q": "hello", "limit": 10})
+	_, err := a.Execute(context.Background(), "search", map[string]any{"q": testHelloLiteral, "limit": 10})
 	if err != nil {
 		t.Fatal(err)
 	}

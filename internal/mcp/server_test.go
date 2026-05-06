@@ -77,13 +77,13 @@ type mockTestBackend struct{}
 
 func (m *mockTestBackend) Execute(_ context.Context, toolName string, params map[string]any) (*backend.ToolResult, error) {
 	return &backend.ToolResult{
-		Content: []any{map[string]any{"type": "text", "text": "ok"}},
+		Content: []any{map[string]any{contentKeyType: contentKeyText, contentKeyText: "ok"}},
 	}, nil
 }
 
 func (m *mockTestBackend) ListTools(_ context.Context) ([]backend.ToolDescriptor, error) {
 	return []backend.ToolDescriptor{
-		{Name: "test:tool", Description: "A test tool"},
+		{Name: testDirectToolName, Description: "A test tool"},
 	}, nil
 }
 
@@ -110,7 +110,7 @@ func TestServer_Health(t *testing.T) {
 }
 
 func TestServer_OAuthMetadata(t *testing.T) {
-	_, mux := newTestServer(t, &config.Config{Issuer: "https://toolmesh.io/"})
+	_, mux := newTestServer(t, &config.Config{Issuer: testIssuerToolmesh})
 
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/.well-known/oauth-authorization-server", nil)
 	w := httptest.NewRecorder()
@@ -123,7 +123,7 @@ func TestServer_OAuthMetadata(t *testing.T) {
 	var resp map[string]any
 	json.NewDecoder(w.Body).Decode(&resp)
 
-	if resp["issuer"] != "https://toolmesh.io/" {
+	if resp["issuer"] != testIssuerToolmesh {
 		t.Errorf("issuer = %v, want \"https://toolmesh.io/\"", resp["issuer"])
 	}
 	if resp["authorization_endpoint"] != "https://toolmesh.io/authorize" {
@@ -144,7 +144,7 @@ func TestServer_OAuthMetadata_NoTrailingSlash(t *testing.T) {
 	var resp map[string]any
 	json.NewDecoder(w.Body).Decode(&resp)
 
-	if resp["issuer"] != "https://toolmesh.io/" {
+	if resp["issuer"] != testIssuerToolmesh {
 		t.Errorf("issuer = %v, want trailing slash", resp["issuer"])
 	}
 	if resp["authorization_endpoint"] != "https://toolmesh.io/authorize" {
@@ -153,7 +153,7 @@ func TestServer_OAuthMetadata_NoTrailingSlash(t *testing.T) {
 }
 
 func TestServer_ProtectedResource(t *testing.T) {
-	_, mux := newTestServer(t, &config.Config{Issuer: "https://toolmesh.io/"})
+	_, mux := newTestServer(t, &config.Config{Issuer: testIssuerToolmesh})
 
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/.well-known/oauth-protected-resource", nil)
 	w := httptest.NewRecorder()
@@ -180,7 +180,7 @@ func TestServer_Register(t *testing.T) {
 	var resp map[string]any
 	json.NewDecoder(w.Body).Decode(&resp)
 
-	if resp["client_id"] == nil || resp["client_id"] == "" {
+	if resp[oauthClientID] == nil || resp[oauthClientID] == "" {
 		t.Error("expected client_id in response")
 	}
 	if resp["client_secret"] == nil || resp["client_secret"] == "" {
@@ -192,13 +192,13 @@ func TestServer_CORSHeaders(t *testing.T) {
 	_, mux := newTestServer(t, &config.Config{})
 
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodOptions, "/mcp", nil)
-	req.Header.Set("Origin", "https://claude.ai")
+	req.Header.Set("Origin", testOriginClaudeAI)
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
 
 	// With no allowlist configured, origin is reflected but credentials are NOT
 	// allowed (H-2: prevents CSRF-like attacks from arbitrary origins).
-	if w.Header().Get("Access-Control-Allow-Origin") != "https://claude.ai" {
+	if w.Header().Get("Access-Control-Allow-Origin") != testOriginClaudeAI {
 		t.Errorf("CORS origin = %q, want \"https://claude.ai\"", w.Header().Get("Access-Control-Allow-Origin"))
 	}
 	if w.Header().Get("Access-Control-Allow-Credentials") != "" {
@@ -208,16 +208,16 @@ func TestServer_CORSHeaders(t *testing.T) {
 
 func TestServer_CORSHeaders_Allowlist(t *testing.T) {
 	_, mux := newTestServer(t, &config.Config{
-		CORSAllowedOrigins: []string{"https://claude.ai"},
+		CORSAllowedOrigins: []string{testOriginClaudeAI},
 	})
 
 	// Allowed origin
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodOptions, "/mcp", nil)
-	req.Header.Set("Origin", "https://claude.ai")
+	req.Header.Set("Origin", testOriginClaudeAI)
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
 
-	if w.Header().Get("Access-Control-Allow-Origin") != "https://claude.ai" {
+	if w.Header().Get("Access-Control-Allow-Origin") != testOriginClaudeAI {
 		t.Errorf("CORS origin = %q, want \"https://claude.ai\"", w.Header().Get("Access-Control-Allow-Origin"))
 	}
 
@@ -290,8 +290,8 @@ func TestServer_MCP_UnknownMethod(t *testing.T) {
 	if !ok {
 		t.Fatal("expected error object")
 	}
-	if errObj["code"].(float64) != -32601 {
-		t.Errorf("error code = %v, want -32601", errObj["code"])
+	if errObj[argNameCode].(float64) != -32601 {
+		t.Errorf("error code = %v, want -32601", errObj[argNameCode])
 	}
 }
 
@@ -310,8 +310,8 @@ func TestServer_MCP_InvalidJSON(t *testing.T) {
 	if !ok {
 		t.Fatal("expected error object for invalid JSON")
 	}
-	if errObj["code"].(float64) != -32700 {
-		t.Errorf("error code = %v, want -32700 (Parse error)", errObj["code"])
+	if errObj[argNameCode].(float64) != -32700 {
+		t.Errorf("error code = %v, want -32700 (Parse error)", errObj[argNameCode])
 	}
 }
 
@@ -369,7 +369,7 @@ func TestServer_MCP_APIKeyAuth(t *testing.T) {
 func TestServer_OAuthFlow(t *testing.T) {
 	_, mux, _ := newTestServerWithRedis(t, &config.Config{
 		AuthPassword: "test-password",
-		Issuer:       "https://toolmesh.io/",
+		Issuer:       testIssuerToolmesh,
 	})
 
 	// Step 1: Register client
@@ -381,7 +381,7 @@ func TestServer_OAuthFlow(t *testing.T) {
 
 	var regResp map[string]any
 	json.NewDecoder(regW.Body).Decode(&regResp)
-	clientID := regResp["client_id"].(string)
+	clientID := regResp[oauthClientID].(string)
 
 	// Step 2: Authorize (POST with correct password + PKCE)
 	codeVerifier := "test-verifier-with-enough-entropy-1234567890"
@@ -389,12 +389,12 @@ func TestServer_OAuthFlow(t *testing.T) {
 	codeChallenge := base64.RawURLEncoding.EncodeToString(h[:])
 
 	form := url.Values{
-		"password":       {"test-password"},
-		"client_id":      {clientID},
-		"redirect_uri":   {"https://example.com/callback"},
-		"state":          {"test-state"},
-		"code_challenge": {codeChallenge},
-		"scope":          {"claudeai"},
+		testFormPassword:   {"test-password"},
+		oauthClientID:      {clientID},
+		oauthRedirectURI:   {"https://example.com/callback"},
+		oauthState:         {"test-state"},
+		oauthCodeChallenge: {codeChallenge},
+		oauthScope:         {clientClaudeAI},
 	}
 	authReq := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/authorize", strings.NewReader(form.Encode()))
 	authReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -412,14 +412,14 @@ func TestServer_OAuthFlow(t *testing.T) {
 
 	// Extract the code from the redirect URL
 	u, _ := url.Parse(location)
-	code := u.Query().Get("code")
+	code := u.Query().Get(argNameCode)
 
 	// Step 3: Exchange code for token (with PKCE verifier + client_id per H-7)
 	tokenForm := url.Values{
-		"grant_type":    {"authorization_code"},
-		"code":          {code},
+		oauthGrantType:  {oauthGrantAuthCode},
+		argNameCode:     {code},
 		"code_verifier": {codeVerifier},
-		"client_id":     {clientID},
+		oauthClientID:   {clientID},
 	}
 	tokenReq := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/token", strings.NewReader(tokenForm.Encode()))
 	tokenReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -437,11 +437,11 @@ func TestServer_OAuthFlow(t *testing.T) {
 	if !ok || accessToken == "" {
 		t.Fatal("expected access_token in response")
 	}
-	refreshToken, ok := tokenResp["refresh_token"].(string)
+	refreshToken, ok := tokenResp[oauthRefreshToken].(string)
 	if !ok || refreshToken == "" {
 		t.Fatal("expected refresh_token in response")
 	}
-	if tokenResp["token_type"] != "Bearer" {
+	if tokenResp["token_type"] != authSchemeBearer {
 		t.Errorf("token_type = %v, want \"Bearer\"", tokenResp["token_type"])
 	}
 
@@ -461,9 +461,9 @@ func TestServer_OAuthFlow(t *testing.T) {
 
 	// Step 5: Refresh token (with client_id per H-7)
 	refreshForm := url.Values{
-		"grant_type":    {"refresh_token"},
-		"refresh_token": {refreshToken},
-		"client_id":     {clientID},
+		oauthGrantType:    {oauthRefreshToken},
+		oauthRefreshToken: {refreshToken},
+		oauthClientID:     {clientID},
 	}
 	refreshReq := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/token", strings.NewReader(refreshForm.Encode()))
 	refreshReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -486,11 +486,11 @@ func TestServer_Authorize_WrongPassword(t *testing.T) {
 	_, mux, _ := newTestServerWithRedis(t, &config.Config{AuthPassword: "correct"})
 
 	form := url.Values{
-		"password":       {"wrong"},
-		"client_id":      {"c1"},
-		"redirect_uri":   {"https://example.com/callback"},
-		"state":          {"s1"},
-		"code_challenge": {"dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"},
+		testFormPassword:   {"wrong"},
+		oauthClientID:      {"c1"},
+		oauthRedirectURI:   {"https://example.com/callback"},
+		oauthState:         {"s1"},
+		oauthCodeChallenge: {"dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"},
 	}
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/authorize", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -510,8 +510,8 @@ func TestServer_Token_InvalidGrant(t *testing.T) {
 	_, mux, _ := newTestServerWithRedis(t, &config.Config{})
 
 	form := url.Values{
-		"grant_type": {"authorization_code"},
-		"code":       {"invalid-code"},
+		oauthGrantType: {oauthGrantAuthCode},
+		argNameCode:    {"invalid-code"},
 	}
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/token", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -529,7 +529,7 @@ func TestServer_Token_UnsupportedGrantType(t *testing.T) {
 	_, mux := newTestServer(t, &config.Config{})
 
 	form := url.Values{
-		"grant_type": {"client_credentials"},
+		oauthGrantType: {"client_credentials"},
 	}
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/token", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")

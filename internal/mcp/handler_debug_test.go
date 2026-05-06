@@ -43,7 +43,7 @@ func decodeDebugResponse(t *testing.T, w *httptest.ResponseRecorder) (resultText
 		return "", isError
 	}
 	first, _ := content[0].(map[string]any)
-	text, _ := first["text"].(string)
+	text, _ := first[contentKeyText].(string)
 	return text, isError
 }
 
@@ -86,7 +86,7 @@ func TestHandleToolCall_DebugEcho_StringRoundTrip(t *testing.T) {
 		t.Fatalf("decode echo result: %v (text=%s)", err, text)
 	}
 
-	if got["type"] != "string" {
+	if got["type"] != jsonTypeString {
 		t.Errorf("expected type=string, got %v", got["type"])
 	}
 	wantSum := sha256.Sum256([]byte(payload))
@@ -111,7 +111,7 @@ func TestHandleToolCall_DebugEcho_Object(t *testing.T) {
 	if err := json.Unmarshal([]byte(text), &got); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if got["type"] != "object" {
+	if got["type"] != jsonTypeObject {
 		t.Errorf("expected type=object, got %v", got["type"])
 	}
 	if _, hasChars := got["received_chars"]; hasChars {
@@ -127,7 +127,7 @@ func TestHandleToolCall_DebugEcho_MissingPayload(t *testing.T) {
 	if !isError {
 		t.Fatalf("expected isError=true when payload missing, got: %s", text)
 	}
-	if !strings.Contains(text, "payload") {
+	if !strings.Contains(text, argNamePayload) {
 		t.Errorf("expected error to mention payload, got: %s", text)
 	}
 }
@@ -161,7 +161,7 @@ func TestHandleToolCall_DebugGenerate_Ascii(t *testing.T) {
 	if int(got["returned_bytes"].(float64)) != 1000 {
 		t.Errorf("returned_bytes: got %v want 1000", got["returned_bytes"])
 	}
-	body := got["text"].(string)
+	body := got[contentKeyText].(string)
 	if len(body) != 1000 {
 		t.Errorf("text length: got %d want 1000", len(body))
 	}
@@ -182,7 +182,7 @@ func TestHandleToolCall_DebugGenerate_Random(t *testing.T) {
 
 	var got map[string]any
 	_ = json.Unmarshal([]byte(text), &got)
-	body := got["text"].(string)
+	body := got[contentKeyText].(string)
 	if len(body) != 256 {
 		t.Errorf("text length: got %d want 256", len(body))
 	}

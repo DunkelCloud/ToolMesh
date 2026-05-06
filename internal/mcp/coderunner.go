@@ -71,8 +71,8 @@ func (r *CodeRunner) Execute(ctx context.Context, code string) (*backend.ToolRes
 		return &backend.ToolResult{
 			IsError: true,
 			Content: []any{map[string]any{
-				"type": "text",
-				"text": fmt.Sprintf("execute_code: static analysis found forbidden patterns:\n%s", strings.Join(msgs, "\n")),
+				contentKeyType: contentKeyText,
+				contentKeyText: fmt.Sprintf("execute_code: static analysis found forbidden patterns:\n%s", strings.Join(msgs, "\n")),
 			}},
 		}, nil
 	}
@@ -141,7 +141,7 @@ func (r *CodeRunner) Execute(ctx context.Context, code string) (*backend.ToolRes
 
 			r.logger.DebugContext(ctx, "execute_code dispatching",
 				"jsFn", sn,
-				"tool", cn,
+				logKeyTool, cn,
 				"params", toolParams,
 			)
 
@@ -150,13 +150,13 @@ func (r *CodeRunner) Execute(ctx context.Context, code string) (*backend.ToolRes
 				coerced, err := r.coercer.Coerce(cn, toolParams)
 				if err != nil {
 					r.logger.DebugContext(ctx, "execute_code coercion failed",
-						"tool", cn,
-						"error", err,
+						logKeyTool, cn,
+						outcomeError, err,
 					)
 					mu.Lock()
 					results = append(results, map[string]any{
-						"tool":  cn,
-						"error": fmt.Sprintf("coercion failed: %s", err),
+						logKeyTool:   cn,
+						outcomeError: fmt.Sprintf("coercion failed: %s", err),
 					})
 					mu.Unlock()
 					// Return undefined — coercion failure is non-fatal
@@ -172,27 +172,27 @@ func (r *CodeRunner) Execute(ctx context.Context, code string) (*backend.ToolRes
 			})
 			if err != nil {
 				r.logger.DebugContext(ctx, "execute_code tool error",
-					"tool", cn,
-					"error", err.Error(),
+					logKeyTool, cn,
+					outcomeError, err.Error(),
 				)
 				mu.Lock()
 				results = append(results, map[string]any{
-					"tool":  cn,
-					"error": err.Error(),
+					logKeyTool:   cn,
+					outcomeError: err.Error(),
 				})
 				mu.Unlock()
 				// Return error object to JS instead of panicking.
 				// This lets loops continue and subsequent calls execute.
 				errObj := rt.NewObject()
-				_ = errObj.Set("error", err.Error())
-				_ = errObj.Set("tool", cn)
+				_ = errObj.Set(outcomeError, err.Error())
+				_ = errObj.Set(logKeyTool, cn)
 				return rt.ToValue(errObj)
 			}
 
 			// Log result
 			if contentJSON, merr := json.Marshal(result.Content); merr == nil {
 				r.logger.DebugContext(ctx, "execute_code tool result",
-					"tool", cn,
+					logKeyTool, cn,
 					"isError", result.IsError,
 					"content", string(contentJSON),
 				)
@@ -201,8 +201,8 @@ func (r *CodeRunner) Execute(ctx context.Context, code string) (*backend.ToolRes
 			// Collect result for the wire-format output
 			mu.Lock()
 			results = append(results, map[string]any{
-				"tool":   cn,
-				"result": result,
+				logKeyTool: cn,
+				"result":   result,
 			})
 			mu.Unlock()
 
@@ -221,7 +221,7 @@ func (r *CodeRunner) Execute(ctx context.Context, code string) (*backend.ToolRes
 	// "Object has no member 'discover_tools'" TypeError that does not point
 	// the caller at the right fix. We only install the guard when no real
 	// backend tool has claimed the same sanitized name.
-	for _, name := range []string{"discover_tools", "execute_code"} {
+	for _, name := range []string{toolDiscoverTools, toolExecuteCode} {
 		if _, taken := r.nameMap[name]; taken {
 			continue
 		}
@@ -290,8 +290,8 @@ func (r *CodeRunner) Execute(ctx context.Context, code string) (*backend.ToolRes
 		}
 		return &backend.ToolResult{
 			Content: []any{map[string]any{
-				"type": "text",
-				"text": string(retJSON),
+				contentKeyType: contentKeyText,
+				contentKeyText: string(retJSON),
 			}},
 		}, nil
 	}
@@ -300,8 +300,8 @@ func (r *CodeRunner) Execute(ctx context.Context, code string) (*backend.ToolRes
 	return &backend.ToolResult{
 		IsError: true,
 		Content: []any{map[string]any{
-			"type": "text",
-			"text": "no tool calls found in code",
+			contentKeyType: contentKeyText,
+			contentKeyText: "no tool calls found in code",
 		}},
 	}, nil
 }
@@ -327,8 +327,8 @@ func (r *CodeRunner) buildResult(results []any, console []string) *backend.ToolR
 		return &backend.ToolResult{
 			IsError: true,
 			Content: []any{map[string]any{
-				"type": "text",
-				"text": "no tool calls found in code",
+				contentKeyType: contentKeyText,
+				contentKeyText: "no tool calls found in code",
 			}},
 		}
 	}
@@ -338,8 +338,8 @@ func (r *CodeRunner) buildResult(results []any, console []string) *backend.ToolR
 		return &backend.ToolResult{
 			IsError: true,
 			Content: []any{map[string]any{
-				"type": "text",
-				"text": fmt.Sprintf("marshal results: %s", err),
+				contentKeyType: contentKeyText,
+				contentKeyText: fmt.Sprintf("marshal results: %s", err),
 			}},
 		}
 	}
@@ -351,8 +351,8 @@ func (r *CodeRunner) buildResult(results []any, console []string) *backend.ToolR
 
 	return &backend.ToolResult{
 		Content: []any{map[string]any{
-			"type": "text",
-			"text": string(resultJSON),
+			contentKeyType: contentKeyText,
+			contentKeyText: string(resultJSON),
 		}},
 	}
 }
@@ -373,10 +373,10 @@ func extractJSValue(rt *goja.Runtime, result *backend.ToolResult) goja.Value {
 		if !ok {
 			continue
 		}
-		if m["type"] != "text" {
+		if m[contentKeyType] != contentKeyText {
 			continue
 		}
-		text, ok := m["text"].(string)
+		text, ok := m[contentKeyText].(string)
 		if !ok {
 			continue
 		}

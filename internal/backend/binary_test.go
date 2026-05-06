@@ -45,7 +45,7 @@ func TestBinaryResponseHandling(t *testing.T) {
 	// Mock backend returns audio/mpeg
 	audioData := []byte("fake-mp3-audio-data-for-testing")
 	backendSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "audio/mpeg")
+		w.Header().Set(testHeaderContentType, testContentTypeAudioMPEG)
 		w.Header().Set("Content-Disposition", `attachment; filename="speech.mp3"`)
 		_, _ = w.Write(audioData)
 	}))
@@ -61,7 +61,7 @@ func TestBinaryResponseHandling(t *testing.T) {
 			http.Error(w, err.Error(), 500)
 			return
 		}
-		file, header, err := r.FormFile("file")
+		file, header, err := r.FormFile(paramTypeFile)
 		if err != nil {
 			http.Error(w, err.Error(), 500)
 			return
@@ -69,7 +69,7 @@ func TestBinaryResponseHandling(t *testing.T) {
 		defer func() { _ = file.Close() }()
 		data, _ := io.ReadAll(file)
 
-		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set(testHeaderContentType, testContentTypeJSON)
 		w.WriteHeader(http.StatusCreated)
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"file_id": "f-abc123",
@@ -90,19 +90,19 @@ func TestBinaryResponseHandling(t *testing.T) {
 	spec := &dadl.Spec{
 		Backend: dadl.BackendDef{
 			Name:    "elevenlabs",
-			Type:    "rest",
+			Type:    transportTypeREST,
 			BaseURL: backendSrv.URL,
 			Tools: map[string]dadl.ToolDef{
 				"create_speech": {
-					Method: "POST",
+					Method: testMethodPOST,
 					Path:   "/v1/text-to-speech/{voice_id}",
 					Params: map[string]dadl.ParamDef{
-						"voice_id": {Type: "string", In: "path", Required: true},
-						"text":     {Type: "string", In: "body", Required: true},
+						testParamVoiceID: {Type: schemaTypeString, In: paramInPath, Required: true},
+						contentTypeText:  {Type: schemaTypeString, In: paramInBody, Required: true},
 					},
 					Response: &dadl.ResponseConfig{
 						Binary:      true,
-						ContentType: "audio/mpeg",
+						ContentType: testContentTypeAudioMPEG,
 					},
 				},
 			},
@@ -119,8 +119,8 @@ func TestBinaryResponseHandling(t *testing.T) {
 	})
 
 	result, err := adapter.Execute(context.Background(), "create_speech", map[string]any{
-		"voice_id": "test-voice",
-		"text":     "Hallo Welt",
+		testParamVoiceID: "test-voice",
+		contentTypeText:  "Hallo Welt",
 	})
 	if err != nil {
 		t.Fatalf("execute: %v", err)
@@ -141,10 +141,10 @@ func TestBinaryResponseHandling(t *testing.T) {
 	if parsed["url"] != "https://files.example.com/f-abc123" {
 		t.Errorf("url = %v", parsed["url"])
 	}
-	if parsed["content_type"] != "audio/mpeg" {
-		t.Errorf("content_type = %v, want audio/mpeg", parsed["content_type"])
+	if parsed[fileKeyContentType] != testContentTypeAudioMPEG {
+		t.Errorf("content_type = %v, want audio/mpeg", parsed[fileKeyContentType])
 	}
-	sizeBytes, _ := parsed["size_bytes"].(float64)
+	sizeBytes, _ := parsed[fileKeySizeBytes].(float64)
 	if int(sizeBytes) != len(audioData) {
 		t.Errorf("size_bytes = %v, want %d", sizeBytes, len(audioData))
 	}
@@ -158,23 +158,23 @@ func TestBinaryResponseHandling(t *testing.T) {
 func TestBinaryResponseFallbackBlobStore(t *testing.T) {
 	audioData := []byte("fake-audio-bytes")
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "audio/mpeg")
+		w.Header().Set(testHeaderContentType, testContentTypeAudioMPEG)
 		_, _ = w.Write(audioData)
 	}))
 	defer srv.Close()
 
 	spec := &dadl.Spec{
 		Backend: dadl.BackendDef{
-			Name:    "testapi",
-			Type:    "rest",
+			Name:    testBackendNameTestAPI,
+			Type:    transportTypeREST,
 			BaseURL: srv.URL,
 			Tools: map[string]dadl.ToolDef{
-				"get_audio": {
-					Method: "GET",
-					Path:   "/audio",
+				testToolGetAudio: {
+					Method: testMethodGET,
+					Path:   testPathAudio,
 					Response: &dadl.ResponseConfig{
 						Binary:      true,
-						ContentType: "audio/mpeg",
+						ContentType: testContentTypeAudioMPEG,
 					},
 				},
 			},
@@ -187,7 +187,7 @@ func TestBinaryResponseFallbackBlobStore(t *testing.T) {
 	}
 	adapter.SetBlobStore(testBlobStore(t))
 
-	result, err := adapter.Execute(context.Background(), "get_audio", nil)
+	result, err := adapter.Execute(context.Background(), testToolGetAudio, nil)
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}
@@ -208,8 +208,8 @@ func TestBinaryResponseFallbackBlobStore(t *testing.T) {
 	if !strings.HasPrefix(blobURL, "http://localhost:8080/blobs/") {
 		t.Errorf("unexpected blob URL: %s", blobURL)
 	}
-	if parsed["content_type"] != "audio/mpeg" {
-		t.Errorf("content_type = %v", parsed["content_type"])
+	if parsed[fileKeyContentType] != testContentTypeAudioMPEG {
+		t.Errorf("content_type = %v", parsed[fileKeyContentType])
 	}
 	if parsed["expires"] == nil {
 		t.Error("missing expires field")
@@ -231,22 +231,22 @@ func TestBinaryResponseFallbackBlobStore(t *testing.T) {
 
 func TestJSONResponseUnchanged(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"voices": [{"id": "v1", "name": "Rachel"}]}`))
+		w.Header().Set(testHeaderContentType, testContentTypeJSON)
+		_, _ = w.Write([]byte(`{"voices": [{"id": "v1", testParamName: "Rachel"}]}`))
 	}))
 	defer srv.Close()
 
 	spec := &dadl.Spec{
 		Backend: dadl.BackendDef{
-			Name:    "testapi",
-			Type:    "rest",
+			Name:    testBackendNameTestAPI,
+			Type:    transportTypeREST,
 			BaseURL: srv.URL,
 			Defaults: dadl.DefaultsConfig{
-				Headers: map[string]string{"Accept": "application/json"},
+				Headers: map[string]string{testHeaderAccept: testContentTypeJSON},
 			},
 			Tools: map[string]dadl.ToolDef{
 				"list_voices": {
-					Method: "GET",
+					Method: testMethodGET,
 					Path:   "/voices",
 					// No binary config — standard JSON path
 				},
@@ -284,19 +284,19 @@ func TestBinaryResponseLargePayload(t *testing.T) {
 	_, _ = rand.Read(largeData)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/pdf")
+		w.Header().Set(testHeaderContentType, "application/pdf")
 		_, _ = w.Write(largeData)
 	}))
 	defer srv.Close()
 
 	spec := &dadl.Spec{
 		Backend: dadl.BackendDef{
-			Name:    "testapi",
-			Type:    "rest",
+			Name:    testBackendNameTestAPI,
+			Type:    transportTypeREST,
 			BaseURL: srv.URL,
 			Tools: map[string]dadl.ToolDef{
 				"get_pdf": {
-					Method: "GET",
+					Method: testMethodGET,
 					Path:   "/report.pdf",
 					Response: &dadl.ResponseConfig{
 						Binary:      true,
@@ -329,7 +329,7 @@ func TestBinaryResponseLargePayload(t *testing.T) {
 	if parsed["url"] == nil {
 		t.Fatal("missing url in result")
 	}
-	sizeBytes, _ := parsed["size_bytes"].(float64)
+	sizeBytes, _ := parsed[fileKeySizeBytes].(float64)
 	if int(sizeBytes) != len(largeData) {
 		t.Errorf("size_bytes = %v, want %d", sizeBytes, len(largeData))
 	}
@@ -351,23 +351,23 @@ func TestBinaryResponseLargePayload(t *testing.T) {
 
 func TestBinaryResponseNoBlobStoreError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "audio/mpeg")
+		w.Header().Set(testHeaderContentType, testContentTypeAudioMPEG)
 		_, _ = w.Write([]byte("audio-data"))
 	}))
 	defer srv.Close()
 
 	spec := &dadl.Spec{
 		Backend: dadl.BackendDef{
-			Name:    "testapi",
-			Type:    "rest",
+			Name:    testBackendNameTestAPI,
+			Type:    transportTypeREST,
 			BaseURL: srv.URL,
 			Tools: map[string]dadl.ToolDef{
-				"get_audio": {
-					Method: "GET",
-					Path:   "/audio",
+				testToolGetAudio: {
+					Method: testMethodGET,
+					Path:   testPathAudio,
 					Response: &dadl.ResponseConfig{
 						Binary:      true,
-						ContentType: "audio/mpeg",
+						ContentType: testContentTypeAudioMPEG,
 					},
 				},
 			},
@@ -380,7 +380,7 @@ func TestBinaryResponseNoBlobStoreError(t *testing.T) {
 	}
 	// No blob store, no file broker — should return clear error
 
-	result, err := adapter.Execute(context.Background(), "get_audio", nil)
+	result, err := adapter.Execute(context.Background(), testToolGetAudio, nil)
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}
@@ -396,23 +396,23 @@ func TestBinaryResponseNoBlobStoreError(t *testing.T) {
 func TestBinaryContentTypeDetection(t *testing.T) {
 	// Backend returns Content-Type that differs from DADL config
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "audio/wav") // HTTP says wav
+		w.Header().Set(testHeaderContentType, "audio/wav") // HTTP says wav
 		_, _ = w.Write([]byte("RIFF-fake-wav"))
 	}))
 	defer srv.Close()
 
 	spec := &dadl.Spec{
 		Backend: dadl.BackendDef{
-			Name:    "testapi",
-			Type:    "rest",
+			Name:    testBackendNameTestAPI,
+			Type:    transportTypeREST,
 			BaseURL: srv.URL,
 			Tools: map[string]dadl.ToolDef{
-				"get_audio": {
-					Method: "GET",
-					Path:   "/audio",
+				testToolGetAudio: {
+					Method: testMethodGET,
+					Path:   testPathAudio,
 					Response: &dadl.ResponseConfig{
 						Binary:      true,
-						ContentType: "audio/mpeg", // DADL says mpeg
+						ContentType: testContentTypeAudioMPEG, // DADL says mpeg
 					},
 				},
 			},
@@ -425,7 +425,7 @@ func TestBinaryContentTypeDetection(t *testing.T) {
 	}
 	adapter.SetBlobStore(testBlobStore(t))
 
-	result, err := adapter.Execute(context.Background(), "get_audio", nil)
+	result, err := adapter.Execute(context.Background(), testToolGetAudio, nil)
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}
@@ -440,8 +440,8 @@ func TestBinaryContentTypeDetection(t *testing.T) {
 	}
 
 	// HTTP Content-Type should take precedence over DADL config
-	if parsed["content_type"] != "audio/wav" {
-		t.Errorf("content_type = %v, want audio/wav (HTTP header should take precedence)", parsed["content_type"])
+	if parsed[fileKeyContentType] != "audio/wav" {
+		t.Errorf("content_type = %v, want audio/wav (HTTP header should take precedence)", parsed[fileKeyContentType])
 	}
 }
 
@@ -449,7 +449,7 @@ func TestBinaryStreamingCollect(t *testing.T) {
 	// Mock backend sends chunked response
 	audioData := bytes.Repeat([]byte("chunk"), 100)
 	backendSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "audio/mpeg")
+		w.Header().Set(testHeaderContentType, testContentTypeAudioMPEG)
 		w.Header().Set("Transfer-Encoding", "chunked")
 		flusher, ok := w.(http.Flusher)
 		// Write in chunks
@@ -473,7 +473,7 @@ func TestBinaryStreamingCollect(t *testing.T) {
 			http.Error(w, err.Error(), 500)
 			return
 		}
-		file, _, err := r.FormFile("file")
+		file, _, err := r.FormFile(paramTypeFile)
 		if err != nil {
 			http.Error(w, err.Error(), 500)
 			return
@@ -482,7 +482,7 @@ func TestBinaryStreamingCollect(t *testing.T) {
 		data, _ := io.ReadAll(file)
 		uploadedBytes = len(data)
 
-		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set(testHeaderContentType, testContentTypeJSON)
 		w.WriteHeader(http.StatusCreated)
 		_, _ = fmt.Fprintf(w, `{"file_id":"f-stream","url":"https://files.example.com/f-stream","expires":"2026-03-30T14:00:00Z"}`)
 	}))
@@ -491,20 +491,20 @@ func TestBinaryStreamingCollect(t *testing.T) {
 	spec := &dadl.Spec{
 		Backend: dadl.BackendDef{
 			Name:    "elevenlabs",
-			Type:    "rest",
+			Type:    transportTypeREST,
 			BaseURL: backendSrv.URL,
 			Tools: map[string]dadl.ToolDef{
 				"stream_speech": {
-					Method: "POST",
+					Method: testMethodPOST,
 					Path:   "/v1/text-to-speech/{voice_id}/stream",
 					Params: map[string]dadl.ParamDef{
-						"voice_id": {Type: "string", In: "path", Required: true},
+						testParamVoiceID: {Type: schemaTypeString, In: paramInPath, Required: true},
 					},
 					Response: &dadl.ResponseConfig{
 						Binary:         true,
 						Streaming:      true,
 						StreamHandling: "collect",
-						ContentType:    "audio/mpeg",
+						ContentType:    testContentTypeAudioMPEG,
 					},
 				},
 			},
@@ -521,7 +521,7 @@ func TestBinaryStreamingCollect(t *testing.T) {
 	})
 
 	result, err := adapter.Execute(context.Background(), "stream_speech", map[string]any{
-		"voice_id": "test-voice",
+		testParamVoiceID: "test-voice",
 	})
 	if err != nil {
 		t.Fatalf("execute: %v", err)

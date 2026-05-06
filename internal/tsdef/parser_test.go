@@ -47,8 +47,8 @@ export function search(params: {
 	}
 
 	q := d.Params[0]
-	if q.Name != "query" {
-		t.Errorf("param[0].name = %q, want %q", q.Name, "query")
+	if q.Name != testParamInQuery {
+		t.Errorf("param[0].name = %q, want %q", q.Name, testParamInQuery)
 	}
 	if q.Type.Kind != kindString {
 		t.Errorf("param[0].type = %q, want %q", q.Type.Kind, kindString)

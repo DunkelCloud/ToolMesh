@@ -117,7 +117,7 @@ func buildParamType(tool ToolDef) string {
 	}
 	var required, optional []paramEntry
 	for name, def := range tool.Params {
-		if def.Required || def.In == "path" {
+		if def.Required || def.In == paramInPath {
 			required = append(required, paramEntry{name, def})
 		} else {
 			optional = append(optional, paramEntry{name, def})
@@ -137,17 +137,27 @@ func buildParamType(tool ToolDef) string {
 	return strings.Join(parts, ", ")
 }
 
+// JSON Schema type strings recognized by DADL → TypeScript generation.
+const (
+	jsTypeString  = "string"
+	jsTypeInteger = "integer"
+	jsTypeNumber  = "number"
+	jsTypeBoolean = "boolean"
+	jsTypeArray   = "array"
+	jsTypeObject  = "object"
+)
+
 func dadlTypeToTS(t string) string {
 	switch t {
-	case "string":
-		return "string"
-	case "integer", "number":
-		return "number"
-	case "boolean":
-		return "boolean"
-	case "array":
+	case jsTypeString:
+		return jsTypeString
+	case jsTypeInteger, jsTypeNumber:
+		return jsTypeNumber
+	case jsTypeBoolean:
+		return jsTypeBoolean
+	case jsTypeArray:
 		return "any[]"
-	case "object":
+	case jsTypeObject:
 		return "Record<string, any>"
 	default:
 		return "any"

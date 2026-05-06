@@ -57,24 +57,27 @@ type Registry struct {
 	labelTool        bool
 }
 
+// metricsNamespace is the Prometheus namespace prefix for all ToolMesh metrics.
+const metricsNamespace = "toolmesh"
+
 // New constructs a Registry with all ToolMesh metrics pre-registered.
 func New(opts Options) *Registry {
 	reg := prometheus.NewRegistry()
 
 	logins := prometheus.NewCounterVec(prometheus.CounterOpts{
-		Namespace: "toolmesh",
+		Namespace: metricsNamespace,
 		Name:      "logins_total",
 		Help:      "Authentication events. method=oauth_code|oauth_refresh|oauth_bearer|api_key, result=success|failure.",
 	}, []string{"method", "result"})
 
 	toolCalls := prometheus.NewCounterVec(prometheus.CounterOpts{
-		Namespace: "toolmesh",
+		Namespace: metricsNamespace,
 		Name:      "tool_calls_total",
 		Help:      "Tool invocations after authentication. result=success|error|denied (denied = blocked by OpenFGA or output gate).",
 	}, []string{"backend", "tool", "result"})
 
 	toolCallDuration := prometheus.NewHistogramVec(prometheus.HistogramOpts{
-		Namespace: "toolmesh",
+		Namespace: metricsNamespace,
 		Name:      "tool_call_duration_seconds",
 		Help:      "End-to-end tool-call latency, from handler entry to result return.",
 		Buckets:   restLatencyBuckets,

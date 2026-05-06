@@ -33,11 +33,11 @@ func (m *errMockCreds) Healthy(_ context.Context) error { return nil }
 
 func TestRestAuth_InjectBearer_UnexpectedError(t *testing.T) {
 	auth := NewRestAuth(
-		AuthConfig{Type: "bearer", Credential: "X"},
+		AuthConfig{Type: authTypeBearer, Credential: "X"},
 		"", &errMockCreds{err: errors.New("backend exploded")},
 		newQuietLogger(),
 	)
-	req, _ := http.NewRequestWithContext(context.Background(), "GET", "http://example.com", nil)
+	req, _ := http.NewRequestWithContext(context.Background(), httpMethodGET, "http://example.com", nil)
 	if err := auth.InjectAuth(context.Background(), req); err == nil {
 		t.Error("expected error")
 	}
@@ -45,11 +45,11 @@ func TestRestAuth_InjectBearer_UnexpectedError(t *testing.T) {
 
 func TestRestAuth_InjectAPIKey_UnexpectedError(t *testing.T) {
 	auth := NewRestAuth(
-		AuthConfig{Type: "apikey", Credential: "X"},
+		AuthConfig{Type: authTypeAPIKey, Credential: "X"},
 		"", &errMockCreds{err: errors.New("broken")},
 		newQuietLogger(),
 	)
-	req, _ := http.NewRequestWithContext(context.Background(), "GET", "http://example.com", nil)
+	req, _ := http.NewRequestWithContext(context.Background(), httpMethodGET, "http://example.com", nil)
 	if err := auth.InjectAuth(context.Background(), req); err == nil {
 		t.Error("expected error")
 	}
@@ -57,11 +57,11 @@ func TestRestAuth_InjectAPIKey_UnexpectedError(t *testing.T) {
 
 func TestRestAuth_InjectAPIKey_Missing(t *testing.T) {
 	auth := NewRestAuth(
-		AuthConfig{Type: "apikey", Credential: "MISSING", InjectInto: "header", HeaderName: "X-API"},
+		AuthConfig{Type: authTypeAPIKey, Credential: testCredMissing, InjectInto: "header", HeaderName: "X-API"},
 		"", &realMockCreds{creds: map[string]string{}},
 		newQuietLogger(),
 	)
-	req, _ := http.NewRequestWithContext(context.Background(), "GET", "http://example.com", nil)
+	req, _ := http.NewRequestWithContext(context.Background(), httpMethodGET, "http://example.com", nil)
 	if err := auth.InjectAuth(context.Background(), req); err != nil {
 		t.Errorf("missing credential should be skipped, got %v", err)
 	}
@@ -73,17 +73,17 @@ func TestRestAuth_InjectAPIKey_Missing(t *testing.T) {
 func TestRestAuth_InjectBasic_PasswordError(t *testing.T) {
 	// Username is present but password lookup returns unexpected error.
 	creds := &errMockCredsSelective{
-		values: map[string]string{"USER": "alice"},
+		values: map[string]string{"USER": testUserAlice},
 		errFor: "PASS",
 		err:    errors.New("vault down"),
 	}
 	auth := NewRestAuth(
 		AuthConfig{
-			Type:               "basic",
+			Type:               authTypeBasic,
 			UsernameCredential: "USER",
 			PasswordCredential: "PASS",
 		}, "", creds, newQuietLogger())
-	req, _ := http.NewRequestWithContext(context.Background(), "GET", "http://example.com", nil)
+	req, _ := http.NewRequestWithContext(context.Background(), httpMethodGET, "http://example.com", nil)
 	if err := auth.InjectAuth(context.Background(), req); err == nil {
 		t.Error("expected error")
 	}
@@ -109,30 +109,30 @@ func (m *errMockCredsSelective) Healthy(_ context.Context) error { return nil }
 
 func TestRestAuth_OAuth2_ClientSecretError(t *testing.T) {
 	creds := &errMockCredsSelective{
-		values: map[string]string{"CID": "c"},
-		errFor: "SEC",
+		values: map[string]string{testCredOAuth2ClientID: "c"},
+		errFor: testCredOAuth2ClientSecret,
 		err:    errors.New("vault error"),
 	}
 	auth := NewRestAuth(AuthConfig{ //nolint:gosec // test credentials, not real
-		Type:                   "oauth2",
-		ClientIDCredential:     "CID",
-		ClientSecretCredential: "SEC",
+		Type:                   authTypeOAuth2,
+		ClientIDCredential:     testCredOAuth2ClientID,
+		ClientSecretCredential: testCredOAuth2ClientSecret,
 		TokenURL:               "http://example.com/token",
 	}, "", creds, newQuietLogger())
-	req, _ := http.NewRequestWithContext(context.Background(), "GET", "http://example.com", nil)
+	req, _ := http.NewRequestWithContext(context.Background(), httpMethodGET, "http://example.com", nil)
 	if err := auth.InjectAuth(context.Background(), req); err == nil {
 		t.Error("expected error")
 	}
 }
 
 func TestRestAuth_InjectBasic_PasswordMissing(t *testing.T) {
-	creds := &realMockCreds{creds: map[string]string{"U": "alice"}}
+	creds := &realMockCreds{creds: map[string]string{"U": testUserAlice}}
 	auth := NewRestAuth(AuthConfig{
-		Type:               "basic",
+		Type:               authTypeBasic,
 		UsernameCredential: "U",
-		PasswordCredential: "MISSING",
+		PasswordCredential: testCredMissing,
 	}, "", creds, newQuietLogger())
-	req, _ := http.NewRequestWithContext(context.Background(), "GET", "http://example.com", nil)
+	req, _ := http.NewRequestWithContext(context.Background(), httpMethodGET, "http://example.com", nil)
 	if err := auth.InjectAuth(context.Background(), req); err != nil {
 		t.Errorf("missing password should be skipped, got %v", err)
 	}

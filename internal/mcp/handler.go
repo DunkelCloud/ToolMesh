@@ -93,8 +93,8 @@ func (h *Handler) isBuiltinTool(name string) bool {
 
 // HandleToolCall processes a single tool call through the execution pipeline.
 func (h *Handler) HandleToolCall(ctx context.Context, toolName string, params map[string]any) (result *backend.ToolResult, err error) {
-	h.logger.InfoContext(ctx, "handling tool call", "tool", toolName)
-	h.logger.DebugContext(ctx, "tool call params", "tool", toolName, "params", params)
+	h.logger.InfoContext(ctx, "handling tool call", logKeyTool, toolName)
+	h.logger.DebugContext(ctx, "tool call params", logKeyTool, toolName, "params", params)
 
 	// Instrument only the built-in meta-tools here. Real tool calls — both
 	// direct ones from the default branch and individual calls extracted from
@@ -105,7 +105,7 @@ func (h *Handler) HandleToolCall(ctx context.Context, toolName string, params ma
 		defer func() {
 			outcome := "success"
 			if err != nil || (result != nil && result.IsError) {
-				outcome = "error"
+				outcome = outcomeError
 			}
 			h.metrics.RecordToolCall("builtin", toolName, outcome, time.Since(start))
 		}()
@@ -131,17 +131,17 @@ func (h *Handler) HandleToolCall(ctx context.Context, toolName string, params ma
 		if h.coercer != nil {
 			coerced, cerr := h.coercer.Coerce(toolName, params)
 			if cerr != nil {
-				h.logger.DebugContext(ctx, "coercion failed", "tool", toolName, "error", cerr)
+				h.logger.DebugContext(ctx, "coercion failed", logKeyTool, toolName, outcomeError, cerr)
 				return &backend.ToolResult{
 					IsError: true,
 					Content: []any{map[string]any{
-						"type": "text",
-						"text": fmt.Sprintf("Parameter coercion failed: %s", cerr),
+						contentKeyType: contentKeyText,
+						contentKeyText: fmt.Sprintf("Parameter coercion failed: %s", cerr),
 					}},
 				}, nil
 			}
 			if fmt.Sprintf("%v", coerced) != fmt.Sprintf("%v", params) {
-				h.logger.DebugContext(ctx, "params after coercion", "tool", toolName, "coerced", coerced)
+				h.logger.DebugContext(ctx, "params after coercion", logKeyTool, toolName, "coerced", coerced)
 			}
 			params = coerced
 		}
@@ -151,10 +151,10 @@ func (h *Handler) HandleToolCall(ctx context.Context, toolName string, params ma
 			Params:   params,
 		})
 		if err != nil {
-			h.logger.DebugContext(ctx, "tool execution error", "tool", toolName, "error", err)
+			h.logger.DebugContext(ctx, "tool execution error", logKeyTool, toolName, outcomeError, err)
 			return nil, err
 		}
-		h.logger.DebugContext(ctx, "tool execution result", "tool", toolName, "isError", result.IsError)
+		h.logger.DebugContext(ctx, "tool execution result", logKeyTool, toolName, "isError", result.IsError)
 		return result, nil
 	}
 }
@@ -163,7 +163,7 @@ func (h *Handler) handleDiscoverTools(ctx context.Context, params map[string]any
 	// pattern is optional. An empty or missing pattern is treated as ".*"
 	// (return every authorized tool) — making the common "list everything"
 	// case work without an explicit magic-string argument.
-	patternStr, _ := params["pattern"].(string)
+	patternStr, _ := params[argNamePattern].(string)
 	if patternStr == "" {
 		patternStr = ".*"
 	}
@@ -173,8 +173,8 @@ func (h *Handler) handleDiscoverTools(ctx context.Context, params map[string]any
 		return &backend.ToolResult{
 			IsError: true,
 			Content: []any{map[string]any{
-				"type": "text",
-				"text": fmt.Sprintf("Invalid regex pattern %q: %s", patternStr, err),
+				contentKeyType: contentKeyText,
+				contentKeyText: fmt.Sprintf("Invalid regex pattern %q: %s", patternStr, err),
 			}},
 		}, nil
 	}
@@ -208,27 +208,27 @@ func (h *Handler) handleDiscoverTools(ctx context.Context, params map[string]any
 	definitions += GenerateToolDefinitions(filtered)
 
 	h.logger.InfoContext(ctx, "discover_tools",
-		"pattern", patternStr,
+		argNamePattern, patternStr,
 		"matched", len(filtered),
 		"total", len(tools),
 	)
 
 	return &backend.ToolResult{
 		Content: []any{map[string]any{
-			"type": "text",
-			"text": definitions,
+			contentKeyType: contentKeyText,
+			contentKeyText: definitions,
 		}},
 	}, nil
 }
 
 func (h *Handler) handleExecuteCode(ctx context.Context, params map[string]any) *backend.ToolResult {
-	codeRaw, ok := params["code"]
+	codeRaw, ok := params[argNameCode]
 	if !ok {
 		return &backend.ToolResult{
 			IsError: true,
 			Content: []any{map[string]any{
-				"type": "text",
-				"text": "Missing required parameter: code",
+				contentKeyType: contentKeyText,
+				contentKeyText: "Missing required parameter: code",
 			}},
 		}
 	}
@@ -238,33 +238,33 @@ func (h *Handler) handleExecuteCode(ctx context.Context, params map[string]any) 
 		return &backend.ToolResult{
 			IsError: true,
 			Content: []any{map[string]any{
-				"type": "text",
-				"text": "Parameter 'code' must be a string",
+				contentKeyType: contentKeyText,
+				contentKeyText: "Parameter 'code' must be a string",
 			}},
 		}
 	}
 
-	h.logger.DebugContext(ctx, "execute_code input", "code", code)
+	h.logger.DebugContext(ctx, "execute_code input", argNameCode, code)
 
 	result, err := h.codeRunner.Execute(ctx, code)
 	if err != nil {
-		h.logger.WarnContext(ctx, "execute_code failed", "error", err)
+		h.logger.WarnContext(ctx, "execute_code failed", outcomeError, err)
 		// If we got a partial result (e.g. some calls succeeded before error),
 		// keep it and append the real error so the caller doesn't only see the
 		// runner's "no tool calls found in code" placeholder.
 		if result != nil {
 			result.IsError = true
 			result.Content = append(result.Content, map[string]any{
-				"type": "text",
-				"text": fmt.Sprintf("execute_code failed: %s", err),
+				contentKeyType: contentKeyText,
+				contentKeyText: fmt.Sprintf("execute_code failed: %s", err),
 			})
 			return result
 		}
 		return &backend.ToolResult{
 			IsError: true,
 			Content: []any{map[string]any{
-				"type": "text",
-				"text": fmt.Sprintf("execute_code failed: %s", err),
+				contentKeyType: contentKeyText,
+				contentKeyText: fmt.Sprintf("execute_code failed: %s", err),
 			}},
 		}
 	}
@@ -290,30 +290,30 @@ func (h *Handler) BuildToolList(ctx context.Context) ([]ToolDefinition, error) {
 
 	tools := []ToolDefinition{
 		{
-			Name:        "discover_tools",
+			Name:        toolDiscoverTools,
 			Description: discoverToolsDesc,
 			InputSchema: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"pattern": map[string]any{
-						"type":        "string",
-						"description": "Optional case-insensitive regex matched against tool names and descriptions. Defaults to \".*\" (all tools) when omitted or empty.",
+				contentKeyType: jsonTypeObject,
+				schemaKeyProperties: map[string]any{
+					argNamePattern: map[string]any{
+						contentKeyType:       jsonTypeString,
+						schemaKeyDescription: "Optional case-insensitive regex matched against tool names and descriptions. Defaults to \".*\" (all tools) when omitted or empty.",
 					},
 				},
 			},
 		},
 		{
-			Name:        "execute_code",
+			Name:        toolExecuteCode,
 			Description: executeCodeDesc,
 			InputSchema: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"code": map[string]any{
-						"type":        "string",
-						"description": "JavaScript body that calls toolmesh.<backend>.<function>(...). Top-level await is supported. Example: `const r = await toolmesh.github.list_user_repos({username: \"octocat\"}); return r[0].name;`",
+				contentKeyType: jsonTypeObject,
+				schemaKeyProperties: map[string]any{
+					argNameCode: map[string]any{
+						contentKeyType:       jsonTypeString,
+						schemaKeyDescription: "JavaScript body that calls toolmesh.<backend>.<function>(...). Top-level await is supported. Example: `const r = await toolmesh.github.list_user_repos({username: \"octocat\"}); return r[0].name;`",
 					},
 				},
-				"required": []string{"code"},
+				schemaKeyRequired: []string{argNameCode},
 			},
 		},
 	}

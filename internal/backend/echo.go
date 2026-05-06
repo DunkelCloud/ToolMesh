@@ -50,7 +50,7 @@ func NewEchoBackendWithDefs(defs []ToolDescriptor) *EchoBackend {
 // Execute runs the specified echo tool.
 func (b *EchoBackend) Execute(_ context.Context, toolName string, params map[string]any) (*ToolResult, error) {
 	switch toolName {
-	case "echo":
+	case echoToolName:
 		return b.echo(params)
 	case "add":
 		return b.add(params)
@@ -81,44 +81,44 @@ func (b *EchoBackend) LookupTool(toolName string) (ToolDescriptor, bool) {
 func defaultEchoTools() []ToolDescriptor {
 	return []ToolDescriptor{
 		{
-			Name:        "echo",
+			Name:        echoToolName,
 			Description: "Echoes back the input message",
 			InputSchema: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"message": map[string]any{
-						"type":        "string",
-						"description": "Message to echo back",
+				schemaKeyType: schemaTypeObject,
+				schemaKeyProperties: map[string]any{
+					schemaKeyMessage: map[string]any{
+						schemaKeyType:        schemaTypeString,
+						schemaKeyDescription: "Message to echo back",
 					},
 				},
-				"required": []any{"message"},
+				"required": []any{schemaKeyMessage},
 			},
-			Backend: "builtin:echo",
-			Access:  "read",
+			Backend: echoBackendName,
+			Access:  accessRead,
 		},
 		{
 			Name:        "add",
 			Description: "Adds two numbers",
 			InputSchema: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"a": map[string]any{"type": "number", "description": "First number"},
-					"b": map[string]any{"type": "number", "description": "Second number"},
+				schemaKeyType: schemaTypeObject,
+				schemaKeyProperties: map[string]any{
+					"a": map[string]any{schemaKeyType: schemaTypeNumber, schemaKeyDescription: "First number"},
+					"b": map[string]any{schemaKeyType: schemaTypeNumber, schemaKeyDescription: "Second number"},
 				},
 				"required": []any{"a", "b"},
 			},
-			Backend: "builtin:echo",
-			Access:  "read",
+			Backend: echoBackendName,
+			Access:  accessRead,
 		},
 		{
 			Name:        "time",
 			Description: "Returns the current UTC time",
 			InputSchema: map[string]any{
-				"type":       "object",
-				"properties": map[string]any{},
+				schemaKeyType:       schemaTypeObject,
+				schemaKeyProperties: map[string]any{},
 			},
-			Backend: "builtin:echo",
-			Access:  "read",
+			Backend: echoBackendName,
+			Access:  accessRead,
 		},
 	}
 }
@@ -156,8 +156,8 @@ func (b *EchoBackend) currentTime() (*ToolResult, error) {
 func textResult(text string) *ToolResult {
 	return &ToolResult{
 		Content: []any{map[string]any{
-			"type": "text",
-			"text": text,
+			schemaKeyType:   contentTypeText,
+			contentTypeText: text,
 		}},
 	}
 }

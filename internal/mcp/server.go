@@ -250,9 +250,9 @@ func (s *Server) handleToolsList(w http.ResponseWriter, ctx context.Context, req
 	mcpTools := make([]map[string]any, 0, len(tools))
 	for _, t := range tools {
 		mcpTools = append(mcpTools, map[string]any{
-			"name":        t.Name,
-			"description": t.Description,
-			"inputSchema": t.InputSchema,
+			"name":               t.Name,
+			schemaKeyDescription: t.Description,
+			"inputSchema":        t.InputSchema,
 		})
 	}
 
@@ -280,7 +280,7 @@ func (s *Server) handleToolsCall(w http.ResponseWriter, ctx context.Context, req
 	result, err := s.handler.HandleToolCall(ctx, params.Name, params.Arguments)
 	if err != nil {
 		// M-17: Log full error server-side, return generic message to client.
-		s.logger.ErrorContext(ctx, "tool call failed", "tool", params.Name, "error", err)
+		s.logger.ErrorContext(ctx, "tool call failed", logKeyTool, params.Name, outcomeError, err)
 		s.writeJSONRPCError(w, req.ID, -32603, "Internal error")
 		return
 	}
@@ -326,7 +326,7 @@ func (s *Server) authenticate(r *http.Request) *userctx.UserContext {
 			s.metrics.RecordLogin("api_key", "success")
 			return &userctx.UserContext{
 				UserID:        s.cfg.AuthUser,
-				CompanyID:     "default",
+				CompanyID:     userDefault,
 				Roles:         s.cfg.AuthRolesList(),
 				Plan:          s.cfg.AuthPlan,
 				Authenticated: true,
@@ -361,20 +361,20 @@ func (s *Server) authenticate(r *http.Request) *userctx.UserContext {
 	// 4. No auth configured — allow anonymous (L-4: Authenticated=false for anonymous).
 	if !s.authRequired() {
 		return &userctx.UserContext{
-			UserID:        "anonymous",
-			CompanyID:     "default",
+			UserID:        userAnonymous,
+			CompanyID:     userDefault,
 			Roles:         []string{},
 			Plan:          "free",
 			Authenticated: false,
-			CallerID:      "anonymous",
+			CallerID:      userAnonymous,
 			CallerClass:   "untrusted",
 		}
 	}
 
 	return &userctx.UserContext{
-		UserID:        "anonymous",
+		UserID:        userAnonymous,
 		Authenticated: false,
-		CallerID:      "anonymous",
+		CallerID:      userAnonymous,
 		CallerClass:   "untrusted",
 	}
 }
@@ -423,11 +423,11 @@ func (s *Server) handleOAuthMetadata(w http.ResponseWriter, _ *http.Request) {
 		"authorization_endpoint":                iss + "/authorize",
 		"token_endpoint":                        iss + "/token",
 		"registration_endpoint":                 iss + "/register",
-		"response_types_supported":              []string{"code"},
-		"grant_types_supported":                 []string{"authorization_code", "refresh_token"},
+		"response_types_supported":              []string{oauthCode},
+		"grant_types_supported":                 []string{oauthGrantAuthCode, oauthRefreshToken},
 		"code_challenge_methods_supported":      []string{"S256"},
 		"token_endpoint_auth_methods_supported": []string{"none"},
-		"scopes_supported":                      []string{"claudeai"},
+		"scopes_supported":                      []string{clientClaudeAI},
 	})
 }
 
@@ -453,16 +453,16 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		ip := clientIP(r)
 		allowed, err := s.rateLimiter.Allow(ctx, ip)
 		if err != nil {
-			s.logger.ErrorContext(ctx, "dcr rate limit check failed", "error", err)
+			s.logger.ErrorContext(ctx, "dcr rate limit check failed", outcomeError, err)
 		} else if !allowed {
-			writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "too_many_requests"})
+			writeJSON(w, http.StatusTooManyRequests, map[string]string{outcomeError: "too_many_requests"})
 			return
 		}
 	}
 
 	// L-2: Validate Content-Type
 	if ct := r.Header.Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_request", "error_description": "Content-Type must be application/json"})
+		writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: oauthErrInvalidReq, oauthErrorDescription: "Content-Type must be application/json"})
 		return
 	}
 
@@ -474,7 +474,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		ClientName   string   `json:"client_name"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_request"})
+		writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: oauthErrInvalidReq})
 		return
 	}
 
@@ -482,14 +482,14 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	for _, uri := range req.RedirectURIs {
 		parsed, err := url.Parse(uri)
 		if err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_redirect_uri", "error_description": fmt.Sprintf("malformed URI: %s", uri)})
+			writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: oauthErrInvalidRedURI, oauthErrorDescription: fmt.Sprintf("malformed URI: %s", uri)})
 			return
 		}
 		if parsed.Scheme == "http" && (parsed.Hostname() == "localhost" || parsed.Hostname() == "127.0.0.1" || parsed.Hostname() == "::1") {
 			continue // http://localhost is allowed for development
 		}
 		if parsed.Scheme != "https" {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_redirect_uri", "error_description": fmt.Sprintf("redirect_uri must use https scheme: %s", uri)})
+			writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: oauthErrInvalidRedURI, oauthErrorDescription: fmt.Sprintf("redirect_uri must use https scheme: %s", uri)})
 			return
 		}
 	}
@@ -507,8 +507,8 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 
 	if s.tokenStore != nil {
 		if err := s.tokenStore.SaveClient(ctx, client); err != nil {
-			s.logger.ErrorContext(ctx, "failed to save client", "error", err)
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
+			s.logger.ErrorContext(ctx, "failed to save client", outcomeError, err)
+			writeJSON(w, http.StatusInternalServerError, map[string]string{outcomeError: oauthErrServerError})
 			return
 		}
 	}
@@ -516,7 +516,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	s.logger.InfoContext(ctx, "registered oauth client", "clientId", clientID)
 
 	writeJSON(w, http.StatusCreated, map[string]any{
-		"client_id":                  clientID,
+		oauthClientID:                clientID,
 		"client_secret":              clientSecret,
 		"redirect_uris":              req.RedirectURIs,
 		"token_endpoint_auth_method": "none",
@@ -525,20 +525,20 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet {
-		clientID := r.URL.Query().Get("client_id")
-		redirectURI := r.URL.Query().Get("redirect_uri")
-		state := r.URL.Query().Get("state")
-		codeChallenge := r.URL.Query().Get("code_challenge")
+		clientID := r.URL.Query().Get(oauthClientID)
+		redirectURI := r.URL.Query().Get(oauthRedirectURI)
+		state := r.URL.Query().Get(oauthState)
+		codeChallenge := r.URL.Query().Get(oauthCodeChallenge)
 		codeChallengeMethod := r.URL.Query().Get("code_challenge_method")
-		scope := r.URL.Query().Get("scope")
+		scope := r.URL.Query().Get(oauthScope)
 
 		// PKCE is mandatory (OAuth 2.1)
 		if codeChallenge == "" {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_request", "error_description": "code_challenge is required (PKCE)"})
+			writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: oauthErrInvalidReq, oauthErrorDescription: "code_challenge is required (PKCE)"})
 			return
 		}
 		if codeChallengeMethod != "" && codeChallengeMethod != "S256" {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_request", "error_description": "only S256 code_challenge_method is supported"})
+			writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: oauthErrInvalidReq, oauthErrorDescription: "only S256 code_challenge_method is supported"})
 			return
 		}
 
@@ -546,7 +546,7 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		if s.tokenStore != nil {
 			client, err := s.tokenStore.GetClient(r.Context(), clientID)
 			if err != nil {
-				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_request", "error_description": "unknown client"})
+				writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: oauthErrInvalidReq, oauthErrorDescription: "unknown client"})
 				return
 			}
 			uriValid := false
@@ -557,7 +557,7 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			if !uriValid {
-				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_redirect_uri"})
+				writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: oauthErrInvalidRedURI})
 				return
 			}
 		}
@@ -575,15 +575,15 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 
 		username := r.FormValue("username")
 		password := r.FormValue("password")
-		clientID := r.FormValue("client_id")
-		redirectURI := r.FormValue("redirect_uri")
-		state := r.FormValue("state")
-		codeChallenge := r.FormValue("code_challenge")
-		scope := r.FormValue("scope")
+		clientID := r.FormValue(oauthClientID)
+		redirectURI := r.FormValue(oauthRedirectURI)
+		state := r.FormValue(oauthState)
+		codeChallenge := r.FormValue(oauthCodeChallenge)
+		scope := r.FormValue(oauthScope)
 
 		// PKCE is mandatory (OAuth 2.1)
 		if codeChallenge == "" {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_request", "error_description": "code_challenge is required (PKCE)"})
+			writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: oauthErrInvalidReq, oauthErrorDescription: "code_challenge is required (PKCE)"})
 			return
 		}
 
@@ -618,7 +618,7 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		if s.tokenStore != nil {
 			client, err := s.tokenStore.GetClient(r.Context(), clientID)
 			if err != nil {
-				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_redirect_uri", "error_description": "unknown client"})
+				writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: oauthErrInvalidRedURI, oauthErrorDescription: "unknown client"})
 				return
 			}
 			uriValid := false
@@ -629,7 +629,7 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			if !uriValid {
-				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_redirect_uri"})
+				writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: oauthErrInvalidRedURI})
 				return
 			}
 		}
@@ -650,7 +650,7 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 
 		if s.tokenStore != nil {
 			if err := s.tokenStore.SaveAuthCode(r.Context(), ac); err != nil {
-				s.logger.ErrorContext(r.Context(), "failed to save auth code", "error", err)
+				s.logger.ErrorContext(r.Context(), "failed to save auth code", outcomeError, err)
 				http.Error(w, "Internal server error", http.StatusInternalServerError)
 				return
 			}
@@ -678,17 +678,17 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1 MB limit
 	if err := r.ParseForm(); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_request"})
+		writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: oauthErrInvalidReq})
 		return
 	}
 
 	switch r.FormValue("grant_type") {
-	case "authorization_code":
+	case oauthGrantAuthCode:
 		s.handleAuthorizationCodeGrant(w, r)
-	case "refresh_token":
+	case oauthRefreshToken:
 		s.handleRefreshTokenGrant(w, r)
 	default:
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "unsupported_grant_type"})
+		writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: "unsupported_grant_type"})
 	}
 }
 
@@ -696,23 +696,23 @@ func (s *Server) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Req
 	ctx := r.Context()
 	code := r.FormValue("code")                  //nolint:gosec // G120: body size limited in handleToken
 	codeVerifier := r.FormValue("code_verifier") //nolint:gosec // G120: body size limited in handleToken
-	clientID := r.FormValue("client_id")         //nolint:gosec // G120: body size limited in handleToken
+	clientID := r.FormValue(oauthClientID)       //nolint:gosec // G120: body size limited in handleToken
 
 	if s.tokenStore == nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_grant"})
+		writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: invalidGrantError})
 		return
 	}
 
 	ac, err := s.tokenStore.ConsumeAuthCode(ctx, code)
 	if err != nil {
 		s.metrics.RecordLogin("oauth_code", "failure")
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_grant"})
+		writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: invalidGrantError})
 		return
 	}
 
 	if time.Now().After(ac.ExpiresAt) {
 		s.metrics.RecordLogin("oauth_code", "failure")
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_grant"})
+		writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: invalidGrantError})
 		return
 	}
 
@@ -721,7 +721,7 @@ func (s *Server) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Req
 		s.logger.WarnContext(ctx, "client_id mismatch in auth code grant",
 			"expected", ac.ClientID, "got", clientID)
 		s.metrics.RecordLogin("oauth_code", "failure")
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_grant"})
+		writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: invalidGrantError})
 		return
 	}
 
@@ -729,7 +729,7 @@ func (s *Server) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Req
 	// Use a single generic error for all PKCE failures (L-3).
 	if ac.CodeChallenge == "" || codeVerifier == "" {
 		s.metrics.RecordLogin("oauth_code", "failure")
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_grant", "error_description": "PKCE verification failed"})
+		writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: invalidGrantError, oauthErrorDescription: "PKCE verification failed"})
 		return
 	}
 	{
@@ -737,7 +737,7 @@ func (s *Server) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Req
 		computed := base64.RawURLEncoding.EncodeToString(h[:])
 		if subtle.ConstantTimeCompare([]byte(computed), []byte(ac.CodeChallenge)) != 1 {
 			s.metrics.RecordLogin("oauth_code", "failure")
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_grant", "error_description": "PKCE verification failed"})
+			writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: invalidGrantError, oauthErrorDescription: "PKCE verification failed"})
 			return
 		}
 	}
@@ -771,40 +771,40 @@ func (s *Server) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Req
 	}
 
 	if err := s.tokenStore.SaveToken(ctx, ti); err != nil {
-		s.logger.ErrorContext(ctx, "failed to save token", "error", err)
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
+		s.logger.ErrorContext(ctx, "failed to save token", outcomeError, err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{outcomeError: oauthErrServerError})
 		return
 	}
 	if err := s.tokenStore.SaveRefreshToken(ctx, ti); err != nil {
-		s.logger.ErrorContext(ctx, "failed to save refresh token", "error", err)
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
+		s.logger.ErrorContext(ctx, "failed to save refresh token", outcomeError, err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{outcomeError: oauthErrServerError})
 		return
 	}
 
 	s.metrics.RecordLogin("oauth_code", "success")
 	writeJSON(w, http.StatusOK, map[string]any{
-		"access_token":  accessToken,
-		"token_type":    "Bearer",
-		"expires_in":    3600,
-		"refresh_token": refreshToken,
-		"scope":         ac.Scope,
+		"access_token":    accessToken,
+		"token_type":      authSchemeBearer,
+		"expires_in":      3600,
+		oauthRefreshToken: refreshToken,
+		oauthScope:        ac.Scope,
 	})
 }
 
 func (s *Server) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	refreshToken := r.FormValue("refresh_token") //nolint:gosec // G120: body size limited in handleToken
-	clientID := r.FormValue("client_id")         //nolint:gosec // G120: body size limited in handleToken
+	refreshToken := r.FormValue(oauthRefreshToken) //nolint:gosec // G120: body size limited in handleToken
+	clientID := r.FormValue(oauthClientID)         //nolint:gosec // G120: body size limited in handleToken
 
 	if s.tokenStore == nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_grant"})
+		writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: invalidGrantError})
 		return
 	}
 
 	oldTI, err := s.tokenStore.ConsumeRefreshToken(ctx, refreshToken)
 	if err != nil {
 		s.metrics.RecordLogin("oauth_refresh", "failure")
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_grant"})
+		writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: invalidGrantError})
 		return
 	}
 
@@ -813,7 +813,7 @@ func (s *Server) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request)
 		s.logger.WarnContext(ctx, "client_id mismatch in refresh token grant",
 			"expected", oldTI.ClientID, "got", clientID)
 		s.metrics.RecordLogin("oauth_refresh", "failure")
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_grant"})
+		writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: invalidGrantError})
 		return
 	}
 
@@ -840,23 +840,23 @@ func (s *Server) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request)
 	}
 
 	if err := s.tokenStore.SaveToken(ctx, ti); err != nil {
-		s.logger.ErrorContext(ctx, "failed to save token", "error", err)
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
+		s.logger.ErrorContext(ctx, "failed to save token", outcomeError, err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{outcomeError: oauthErrServerError})
 		return
 	}
 	if err := s.tokenStore.SaveRefreshToken(ctx, ti); err != nil {
-		s.logger.ErrorContext(ctx, "failed to save refresh token", "error", err)
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
+		s.logger.ErrorContext(ctx, "failed to save refresh token", outcomeError, err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{outcomeError: oauthErrServerError})
 		return
 	}
 
 	s.metrics.RecordLogin("oauth_refresh", "success")
 	writeJSON(w, http.StatusOK, map[string]any{
-		"access_token":  newAccessToken,
-		"token_type":    "Bearer",
-		"expires_in":    3600,
-		"refresh_token": newRefreshToken,
-		"scope":         oldTI.Scope,
+		"access_token":    newAccessToken,
+		"token_type":      authSchemeBearer,
+		"expires_in":      3600,
+		oauthRefreshToken: newRefreshToken,
+		oauthScope:        oldTI.Scope,
 	})
 }
 
@@ -875,11 +875,11 @@ button:hover{background:#1d4ed8}</style></head>
 <h2>ToolMesh</h2>
 <p>Enter your credentials to authorize access.</p>
 <form method="POST" action="/authorize">
-<input type="hidden" name="client_id" value="{{.ClientID}}">
-<input type="hidden" name="redirect_uri" value="{{.RedirectURI}}">
-<input type="hidden" name="state" value="{{.State}}">
-<input type="hidden" name="code_challenge" value="{{.CodeChallenge}}">
-<input type="hidden" name="scope" value="{{.Scope}}">
+<input type="hidden" name=oauthClientID value="{{.ClientID}}">
+<input type="hidden" name=oauthRedirectURI value="{{.RedirectURI}}">
+<input type="hidden" name=oauthState value="{{.State}}">
+<input type="hidden" name=oauthCodeChallenge value="{{.CodeChallenge}}">
+<input type="hidden" name=oauthScope value="{{.Scope}}">
 <input type="text" name="username" placeholder="Username" autofocus>
 <input type="password" name="password" placeholder="Password">
 <button type="submit">Authorize</button>
@@ -896,7 +896,7 @@ func (s *Server) renderLoginForm(w http.ResponseWriter, clientID, redirectURI, s
 		"CodeChallenge": codeChallenge,
 		"Scope":         scope,
 	}); err != nil {
-		s.logger.Error("failed to render login form", "error", err)
+		s.logger.Error("failed to render login form", outcomeError, err)
 	}
 }
 
@@ -914,8 +914,8 @@ func (s *Server) writeJSONRPCError(w http.ResponseWriter, id any, code int, mess
 	writeJSON(w, http.StatusOK, map[string]any{
 		"jsonrpc": "2.0",
 		"id":      id,
-		"error": map[string]any{
-			"code":    code,
+		outcomeError: map[string]any{
+			oauthCode: code,
 			"message": message,
 		},
 	})

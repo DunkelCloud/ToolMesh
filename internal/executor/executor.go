@@ -43,6 +43,16 @@ const (
 	statusDenied  = "denied"
 )
 
+// MCP content-block keys reused in error result payloads.
+const (
+	contentKeyType = "type"
+	contentKeyText = "text"
+)
+
+// paramPassword is the well-known sensitive parameter name extracted to keep
+// it consistent across the redaction list and the regression tests.
+const paramPassword = "password"
+
 // Executor orchestrates the full tool execution pipeline.
 type Executor struct {
 	authorizer *authz.Authorizer
@@ -171,8 +181,8 @@ func (e *Executor) ExecuteTool(ctx context.Context, req ExecuteToolRequest) (*ba
 			return &backend.ToolResult{
 				IsError: true,
 				Content: []any{map[string]any{
-					"type": "text",
-					"text": fmt.Sprintf("User %s is not authorized to execute tool %s", uc.UserID, req.ToolName),
+					contentKeyType: contentKeyText,
+					contentKeyText: fmt.Sprintf("User %s is not authorized to execute tool %s", uc.UserID, req.ToolName),
 				}},
 			}, nil
 		}
@@ -220,8 +230,8 @@ func (e *Executor) ExecuteTool(ctx context.Context, req ExecuteToolRequest) (*ba
 			return &backend.ToolResult{
 				IsError: true,
 				Content: []any{map[string]any{
-					"type": "text",
-					"text": fmt.Sprintf("Gate rejected (pre-execution): %s", err),
+					contentKeyType: contentKeyText,
+					contentKeyText: fmt.Sprintf("Gate rejected (pre-execution): %s", err),
 				}},
 			}, nil
 		}
@@ -275,8 +285,8 @@ func (e *Executor) ExecuteTool(ctx context.Context, req ExecuteToolRequest) (*ba
 			return &backend.ToolResult{
 				IsError: true,
 				Content: []any{map[string]any{
-					"type": "text",
-					"text": fmt.Sprintf("Gate rejected (post-execution): %s", err),
+					contentKeyType: contentKeyText,
+					contentKeyText: fmt.Sprintf("Gate rejected (post-execution): %s", err),
 				}},
 			}, nil
 		}
@@ -379,7 +389,7 @@ func (e *Executor) resolveCredentials(ctx context.Context, backendPrefix string,
 
 // sensitiveParamNames is the set of parameter name patterns that should be redacted in audit logs.
 var sensitiveParamNames = map[string]bool{
-	"password":      true,
+	paramPassword:   true,
 	"secret":        true,
 	"token":         true,
 	"api_key":       true,

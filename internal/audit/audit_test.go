@@ -32,7 +32,7 @@ func sampleEntry() AuditEntry {
 		Tool:        "github_list_issues",
 		Params:      map[string]any{"owner": "DunkelCloud", "repo": "ToolMesh"},
 		DurationMs:  42,
-		Status:      "success",
+		Status:      testStatusSuccess,
 		Backend:     "github",
 	}
 }
@@ -104,7 +104,7 @@ func TestSQLiteStore_RecordAndQuery(t *testing.T) {
 		},
 		{
 			name:    "by status",
-			filter:  AuditFilter{Status: "success"},
+			filter:  AuditFilter{Status: testStatusSuccess},
 			wantLen: 1,
 		},
 		{
@@ -161,12 +161,12 @@ func TestSQLiteStore_CompositeEntry(t *testing.T) {
 		{
 			Tool:       "github_get_issue",
 			DurationMs: 10,
-			Status:     "success",
+			Status:     testStatusSuccess,
 		},
 		{
 			Tool:       "github_add_comment",
 			DurationMs: 15,
-			Status:     "error",
+			Status:     testStatusError,
 			Error:      "permission denied",
 		},
 	}
@@ -210,14 +210,14 @@ func TestSQLiteStore_ErrorEntry(t *testing.T) {
 
 	ctx := context.Background()
 	entry := sampleEntry()
-	entry.Status = "error"
+	entry.Status = testStatusError
 	entry.Error = "backend timeout"
 
 	if err := store.Record(ctx, entry); err != nil {
 		t.Fatalf("Record() error = %v", err)
 	}
 
-	results, err := store.Query(ctx, AuditFilter{Status: "error"})
+	results, err := store.Query(ctx, AuditFilter{Status: testStatusError})
 	if err != nil {
 		t.Fatalf("Query() error = %v", err)
 	}

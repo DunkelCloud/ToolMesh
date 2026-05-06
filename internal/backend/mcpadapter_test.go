@@ -145,15 +145,15 @@ func TestMCPAdapter_Connect_MissingCredential(t *testing.T) {
 			"secure": {
 				entry: BackendEntry{
 					Name:      "secure",
-					Transport: "http",
-					URL:       "https://example.com/mcp",
+					Transport: transportTypeHTTP,
+					URL:       testMCPURLExample,
 					APIKeyEnv: "NONEXISTENT_KEY",
 				},
 			},
 		},
 		creds:  creds,
 		logger: logger,
-		client: mcp.NewClient(&mcp.Implementation{Name: "test", Version: "0.1"}, nil),
+		client: mcp.NewClient(&mcp.Implementation{Name: testBackendNameTest, Version: testVersion01}, nil),
 	}
 
 	// Connect should log an error but not panic
@@ -171,11 +171,11 @@ func TestMCPAdapter_Execute_NotConnected(t *testing.T) {
 
 	adapter := &MCPAdapter{
 		backends: map[string]*backendConn{
-			"mybackend": {
+			testBackendNameMy: {
 				entry: BackendEntry{
-					Name:      "mybackend",
-					Transport: "http",
-					URL:       "https://example.com/mcp",
+					Name:      testBackendNameMy,
+					Transport: transportTypeHTTP,
+					URL:       testMCPURLExample,
 				},
 				// session is nil — not connected
 			},
@@ -184,7 +184,7 @@ func TestMCPAdapter_Execute_NotConnected(t *testing.T) {
 		logger: logger,
 	}
 
-	_, err := adapter.Execute(context.Background(), "mybackend:search", map[string]any{"q": "test"})
+	_, err := adapter.Execute(context.Background(), "mybackend:search", map[string]any{"q": testBackendNameTest})
 	if err == nil {
 		t.Fatal("expected error for not-connected backend, got nil")
 	}
@@ -240,18 +240,18 @@ func TestMCPAdapter_RegisterTools(t *testing.T) {
 
 	adapter := &MCPAdapter{
 		backends: map[string]*backendConn{
-			"mybackend": {entry: BackendEntry{Name: "mybackend"}},
+			testBackendNameMy: {entry: BackendEntry{Name: testBackendNameMy}},
 		},
 		creds:  creds,
 		logger: logger,
 	}
 
-	adapter.RegisterTools("mybackend", []ToolDescriptor{
+	adapter.RegisterTools(testBackendNameMy, []ToolDescriptor{
 		{Name: "tool1", Description: "First tool"},
 	})
 
-	if len(adapter.backends["mybackend"].tools) != 1 {
-		t.Errorf("expected 1 tool after registration, got %d", len(adapter.backends["mybackend"].tools))
+	if len(adapter.backends[testBackendNameMy].tools) != 1 {
+		t.Errorf("expected 1 tool after registration, got %d", len(adapter.backends[testBackendNameMy].tools))
 	}
 }
 
@@ -277,10 +277,10 @@ func TestMCPAdapter_Healthy_WithConnectedBackend(t *testing.T) {
 	// Simulate a connected backend by setting a non-nil session
 	// We use an InMemory transport pair for a real session
 	clientTransport, serverTransport := mcp.NewInMemoryTransports()
-	server := mcp.NewServer(&mcp.Implementation{Name: "test-server", Version: "0.1"}, nil)
+	server := mcp.NewServer(&mcp.Implementation{Name: "test-server", Version: testVersion01}, nil)
 	go server.Connect(context.Background(), serverTransport, nil)
 
-	client := mcp.NewClient(&mcp.Implementation{Name: "test-client", Version: "0.1"}, nil)
+	client := mcp.NewClient(&mcp.Implementation{Name: "test-client", Version: testVersion01}, nil)
 	session, err := client.Connect(context.Background(), clientTransport, nil)
 	if err != nil {
 		t.Fatalf("failed to connect in-memory: %v", err)
@@ -289,8 +289,8 @@ func TestMCPAdapter_Healthy_WithConnectedBackend(t *testing.T) {
 
 	adapter := &MCPAdapter{
 		backends: map[string]*backendConn{
-			"test": {
-				entry:   BackendEntry{Name: "test"},
+			testBackendNameTest: {
+				entry:   BackendEntry{Name: testBackendNameTest},
 				session: session,
 			},
 		},
@@ -309,7 +309,7 @@ func TestMCPAdapter_Healthy_NotConnected(t *testing.T) {
 
 	adapter := &MCPAdapter{
 		backends: map[string]*backendConn{
-			"test": {entry: BackendEntry{Name: "test"}},
+			testBackendNameTest: {entry: BackendEntry{Name: testBackendNameTest}},
 		},
 		creds:  creds,
 		logger: logger,

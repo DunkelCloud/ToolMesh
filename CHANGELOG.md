@@ -24,6 +24,11 @@ for the full narrative and details.
   duplicated the per-backend hint block) to under 100 tokens. The hint block
   remains on `execute_code`, which is the tool LLMs reach for when they want
   the discovery surface in front of them.
+- Backend instances that share a DADL spec are now collapsed into a single
+  hint line in the `execute_code` description (e.g.
+  `dokuwiki-prod, dokuwiki-staging: DokuWiki JSON-RPC API` instead of two
+  identical lines). Native backends without a DADL spec continue to render
+  individually.
 
 ## [0.1.3] - 2026-04-06
 

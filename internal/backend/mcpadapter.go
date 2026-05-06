@@ -54,9 +54,19 @@ type BackendEntry struct {
 }
 
 // BackendInfo provides a summary of a backend for tool description enrichment.
+//
+// SpecID is an opaque identifier shared by every instance that derives from the
+// same DADL spec — typically the spec's ContentHash. Two instances with the
+// same SpecID expose the same set of tools and the same hint; the description
+// builder collapses them into a single line so the resulting tool description
+// stays compact when the operator runs several instances of one API
+// (e.g. "dokuwiki-prod" and "dokuwiki-staging" against the same .dadl file).
+// Leave empty for backends without an underlying DADL spec — those are
+// rendered individually.
 type BackendInfo struct {
-	Name string
-	Hint string
+	Name   string
+	Hint   string
+	SpecID string
 }
 
 // MCPAdapter connects ToolMesh as an MCP client to external MCP servers.

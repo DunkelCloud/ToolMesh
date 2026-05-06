@@ -199,6 +199,135 @@ func TestBuildBackendDescription_NoSummarizer(t *testing.T) {
 	}
 }
 
+// TestBuildGroupedHints covers the grouping logic that collapses backend
+// instances sharing a DADL spec into a single hint line. Edge cases mirror the
+// brief: no group, two instances of one spec, three+ instances, mix of DADL
+// and native backends, infos without hints, and stable group ordering.
+func TestBuildGroupedHints(t *testing.T) {
+	cases := []struct {
+		name  string
+		infos []backend.BackendInfo
+		want  string
+	}{
+		{
+			name:  "empty input",
+			infos: nil,
+			want:  "",
+		},
+		{
+			name: "single instance, no SpecID — renders individually",
+			infos: []backend.BackendInfo{
+				{Name: "memorizer", Hint: "Local memory store"},
+			},
+			want: "memorizer: Local memory store",
+		},
+		{
+			name: "two instances of one DADL spec — collapsed to one line",
+			infos: []backend.BackendInfo{
+				{Name: "dokuwiki-dunkel.cloud", Hint: "DokuWiki JSON-RPC API", SpecID: "sha-doku"},
+				{Name: "dokuwiki-dunkel.io", Hint: "DokuWiki JSON-RPC API", SpecID: "sha-doku"},
+			},
+			want: "dokuwiki-dunkel.cloud, dokuwiki-dunkel.io: DokuWiki JSON-RPC API",
+		},
+		{
+			name: "three instances of one DADL spec — alphabetical names",
+			infos: []backend.BackendInfo{
+				{Name: "opnsense_primary", Hint: "OPNsense REST API", SpecID: "sha-opn"},
+				{Name: "opnsense_backup", Hint: "OPNsense REST API", SpecID: "sha-opn"},
+				{Name: "opnsense_edge", Hint: "OPNsense REST API", SpecID: "sha-opn"},
+			},
+			want: "opnsense_backup, opnsense_edge, opnsense_primary: OPNsense REST API",
+		},
+		{
+			name: "two distinct DADL specs — two groups in input order",
+			infos: []backend.BackendInfo{
+				{Name: "github", Hint: "GitHub REST API", SpecID: "sha-gh"},
+				{Name: "jira", Hint: "Jira API", SpecID: "sha-jira"},
+			},
+			want: "github: GitHub REST API; jira: Jira API",
+		},
+		{
+			name: "mix of DADL and native backends",
+			infos: []backend.BackendInfo{
+				{Name: "dokuwiki-dunkel.cloud", Hint: "DokuWiki JSON-RPC API", SpecID: "sha-doku"},
+				{Name: "memorizer", Hint: "Local memory store"},
+				{Name: "dokuwiki-dunkel.io", Hint: "DokuWiki JSON-RPC API", SpecID: "sha-doku"},
+				{Name: "web_search", Hint: "Web search"},
+			},
+			want: "dokuwiki-dunkel.cloud, dokuwiki-dunkel.io: DokuWiki JSON-RPC API; memorizer: Local memory store; web_search: Web search",
+		},
+		{
+			name: "group position follows first instance — second spec appears between native entries",
+			infos: []backend.BackendInfo{
+				{Name: "memorizer", Hint: "Local memory store"},
+				{Name: "opnsense_a", Hint: "OPNsense REST API", SpecID: "sha-opn"},
+				{Name: "web_search", Hint: "Web search"},
+				{Name: "opnsense_b", Hint: "OPNsense REST API", SpecID: "sha-opn"},
+			},
+			want: "memorizer: Local memory store; opnsense_a, opnsense_b: OPNsense REST API; web_search: Web search",
+		},
+		{
+			name: "infos without hints are skipped",
+			infos: []backend.BackendInfo{
+				{Name: "github", Hint: "GitHub REST API", SpecID: "sha-gh"},
+				{Name: "anonymous", Hint: ""},
+				{Name: "another", Hint: "", SpecID: "sha-anon"},
+			},
+			want: "github: GitHub REST API",
+		},
+		{
+			name: "empty SpecID is not a grouping key — two native backends with the same hint stay separate",
+			infos: []backend.BackendInfo{
+				{Name: "alpha", Hint: "shared text"},
+				{Name: "beta", Hint: "shared text"},
+			},
+			want: "alpha: shared text; beta: shared text",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := buildGroupedHints(tc.infos)
+			if got != tc.want {
+				t.Errorf("buildGroupedHints() = %q\nwant %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestBuildBackendDescription_GroupsSharedSpecs is the integration check: it
+// runs through buildBackendDescription end to end and verifies that the
+// grouping logic surfaces in the final description string used in the
+// execute_code tool description.
+func TestBuildBackendDescription_GroupsSharedSpecs(t *testing.T) {
+	mb := &summarizingBackend{
+		infos: []backend.BackendInfo{
+			{Name: "dokuwiki-dunkel.cloud", Hint: "DokuWiki JSON-RPC API", SpecID: "sha-doku"},
+			{Name: "dokuwiki-dunkel.io", Hint: "DokuWiki JSON-RPC API", SpecID: "sha-doku"},
+			{Name: "memorizer", Hint: "Local memory store"},
+		},
+	}
+	h := NewHandler(nil, mb, nil, "", nil, newQuietMCPLogger(), false)
+	desc := h.buildBackendDescription()
+
+	// Every instance name must appear in the "Available backends" line.
+	for _, name := range []string{"dokuwiki-dunkel.cloud", "dokuwiki-dunkel.io", "memorizer"} {
+		if !strings.Contains(desc, name) {
+			t.Errorf("description missing backend name %q: %s", name, desc)
+		}
+	}
+
+	// The DokuWiki hint must appear exactly once, prefixed by the comma-separated instance list.
+	wantHint := "dokuwiki-dunkel.cloud, dokuwiki-dunkel.io: DokuWiki JSON-RPC API"
+	if !strings.Contains(desc, wantHint) {
+		t.Errorf("description missing grouped hint %q: %s", wantHint, desc)
+	}
+	if strings.Count(desc, "DokuWiki JSON-RPC API") != 1 {
+		t.Errorf("DokuWiki hint should appear exactly once, got %d occurrences in: %s",
+			strings.Count(desc, "DokuWiki JSON-RPC API"), desc)
+	}
+}
+
 // TestBuildToolList_BackendHintsOnExecuteCodeOnly verifies that the per-backend
 // "Available backends: ... Hints: ..." block is appended to the execute_code
 // description but not to discover_tools. Duplicating that block on both tools

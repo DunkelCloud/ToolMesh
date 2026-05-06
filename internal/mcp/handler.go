@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"log/slog"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -333,7 +334,10 @@ func (h *Handler) BuildToolList(ctx context.Context) ([]ToolDefinition, error) {
 }
 
 // buildBackendDescription generates a summary of available backends and their hints
-// for inclusion in MCP tool descriptions.
+// for inclusion in the execute_code tool description. Backends that share a
+// DADL spec (matched by BackendInfo.SpecID) are grouped into a single hint
+// line so multiple instances of one API do not bloat the description with
+// duplicate text.
 func (h *Handler) buildBackendDescription() string {
 	summarizer, ok := h.backend.(backend.BackendSummarizer)
 	if !ok {
@@ -345,25 +349,64 @@ func (h *Handler) buildBackendDescription() string {
 		return ""
 	}
 
-	// Build "Available backends: name1, name2, ..." line
+	// "Available backends" line keeps every instance name — the grouping is
+	// only an optimization for the hints block. Listing every name here is
+	// what lets the LLM address each instance individually via execute_code.
 	names := make([]string, 0, len(infos))
 	for _, info := range infos {
 		names = append(names, info.Name)
 	}
 	desc := "Available backends: " + strings.Join(names, ", ") + ", and more — call discover_tools to discover all current backends and their tool signatures"
 
-	// Collect hints from backends that have them
-	var hints []string
-	for _, info := range infos {
-		if info.Hint != "" {
-			hints = append(hints, info.Name+": "+info.Hint)
-		}
-	}
-	if len(hints) > 0 {
-		desc += ". Hints: " + strings.Join(hints, "; ")
+	hints := buildGroupedHints(infos)
+	if hints != "" {
+		desc += ". Hints: " + hints
 	}
 
 	return desc
+}
+
+// buildGroupedHints renders a "name1: hint; name2, name3: hint; ..." line by
+// collapsing infos that share a non-empty SpecID into one entry. Backends with
+// an empty SpecID are rendered individually. Group ordering follows the
+// position of the first member in the input slice; instance names within a
+// group are sorted alphabetically. Infos with no hint are skipped entirely.
+func buildGroupedHints(infos []backend.BackendInfo) string {
+	type hintGroup struct {
+		names []string
+		hint  string
+	}
+
+	groups := make([]*hintGroup, 0, len(infos))
+	groupBySpec := make(map[string]*hintGroup) // populated only for non-empty SpecID
+
+	for _, info := range infos {
+		if info.Hint == "" {
+			continue
+		}
+		if info.SpecID != "" {
+			if g, ok := groupBySpec[info.SpecID]; ok {
+				g.names = append(g.names, info.Name)
+				continue
+			}
+			g := &hintGroup{names: []string{info.Name}, hint: info.Hint}
+			groupBySpec[info.SpecID] = g
+			groups = append(groups, g)
+			continue
+		}
+		groups = append(groups, &hintGroup{names: []string{info.Name}, hint: info.Hint})
+	}
+
+	if len(groups) == 0 {
+		return ""
+	}
+
+	parts := make([]string, 0, len(groups))
+	for _, g := range groups {
+		sort.Strings(g.names)
+		parts = append(parts, strings.Join(g.names, ", ")+": "+g.hint)
+	}
+	return strings.Join(parts, "; ")
 }
 
 // ToolDefinition represents a tool exposed by the MCP server.

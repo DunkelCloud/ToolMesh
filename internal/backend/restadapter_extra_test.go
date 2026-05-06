@@ -27,8 +27,8 @@ import (
 
 func TestRESTAdapter_Setters(t *testing.T) {
 	spec := &dadl.Spec{
-		Spec:    "https://dadl.ai/spec/dadl-spec-v0.1.md",
-		Backend: dadl.BackendDef{Name: "t", Type: "rest", BaseURL: "https://api.example.com"},
+		Spec:    testDADLSpecURL,
+		Backend: dadl.BackendDef{Name: "t", Type: transportTypeREST, BaseURL: testBaseURLExample},
 	}
 	a, err := NewRESTAdapter(spec, &testCredStore{}, slog.Default(), testRESTOpts)
 	if err != nil {
@@ -56,8 +56,8 @@ func TestRESTAdapter_Healthy(t *testing.T) {
 	defer srv.Close()
 
 	spec := &dadl.Spec{
-		Spec:    "https://dadl.ai/spec/dadl-spec-v0.1.md",
-		Backend: dadl.BackendDef{Name: "t", Type: "rest", BaseURL: srv.URL},
+		Spec:    testDADLSpecURL,
+		Backend: dadl.BackendDef{Name: "t", Type: transportTypeREST, BaseURL: srv.URL},
 	}
 	a, err := NewRESTAdapter(spec, &testCredStore{}, slog.Default(), testRESTOpts)
 	if err != nil {
@@ -75,8 +75,8 @@ func TestRESTAdapter_Healthy_ReturnsError(t *testing.T) {
 	defer srv.Close()
 
 	spec := &dadl.Spec{
-		Spec:    "https://dadl.ai/spec/dadl-spec-v0.1.md",
-		Backend: dadl.BackendDef{Name: "t", Type: "rest", BaseURL: srv.URL},
+		Spec:    testDADLSpecURL,
+		Backend: dadl.BackendDef{Name: "t", Type: transportTypeREST, BaseURL: srv.URL},
 	}
 	a, _ := NewRESTAdapter(spec, &testCredStore{}, slog.Default(), testRESTOpts)
 	if err := a.Healthy(context.Background()); err == nil {
@@ -86,8 +86,8 @@ func TestRESTAdapter_Healthy_ReturnsError(t *testing.T) {
 
 func TestRESTAdapter_Execute_UnknownTool(t *testing.T) {
 	spec := &dadl.Spec{
-		Spec:    "https://dadl.ai/spec/dadl-spec-v0.1.md",
-		Backend: dadl.BackendDef{Name: "t", Type: "rest", BaseURL: "https://api.example.com"},
+		Spec:    testDADLSpecURL,
+		Backend: dadl.BackendDef{Name: "t", Type: transportTypeREST, BaseURL: testBaseURLExample},
 	}
 	a, _ := NewRESTAdapter(spec, &testCredStore{}, slog.Default(), testRESTOpts)
 	_, err := a.Execute(context.Background(), "nonexistent", nil)

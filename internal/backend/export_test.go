@@ -18,3 +18,66 @@ package backend
 // private URLs so that tests targeting httptest servers on 127.0.0.1 work
 // without tripping SSRF validation.
 var testRESTOpts = RESTAdapterOptions{AllowPrivateURL: true}
+
+// Test fixture string constants. These mirror the literals that appear most
+// often in fixture DADL specs, HTTP server stubs, and assertion strings — they
+// are extracted only to keep the goconst linter quiet, not to encode anything
+// semantic that production code depends on.
+const (
+	// DADL spec URL used by every fixture spec.
+	testDADLSpecURL = "https://dadl.ai/spec/dadl-spec-v0.1.md"
+
+	// Fixture backend names.
+	testBackendNameAPI     = "api"
+	testBackendNameTestAPI = "testapi"
+	testBackendNameTest    = "test"
+	testBackendNameMy      = "mybackend"
+	testBackendNameGitHub  = "github"
+
+	// Fixture base URLs.
+	testBaseURLExample = "https://api.example.com"
+	testBaseURLGitLab  = "https://gitlab.example.com/api/v4"
+	testMCPURLExample  = "https://example.com/mcp"
+
+	// Fixture tool names.
+	testToolGetItem   = "get_item"
+	testToolListItems = "list_items"
+	testToolGetAudio  = "get_audio"
+
+	// Fixture path literals.
+	testPathItems = "/items"
+	testPathAudio = "/audio"
+
+	// Fixture HTTP method literals (separate from "GET"/"POST" because tests
+	// also assert on them as strings).
+	testMethodGET  = "GET"
+	testMethodPOST = "POST"
+
+	// Common header names asserted in tests.
+	testHeaderContentType = "Content-Type"
+	testHeaderAccept      = "Accept"
+	testHeaderAuth        = "Authorization"
+	testHeaderFieldMask   = "X-Goog-FieldMask"
+
+	// Common query/body param names used in fixtures.
+	testParamPage      = "page"
+	testParamFilter    = "filter"
+	testParamTags      = "tags"
+	testParamAccountID = "account_id"
+
+	// Common content-type / token / response literals.
+	testContentTypeJSON      = "application/json"
+	testContentTypeAudioMPEG = "audio/mpeg"
+	testHelloLiteral         = "hello"
+	testTokenBearer          = "bearer"
+	testTokenValue           = "tok"
+	testJSONFormat           = "json"
+	testJSONPathMessage      = "$.message"
+	testPrivateLoopback      = "private/loopback"
+	testVersion01            = "0.1"
+
+	// Common DADL/HTTP body field names asserted in tests.
+	testParamName      = "name"
+	testParamVoiceID   = "voice_id"
+	testParamTextQuery = "textQuery"
+)

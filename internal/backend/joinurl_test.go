@@ -26,7 +26,7 @@ func TestJoinURL(t *testing.T) {
 	}{
 		{
 			name: "host-only base with absolute path",
-			base: "https://api.example.com",
+			base: testBaseURLExample,
 			path: "/v2/items",
 			want: "https://api.example.com/v2/items",
 		},
@@ -38,7 +38,7 @@ func TestJoinURL(t *testing.T) {
 		},
 		{
 			name: "base with path prefix is preserved (GitLab)",
-			base: "https://gitlab.example.com/api/v4",
+			base: testBaseURLGitLab,
 			path: "/projects",
 			want: "https://gitlab.example.com/api/v4/projects",
 		},
@@ -62,7 +62,7 @@ func TestJoinURL(t *testing.T) {
 		},
 		{
 			name: "absolute tool URL with base that has path prefix",
-			base: "https://gitlab.example.com/api/v4",
+			base: testBaseURLGitLab,
 			path: "https://other.example.com/foo",
 			want: "https://other.example.com/foo",
 		},
@@ -74,13 +74,13 @@ func TestJoinURL(t *testing.T) {
 		},
 		{
 			name: "percent-encoded path segment is preserved",
-			base: "https://api.example.com",
+			base: testBaseURLExample,
 			path: "/repos/owner/some%20repo",
 			want: "https://api.example.com/repos/owner/some%20repo",
 		},
 		{
 			name: "percent-encoded segment with base path prefix",
-			base: "https://gitlab.example.com/api/v4",
+			base: testBaseURLGitLab,
 			path: "/projects/group%2Fproject",
 			want: "https://gitlab.example.com/api/v4/projects/group%2Fproject",
 		},

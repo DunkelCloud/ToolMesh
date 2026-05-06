@@ -34,7 +34,7 @@ func ValidateBaseURL(rawURL string) error {
 		return fmt.Errorf("invalid base_url: %w", err)
 	}
 
-	if parsed.Scheme != "https" && parsed.Scheme != "http" {
+	if parsed.Scheme != "https" && parsed.Scheme != urlSchemeHTTP {
 		return fmt.Errorf("base_url must use http or https scheme, got %q", parsed.Scheme)
 	}
 
@@ -45,7 +45,7 @@ func ValidateBaseURL(rawURL string) error {
 
 	// Check for obviously private hostnames
 	lower := strings.ToLower(hostname)
-	if lower == "localhost" || lower == "metadata.google.internal" {
+	if lower == hostnameLocalhost || lower == hostnameGoogleMetadata {
 		return fmt.Errorf("base_url points to private hostname %q", hostname)
 	}
 
@@ -144,7 +144,7 @@ func newRedirectChecker(allowPrivate bool) func(*http.Request, []*http.Request) 
 			return nil
 		}
 		lower := strings.ToLower(hostname)
-		if lower == "localhost" || lower == "metadata.google.internal" {
+		if lower == hostnameLocalhost || lower == hostnameGoogleMetadata {
 			return fmt.Errorf("redirect to private hostname %q blocked", hostname)
 		}
 		ips, err := net.DefaultResolver.LookupHost(req.Context(), hostname)

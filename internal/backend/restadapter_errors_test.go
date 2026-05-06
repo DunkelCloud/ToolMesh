@@ -27,24 +27,24 @@ import (
 
 func TestRESTAdapter_ErrorResponse(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set(testHeaderContentType, testContentTypeJSON)
 		w.WriteHeader(http.StatusBadRequest)
 		_, _ = w.Write([]byte(`{"message": "bad request details"}`))
 	}))
 	defer srv.Close()
 
 	spec := &dadl.Spec{
-		Spec: "https://dadl.ai/spec/dadl-spec-v0.1.md",
+		Spec: testDADLSpecURL,
 		Backend: dadl.BackendDef{
-			Name:    "api",
-			Type:    "rest",
+			Name:    testBackendNameAPI,
+			Type:    transportTypeREST,
 			BaseURL: srv.URL,
 			Tools: map[string]dadl.ToolDef{
 				"t": {
-					Method: "GET", Path: "/",
+					Method: testMethodGET, Path: "/",
 					Errors: &dadl.ErrorConfig{
-						Format:      "json",
-						MessagePath: "$.message",
+						Format:      testJSONFormat,
+						MessagePath: testJSONPathMessage,
 						Terminal:    []int{400},
 					},
 				},
@@ -59,7 +59,7 @@ func TestRESTAdapter_ErrorResponse(t *testing.T) {
 	if !result.IsError {
 		t.Error("expected IsError=true")
 	}
-	text, _ := result.Content[0].(map[string]any)["text"].(string)
+	text, _ := result.Content[0].(map[string]any)[contentTypeText].(string)
 	if !strings.Contains(text, "bad request") {
 		t.Errorf("expected error text, got %s", text)
 	}
@@ -73,13 +73,13 @@ func TestRESTAdapter_404WithoutErrorConfig(t *testing.T) {
 	defer srv.Close()
 
 	spec := &dadl.Spec{
-		Spec: "https://dadl.ai/spec/dadl-spec-v0.1.md",
+		Spec: testDADLSpecURL,
 		Backend: dadl.BackendDef{
-			Name:    "api",
-			Type:    "rest",
+			Name:    testBackendNameAPI,
+			Type:    transportTypeREST,
 			BaseURL: srv.URL,
 			Tools: map[string]dadl.ToolDef{
-				"t": {Method: "GET", Path: "/"},
+				"t": {Method: testMethodGET, Path: "/"},
 			},
 		},
 	}
@@ -95,20 +95,20 @@ func TestRESTAdapter_404WithoutErrorConfig(t *testing.T) {
 
 func TestRESTAdapter_ResponseTransform(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set(testHeaderContentType, testContentTypeJSON)
 		_, _ = w.Write([]byte(`{"data": {"items": [1, 2, 3]}}`))
 	}))
 	defer srv.Close()
 
 	spec := &dadl.Spec{
-		Spec: "https://dadl.ai/spec/dadl-spec-v0.1.md",
+		Spec: testDADLSpecURL,
 		Backend: dadl.BackendDef{
-			Name:    "api",
-			Type:    "rest",
+			Name:    testBackendNameAPI,
+			Type:    transportTypeREST,
 			BaseURL: srv.URL,
 			Tools: map[string]dadl.ToolDef{
 				"t": {
-					Method: "GET", Path: "/",
+					Method: testMethodGET, Path: "/",
 					Response: &dadl.ResponseConfig{
 						ResultPath: "$.data.items",
 					},
@@ -121,7 +121,7 @@ func TestRESTAdapter_ResponseTransform(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	text, _ := result.Content[0].(map[string]any)["text"].(string)
+	text, _ := result.Content[0].(map[string]any)[contentTypeText].(string)
 	if !strings.Contains(text, "[1,2,3]") && !strings.Contains(text, "[1, 2, 3]") {
 		t.Errorf("expected extracted array, got %s", text)
 	}

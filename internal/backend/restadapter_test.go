@@ -48,26 +48,26 @@ func (s *testCredStore) Healthy(_ context.Context) error { return nil }
 
 func TestRESTAdapter_ListTools(t *testing.T) {
 	spec := &dadl.Spec{
-		Spec: "https://dadl.ai/spec/dadl-spec-v0.1.md",
+		Spec: testDADLSpecURL,
 		Backend: dadl.BackendDef{
-			Name:    "testapi",
-			Type:    "rest",
-			BaseURL: "https://api.example.com",
+			Name:    testBackendNameTestAPI,
+			Type:    transportTypeREST,
+			BaseURL: testBaseURLExample,
 			Tools: map[string]dadl.ToolDef{
-				"get_item": {
-					Method:      "GET",
+				testToolGetItem: {
+					Method:      testMethodGET,
 					Path:        "/items/{id}",
 					Description: "Get an item",
 					Params: map[string]dadl.ParamDef{
-						"id": {Type: "integer", In: "path", Required: true},
+						"id": {Type: schemaTypeInteger, In: paramInPath, Required: true},
 					},
 				},
-				"list_items": {
-					Method:      "GET",
-					Path:        "/items",
+				testToolListItems: {
+					Method:      testMethodGET,
+					Path:        testPathItems,
 					Description: "List items",
 					Params: map[string]dadl.ParamDef{
-						"page": {Type: "integer", In: "query"},
+						testParamPage: {Type: schemaTypeInteger, In: paramInQuery},
 					},
 				},
 			},
@@ -89,19 +89,19 @@ func TestRESTAdapter_ListTools(t *testing.T) {
 	}
 
 	// Tools should be sorted
-	if tools[0].Name != "get_item" {
+	if tools[0].Name != testToolGetItem {
 		t.Errorf("first tool = %q, want get_item", tools[0].Name)
 	}
-	if tools[1].Name != "list_items" {
+	if tools[1].Name != testToolListItems {
 		t.Errorf("second tool = %q, want list_items", tools[1].Name)
 	}
 
 	// Check schema
 	schema := tools[0].InputSchema
-	if schema["type"] != "object" {
-		t.Errorf("schema type = %v, want object", schema["type"])
+	if schema[schemaKeyType] != schemaTypeObject {
+		t.Errorf("schema type = %v, want object", schema[schemaKeyType])
 	}
-	props, ok := schema["properties"].(map[string]any)
+	props, ok := schema[schemaKeyProperties].(map[string]any)
 	if !ok {
 		t.Fatal("properties is not a map")
 	}
@@ -109,8 +109,8 @@ func TestRESTAdapter_ListTools(t *testing.T) {
 	if !ok {
 		t.Fatal("id property not found")
 	}
-	if idProp["type"] != "integer" {
-		t.Errorf("id type = %v, want integer", idProp["type"])
+	if idProp[schemaKeyType] != schemaTypeInteger {
+		t.Errorf("id type = %v, want integer", idProp[schemaKeyType])
 	}
 
 	// Check required
@@ -132,15 +132,15 @@ func TestRESTAdapter_Execute(t *testing.T) {
 	// Mock API server
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case r.Method == "GET" && r.URL.Path == "/api/items/42":
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"id": 42, "name": "test item"}`))
-		case r.Method == "POST" && r.URL.Path == "/api/items":
-			w.Header().Set("Content-Type", "application/json")
+		case r.Method == testMethodGET && r.URL.Path == "/api/items/42":
+			w.Header().Set(testHeaderContentType, testContentTypeJSON)
+			_, _ = w.Write([]byte(`{"id": 42, testParamName: "test item"}`))
+		case r.Method == testMethodPOST && r.URL.Path == "/api/items":
+			w.Header().Set(testHeaderContentType, testContentTypeJSON)
 			w.WriteHeader(201)
-			_, _ = w.Write([]byte(`{"id": 99, "name": "new item"}`))
-		case r.Method == "GET" && r.URL.Path == "/api/items":
-			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"id": 99, testParamName: "new item"}`))
+		case r.Method == testMethodGET && r.URL.Path == "/api/items":
+			w.Header().Set(testHeaderContentType, testContentTypeJSON)
 			_, _ = w.Write([]byte(`[{"id": 1}, {"id": 2}]`))
 		default:
 			w.WriteHeader(404)
@@ -150,35 +150,35 @@ func TestRESTAdapter_Execute(t *testing.T) {
 	defer server.Close()
 
 	spec := &dadl.Spec{
-		Spec: "https://dadl.ai/spec/dadl-spec-v0.1.md",
+		Spec: testDADLSpecURL,
 		Backend: dadl.BackendDef{
-			Name:    "testapi",
-			Type:    "rest",
+			Name:    testBackendNameTestAPI,
+			Type:    transportTypeREST,
 			BaseURL: server.URL + "/api",
 			Defaults: dadl.DefaultsConfig{
 				Headers: map[string]string{
-					"Content-Type": "application/json",
-					"Accept":       "application/json",
+					testHeaderContentType: testContentTypeJSON,
+					testHeaderAccept:      testContentTypeJSON,
 				},
 			},
 			Tools: map[string]dadl.ToolDef{
-				"get_item": {
-					Method: "GET",
+				testToolGetItem: {
+					Method: testMethodGET,
 					Path:   "/items/{id}",
 					Params: map[string]dadl.ParamDef{
-						"id": {Type: "integer", In: "path", Required: true},
+						"id": {Type: schemaTypeInteger, In: paramInPath, Required: true},
 					},
 				},
 				"create_item": {
-					Method: "POST",
-					Path:   "/items",
+					Method: testMethodPOST,
+					Path:   testPathItems,
 					Params: map[string]dadl.ParamDef{
-						"name": {Type: "string", In: "body", Required: true},
+						testParamName: {Type: schemaTypeString, In: paramInBody, Required: true},
 					},
 				},
-				"list_items": {
-					Method: "GET",
-					Path:   "/items",
+				testToolListItems: {
+					Method: testMethodGET,
+					Path:   testPathItems,
 				},
 			},
 		},
@@ -190,7 +190,7 @@ func TestRESTAdapter_Execute(t *testing.T) {
 	}
 
 	t.Run("GET with path param", func(t *testing.T) {
-		result, err := adapter.Execute(context.Background(), "get_item", map[string]any{"id": 42})
+		result, err := adapter.Execute(context.Background(), testToolGetItem, map[string]any{"id": 42})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -198,13 +198,13 @@ func TestRESTAdapter_Execute(t *testing.T) {
 			t.Fatal("unexpected error result")
 		}
 		text := extractText(t, result)
-		if !strings.Contains(text, `"name": "test item"`) && !strings.Contains(text, `"name":"test item"`) {
+		if !strings.Contains(text, `testParamName: "test item"`) && !strings.Contains(text, `testParamName:"test item"`) {
 			t.Errorf("response = %s", text)
 		}
 	})
 
 	t.Run("POST with body", func(t *testing.T) {
-		result, err := adapter.Execute(context.Background(), "create_item", map[string]any{"name": "new item"})
+		result, err := adapter.Execute(context.Background(), "create_item", map[string]any{testParamName: "new item"})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -232,43 +232,43 @@ func TestRESTAdapter_FormEncodedBody(t *testing.T) {
 	var receivedBody string
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		receivedContentType = r.Header.Get("Content-Type")
+		receivedContentType = r.Header.Get(testHeaderContentType)
 		body, _ := io.ReadAll(r.Body)
 		receivedBody = string(body)
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"id": "cus_123", "email": "jane@example.com", "name": "Jane"}`))
+		w.Header().Set(testHeaderContentType, testContentTypeJSON)
+		_, _ = w.Write([]byte(`{"id": "cus_123", "email": "jane@example.com", testParamName: "Jane"}`))
 	}))
 	defer srv.Close()
 
 	spec := &dadl.Spec{
-		Spec: "https://dadl.ai/spec/dadl-spec-v0.1.md",
+		Spec: testDADLSpecURL,
 		Backend: dadl.BackendDef{
-			Name:    "testapi",
-			Type:    "rest",
+			Name:    testBackendNameTestAPI,
+			Type:    transportTypeREST,
 			BaseURL: srv.URL,
-			Auth:    dadl.AuthConfig{Type: "bearer", Credential: "tok"},
+			Auth:    dadl.AuthConfig{Type: testTokenBearer, Credential: testTokenValue},
 			Tools: map[string]dadl.ToolDef{
 				"create_customer": {
-					Method:      "POST",
+					Method:      testMethodPOST,
 					Path:        "/customers",
 					ContentType: contentTypeFormEncoded,
 					Params: map[string]dadl.ParamDef{
-						"email": {Type: "string", In: "body"},
-						"name":  {Type: "string", In: "body"},
+						"email":       {Type: schemaTypeString, In: paramInBody},
+						testParamName: {Type: schemaTypeString, In: paramInBody},
 					},
 				},
 			},
 		},
 	}
 
-	adapter, err := NewRESTAdapter(spec, &testCredStore{creds: map[string]string{"tok": "sk_test_123"}}, slog.Default(), testRESTOpts)
+	adapter, err := NewRESTAdapter(spec, &testCredStore{creds: map[string]string{testTokenValue: "sk_test_123"}}, slog.Default(), testRESTOpts)
 	if err != nil {
 		t.Fatalf("create adapter: %v", err)
 	}
 
 	result, err := adapter.Execute(context.Background(), "create_customer", map[string]any{
-		"email": "jane@example.com",
-		"name":  "Jane",
+		"email":       "jane@example.com",
+		testParamName: "Jane",
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -288,8 +288,8 @@ func TestRESTAdapter_FormEncodedBody(t *testing.T) {
 	if parsed.Get("email") != "jane@example.com" {
 		t.Errorf("email = %q, want jane@example.com", parsed.Get("email"))
 	}
-	if parsed.Get("name") != "Jane" {
-		t.Errorf("name = %q, want Jane", parsed.Get("name"))
+	if parsed.Get(testParamName) != "Jane" {
+		t.Errorf("name = %q, want Jane", parsed.Get(testParamName))
 	}
 }
 
@@ -299,34 +299,34 @@ func TestRESTAdapter_FormEncodedNestedObject(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		receivedBody = string(body)
-		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set(testHeaderContentType, testContentTypeJSON)
 		_, _ = w.Write([]byte(`{"id": "price_123"}`))
 	}))
 	defer srv.Close()
 
 	spec := &dadl.Spec{
-		Spec: "https://dadl.ai/spec/dadl-spec-v0.1.md",
+		Spec: testDADLSpecURL,
 		Backend: dadl.BackendDef{
-			Name:    "testapi",
-			Type:    "rest",
+			Name:    testBackendNameTestAPI,
+			Type:    transportTypeREST,
 			BaseURL: srv.URL,
-			Auth:    dadl.AuthConfig{Type: "bearer", Credential: "tok"},
+			Auth:    dadl.AuthConfig{Type: testTokenBearer, Credential: testTokenValue},
 			Tools: map[string]dadl.ToolDef{
 				"create_price": {
-					Method:      "POST",
+					Method:      testMethodPOST,
 					Path:        "/prices",
 					ContentType: contentTypeFormEncoded,
 					Params: map[string]dadl.ParamDef{
-						"unit_amount": {Type: "integer", In: "body"},
-						"currency":    {Type: "string", In: "body"},
-						"recurring":   {Type: "object", In: "body"},
+						"unit_amount": {Type: schemaTypeInteger, In: paramInBody},
+						"currency":    {Type: schemaTypeString, In: paramInBody},
+						"recurring":   {Type: schemaTypeObject, In: paramInBody},
 					},
 				},
 			},
 		},
 	}
 
-	adapter, _ := NewRESTAdapter(spec, &testCredStore{creds: map[string]string{"tok": "sk_test_123"}}, slog.Default(), testRESTOpts)
+	adapter, _ := NewRESTAdapter(spec, &testCredStore{creds: map[string]string{testTokenValue: "sk_test_123"}}, slog.Default(), testRESTOpts)
 
 	_, err := adapter.Execute(context.Background(), "create_price", map[string]any{
 		"unit_amount": 1999,
@@ -356,9 +356,9 @@ func TestRESTAdapter_BackendSummaries(t *testing.T) {
 		Backend: dadl.BackendDef{
 			Name:        "myapi",
 			Description: "My API description",
-			Type:        "rest",
+			Type:        transportTypeREST,
 			BaseURL:     "https://example.com",
-			Tools:       map[string]dadl.ToolDef{"t": {Method: "GET", Path: "/"}},
+			Tools:       map[string]dadl.ToolDef{"t": {Method: testMethodGET, Path: "/"}},
 		},
 	}
 	adapter, _ := NewRESTAdapter(spec, &testCredStore{}, slog.Default(), testRESTOpts)
@@ -380,23 +380,23 @@ func extractText(t *testing.T, result *ToolResult) string {
 	if !ok {
 		t.Fatalf("content[0] is %T, want map", result.Content[0])
 	}
-	text, _ := m["text"].(string)
+	text, _ := m[contentTypeText].(string)
 	return text
 }
 
 func TestBuildInputSchema(t *testing.T) {
 	tool := dadl.ToolDef{
 		Params: map[string]dadl.ParamDef{
-			"id":     {Type: "integer", In: "path", Required: true},
-			"name":   {Type: "string", In: "body", Required: true},
-			"active": {Type: "boolean", In: "body"},
-			"tags":   {Type: "array", In: "body"},
+			"id":          {Type: schemaTypeInteger, In: paramInPath, Required: true},
+			testParamName: {Type: schemaTypeString, In: paramInBody, Required: true},
+			"active":      {Type: schemaTypeBoolean, In: paramInBody},
+			testParamTags: {Type: "array", In: paramInBody},
 		},
 	}
 
 	schema := buildInputSchema(tool)
 
-	props := schema["properties"].(map[string]any)
+	props := schema[schemaKeyProperties].(map[string]any)
 	if len(props) != 4 {
 		t.Errorf("got %d properties, want 4", len(props))
 	}
@@ -421,7 +421,7 @@ func TestRESTAdapter_MultipartFileUpload(t *testing.T) {
 	var receivedFormField string
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		receivedContentType = r.Header.Get("Content-Type")
+		receivedContentType = r.Header.Get(testHeaderContentType)
 
 		err := r.ParseMultipartForm(32 << 20) //nolint:gosec // test server with controlled input
 		if err != nil {
@@ -433,7 +433,7 @@ func TestRESTAdapter_MultipartFileUpload(t *testing.T) {
 		receivedFormField = r.FormValue("description") //nolint:gosec // test server
 
 		// Check file
-		file, header, err := r.FormFile("file")
+		file, header, err := r.FormFile(paramTypeFile)
 		if err != nil {
 			http.Error(w, err.Error(), 500)
 			return
@@ -449,21 +449,21 @@ func TestRESTAdapter_MultipartFileUpload(t *testing.T) {
 	defer srv.Close()
 
 	spec := &dadl.Spec{
-		Spec: "https://dadl.ai/spec/dadl-spec-v0.1.md",
+		Spec: testDADLSpecURL,
 		Backend: dadl.BackendDef{
 			Name:    "testupload",
-			Type:    "rest",
+			Type:    transportTypeREST,
 			BaseURL: srv.URL,
 			Auth:    dadl.AuthConfig{Type: ""},
 			Tools: map[string]dadl.ToolDef{
 				"upload_file": {
-					Method:      "POST",
+					Method:      testMethodPOST,
 					Path:        "/upload",
 					Description: "Upload a file",
 					ContentType: "multipart/form-data",
 					Params: map[string]dadl.ParamDef{
-						"file":        {Type: "file", In: "body", Required: true},
-						"description": {Type: "string", In: "body"},
+						paramTypeFile: {Type: paramTypeFile, In: paramInBody, Required: true},
+						"description": {Type: schemaTypeString, In: paramInBody},
 					},
 				},
 			},
@@ -495,7 +495,7 @@ func TestRESTAdapter_MultipartFileUpload(t *testing.T) {
 	_ = tmpFile.Close()
 
 	result, err := adapter.Execute(context.Background(), "upload_file", map[string]any{
-		"file":        tmpFile.Name(),
+		paramTypeFile: tmpFile.Name(),
 		"description": "test document",
 	})
 	if err != nil {
@@ -530,10 +530,10 @@ func TestRESTAdapter_MultipartFileUpload(t *testing.T) {
 func TestBuildQuery_URLEncoding(t *testing.T) {
 	spec := &dadl.Spec{
 		Backend: dadl.BackendDef{
-			Name:    "testapi",
-			Type:    "rest",
-			BaseURL: "https://api.example.com",
-			Tools:   map[string]dadl.ToolDef{"t": {Method: "GET", Path: "/"}},
+			Name:    testBackendNameTestAPI,
+			Type:    transportTypeREST,
+			BaseURL: testBaseURLExample,
+			Tools:   map[string]dadl.ToolDef{"t": {Method: testMethodGET, Path: "/"}},
 		},
 	}
 	adapter, err := NewRESTAdapter(spec, &testCredStore{}, slog.Default(), testRESTOpts)
@@ -543,7 +543,7 @@ func TestBuildQuery_URLEncoding(t *testing.T) {
 
 	tool := &dadl.ToolDef{
 		Params: map[string]dadl.ParamDef{
-			"q": {Type: "string", In: "query"},
+			"q": {Type: schemaTypeString, In: paramInQuery},
 		},
 	}
 
@@ -561,10 +561,10 @@ func TestBuildQuery_URLEncoding(t *testing.T) {
 func TestBuildQuery_NilValues(t *testing.T) {
 	spec := &dadl.Spec{
 		Backend: dadl.BackendDef{
-			Name:    "testapi",
-			Type:    "rest",
-			BaseURL: "https://api.example.com",
-			Tools:   map[string]dadl.ToolDef{"t": {Method: "GET", Path: "/"}},
+			Name:    testBackendNameTestAPI,
+			Type:    transportTypeREST,
+			BaseURL: testBaseURLExample,
+			Tools:   map[string]dadl.ToolDef{"t": {Method: testMethodGET, Path: "/"}},
 		},
 	}
 	adapter, err := NewRESTAdapter(spec, &testCredStore{}, slog.Default(), testRESTOpts)
@@ -574,20 +574,20 @@ func TestBuildQuery_NilValues(t *testing.T) {
 
 	tool := &dadl.ToolDef{
 		Params: map[string]dadl.ParamDef{
-			"q":      {Type: "string", In: "query"},
-			"filter": {Type: "string", In: "query"},
+			"q":             {Type: schemaTypeString, In: paramInQuery},
+			testParamFilter: {Type: schemaTypeString, In: paramInQuery},
 		},
 	}
 
 	// filter is explicitly nil (JS undefined → Go nil)
-	query := adapter.buildQuery(tool, map[string]any{"q": "test", "filter": nil})
+	query := adapter.buildQuery(tool, map[string]any{"q": testBackendNameTest, testParamFilter: nil})
 	if strings.Contains(query, "nil") {
 		t.Errorf("query contains nil value: %s", query)
 	}
 	if !strings.Contains(query, "q=test") {
 		t.Errorf("query missing valid param: %s", query)
 	}
-	if strings.Contains(query, "filter") {
+	if strings.Contains(query, testParamFilter) {
 		t.Errorf("query should not contain nil param 'filter': %s", query)
 	}
 }
@@ -596,10 +596,10 @@ func TestBuildQuery_NilValues(t *testing.T) {
 func TestBuildQuery_NilWithDefault(t *testing.T) {
 	spec := &dadl.Spec{
 		Backend: dadl.BackendDef{
-			Name:    "testapi",
-			Type:    "rest",
-			BaseURL: "https://api.example.com",
-			Tools:   map[string]dadl.ToolDef{"t": {Method: "GET", Path: "/"}},
+			Name:    testBackendNameTestAPI,
+			Type:    transportTypeREST,
+			BaseURL: testBaseURLExample,
+			Tools:   map[string]dadl.ToolDef{"t": {Method: testMethodGET, Path: "/"}},
 		},
 	}
 	adapter, err := NewRESTAdapter(spec, &testCredStore{}, slog.Default(), testRESTOpts)
@@ -609,11 +609,11 @@ func TestBuildQuery_NilWithDefault(t *testing.T) {
 
 	tool := &dadl.ToolDef{
 		Params: map[string]dadl.ParamDef{
-			"tags": {Type: "string", In: "query", Default: "story"},
+			testParamTags: {Type: schemaTypeString, In: paramInQuery, Default: "story"},
 		},
 	}
 
-	query := adapter.buildQuery(tool, map[string]any{"tags": nil})
+	query := adapter.buildQuery(tool, map[string]any{testParamTags: nil})
 	if !strings.Contains(query, "tags=story") {
 		t.Errorf("nil value should fall back to default, got: %s", query)
 	}
@@ -623,10 +623,10 @@ func TestBuildQuery_NilWithDefault(t *testing.T) {
 func TestBuildBody_NilValues(t *testing.T) {
 	spec := &dadl.Spec{
 		Backend: dadl.BackendDef{
-			Name:    "testapi",
-			Type:    "rest",
-			BaseURL: "https://api.example.com",
-			Tools:   map[string]dadl.ToolDef{"t": {Method: "POST", Path: "/"}},
+			Name:    testBackendNameTestAPI,
+			Type:    transportTypeREST,
+			BaseURL: testBaseURLExample,
+			Tools:   map[string]dadl.ToolDef{"t": {Method: testMethodPOST, Path: "/"}},
 		},
 	}
 	adapter, err := NewRESTAdapter(spec, &testCredStore{}, slog.Default(), testRESTOpts)
@@ -636,16 +636,16 @@ func TestBuildBody_NilValues(t *testing.T) {
 
 	tool := &dadl.ToolDef{
 		Params: map[string]dadl.ParamDef{
-			"name":   {Type: "string", In: "body"},
-			"filter": {Type: "string", In: "body"},
+			testParamName:   {Type: schemaTypeString, In: paramInBody},
+			testParamFilter: {Type: schemaTypeString, In: paramInBody},
 		},
 	}
 
-	body := adapter.buildBody(tool, map[string]any{"name": "test", "filter": nil})
-	if _, exists := body["filter"]; exists {
+	body := adapter.buildBody(tool, map[string]any{testParamName: testBackendNameTest, testParamFilter: nil})
+	if _, exists := body[testParamFilter]; exists {
 		t.Errorf("body should not contain nil param 'filter': %v", body)
 	}
-	if body["name"] != "test" {
+	if body[testParamName] != testBackendNameTest {
 		t.Errorf("body missing valid param 'name': %v", body)
 	}
 }
@@ -653,10 +653,10 @@ func TestBuildBody_NilValues(t *testing.T) {
 func TestBuildPath_URLEncoding(t *testing.T) {
 	spec := &dadl.Spec{
 		Backend: dadl.BackendDef{
-			Name:    "testapi",
-			Type:    "rest",
-			BaseURL: "https://api.example.com",
-			Tools:   map[string]dadl.ToolDef{"t": {Method: "GET", Path: "/"}},
+			Name:    testBackendNameTestAPI,
+			Type:    transportTypeREST,
+			BaseURL: testBaseURLExample,
+			Tools:   map[string]dadl.ToolDef{"t": {Method: testMethodGET, Path: "/"}},
 		},
 	}
 	adapter, err := NewRESTAdapter(spec, &testCredStore{}, slog.Default(), testRESTOpts)
@@ -667,7 +667,7 @@ func TestBuildPath_URLEncoding(t *testing.T) {
 	tool := &dadl.ToolDef{
 		Path: "/users/{id}/items",
 		Params: map[string]dadl.ParamDef{
-			"id": {Type: "string", In: "path"},
+			"id": {Type: schemaTypeString, In: paramInPath},
 		},
 	}
 
@@ -691,10 +691,10 @@ func TestBuildPath_URLEncoding(t *testing.T) {
 func TestBuildPath_MissingRequiredParam(t *testing.T) {
 	spec := &dadl.Spec{
 		Backend: dadl.BackendDef{
-			Name:    "testapi",
-			Type:    "rest",
-			BaseURL: "https://api.example.com",
-			Tools:   map[string]dadl.ToolDef{"t": {Method: "GET", Path: "/"}},
+			Name:    testBackendNameTestAPI,
+			Type:    transportTypeREST,
+			BaseURL: testBaseURLExample,
+			Tools:   map[string]dadl.ToolDef{"t": {Method: testMethodGET, Path: "/"}},
 		},
 	}
 	adapter, err := NewRESTAdapter(spec, &testCredStore{}, slog.Default(), testRESTOpts)
@@ -705,7 +705,7 @@ func TestBuildPath_MissingRequiredParam(t *testing.T) {
 	tool := &dadl.ToolDef{
 		Path: "/accounts/{account_id}/d1/database",
 		Params: map[string]dadl.ParamDef{
-			"account_id": {Type: "string", In: "path", Required: true},
+			testParamAccountID: {Type: schemaTypeString, In: paramInPath, Required: true},
 		},
 	}
 
@@ -714,18 +714,18 @@ func TestBuildPath_MissingRequiredParam(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for missing path parameter, got nil")
 	}
-	if !strings.Contains(err.Error(), "account_id") {
+	if !strings.Contains(err.Error(), testParamAccountID) {
 		t.Errorf("error does not mention the missing parameter name: %v", err)
 	}
 
 	// Explicitly nil value.
-	_, err = adapter.buildPath(tool, map[string]any{"account_id": nil})
+	_, err = adapter.buildPath(tool, map[string]any{testParamAccountID: nil})
 	if err == nil {
 		t.Fatal("expected error for nil path parameter, got nil")
 	}
 
 	// Empty string.
-	_, err = adapter.buildPath(tool, map[string]any{"account_id": ""})
+	_, err = adapter.buildPath(tool, map[string]any{testParamAccountID: ""})
 	if err == nil {
 		t.Fatal("expected error for empty path parameter, got nil")
 	}
@@ -736,10 +736,10 @@ func TestBuildPath_MissingRequiredParam(t *testing.T) {
 func TestBuildPath_SubstitutesAllRequiredParams(t *testing.T) {
 	spec := &dadl.Spec{
 		Backend: dadl.BackendDef{
-			Name:    "testapi",
-			Type:    "rest",
-			BaseURL: "https://api.example.com",
-			Tools:   map[string]dadl.ToolDef{"t": {Method: "GET", Path: "/"}},
+			Name:    testBackendNameTestAPI,
+			Type:    transportTypeREST,
+			BaseURL: testBaseURLExample,
+			Tools:   map[string]dadl.ToolDef{"t": {Method: testMethodGET, Path: "/"}},
 		},
 	}
 	adapter, err := NewRESTAdapter(spec, &testCredStore{}, slog.Default(), testRESTOpts)
@@ -750,14 +750,14 @@ func TestBuildPath_SubstitutesAllRequiredParams(t *testing.T) {
 	tool := &dadl.ToolDef{
 		Path: "/accounts/{account_id}/d1/database/{database_id}/query",
 		Params: map[string]dadl.ParamDef{
-			"account_id":  {Type: "string", In: "path", Required: true},
-			"database_id": {Type: "string", In: "path", Required: true},
+			testParamAccountID: {Type: schemaTypeString, In: paramInPath, Required: true},
+			"database_id":      {Type: schemaTypeString, In: paramInPath, Required: true},
 		},
 	}
 
 	path, err := adapter.buildPath(tool, map[string]any{
-		"account_id":  "acct-123",
-		"database_id": "db-456",
+		testParamAccountID: "acct-123",
+		"database_id":      "db-456",
 	})
 	if err != nil {
 		t.Fatalf("buildPath: %v", err)

@@ -30,12 +30,12 @@ func TestValidateBaseURL_Rejects(t *testing.T) {
 		url     string
 		wantSub string
 	}{
-		{"localhost", "http://localhost/api", "private hostname"},
-		{"metadata.google.internal", "http://metadata.google.internal/", "private hostname"},
-		{"loopback_ipv4", "http://127.0.0.1/", "private/loopback"},
-		{"loopback_ipv6", "http://[::1]/", "private/loopback"},
-		{"private_10", "http://10.0.0.1/", "private/loopback"},
-		{"aws_metadata", "http://169.254.169.254/", "private/loopback"},
+		{hostnameLocalhost, "http://localhost/api", "private hostname"},
+		{hostnameGoogleMetadata, "http://metadata.google.internal/", "private hostname"},
+		{"loopback_ipv4", "http://127.0.0.1/", testPrivateLoopback},
+		{"loopback_ipv6", "http://[::1]/", testPrivateLoopback},
+		{"private_10", "http://10.0.0.1/", testPrivateLoopback},
+		{"aws_metadata", "http://169.254.169.254/", testPrivateLoopback},
 		{"invalid_scheme", "ftp://example.com/", "scheme"},
 		{"no_hostname", "http:///foo", "hostname"},
 		{"dns_failure", "http://this-host-does-not-exist.invalid/", "DNS resolution"},
@@ -149,14 +149,14 @@ func TestRedirectChecker(t *testing.T) {
 
 	t.Run("strict rejects localhost", func(t *testing.T) {
 		checker := newRedirectChecker(false)
-		if err := checker(mkReq("localhost"), nil); err == nil {
+		if err := checker(mkReq(hostnameLocalhost), nil); err == nil {
 			t.Error("expected rejection for localhost")
 		}
 	})
 
 	t.Run("strict rejects metadata", func(t *testing.T) {
 		checker := newRedirectChecker(false)
-		if err := checker(mkReq("metadata.google.internal"), nil); err == nil {
+		if err := checker(mkReq(hostnameGoogleMetadata), nil); err == nil {
 			t.Error("expected rejection for metadata")
 		}
 	})

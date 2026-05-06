@@ -39,33 +39,33 @@ func TestRESTAdapter_HeaderParam_Forwarded(t *testing.T) {
 	)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
-		gotMask = r.Header.Get("X-Goog-FieldMask")
-		gotCT = r.Header.Get("Content-Type")
+		gotMask = r.Header.Get(testHeaderFieldMask)
+		gotCT = r.Header.Get(testHeaderContentType)
 		mu.Unlock()
-		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set(testHeaderContentType, testContentTypeJSON)
 		_, _ = w.Write([]byte(`{"places":[]}`))
 	}))
 	defer srv.Close()
 
 	spec := &dadl.Spec{
-		Spec: "https://dadl.ai/spec/dadl-spec-v0.1.md",
+		Spec: testDADLSpecURL,
 		Backend: dadl.BackendDef{
 			Name:    "places",
-			Type:    "rest",
+			Type:    transportTypeREST,
 			BaseURL: srv.URL,
 			Defaults: dadl.DefaultsConfig{
 				Headers: map[string]string{
-					"Content-Type": "application/json",
-					"Accept":       "application/json",
+					testHeaderContentType: testContentTypeJSON,
+					testHeaderAccept:      testContentTypeJSON,
 				},
 			},
 			Tools: map[string]dadl.ToolDef{
 				"search_text": {
-					Method: "POST",
+					Method: testMethodPOST,
 					Path:   "/v1/places:searchText",
 					Params: map[string]dadl.ParamDef{
-						"X-Goog-FieldMask": {Type: "string", In: "header", Required: true},
-						"textQuery":        {Type: "string", In: "body", Required: true},
+						testHeaderFieldMask: {Type: schemaTypeString, In: paramInHeader, Required: true},
+						testParamTextQuery:  {Type: schemaTypeString, In: paramInBody, Required: true},
 					},
 				},
 			},
@@ -78,8 +78,8 @@ func TestRESTAdapter_HeaderParam_Forwarded(t *testing.T) {
 	}
 
 	_, err = adapter.Execute(context.Background(), "search_text", map[string]any{
-		"X-Goog-FieldMask": "places.id,places.displayName",
-		"textQuery":        "Bahnhof Hofheim",
+		testHeaderFieldMask: "places.id,places.displayName",
+		testParamTextQuery:  "Bahnhof Hofheim",
 	})
 	if err != nil {
 		t.Fatalf("execute: %v", err)
@@ -90,7 +90,7 @@ func TestRESTAdapter_HeaderParam_Forwarded(t *testing.T) {
 	if gotMask != "places.id,places.displayName" {
 		t.Errorf("X-Goog-FieldMask header = %q, want %q", gotMask, "places.id,places.displayName")
 	}
-	if gotCT != "application/json" {
+	if gotCT != testContentTypeJSON {
 		t.Errorf("Content-Type header = %q, want application/json (auth/content-type must not be clobbered)", gotCT)
 	}
 }
@@ -107,18 +107,18 @@ func TestRESTAdapter_HeaderParam_RequiredMissing(t *testing.T) {
 	defer srv.Close()
 
 	spec := &dadl.Spec{
-		Spec: "https://dadl.ai/spec/dadl-spec-v0.1.md",
+		Spec: testDADLSpecURL,
 		Backend: dadl.BackendDef{
 			Name:    "places",
-			Type:    "rest",
+			Type:    transportTypeREST,
 			BaseURL: srv.URL,
 			Tools: map[string]dadl.ToolDef{
 				"search_text": {
-					Method: "POST",
+					Method: testMethodPOST,
 					Path:   "/v1/places:searchText",
 					Params: map[string]dadl.ParamDef{
-						"X-Goog-FieldMask": {Type: "string", In: "header", Required: true},
-						"textQuery":        {Type: "string", In: "body", Required: true},
+						testHeaderFieldMask: {Type: schemaTypeString, In: paramInHeader, Required: true},
+						testParamTextQuery:  {Type: schemaTypeString, In: paramInBody, Required: true},
 					},
 				},
 			},
@@ -131,7 +131,7 @@ func TestRESTAdapter_HeaderParam_RequiredMissing(t *testing.T) {
 	}
 
 	result, err := adapter.Execute(context.Background(), "search_text", map[string]any{
-		"textQuery": "x",
+		testParamTextQuery: "x",
 	})
 	if err == nil && (result == nil || !result.IsError) {
 		t.Fatalf("expected error for missing required header param, got nil (called=%v)", called)
@@ -146,30 +146,30 @@ func TestRESTAdapter_HeaderParam_RequiredMissing(t *testing.T) {
 func TestRESTAdapter_HeaderParam_Default(t *testing.T) {
 	var gotAccept string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotAccept = r.Header.Get("Accept")
-		w.Header().Set("Content-Type", "text/tab-separated-values")
+		gotAccept = r.Header.Get(testHeaderAccept)
+		w.Header().Set(testHeaderContentType, "text/tab-separated-values")
 		_, _ = w.Write([]byte("a\tb\n1\t2\n"))
 	}))
 	defer srv.Close()
 
 	spec := &dadl.Spec{
-		Spec: "https://dadl.ai/spec/dadl-spec-v0.1.md",
+		Spec: testDADLSpecURL,
 		Backend: dadl.BackendDef{
 			Name:    "deepl",
-			Type:    "rest",
+			Type:    transportTypeREST,
 			BaseURL: srv.URL,
 			Defaults: dadl.DefaultsConfig{
 				Headers: map[string]string{
-					"Accept": "application/json",
+					testHeaderAccept: testContentTypeJSON,
 				},
 			},
 			Tools: map[string]dadl.ToolDef{
 				"export_glossary_as_tsv": {
-					Method: "GET",
+					Method: testMethodGET,
 					Path:   "/glossaries/{glossary_id}/entries",
 					Params: map[string]dadl.ParamDef{
-						"glossary_id": {Type: "string", In: "path", Required: true},
-						"Accept":      {Type: "string", In: "header", Default: "text/tab-separated-values"},
+						"glossary_id":    {Type: schemaTypeString, In: paramInPath, Required: true},
+						testHeaderAccept: {Type: schemaTypeString, In: paramInHeader, Default: "text/tab-separated-values"},
 					},
 				},
 			},
@@ -198,62 +198,62 @@ func TestRESTAdapter_HeaderParam_Default(t *testing.T) {
 func TestRESTAdapter_HeaderParam_ContentTypeAndAuthProtected(t *testing.T) {
 	var gotCT, gotAuth string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotCT = r.Header.Get("Content-Type")
-		gotAuth = r.Header.Get("Authorization")
-		w.Header().Set("Content-Type", "application/json")
+		gotCT = r.Header.Get(testHeaderContentType)
+		gotAuth = r.Header.Get(testHeaderAuth)
+		w.Header().Set(testHeaderContentType, testContentTypeJSON)
 		_, _ = w.Write([]byte(`{}`))
 	}))
 	defer srv.Close()
 
 	spec := &dadl.Spec{
-		Spec: "https://dadl.ai/spec/dadl-spec-v0.1.md",
+		Spec: testDADLSpecURL,
 		Backend: dadl.BackendDef{
 			Name:    "evil",
-			Type:    "rest",
+			Type:    transportTypeREST,
 			BaseURL: srv.URL,
 			Auth: dadl.AuthConfig{
-				Type:       "bearer",
-				Credential: "tok",
-				InjectInto: "header",
-				HeaderName: "Authorization",
+				Type:       testTokenBearer,
+				Credential: testTokenValue,
+				InjectInto: paramInHeader,
+				HeaderName: testHeaderAuth,
 				Prefix:     "Bearer ",
 			},
 			Defaults: dadl.DefaultsConfig{
 				Headers: map[string]string{
-					"Content-Type": "application/json",
+					testHeaderContentType: testContentTypeJSON,
 				},
 			},
 			Tools: map[string]dadl.ToolDef{
 				"malicious": {
-					Method: "POST",
+					Method: testMethodPOST,
 					Path:   "/x",
 					Params: map[string]dadl.ParamDef{
 						// Attempt to clobber Content-Type and Authorization via
 						// `in: header` params — must not succeed.
-						"Content-Type":  {Type: "string", In: "header"},
-						"Authorization": {Type: "string", In: "header"},
-						"payload":       {Type: "string", In: "body"},
+						testHeaderContentType: {Type: schemaTypeString, In: paramInHeader},
+						testHeaderAuth:        {Type: schemaTypeString, In: paramInHeader},
+						"payload":             {Type: schemaTypeString, In: paramInBody},
 					},
 				},
 			},
 		},
 	}
 
-	adapter, err := NewRESTAdapter(spec, &testCredStore{creds: map[string]string{"tok": "sk_secret"}}, slog.Default(), testRESTOpts)
+	adapter, err := NewRESTAdapter(spec, &testCredStore{creds: map[string]string{testTokenValue: "sk_secret"}}, slog.Default(), testRESTOpts)
 	if err != nil {
 		t.Fatalf("create adapter: %v", err)
 	}
 
 	_, err = adapter.Execute(context.Background(), "malicious", map[string]any{
-		"Content-Type":  "text/evil",
-		"Authorization": "Bearer attacker",
-		"payload":       "hi",
+		testHeaderContentType: "text/evil",
+		testHeaderAuth:        "Bearer attacker",
+		"payload":             "hi",
 	})
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}
 
-	if gotCT != "application/json" {
+	if gotCT != testContentTypeJSON {
 		t.Errorf("Content-Type = %q, want application/json (must be protected from header-param clobber)", gotCT)
 	}
 	if !strings.HasPrefix(gotAuth, "Bearer sk_secret") {

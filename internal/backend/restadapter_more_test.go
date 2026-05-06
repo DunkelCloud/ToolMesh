@@ -29,26 +29,26 @@ func TestRESTAdapter_RetryOnTransientError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		calls++
 		if calls < 3 {
-			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set(testHeaderContentType, testContentTypeJSON)
 			w.WriteHeader(http.StatusServiceUnavailable)
 			_, _ = w.Write([]byte(`{"message": "temp down"}`))
 			return
 		}
-		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set(testHeaderContentType, testContentTypeJSON)
 		_, _ = w.Write([]byte(`{"ok": true}`))
 	}))
 	defer srv.Close()
 
 	spec := &dadl.Spec{
-		Spec: "https://dadl.ai/spec/dadl-spec-v0.1.md",
+		Spec: testDADLSpecURL,
 		Backend: dadl.BackendDef{
-			Name: "api", Type: "rest", BaseURL: srv.URL,
+			Name: testBackendNameAPI, Type: transportTypeREST, BaseURL: srv.URL,
 			Tools: map[string]dadl.ToolDef{
 				"t": {
-					Method: "GET", Path: "/",
+					Method: testMethodGET, Path: "/",
 					Errors: &dadl.ErrorConfig{
-						Format:      "json",
-						MessagePath: "$.message",
+						Format:      testJSONFormat,
+						MessagePath: testJSONPathMessage,
 						RetryOn:     []int{503},
 						RetryStrategy: &dadl.RetryStrategyConfig{
 							MaxRetries:   3,
@@ -77,22 +77,22 @@ func TestRESTAdapter_RetryExhausted(t *testing.T) {
 	calls := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		calls++
-		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set(testHeaderContentType, testContentTypeJSON)
 		w.WriteHeader(http.StatusServiceUnavailable)
 		_, _ = w.Write([]byte(`{"message": "still down"}`))
 	}))
 	defer srv.Close()
 
 	spec := &dadl.Spec{
-		Spec: "https://dadl.ai/spec/dadl-spec-v0.1.md",
+		Spec: testDADLSpecURL,
 		Backend: dadl.BackendDef{
-			Name: "api", Type: "rest", BaseURL: srv.URL,
+			Name: testBackendNameAPI, Type: transportTypeREST, BaseURL: srv.URL,
 			Tools: map[string]dadl.ToolDef{
 				"t": {
-					Method: "GET", Path: "/",
+					Method: testMethodGET, Path: "/",
 					Errors: &dadl.ErrorConfig{
-						Format:      "json",
-						MessagePath: "$.message",
+						Format:      testJSONFormat,
+						MessagePath: testJSONPathMessage,
 						RetryOn:     []int{503},
 						RetryStrategy: &dadl.RetryStrategyConfig{
 							MaxRetries:   2,
@@ -113,18 +113,18 @@ func TestRESTAdapter_RetryExhausted(t *testing.T) {
 
 func TestRESTAdapter_JQTransform(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set(testHeaderContentType, testContentTypeJSON)
 		_, _ = w.Write([]byte(`{"items": [{"id": 1}, {"id": 2}]}`))
 	}))
 	defer srv.Close()
 
 	spec := &dadl.Spec{
-		Spec: "https://dadl.ai/spec/dadl-spec-v0.1.md",
+		Spec: testDADLSpecURL,
 		Backend: dadl.BackendDef{
-			Name: "api", Type: "rest", BaseURL: srv.URL,
+			Name: testBackendNameAPI, Type: transportTypeREST, BaseURL: srv.URL,
 			Tools: map[string]dadl.ToolDef{
 				"t": {
-					Method: "GET", Path: "/",
+					Method: testMethodGET, Path: "/",
 					Response: &dadl.ResponseConfig{
 						Transform: "[.items[].id]",
 					},

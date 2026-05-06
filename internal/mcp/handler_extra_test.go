@@ -197,8 +197,8 @@ func TestHandleToolCall_ExecuteCodeDiscoverToolsGuard(t *testing.T) {
 		name string
 		code string
 	}{
-		{name: "discover_tools", code: `await toolmesh.discover_tools({pattern: ".*"});`},
-		{name: "execute_code", code: `await toolmesh.execute_code({code: "1"});`},
+		{name: toolDiscoverTools, code: `await toolmesh.discover_tools({pattern: ".*"});`},
+		{name: toolExecuteCode, code: `await toolmesh.execute_code({code: "1"});`},
 	}
 
 	for _, tc := range cases {

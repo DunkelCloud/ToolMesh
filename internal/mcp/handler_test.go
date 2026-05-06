@@ -213,7 +213,7 @@ func TestBuildToolList_PatternInSchema(t *testing.T) {
 
 	var discoverTool *ToolDefinition
 	for i := range tools {
-		if tools[i].Name == "discover_tools" {
+		if tools[i].Name == toolDiscoverTools {
 			discoverTool = &tools[i]
 			break
 		}

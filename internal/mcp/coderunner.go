@@ -221,7 +221,7 @@ func (r *CodeRunner) Execute(ctx context.Context, code string) (*backend.ToolRes
 	// "Object has no member 'discover_tools'" TypeError that does not point
 	// the caller at the right fix. We only install the guard when no real
 	// backend tool has claimed the same sanitized name.
-	for _, name := range []string{"discover_tools", "execute_code"} {
+	for _, name := range []string{toolDiscoverTools, toolExecuteCode} {
 		if _, taken := r.nameMap[name]; taken {
 			continue
 		}

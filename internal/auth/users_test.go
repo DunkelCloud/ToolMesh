@@ -53,17 +53,17 @@ func TestUserStore_Authenticate(t *testing.T) {
 	}
 
 	// Valid admin login
-	user := store.Authenticate("admin", "admin-pw")
+	user := store.Authenticate(testUserAdmin, "admin-pw")
 	if user == nil {
 		t.Fatal("expected admin to authenticate")
 	}
-	if user.Username != "admin" {
+	if user.Username != testUserAdmin {
 		t.Errorf("Username = %q, want admin", user.Username)
 	}
-	if user.Company != "dunkelcloud" {
+	if user.Company != testCompanyDunkel {
 		t.Errorf("Company = %q, want dunkelcloud", user.Company)
 	}
-	if user.Plan != "pro" {
+	if user.Plan != testPlanPro {
 		t.Errorf("Plan = %q, want pro", user.Plan)
 	}
 
@@ -72,12 +72,12 @@ func TestUserStore_Authenticate(t *testing.T) {
 	if user == nil {
 		t.Fatal("expected demo to authenticate")
 	}
-	if user.Plan != "free" {
+	if user.Plan != testPlanFree {
 		t.Errorf("Plan = %q, want free", user.Plan)
 	}
 
 	// Wrong password
-	if store.Authenticate("admin", "wrong") != nil {
+	if store.Authenticate(testUserAdmin, "wrong") != nil {
 		t.Error("expected nil for wrong password")
 	}
 
@@ -139,7 +139,7 @@ func TestAPIKeyStore_Match(t *testing.T) {
 	if entry.CompanyID != "company-a" {
 		t.Errorf("CompanyID = %q, want company-a", entry.CompanyID)
 	}
-	if entry.Plan != "pro" {
+	if entry.Plan != testPlanPro {
 		t.Errorf("Plan = %q, want pro", entry.Plan)
 	}
 	if entry.CallerID != "claude" {
@@ -154,7 +154,7 @@ func TestAPIKeyStore_Match(t *testing.T) {
 	if entry.UserID != "user-two" {
 		t.Errorf("UserID = %q, want user-two", entry.UserID)
 	}
-	if entry.Plan != "free" {
+	if entry.Plan != testPlanFree {
 		t.Errorf("Plan = %q, want free", entry.Plan)
 	}
 

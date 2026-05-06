@@ -36,7 +36,7 @@ func TestCoerceToNumber(t *testing.T) {
 		{"int", 42, float64(42), false},
 		{"int64", int64(9), float64(9), false},
 		{"json.Number", json.Number("1.5"), 1.5, false},
-		{"string", "2.5", 2.5, false},
+		{kindString, "2.5", 2.5, false},
 		{"invalid string", "nope", nil, true},
 		{"bool true", true, float64(1), false},
 		{"bool false", false, float64(0), false},
@@ -72,10 +72,10 @@ func TestCoerceToBoolean(t *testing.T) {
 		err  bool
 	}{
 		{"bool", true, true, false},
-		{"string true", "true", true, false},
-		{"string yes", "yes", true, false},
+		{"string true", boolTrue, true, false},
+		{"string yes", testTokenYes, true, false},
 		{"string 1", "1", true, false},
-		{"string false", "false", false, false},
+		{"string false", boolFalse, false, false},
 		{"string no", "no", false, false},
 		{"string 0", "0", false, false},
 		{"invalid string", "maybe", nil, true},
@@ -111,7 +111,7 @@ func TestCoerce_EnumMatching(t *testing.T) {
 		{
 			Name: "t",
 			Params: []ParamDef{
-				{Name: "x", Type: ParamType{Kind: "string"}, Enum: []string{"Alpha", "Beta"}},
+				{Name: "x", Type: ParamType{Kind: kindString}, Enum: []string{"Alpha", "Beta"}},
 			},
 		},
 	}, quietLogger())
@@ -137,7 +137,7 @@ func TestCoerce_MissingRequiredExtra(t *testing.T) {
 		{
 			Name: "t",
 			Params: []ParamDef{
-				{Name: "x", Required: true, Type: ParamType{Kind: "string"}},
+				{Name: "x", Required: true, Type: ParamType{Kind: kindString}},
 			},
 		},
 	}, quietLogger())
@@ -153,7 +153,7 @@ func TestCoerce_StripsUnknownFields(t *testing.T) {
 		{
 			Name: "t",
 			Params: []ParamDef{
-				{Name: "known", Type: ParamType{Kind: "string"}},
+				{Name: "known", Type: ParamType{Kind: kindString}},
 			},
 		},
 	}, quietLogger())
@@ -177,7 +177,7 @@ func TestCoerce_UnknownToolExtra(t *testing.T) {
 
 func TestAddDef(t *testing.T) {
 	c := NewCoercer(nil, quietLogger())
-	c.AddDef(ToolDef{Name: "new", Params: []ParamDef{{Name: "a", Type: ParamType{Kind: "number"}}}})
+	c.AddDef(ToolDef{Name: "new", Params: []ParamDef{{Name: "a", Type: ParamType{Kind: kindNumber}}}})
 	out, err := c.Coerce("new", map[string]any{"a": "42"})
 	if err != nil {
 		t.Fatal(err)
@@ -191,7 +191,7 @@ func TestCoerce_ArrayWrapping(t *testing.T) {
 	c := NewCoercer([]ToolDef{
 		{
 			Name:   "t",
-			Params: []ParamDef{{Name: "x", Type: ParamType{Kind: "array", ItemKind: "string"}}},
+			Params: []ParamDef{{Name: "x", Type: ParamType{Kind: kindArray, ItemKind: kindString}}},
 		},
 	}, quietLogger())
 

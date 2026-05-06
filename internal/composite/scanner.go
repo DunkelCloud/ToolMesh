@@ -32,23 +32,23 @@ type Violation struct {
 
 // scanBlocklist is the set of identifiers that are forbidden in composite code.
 var scanBlocklist = map[unistring.String]bool{
-	"fetch":                     true,
+	jsIdentFetch:                true,
 	"XMLHttpRequest":            true,
-	"require":                   true,
+	jsIdentRequire:              true,
 	"import":                    true,
-	"process":                   true,
+	jsIdentProcess:              true,
 	"fs":                        true,
 	"os":                        true,
 	"child_process":             true,
-	"globalThis":                true,
-	"setTimeout":                true,
+	jsIdentGlobalThis:           true,
+	jsIdentSetTimeout:           true,
 	"setInterval":               true,
 	"setImmediate":              true,
 	"clearTimeout":              true,
 	"clearInterval":             true,
 	"clearImmediate":            true,
-	"window":                    true,
-	"self":                      true,
+	jsIdentWindow:               true,
+	jsIdentSelf:                 true,
 	"global":                    true,
 	"constructor":               true,
 	"__proto__":                 true,
@@ -121,7 +121,7 @@ func walkNode(node ast.Node, fileSet *file.FileSet, violations *[]Violation) {
 	case *ast.DotExpression:
 		// Check if accessing globalThis.*, window.*, self.*
 		if ident, ok := n.Left.(*ast.Identifier); ok {
-			if ident.Name == "globalThis" || ident.Name == "window" || ident.Name == "self" {
+			if ident.Name == jsIdentGlobalThis || ident.Name == jsIdentWindow || ident.Name == jsIdentSelf {
 				pos := resolvePosition(fileSet, ident.Idx)
 				*violations = append(*violations, Violation{
 					Line:    pos.Line,

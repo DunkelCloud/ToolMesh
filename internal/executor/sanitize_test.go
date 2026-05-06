@@ -40,17 +40,17 @@ func (h *recordingHandler) WithGroup(_ string) slog.Handler      { return h }
 func TestSanitizeParams(t *testing.T) {
 	const redacted = "[REDACTED]"
 	got := sanitizeParams(map[string]any{
-		"name":          "alice",
-		"password":      "hunter2",
+		"name":          testUserAlice,
+		paramPassword:   "hunter2",
 		"API_KEY":       "abcd",
 		"access_token":  "xyz",
 		"refresh_token": "rrr",
 	})
-	if got["name"] != "alice" {
+	if got["name"] != testUserAlice {
 		t.Errorf("name = %v", got["name"])
 	}
-	if got["password"] != redacted {
-		t.Errorf("password = %v", got["password"])
+	if got[paramPassword] != redacted {
+		t.Errorf("password = %v", got[paramPassword])
 	}
 	if got["API_KEY"] != redacted {
 		t.Errorf("API_KEY = %v", got["API_KEY"])
@@ -83,10 +83,10 @@ func TestExecute_DebugLoggingRedactsSecrets(t *testing.T) {
 		Authenticated: true,
 	})
 	_, err := exec.ExecuteTool(ctx, ExecuteToolRequest{
-		ToolName: "test:tool",
+		ToolName: testToolDirect,
 		Params: map[string]any{
-			"username": "alice",
-			"password": "plaintext-secret-value",
+			"username":    testUserAlice,
+			paramPassword: "plaintext-secret-value",
 		},
 	})
 	if err != nil {

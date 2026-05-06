@@ -36,7 +36,7 @@ func TestPipeline_Evaluate(t *testing.T) {
 			evaluators: []Evaluator{},
 			ctx: GateContext{
 				User:     userctx.UserContext{UserID: "u1"},
-				Tool:     "test_tool",
+				Tool:     testToolName,
 				Response: &backend.ToolResult{},
 			},
 			wantErr: false,
@@ -48,7 +48,7 @@ func TestPipeline_Evaluate(t *testing.T) {
 			},
 			ctx: GateContext{
 				User:     userctx.UserContext{UserID: "u1"},
-				Tool:     "test_tool",
+				Tool:     testToolName,
 				Response: &backend.ToolResult{},
 			},
 			wantErr: false,
@@ -60,7 +60,7 @@ func TestPipeline_Evaluate(t *testing.T) {
 			},
 			ctx: GateContext{
 				User:     userctx.UserContext{UserID: "u1"},
-				Tool:     "test_tool",
+				Tool:     testToolName,
 				Response: &backend.ToolResult{},
 			},
 			wantErr: true,
@@ -73,7 +73,7 @@ func TestPipeline_Evaluate(t *testing.T) {
 			},
 			ctx: GateContext{
 				User:     userctx.UserContext{UserID: "u1"},
-				Tool:     "test_tool",
+				Tool:     testToolName,
 				Response: &backend.ToolResult{},
 			},
 			wantErr: true,
@@ -82,12 +82,12 @@ func TestPipeline_Evaluate(t *testing.T) {
 		{
 			name: "first evaluator passes but second rejects",
 			evaluators: []Evaluator{
-				&mockEvaluator{name: "pass-eval", allowAll: true},
+				&mockEvaluator{name: testEvalNamePass, allowAll: true},
 				&mockEvaluator{name: "block-eval", rejectMsg: "blocked by second"},
 			},
 			ctx: GateContext{
 				User:     userctx.UserContext{UserID: "u1"},
-				Tool:     "test_tool",
+				Tool:     testToolName,
 				Response: &backend.ToolResult{},
 			},
 			wantErr: true,
@@ -102,7 +102,7 @@ func TestPipeline_Evaluate(t *testing.T) {
 			},
 			ctx: GateContext{
 				User:     userctx.UserContext{UserID: "u1"},
-				Tool:     "test_tool",
+				Tool:     testToolName,
 				Response: &backend.ToolResult{},
 			},
 			wantErr: false,
@@ -110,11 +110,11 @@ func TestPipeline_Evaluate(t *testing.T) {
 		{
 			name: "defaults to PhasePost when phase is empty",
 			evaluators: []Evaluator{
-				&mockEvaluator{name: "pass-eval", allowAll: true},
+				&mockEvaluator{name: testEvalNamePass, allowAll: true},
 			},
 			ctx: GateContext{
 				User:     userctx.UserContext{UserID: "u1"},
-				Tool:     "test_tool",
+				Tool:     testToolName,
 				Phase:    "", // should default to PhasePost
 				Response: &backend.ToolResult{},
 			},
@@ -123,11 +123,11 @@ func TestPipeline_Evaluate(t *testing.T) {
 		{
 			name: "preserves explicit phase",
 			evaluators: []Evaluator{
-				&mockEvaluator{name: "pass-eval", allowAll: true},
+				&mockEvaluator{name: testEvalNamePass, allowAll: true},
 			},
 			ctx: GateContext{
 				User:     userctx.UserContext{UserID: "u1"},
-				Tool:     "test_tool",
+				Tool:     testToolName,
 				Phase:    PhasePre,
 				Response: &backend.ToolResult{},
 			},
@@ -158,7 +158,7 @@ func TestPipeline_Evaluate(t *testing.T) {
 
 func TestPipeline_Evaluate_ModifiedResult(t *testing.T) {
 	modifiedResult := &backend.ToolResult{
-		Content: []any{map[string]any{"type": "text", "text": "modified"}},
+		Content: []any{map[string]any{testContentKeyType: testContentText, testContentText: "modified"}},
 	}
 
 	evaluators := []Evaluator{
@@ -169,14 +169,14 @@ func TestPipeline_Evaluate_ModifiedResult(t *testing.T) {
 				Modified: modifiedResult,
 			},
 		},
-		&mockEvaluator{name: "pass-eval", allowAll: true},
+		&mockEvaluator{name: testEvalNamePass, allowAll: true},
 	}
 
 	p := NewPipeline(evaluators)
 	ctx := GateContext{
 		User:     userctx.UserContext{UserID: "u1"},
-		Tool:     "test_tool",
-		Response: &backend.ToolResult{Content: []any{map[string]any{"type": "text", "text": "original"}}},
+		Tool:     testToolName,
+		Response: &backend.ToolResult{Content: []any{map[string]any{testContentKeyType: testContentText, testContentText: "original"}}},
 	}
 
 	err := p.Evaluate(ctx)
@@ -197,7 +197,7 @@ func TestPipeline_EvaluatePre_And_EvaluatePost(t *testing.T) {
 	// EvaluatePre should set phase to PhasePre and trigger block
 	err := p.EvaluatePre(GateContext{
 		User:     userctx.UserContext{UserID: "u1"},
-		Tool:     "test_tool",
+		Tool:     testToolName,
 		Response: &backend.ToolResult{},
 	})
 	if err == nil {
@@ -207,7 +207,7 @@ func TestPipeline_EvaluatePre_And_EvaluatePost(t *testing.T) {
 	// EvaluatePost should set phase to PhasePost and pass
 	err = p.EvaluatePost(GateContext{
 		User:     userctx.UserContext{UserID: "u1"},
-		Tool:     "test_tool",
+		Tool:     testToolName,
 		Response: &backend.ToolResult{},
 	})
 	if err != nil {

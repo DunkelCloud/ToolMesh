@@ -36,7 +36,7 @@ func TestRedisTokenStore_ClientRoundTrip(t *testing.T) {
 	s := newTestRedisStore(t)
 	ctx := context.Background()
 
-	c := &OAuthClient{ClientID: "c1", ClientSecret: "sec"}
+	c := &OAuthClient{ClientID: "c1", ClientSecret: testTokenSec}
 	if err := s.SaveClient(ctx, c); err != nil {
 		t.Fatal(err)
 	}
@@ -54,16 +54,16 @@ func TestRedisTokenStore_AuthCodeConsume(t *testing.T) {
 	s := newTestRedisStore(t)
 	ctx := context.Background()
 
-	ac := &AuthCode{Code: "abc", ClientID: "c"}
+	ac := &AuthCode{Code: testTokenABC, ClientID: "c"}
 	if err := s.SaveAuthCode(ctx, ac); err != nil {
 		t.Fatal(err)
 	}
-	got, err := s.ConsumeAuthCode(ctx, "abc")
-	if err != nil || got.Code != "abc" {
+	got, err := s.ConsumeAuthCode(ctx, testTokenABC)
+	if err != nil || got.Code != testTokenABC {
 		t.Errorf("got %+v, err %v", got, err)
 	}
 	// Already consumed.
-	if _, err := s.ConsumeAuthCode(ctx, "abc"); !errors.Is(err, ErrNotFound) {
+	if _, err := s.ConsumeAuthCode(ctx, testTokenABC); !errors.Is(err, ErrNotFound) {
 		t.Errorf("expected ErrNotFound, got %v", err)
 	}
 }

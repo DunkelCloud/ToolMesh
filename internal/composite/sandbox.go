@@ -23,23 +23,23 @@ import (
 // blockedGlobals lists all global identifiers that must be removed or overridden
 // in the goja sandbox before executing composite code.
 var blockedGlobals = []string{
-	"fetch",
+	jsIdentFetch,
 	"XMLHttpRequest",
-	"require",
+	jsIdentRequire,
 	"import",
-	"process",
+	jsIdentProcess,
 	"fs",
 	"os",
 	"child_process",
-	"globalThis",
-	"setTimeout",
+	jsIdentGlobalThis,
+	jsIdentSetTimeout,
 	"setInterval",
 	"setImmediate",
 	"clearTimeout",
 	"clearInterval",
 	"clearImmediate",
-	"window",
-	"self",
+	jsIdentWindow,
+	jsIdentSelf,
 	"global",
 }
 

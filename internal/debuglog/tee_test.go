@@ -62,14 +62,14 @@ func TestTeeHandler_WithAttrs(t *testing.T) {
 
 	ph := slog.NewTextHandler(&primary, &slog.HandlerOptions{Level: slog.LevelDebug})
 	tee := NewTeeHandler(ph, &secondary)
-	logger := slog.New(tee).With("backend", "github")
+	logger := slog.New(tee).With("backend", testBackendGitHub)
 
 	logger.Info("test")
 
-	if !strings.Contains(primary.String(), "github") {
+	if !strings.Contains(primary.String(), testBackendGitHub) {
 		t.Error("primary handler missing WithAttrs attribute")
 	}
-	if !strings.Contains(secondary.String(), "github") {
+	if !strings.Contains(secondary.String(), testBackendGitHub) {
 		t.Error("secondary handler missing WithAttrs attribute")
 	}
 }
@@ -112,11 +112,11 @@ func TestFilteredTeeHandler_MatchingBackend(t *testing.T) {
 	var primary, secondary bytes.Buffer
 
 	ph := slog.NewTextHandler(&primary, &slog.HandlerOptions{Level: slog.LevelDebug})
-	allowed := map[string]bool{"github": true}
+	allowed := map[string]bool{testBackendGitHub: true}
 	filtered := NewFilteredTeeHandler(ph, &secondary, allowed)
 	logger := slog.New(filtered)
 
-	logger.Info("matched", "backend", "github", "tool", "create_pull")
+	logger.Info("matched", "backend", testBackendGitHub, "tool", "create_pull")
 
 	if !strings.Contains(primary.String(), "matched") {
 		t.Error("primary should always receive record")
@@ -130,7 +130,7 @@ func TestFilteredTeeHandler_NonMatchingBackend(t *testing.T) {
 	var primary, secondary bytes.Buffer
 
 	ph := slog.NewTextHandler(&primary, &slog.HandlerOptions{Level: slog.LevelDebug})
-	allowed := map[string]bool{"github": true}
+	allowed := map[string]bool{testBackendGitHub: true}
 	filtered := NewFilteredTeeHandler(ph, &secondary, allowed)
 	logger := slog.New(filtered)
 
@@ -148,7 +148,7 @@ func TestFilteredTeeHandler_NoBackendAttr(t *testing.T) {
 	var primary, secondary bytes.Buffer
 
 	ph := slog.NewTextHandler(&primary, &slog.HandlerOptions{Level: slog.LevelDebug})
-	allowed := map[string]bool{"github": true}
+	allowed := map[string]bool{testBackendGitHub: true}
 	filtered := NewFilteredTeeHandler(ph, &secondary, allowed)
 	logger := slog.New(filtered)
 
@@ -166,11 +166,11 @@ func TestFilteredTeeHandler_WithAttrsMatch(t *testing.T) {
 	var primary, secondary bytes.Buffer
 
 	ph := slog.NewTextHandler(&primary, &slog.HandlerOptions{Level: slog.LevelDebug})
-	allowed := map[string]bool{"github": true}
+	allowed := map[string]bool{testBackendGitHub: true}
 	filtered := NewFilteredTeeHandler(ph, &secondary, allowed)
 
 	// Simulate a child logger with a pre-set matching backend attr.
-	logger := slog.New(filtered).With("backend", "github")
+	logger := slog.New(filtered).With("backend", testBackendGitHub)
 	logger.Info("via-with")
 
 	if !strings.Contains(secondary.String(), "via-with") {
@@ -182,7 +182,7 @@ func TestFilteredTeeHandler_WithAttrsNoMatch(t *testing.T) {
 	var primary, secondary bytes.Buffer
 
 	ph := slog.NewTextHandler(&primary, &slog.HandlerOptions{Level: slog.LevelDebug})
-	allowed := map[string]bool{"github": true}
+	allowed := map[string]bool{testBackendGitHub: true}
 	filtered := NewFilteredTeeHandler(ph, &secondary, allowed)
 
 	logger := slog.New(filtered).With("backend", "fetch_url")

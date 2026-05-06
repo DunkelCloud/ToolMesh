@@ -193,13 +193,13 @@ func TestEvaluatorNames(t *testing.T) {
 		},
 		{
 			name:      "returns single registered name",
-			register:  []string{"alpha"},
-			wantNames: []string{"alpha"},
+			register:  []string{testEvalNameAlpha},
+			wantNames: []string{testEvalNameAlpha},
 		},
 		{
 			name:      "returns all registered names",
-			register:  []string{"alpha", "beta", "gamma"},
-			wantNames: []string{"alpha", "beta", "gamma"},
+			register:  []string{testEvalNameAlpha, "beta", "gamma"},
+			wantNames: []string{testEvalNameAlpha, "beta", "gamma"},
 		},
 	}
 

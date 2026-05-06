@@ -189,12 +189,12 @@ func TestExecute_SandboxViolations(t *testing.T) {
 		{
 			name:    "fetch blocked",
 			code:    `fetch("http://evil.com")`,
-			wantErr: "not defined",
+			wantErr: testErrNotDefined,
 		},
 		{
 			name:    "require blocked",
 			code:    `require("fs")`,
-			wantErr: "not defined",
+			wantErr: testErrNotDefined,
 		},
 		{
 			name:    "eval blocked",
@@ -209,22 +209,22 @@ func TestExecute_SandboxViolations(t *testing.T) {
 		{
 			name:    "process.env blocked",
 			code:    `process.env.SECRET`,
-			wantErr: "not defined",
+			wantErr: testErrNotDefined,
 		},
 		{
 			name:    "setTimeout blocked",
 			code:    `setTimeout(() => {}, 100)`,
-			wantErr: "not defined",
+			wantErr: testErrNotDefined,
 		},
 		{
 			name:    "globalThis blocked",
 			code:    `globalThis.fetch`,
-			wantErr: "not defined",
+			wantErr: testErrNotDefined,
 		},
 		{
 			name:    "XMLHttpRequest blocked",
 			code:    `new XMLHttpRequest()`,
-			wantErr: "not defined",
+			wantErr: testErrNotDefined,
 		},
 	}
 

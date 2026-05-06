@@ -24,7 +24,7 @@ func TestRemappingStore_Get_Remapped(t *testing.T) {
 
 	delegate := NewEmbeddedStore()
 	store := NewRemappingStore(delegate, map[string]string{ //nolint:gosec // test credential mapping, not real secrets
-		"CREDENTIAL_ANTHROPIC_TOKEN": "MY_PROD_TOKEN",
+		testEnvAnthropicToken: "MY_PROD_TOKEN",
 	})
 
 	val, err := store.Get(context.Background(), "ANTHROPIC_TOKEN", TenantInfo{})
@@ -41,7 +41,7 @@ func TestRemappingStore_Get_Delegates(t *testing.T) {
 
 	delegate := NewEmbeddedStore()
 	store := NewRemappingStore(delegate, map[string]string{ //nolint:gosec // test credential mapping, not real secrets
-		"CREDENTIAL_ANTHROPIC_TOKEN": "MY_PROD_TOKEN",
+		testEnvAnthropicToken: "MY_PROD_TOKEN",
 	})
 
 	// OTHER_KEY is not in the remap — should delegate to EmbeddedStore.
@@ -60,7 +60,7 @@ func TestRemappingStore_Get_EmptyRemapped(t *testing.T) {
 
 	delegate := NewEmbeddedStore()
 	store := NewRemappingStore(delegate, map[string]string{ //nolint:gosec // test credential mapping
-		"CREDENTIAL_ANTHROPIC_TOKEN": "EMPTY_VAR",
+		testEnvAnthropicToken: "EMPTY_VAR",
 	})
 
 	_, err := store.Get(context.Background(), "ANTHROPIC_TOKEN", TenantInfo{})

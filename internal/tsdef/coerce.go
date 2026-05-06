@@ -29,6 +29,11 @@ const (
 	kindArray   = "array"
 	kindAny     = "any"
 	kindObject  = "object"
+
+	boolTrue  = "true"
+	boolFalse = "false"
+
+	schemaKeyType = "type"
 )
 
 // Coercer applies type coercion to tool parameters based on ToolDef definitions.
@@ -156,9 +161,9 @@ func coerceToBoolean(val any) (any, error) {
 		return v, nil
 	case string:
 		switch strings.ToLower(v) {
-		case "true", "1", "yes":
+		case boolTrue, "1", "yes":
 			return true, nil
-		case "false", "0", "no":
+		case boolFalse, "0", "no":
 			return false, nil
 		default:
 			return nil, fmt.Errorf("cannot coerce %q to boolean", v)

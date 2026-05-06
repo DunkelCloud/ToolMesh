@@ -20,7 +20,7 @@ import (
 
 func TestToInputSchema_BasicTypes(t *testing.T) {
 	td := ToolDef{
-		Name: "test",
+		Name: testToolName,
 		Params: []ParamDef{
 			{Name: "q", Type: ParamType{Kind: kindString}, Required: true},
 			{Name: "n", Type: ParamType{Kind: kindNumber}, Required: true},
@@ -50,13 +50,13 @@ func TestToInputSchema_BasicTypes(t *testing.T) {
 func TestToInputSchema_Enum(t *testing.T) {
 	td := ToolDef{
 		Params: []ParamDef{
-			{Name: "dir", Type: ParamType{Kind: kindString}, Enum: []string{"up", "down"}, Required: true},
+			{Name: testParamDir, Type: ParamType{Kind: kindString}, Enum: []string{"up", "down"}, Required: true},
 		},
 	}
 
 	schema := td.ToInputSchema()
 	props, _ := schema["properties"].(map[string]any)
-	dir := props["dir"].(map[string]any)
+	dir := props[testParamDir].(map[string]any)
 
 	if dir["type"] != kindString {
 		t.Error("enum should be string type")
@@ -70,13 +70,13 @@ func TestToInputSchema_Enum(t *testing.T) {
 func TestToInputSchema_Array(t *testing.T) {
 	td := ToolDef{
 		Params: []ParamDef{
-			{Name: "tags", Type: ParamType{Kind: kindArray, ItemKind: kindString}, Required: true},
+			{Name: testParamTags, Type: ParamType{Kind: kindArray, ItemKind: kindString}, Required: true},
 		},
 	}
 
 	schema := td.ToInputSchema()
 	props, _ := schema["properties"].(map[string]any)
-	tags := props["tags"].(map[string]any)
+	tags := props[testParamTags].(map[string]any)
 
 	if tags["type"] != kindArray {
 		t.Error("should be array type")
@@ -88,7 +88,7 @@ func TestToInputSchema_Array(t *testing.T) {
 }
 
 func TestToInputSchema_NoParams(t *testing.T) {
-	td := ToolDef{Name: "test"}
+	td := ToolDef{Name: testToolName}
 	schema := td.ToInputSchema()
 	if schema["type"] != kindObject {
 		t.Error("should be object")
@@ -100,7 +100,7 @@ func TestToolDefFromSchema_Roundtrip(t *testing.T) {
 		Name:        "search",
 		Description: "Search things",
 		Params: []ParamDef{
-			{Name: "query", Type: ParamType{Kind: kindString}, Required: true, Description: "The query"},
+			{Name: testParamInQuery, Type: ParamType{Kind: kindString}, Required: true, Description: "The query"},
 			{Name: "limit", Type: ParamType{Kind: kindNumber}, Required: false, Description: "Max results"},
 		},
 	}
@@ -115,10 +115,10 @@ func TestToolDefFromSchema_Roundtrip(t *testing.T) {
 		t.Fatalf("expected 2 params, got %d", len(reconstructed.Params))
 	}
 
-	// Find the "query" param (order may differ in map iteration)
+	// Find the testParamInQuery param (order may differ in map iteration)
 	var queryParam *ParamDef
 	for i := range reconstructed.Params {
-		if reconstructed.Params[i].Name == "query" {
+		if reconstructed.Params[i].Name == testParamInQuery {
 			queryParam = &reconstructed.Params[i]
 			break
 		}

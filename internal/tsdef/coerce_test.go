@@ -26,11 +26,11 @@ func testLogger() *slog.Logger {
 
 func TestCoerce_StringToNumber(t *testing.T) {
 	c := NewCoercer([]ToolDef{{
-		Name:   "test",
+		Name:   testToolName,
 		Params: []ParamDef{{Name: "n", Type: ParamType{Kind: kindNumber}, Required: true}},
 	}}, testLogger())
 
-	result, err := c.Coerce("test", map[string]any{"n": "42"})
+	result, err := c.Coerce(testToolName, map[string]any{"n": "42"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -41,7 +41,7 @@ func TestCoerce_StringToNumber(t *testing.T) {
 
 func TestCoerce_StringToBoolean(t *testing.T) {
 	c := NewCoercer([]ToolDef{{
-		Name:   "test",
+		Name:   testToolName,
 		Params: []ParamDef{{Name: "b", Type: ParamType{Kind: kindBoolean}, Required: true}},
 	}}, testLogger())
 
@@ -49,16 +49,16 @@ func TestCoerce_StringToBoolean(t *testing.T) {
 		input string
 		want  bool
 	}{
-		{"true", true},
-		{"false", false},
+		{boolTrue, true},
+		{boolFalse, false},
 		{"1", true},
 		{"0", false},
-		{"yes", true},
+		{testTokenYes, true},
 		{"no", false},
 	}
 
 	for _, tt := range tests {
-		result, err := c.Coerce("test", map[string]any{"b": tt.input})
+		result, err := c.Coerce(testToolName, map[string]any{"b": tt.input})
 		if err != nil {
 			t.Fatalf("input %q: unexpected error: %v", tt.input, err)
 		}
@@ -70,11 +70,11 @@ func TestCoerce_StringToBoolean(t *testing.T) {
 
 func TestCoerce_NumberToString(t *testing.T) {
 	c := NewCoercer([]ToolDef{{
-		Name:   "test",
+		Name:   testToolName,
 		Params: []ParamDef{{Name: "s", Type: ParamType{Kind: kindString}, Required: true}},
 	}}, testLogger())
 
-	result, err := c.Coerce("test", map[string]any{"s": 42})
+	result, err := c.Coerce(testToolName, map[string]any{"s": 42})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -85,27 +85,27 @@ func TestCoerce_NumberToString(t *testing.T) {
 
 func TestCoerce_SingleToArray(t *testing.T) {
 	c := NewCoercer([]ToolDef{{
-		Name:   "test",
-		Params: []ParamDef{{Name: "tags", Type: ParamType{Kind: "array", ItemKind: kindString}, Required: true}},
+		Name:   testToolName,
+		Params: []ParamDef{{Name: testParamTags, Type: ParamType{Kind: kindArray, ItemKind: kindString}, Required: true}},
 	}}, testLogger())
 
-	result, err := c.Coerce("test", map[string]any{"tags": "single"})
+	result, err := c.Coerce(testToolName, map[string]any{testParamTags: "single"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	arr, ok := result["tags"].([]any)
+	arr, ok := result[testParamTags].([]any)
 	if !ok || len(arr) != 1 {
-		t.Errorf("expected array with 1 element, got %v", result["tags"])
+		t.Errorf("expected array with 1 element, got %v", result[testParamTags])
 	}
 }
 
 func TestCoerce_StripExtraFields(t *testing.T) {
 	c := NewCoercer([]ToolDef{{
-		Name:   "test",
+		Name:   testToolName,
 		Params: []ParamDef{{Name: "a", Type: ParamType{Kind: kindString}, Required: true}},
 	}}, testLogger())
 
-	result, err := c.Coerce("test", map[string]any{"a": "ok", "unknown": "strip me"})
+	result, err := c.Coerce(testToolName, map[string]any{"a": "ok", "unknown": "strip me"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -119,11 +119,11 @@ func TestCoerce_StripExtraFields(t *testing.T) {
 
 func TestCoerce_MissingRequired(t *testing.T) {
 	c := NewCoercer([]ToolDef{{
-		Name:   "test",
+		Name:   testToolName,
 		Params: []ParamDef{{Name: "req", Type: ParamType{Kind: kindString}, Required: true}},
 	}}, testLogger())
 
-	_, err := c.Coerce("test", map[string]any{})
+	_, err := c.Coerce(testToolName, map[string]any{})
 	if err == nil {
 		t.Fatal("expected error for missing required param")
 	}
@@ -131,11 +131,11 @@ func TestCoerce_MissingRequired(t *testing.T) {
 
 func TestCoerce_MissingOptional(t *testing.T) {
 	c := NewCoercer([]ToolDef{{
-		Name:   "test",
+		Name:   testToolName,
 		Params: []ParamDef{{Name: "opt", Type: ParamType{Kind: kindString}, Required: false}},
 	}}, testLogger())
 
-	result, err := c.Coerce("test", map[string]any{})
+	result, err := c.Coerce(testToolName, map[string]any{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -146,19 +146,19 @@ func TestCoerce_MissingOptional(t *testing.T) {
 
 func TestCoerce_EnumCaseInsensitive(t *testing.T) {
 	c := NewCoercer([]ToolDef{{
-		Name: "test",
+		Name: testToolName,
 		Params: []ParamDef{{
-			Name: "dir", Type: ParamType{Kind: kindString}, Required: true,
+			Name: testParamDir, Type: ParamType{Kind: kindString}, Required: true,
 			Enum: []string{"up", "down"},
 		}},
 	}}, testLogger())
 
-	result, err := c.Coerce("test", map[string]any{"dir": "UP"})
+	result, err := c.Coerce(testToolName, map[string]any{testParamDir: "UP"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if result["dir"] != "up" {
-		t.Errorf("dir = %v, want \"up\"", result["dir"])
+	if result[testParamDir] != "up" {
+		t.Errorf("dir = %v, want \"up\"", result[testParamDir])
 	}
 }
 

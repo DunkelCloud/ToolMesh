@@ -25,7 +25,7 @@ func TestFileTokenStore_ClientRoundTrip(t *testing.T) {
 	s := newTestFileStore(t)
 	ctx := context.Background()
 
-	c := &OAuthClient{ClientID: "c1", ClientSecret: "sec", ClientName: "Test", RedirectURIs: []string{"https://x/"}, CreatedAt: time.Now()}
+	c := &OAuthClient{ClientID: "c1", ClientSecret: testTokenSec, ClientName: "Test", RedirectURIs: []string{"https://x/"}, CreatedAt: time.Now()}
 	if err := s.SaveClient(ctx, c); err != nil {
 		t.Fatal(err)
 	}
@@ -33,7 +33,7 @@ func TestFileTokenStore_ClientRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.ClientID != "c1" || got.ClientSecret != "sec" {
+	if got.ClientID != "c1" || got.ClientSecret != testTokenSec {
 		t.Errorf("round-trip mismatch: %+v", got)
 	}
 
@@ -46,12 +46,12 @@ func TestFileTokenStore_AuthCodeConsume(t *testing.T) {
 	s := newTestFileStore(t)
 	ctx := context.Background()
 
-	ac := &AuthCode{Code: "abc", ClientID: "c1", ExpiresAt: time.Now().Add(time.Minute)}
+	ac := &AuthCode{Code: testTokenABC, ClientID: "c1", ExpiresAt: time.Now().Add(time.Minute)}
 	if err := s.SaveAuthCode(ctx, ac); err != nil {
 		t.Fatal(err)
 	}
 
-	got, err := s.ConsumeAuthCode(ctx, "abc")
+	got, err := s.ConsumeAuthCode(ctx, testTokenABC)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,7 +60,7 @@ func TestFileTokenStore_AuthCodeConsume(t *testing.T) {
 	}
 
 	// Already consumed.
-	if _, err := s.ConsumeAuthCode(ctx, "abc"); !errors.Is(err, ErrNotFound) {
+	if _, err := s.ConsumeAuthCode(ctx, testTokenABC); !errors.Is(err, ErrNotFound) {
 		t.Errorf("expected ErrNotFound, got %v", err)
 	}
 }

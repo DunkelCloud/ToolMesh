@@ -61,7 +61,7 @@ func TestGate_Evaluate_Authenticated(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			result, err := g.Evaluate(GateContext{
 				User:     tt.user,
-				Tool:     "test_tool",
+				Tool:     testToolName,
 				Response: &backend.ToolResult{},
 			})
 			if err != nil {
@@ -85,7 +85,7 @@ func TestGate_Evaluate_NoPolicies(t *testing.T) {
 
 	result, err := g.Evaluate(GateContext{
 		User:     userctx.UserContext{UserID: "u1"},
-		Tool:     "test_tool",
+		Tool:     testToolName,
 		Response: &backend.ToolResult{},
 	})
 	if err != nil {
@@ -179,14 +179,14 @@ func TestGate_PIIProtection(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			result := &backend.ToolResult{
 				Content: []any{map[string]any{
-					"type": "text",
-					"text": tt.input,
+					testContentKeyType: testContentText,
+					testContentText:    tt.input,
 				}},
 			}
 
 			evalResult, err := g.Evaluate(GateContext{
 				User:     userctx.UserContext{UserID: "u1", Authenticated: true},
-				Tool:     "test_tool",
+				Tool:     testToolName,
 				Response: result,
 			})
 			if err != nil {
@@ -196,7 +196,7 @@ func TestGate_PIIProtection(t *testing.T) {
 				t.Fatalf("expected allowed, got rejected: %s", evalResult.Reason)
 			}
 
-			text := result.Content[0].(map[string]any)["text"].(string)
+			text := result.Content[0].(map[string]any)[testContentText].(string)
 			if !contains(text, tt.contains) {
 				t.Errorf("output %q should contain %q", text, tt.contains)
 			}
@@ -214,8 +214,8 @@ func TestGate_PIIProtection_NoOriginalLeakage(t *testing.T) {
 
 	result := &backend.ToolResult{
 		Content: []any{map[string]any{
-			"type": "text",
-			"text": "Email: secret@company.com, Card: 4111 1111 1111 1111",
+			testContentKeyType: testContentText,
+			testContentText:    "Email: secret@company.com, Card: 4111 1111 1111 1111",
 		}},
 	}
 
@@ -225,7 +225,7 @@ func TestGate_PIIProtection_NoOriginalLeakage(t *testing.T) {
 		Response: result,
 	})
 
-	text := result.Content[0].(map[string]any)["text"].(string)
+	text := result.Content[0].(map[string]any)[testContentText].(string)
 	if contains(text, "secret@company.com") {
 		t.Error("email should have been masked")
 	}
@@ -250,8 +250,8 @@ func TestGate_RoleFieldFilter(t *testing.T) {
 	// Non-compliance user calling a user tool — ssn should be redacted
 	result := &backend.ToolResult{
 		Content: []any{map[string]any{
-			"type": "text",
-			"text": jsonContent,
+			testContentKeyType: testContentText,
+			testContentText:    jsonContent,
 		}},
 	}
 
@@ -267,7 +267,7 @@ func TestGate_RoleFieldFilter(t *testing.T) {
 		t.Fatalf("expected allowed, got rejected: %s", evalResult.Reason)
 	}
 
-	text := result.Content[0].(map[string]any)["text"].(string)
+	text := result.Content[0].(map[string]any)[testContentText].(string)
 	if contains(text, "123-45-6789") {
 		t.Error("SSN should have been redacted for non-compliance user")
 	}
@@ -291,8 +291,8 @@ func TestGate_RoleFieldFilter_AdminBypass(t *testing.T) {
 
 	result := &backend.ToolResult{
 		Content: []any{map[string]any{
-			"type": "text",
-			"text": jsonContent,
+			testContentKeyType: testContentText,
+			testContentText:    jsonContent,
 		}},
 	}
 
@@ -303,7 +303,7 @@ func TestGate_RoleFieldFilter_AdminBypass(t *testing.T) {
 		Response: result,
 	})
 
-	text := result.Content[0].(map[string]any)["text"].(string)
+	text := result.Content[0].(map[string]any)[testContentText].(string)
 	if contains(text, "[REDACTED]") {
 		t.Error("admin should not have fields redacted")
 	}
@@ -350,21 +350,21 @@ func TestGate_Evaluate_PrePhase_BlocksWriteOperation(t *testing.T) {
 	}{
 		{
 			name:    "pre phase blocks turn-off",
-			tool:    "shelly_cloud_set_switch",
+			tool:    testToolShelly,
 			params:  map[string]any{"on": false, "id": "abc123"},
 			phase:   PhasePre,
 			wantErr: true,
 		},
 		{
 			name:    "pre phase allows turn-on",
-			tool:    "shelly_cloud_set_switch",
+			tool:    testToolShelly,
 			params:  map[string]any{"on": true, "id": "abc123"},
 			phase:   PhasePre,
 			wantErr: false,
 		},
 		{
 			name:    "post phase ignores params",
-			tool:    "shelly_cloud_set_switch",
+			tool:    testToolShelly,
 			params:  map[string]any{"on": false},
 			phase:   PhasePost,
 			wantErr: false,
@@ -415,7 +415,7 @@ func TestGate_Evaluate_PhaseDefaultsToPost(t *testing.T) {
 	// Without phase set, should default to "post" and pass
 	result, err := g.Evaluate(GateContext{
 		User:     userctx.UserContext{UserID: "u1", Authenticated: true},
-		Tool:     "test_tool",
+		Tool:     testToolName,
 		Response: &backend.ToolResult{},
 	})
 	if err != nil {
@@ -443,7 +443,7 @@ func TestGate_Evaluate_ParamsAvailableInContext(t *testing.T) {
 	// Channel 2 should be blocked
 	result, _ := g.Evaluate(GateContext{
 		User:     userctx.UserContext{UserID: "u1", Authenticated: true},
-		Tool:     "shelly_cloud_set_switch",
+		Tool:     testToolShelly,
 		Params:   map[string]any{"channel": 2, "on": true},
 		Phase:    PhasePre,
 		Response: &backend.ToolResult{},
@@ -455,7 +455,7 @@ func TestGate_Evaluate_ParamsAvailableInContext(t *testing.T) {
 	// Channel 1 should pass
 	result, _ = g.Evaluate(GateContext{
 		User:     userctx.UserContext{UserID: "u1", Authenticated: true},
-		Tool:     "shelly_cloud_set_switch",
+		Tool:     testToolShelly,
 		Params:   map[string]any{"channel": 1, "on": true},
 		Phase:    PhasePre,
 		Response: &backend.ToolResult{},
@@ -528,9 +528,9 @@ func TestGate_CallerIDAndCallerClassAvailable(t *testing.T) {
 	}{
 		{
 			name:        "untrusted caller blocked on destructive tool",
-			callerID:    "anonymous",
-			callerClass: "untrusted",
-			tool:        "db_delete_user",
+			callerID:    testUserAnonymous,
+			callerClass: testCallerUntrust,
+			tool:        testToolDeleteUser,
 			phase:       PhasePre,
 			wantAllowed: false,
 		},
@@ -538,23 +538,23 @@ func TestGate_CallerIDAndCallerClassAvailable(t *testing.T) {
 			name:        "trusted caller allowed on destructive tool",
 			callerID:    "claude-code",
 			callerClass: "trusted",
-			tool:        "db_delete_user",
+			tool:        testToolDeleteUser,
 			phase:       PhasePre,
 			wantAllowed: true,
 		},
 		{
 			name:        "untrusted caller allowed on read tool",
-			callerID:    "anonymous",
-			callerClass: "untrusted",
+			callerID:    testUserAnonymous,
+			callerClass: testCallerUntrust,
 			tool:        "db_get_user",
 			phase:       PhasePre,
 			wantAllowed: true,
 		},
 		{
 			name:        "post phase not affected",
-			callerID:    "anonymous",
-			callerClass: "untrusted",
-			tool:        "db_delete_user",
+			callerID:    testUserAnonymous,
+			callerClass: testCallerUntrust,
+			tool:        testToolDeleteUser,
 			phase:       PhasePost,
 			wantAllowed: true,
 		},
@@ -596,7 +596,7 @@ func TestGate_evalPolicy_EmptyPolicy(t *testing.T) {
 
 	result, err := g.Evaluate(GateContext{
 		User:     userctx.UserContext{UserID: "u1", Authenticated: true},
-		Tool:     "test_tool",
+		Tool:     testToolName,
 		Response: &backend.ToolResult{},
 	})
 	if err != nil {
@@ -621,7 +621,7 @@ func TestGate_evalPolicy_SyntaxError(t *testing.T) {
 
 	result, err := g.Evaluate(GateContext{
 		User:     userctx.UserContext{UserID: "u1", Authenticated: true},
-		Tool:     "test_tool",
+		Tool:     testToolName,
 		Response: &backend.ToolResult{},
 	})
 	if err != nil {
@@ -645,7 +645,7 @@ func TestGate_evalPolicy_PolicyThrowsString(t *testing.T) {
 
 	result, err := g.Evaluate(GateContext{
 		User:     userctx.UserContext{UserID: "u1", Authenticated: true},
-		Tool:     "test_tool",
+		Tool:     testToolName,
 		Response: &backend.ToolResult{},
 	})
 	if err != nil {
@@ -671,7 +671,7 @@ func TestGate_evalPolicy_PolicyThrowsError(t *testing.T) {
 
 	result, err := g.Evaluate(GateContext{
 		User:     userctx.UserContext{UserID: "u1", Authenticated: true},
-		Tool:     "test_tool",
+		Tool:     testToolName,
 		Response: &backend.ToolResult{},
 	})
 	if err != nil {
@@ -733,14 +733,14 @@ func TestGate_evalPolicy_PolicyModifiesResponseContent(t *testing.T) {
 
 	result := &backend.ToolResult{
 		Content: []any{map[string]any{
-			"type": "text",
-			"text": "sensitive data",
+			testContentKeyType: testContentText,
+			testContentText:    "sensitive data",
 		}},
 	}
 
 	evalResult, err := g.Evaluate(GateContext{
 		User:     userctx.UserContext{UserID: "u1", Authenticated: true},
-		Tool:     "test_tool",
+		Tool:     testToolName,
 		Response: result,
 	})
 	if err != nil {
@@ -750,7 +750,7 @@ func TestGate_evalPolicy_PolicyModifiesResponseContent(t *testing.T) {
 		t.Error("policy that modifies content should still allow")
 	}
 
-	text := result.Content[0].(map[string]any)["text"].(string)
+	text := result.Content[0].(map[string]any)[testContentText].(string)
 	if text != "REDACTED" {
 		t.Errorf("expected modified content 'REDACTED', got %q", text)
 	}
@@ -773,7 +773,7 @@ func TestGate_evalPolicy_NilResponse(t *testing.T) {
 
 	result, err := g.Evaluate(GateContext{
 		User:     userctx.UserContext{UserID: "u1", Authenticated: true},
-		Tool:     "test_tool",
+		Tool:     testToolName,
 		Response: nil,
 	})
 	if err != nil {
@@ -800,7 +800,7 @@ func TestGate_evalPolicy_RateLimitFunction(t *testing.T) {
 
 	ctx := GateContext{
 		User:     userctx.UserContext{UserID: "rate-test-user", Authenticated: true},
-		Tool:     "test_tool",
+		Tool:     testToolName,
 		Response: &backend.ToolResult{},
 	}
 
@@ -839,7 +839,7 @@ func TestGate_evalPolicy_MultiplePoliciesShortCircuit(t *testing.T) {
 
 	result, err := g.Evaluate(GateContext{
 		User:     userctx.UserContext{UserID: "u1", Authenticated: true},
-		Tool:     "test_tool",
+		Tool:     testToolName,
 		Response: &backend.ToolResult{},
 	})
 	if err != nil {

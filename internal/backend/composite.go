@@ -66,16 +66,32 @@ func (c *CompositeBackend) AddPassthrough(b ToolBackend) {
 // Execute routes the tool call to the correct backend based on the name prefix.
 // Tool names use underscore as separator: "backend_toolname".
 // We match against known backend names (longest prefix wins).
+//
+// Collapse fallback: when the tool name exactly equals a registered backend
+// name, the call is routed to that backend's same-named tool. This supports
+// the expose_tools convention where a backend named after its single primary
+// tool advertises the bare name (e.g. backend "web_search" exposes tool
+// "web_search" as just "web_search", not "web_search_web_search"). Standard
+// prefix routing still wins when both apply.
 func (c *CompositeBackend) Execute(ctx context.Context, toolName string, params map[string]any) (*ToolResult, error) {
 	s := c.state.Load()
 
 	// Check named backends by prefix match
+	var collapseTarget ToolBackend
 	for name, b := range s.backends {
 		prefix := name + "_"
 		if strings.HasPrefix(toolName, prefix) {
 			realTool := strings.TrimPrefix(toolName, prefix)
 			return b.Execute(ctx, realTool, params)
 		}
+		if toolName == name {
+			// Defer the collapse dispatch until after the prefix loop so a
+			// real prefix match elsewhere still wins.
+			collapseTarget = b
+		}
+	}
+	if collapseTarget != nil {
+		return collapseTarget.Execute(ctx, toolName, params)
 	}
 
 	// Try passthrough backends (they handle their own routing)
@@ -162,27 +178,40 @@ func (c *CompositeBackend) Swap(backends map[string]ToolBackend, passthroughs []
 // prefix) or falls back to passthrough backends. Returns the descriptor with
 // the Access classification when available, or false if no backend owns the
 // tool. Backends that do not implement ToolMetadataLookup are skipped silently.
+//
+// Mirrors [CompositeBackend.Execute] in honoring the collapse fallback: a
+// bare tool name that exactly matches a backend name resolves to that
+// backend's same-named tool, supporting the expose_tools collapse convention.
 func (c *CompositeBackend) LookupTool(toolName string) (ToolDescriptor, bool) {
 	s := c.state.Load()
 
 	for name, b := range s.backends {
 		prefix := name + "_"
-		if !strings.HasPrefix(toolName, prefix) {
-			continue
+		switch {
+		case strings.HasPrefix(toolName, prefix):
+			lookup, ok := b.(ToolMetadataLookup)
+			if !ok {
+				return ToolDescriptor{}, false
+			}
+			realTool := strings.TrimPrefix(toolName, prefix)
+			desc, found := lookup.LookupTool(realTool)
+			if !found {
+				return ToolDescriptor{}, false
+			}
+			// Re-apply the public prefix so callers receive the same name they
+			// passed in (named backends store tools under their bare names).
+			desc.Name = toolName
+			return desc, true
+		case toolName == name:
+			lookup, ok := b.(ToolMetadataLookup)
+			if !ok {
+				continue
+			}
+			if desc, found := lookup.LookupTool(toolName); found {
+				desc.Name = toolName
+				return desc, true
+			}
 		}
-		lookup, ok := b.(ToolMetadataLookup)
-		if !ok {
-			return ToolDescriptor{}, false
-		}
-		realTool := strings.TrimPrefix(toolName, prefix)
-		desc, found := lookup.LookupTool(realTool)
-		if !found {
-			return ToolDescriptor{}, false
-		}
-		// Re-apply the public prefix so callers receive the same name they
-		// passed in (named backends store tools under their bare names).
-		desc.Name = toolName
-		return desc, true
 	}
 
 	for _, b := range s.passthroughs {

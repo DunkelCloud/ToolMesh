@@ -44,6 +44,9 @@ const (
 	testToolListItems = "list_items"
 	testToolGetAudio  = "get_audio"
 	testToolSearch    = "search"
+	testToolWebSearch = "web_search"
+	testToolFetchURL  = "fetch_url"
+	testDescWebSearch = "search the web"
 
 	// Fixture path literals.
 	testPathItems     = "/items"

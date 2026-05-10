@@ -413,6 +413,33 @@ func TestRESTAdapter_PromotedTools_DropsUnknownNames(t *testing.T) {
 	}
 }
 
+func TestRESTAdapter_PromotedTools_CollapsesWhenBackendNameEqualsToolName(t *testing.T) {
+	spec := &dadl.Spec{
+		Backend: dadl.BackendDef{
+			Name:    testToolWebSearch,
+			Type:    transportTypeREST,
+			BaseURL: testBaseURLExample,
+			Tools: map[string]dadl.ToolDef{
+				testToolWebSearch: {Method: testMethodGET, Path: "/search", Description: "Search the web"},
+			},
+		},
+	}
+	opts := testRESTOpts
+	opts.ExposeTools = []string{testToolWebSearch}
+	adapter, err := NewRESTAdapter(spec, &testCredStore{}, slog.Default(), opts)
+	if err != nil {
+		t.Fatalf("NewRESTAdapter: %v", err)
+	}
+
+	promoted := adapter.PromotedTools()
+	if len(promoted) != 1 {
+		t.Fatalf("got %d promoted tools, want 1", len(promoted))
+	}
+	if promoted[0].Name != testToolWebSearch {
+		t.Errorf("public name = %q, want %q (collapsed, not %q)", promoted[0].Name, testToolWebSearch, "web_search_web_search")
+	}
+}
+
 func TestRESTAdapter_PromotedTools_Empty(t *testing.T) {
 	spec := &dadl.Spec{
 		Backend: dadl.BackendDef{

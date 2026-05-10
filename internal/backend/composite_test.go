@@ -190,7 +190,7 @@ func TestCompositeBackend_PromotedTools_AggregatesNamedAndPassthrough(t *testing
 	}
 	pass := &promoterStub{
 		stubBackend: stubBackend{name: "mcp"},
-		promoted:    []ToolDescriptor{{Name: "mcp_fetch_url", Description: "fetch_url"}},
+		promoted:    []ToolDescriptor{{Name: "mcp_" + testToolFetchURL, Description: testToolFetchURL}},
 	}
 
 	c := NewCompositeBackend(map[string]ToolBackend{"rest": named})
@@ -204,7 +204,7 @@ func TestCompositeBackend_PromotedTools_AggregatesNamedAndPassthrough(t *testing
 	for _, d := range got {
 		names[d.Name] = true
 	}
-	if !names["rest_"+testToolSearch] || !names["mcp_fetch_url"] {
+	if !names["rest_"+testToolSearch] || !names["mcp_"+testToolFetchURL] {
 		t.Errorf("missing expected names: %v", names)
 	}
 }
@@ -231,6 +231,61 @@ func TestCompositeBackend_PromotedTools_SkipsNonPromoter(t *testing.T) {
 	c := NewCompositeBackend(map[string]ToolBackend{"a": &stubBackend{name: "a"}})
 	if got := c.PromotedTools(); len(got) != 0 {
 		t.Errorf("expected no promoted tools, got %d", len(got))
+	}
+}
+
+// TestCompositeBackend_Execute_CollapseFallback verifies the routing
+// convention used when a backend is named after its own primary tool: a bare
+// call equal to the backend name dispatches to that backend's same-named
+// tool. This is what makes the expose_tools collapse testToolWebSearch (instead
+// of "web_search_web_search") actually invokable end-to-end.
+func TestCompositeBackend_Execute_CollapseFallback(t *testing.T) {
+	b := &stubBackend{name: testToolWebSearch, tools: []ToolDescriptor{{Name: testToolWebSearch}}}
+	c := NewCompositeBackend(map[string]ToolBackend{testToolWebSearch: b})
+
+	r, err := c.Execute(context.Background(), testToolWebSearch, nil)
+	if err != nil {
+		t.Fatalf("collapse execute: %v", err)
+	}
+	item := r.Content[0].(map[string]any)
+	if item[contentTypeText] != "web_search:web_search" {
+		t.Errorf("collapse routed elsewhere: %v", item)
+	}
+}
+
+// TestCompositeBackend_Execute_PrefixWinsOverCollapse verifies that an
+// unambiguous "<backend>_<tool>" prefix dispatch still beats a coexisting
+// bare-name collapse target on a different backend. Avoids overlapping
+// prefixes (e.g. backends "web" and testToolWebSearch) because the composite's
+// existing first-match semantics over a map iteration are not deterministic
+// for overlapping prefixes — that orthogonal limitation is documented as
+// "longest prefix wins" but is not implemented and out of scope here.
+func TestCompositeBackend_Execute_PrefixWinsOverCollapse(t *testing.T) {
+	collapse := &stubBackend{name: testToolFetchURL, tools: []ToolDescriptor{{Name: testToolFetchURL}}}
+	prefixed := &stubBackend{name: "github", tools: []ToolDescriptor{{Name: "create_issue"}}}
+	c := NewCompositeBackend(map[string]ToolBackend{
+		testToolFetchURL: collapse,
+		"github":         prefixed,
+	})
+
+	// Prefix match: "github_create_issue" → backend "github", tool "create_issue".
+	r, err := c.Execute(context.Background(), "github_create_issue", nil)
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	item := r.Content[0].(map[string]any)
+	if item[contentTypeText] != "github:create_issue" {
+		t.Errorf("expected prefix dispatch, got %v", item)
+	}
+
+	// Collapse match: testToolFetchURL → backend testToolFetchURL, tool testToolFetchURL.
+	r, err = c.Execute(context.Background(), testToolFetchURL, nil)
+	if err != nil {
+		t.Fatalf("execute (collapse): %v", err)
+	}
+	item = r.Content[0].(map[string]any)
+	if item[contentTypeText] != testToolFetchURL+":"+testToolFetchURL {
+		t.Errorf("expected collapse dispatch, got %v", item)
 	}
 }
 

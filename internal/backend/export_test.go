@@ -48,6 +48,10 @@ const (
 	testToolFetchURL  = "fetch_url"
 	testDescWebSearch = "search the web"
 
+	// Vendor backend names used across promotion tests.
+	testVendorBrave  = "brave"
+	testVendorTavily = "tavily"
+
 	// Fixture path literals.
 	testPathItems     = "/items"
 	testPathItemsByID = "/items/{id}"

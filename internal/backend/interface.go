@@ -69,12 +69,22 @@ type ToolMetadataLookup interface {
 	LookupTool(toolName string) (ToolDescriptor, bool)
 }
 
+// Promotion is the structured form of a single tool surfaced as a direct
+// top-level MCP tool. Descriptor.Name is the bare tool name as it should
+// appear on the MCP wire by default; Canonical is the "<backend>_<tool>"
+// form used by the composite to dispatch the call to the owning backend.
+//
+// Keeping both names explicit (instead of deriving Canonical from
+// Descriptor.Name) is necessary because backend names can themselves
+// contain underscores — a heuristic split would be ambiguous for backends
+// like "web_search" that also expose a tool named "web_search".
+type Promotion struct {
+	Descriptor ToolDescriptor
+	Canonical  string
+}
+
 // ToolPromoter is implemented by backends that opt to expose specific tools
 // as direct top-level MCP tools (in addition to discover_tools / execute_code).
-// The returned descriptors carry the public, prefixed tool name as it appears
-// on the MCP wire (e.g. "<backend>_<tool>"), so the handler can advertise them
-// without further name munging and the existing composite routing dispatches
-// calls correctly.
 //
 // The exposed surface is intended for high-frequency tools (web_search,
 // fetch_url, ...) where forcing an LLM through discover_tools + execute_code
@@ -86,7 +96,16 @@ type ToolMetadataLookup interface {
 // A name that does not (yet) match any known tool is silently skipped here —
 // backends are expected to log a startup warning when applicable.
 type ToolPromoter interface {
-	// PromotedTools returns the descriptors of tools that should be
-	// advertised as direct MCP tools. May return nil/empty.
-	PromotedTools() []ToolDescriptor
+	// PromotedTools returns one Promotion per advertised tool. May be nil.
+	PromotedTools() []Promotion
+}
+
+// ToolAliasResolver maps a public promoted tool name to its routing
+// canonical "<backend>_<tool>" form. Returns the input unchanged when no
+// alias is registered for it. Used by the MCP handler to canonicalize tool
+// names before passing them through the executor / authz / audit pipeline,
+// so internal observability always references the same key regardless of
+// whether the caller used the bare or prefixed form.
+type ToolAliasResolver interface {
+	ResolveAlias(name string) string
 }

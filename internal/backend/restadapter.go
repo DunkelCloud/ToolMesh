@@ -423,19 +423,19 @@ func (a *RESTAdapter) BackendSummaries() []BackendInfo {
 	}}
 }
 
-// PromotedTools returns descriptors for tools this backend opted to expose as
-// direct top-level MCP tools (configured via backends.yaml expose_tools). Each
-// returned descriptor carries the public name as it should appear on the wire:
-// "<backend>_<tool>" by default, or just "<tool>" when the backend is named
-// after that single tool (e.g. a backend "web_search" with one tool
-// "web_search" exposes as "web_search", not "web_search_web_search"). The
-// composite backend's collapse-fallback routing dispatches the bare-name form
-// back to the right backend.
-func (a *RESTAdapter) PromotedTools() []ToolDescriptor {
+// PromotedTools returns one Promotion per tool this backend opted to expose
+// as a direct top-level MCP tool (via backends.yaml expose_tools). The
+// Descriptor.Name is the bare tool name (no backend prefix) — the natural
+// public form like "web_search" or "fetch_url"; Canonical carries the
+// "<backend>_<tool>" routing form. The composite backend resolves bare
+// names back to Canonical at dispatch time and falls back to Canonical as
+// the public name only when two backends would advertise the same bare
+// name (cross-backend conflict).
+func (a *RESTAdapter) PromotedTools() []Promotion {
 	if len(a.exposeTools) == 0 {
 		return nil
 	}
-	out := make([]ToolDescriptor, 0, len(a.exposeTools))
+	out := make([]Promotion, 0, len(a.exposeTools))
 	for _, name := range a.exposeTools {
 		desc, ok := a.LookupTool(name)
 		if !ok {
@@ -443,22 +443,13 @@ func (a *RESTAdapter) PromotedTools() []ToolDescriptor {
 			// we silently skip rather than emit an error tool.
 			continue
 		}
-		desc.Name = promotedPublicName(a.spec.Backend.Name, name)
-		out = append(out, desc)
+		desc.Name = name
+		out = append(out, Promotion{
+			Descriptor: desc,
+			Canonical:  a.spec.Backend.Name + "_" + name,
+		})
 	}
 	return out
-}
-
-// promotedPublicName returns the public MCP name for a tool exposed via
-// expose_tools. Defaults to "<backend>_<tool>"; when the backend is named
-// after that tool, the redundant prefix is dropped so the public surface
-// stays "<tool>". Routing relies on the composite's collapse fallback to
-// dispatch the bare form back to the backend's same-named tool.
-func promotedPublicName(backendName, toolName string) string {
-	if backendName == toolName {
-		return toolName
-	}
-	return backendName + "_" + toolName
 }
 
 func (a *RESTAdapter) doRequest(ctx context.Context, tool *dadl.ToolDef, params map[string]any) (*http.Response, []byte, error) {

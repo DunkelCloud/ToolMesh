@@ -178,19 +178,25 @@ func TestCompositeBackend_BackendSummaries(t *testing.T) {
 // promoterStub is a stubBackend that also implements ToolPromoter.
 type promoterStub struct {
 	stubBackend
-	promoted []ToolDescriptor
+	promoted []Promotion
 }
 
-func (p *promoterStub) PromotedTools() []ToolDescriptor { return p.promoted }
+func (p *promoterStub) PromotedTools() []Promotion { return p.promoted }
 
 func TestCompositeBackend_PromotedTools_AggregatesNamedAndPassthrough(t *testing.T) {
 	named := &promoterStub{
 		stubBackend: stubBackend{name: "rest"},
-		promoted:    []ToolDescriptor{{Name: "rest_" + testToolSearch, Description: testToolSearch}},
+		promoted: []Promotion{{
+			Descriptor: ToolDescriptor{Name: testToolSearch, Description: testToolSearch},
+			Canonical:  "rest_" + testToolSearch,
+		}},
 	}
 	pass := &promoterStub{
 		stubBackend: stubBackend{name: "mcp"},
-		promoted:    []ToolDescriptor{{Name: "mcp_" + testToolFetchURL, Description: testToolFetchURL}},
+		promoted: []Promotion{{
+			Descriptor: ToolDescriptor{Name: testToolFetchURL, Description: testToolFetchURL},
+			Canonical:  "mcp_" + testToolFetchURL,
+		}},
 	}
 
 	c := NewCompositeBackend(map[string]ToolBackend{"rest": named})
@@ -201,29 +207,49 @@ func TestCompositeBackend_PromotedTools_AggregatesNamedAndPassthrough(t *testing
 		t.Fatalf("got %d promoted tools, want 2", len(got))
 	}
 	names := map[string]bool{}
-	for _, d := range got {
-		names[d.Name] = true
+	for _, p := range got {
+		names[p.Descriptor.Name] = true
 	}
-	if !names["rest_"+testToolSearch] || !names["mcp_"+testToolFetchURL] {
-		t.Errorf("missing expected names: %v", names)
+	if !names[testToolSearch] || !names[testToolFetchURL] {
+		t.Errorf("missing expected bare names: %v", names)
 	}
 }
 
-func TestCompositeBackend_PromotedTools_DeduplicatesByName(t *testing.T) {
+// TestCompositeBackend_PromotedTools_ConflictDemotedToCanonical: when two
+// backends would advertise the same bare name, both fall back to their
+// canonical "<backend>_<tool>" form for advertisement so the public surface
+// stays unambiguous.
+func TestCompositeBackend_PromotedTools_ConflictDemotedToCanonical(t *testing.T) {
 	a := &promoterStub{
-		stubBackend: stubBackend{name: "a"},
-		promoted:    []ToolDescriptor{{Name: "shared_x", Description: "first"}},
+		stubBackend: stubBackend{name: testVendorBrave},
+		promoted: []Promotion{{
+			Descriptor: ToolDescriptor{Name: testToolWebSearch, Description: testVendorBrave},
+			Canonical:  "brave_" + testToolWebSearch,
+		}},
 	}
 	b := &promoterStub{
-		stubBackend: stubBackend{name: "b"},
-		promoted:    []ToolDescriptor{{Name: "shared_x", Description: "second"}},
+		stubBackend: stubBackend{name: testVendorTavily},
+		promoted: []Promotion{{
+			Descriptor: ToolDescriptor{Name: testToolWebSearch, Description: testVendorTavily},
+			Canonical:  "tavily_" + testToolWebSearch,
+		}},
 	}
-	c := NewCompositeBackend(map[string]ToolBackend{"a": a})
+	c := NewCompositeBackend(map[string]ToolBackend{testVendorBrave: a})
 	c.AddPassthrough(b)
 
 	got := c.PromotedTools()
-	if len(got) != 1 {
-		t.Fatalf("got %d promoted tools, want 1 (deduped)", len(got))
+	if len(got) != 2 {
+		t.Fatalf("got %d promoted tools, want 2 (both backends keep their entries)", len(got))
+	}
+	names := map[string]bool{}
+	for _, p := range got {
+		names[p.Descriptor.Name] = true
+	}
+	if names[testToolWebSearch] {
+		t.Errorf("bare name %q must NOT be advertised when conflicting; got %v", testToolWebSearch, names)
+	}
+	if !names["brave_"+testToolWebSearch] || !names["tavily_"+testToolWebSearch] {
+		t.Errorf("expected canonical fallback names, got %v", names)
 	}
 }
 
@@ -234,58 +260,31 @@ func TestCompositeBackend_PromotedTools_SkipsNonPromoter(t *testing.T) {
 	}
 }
 
-// TestCompositeBackend_Execute_CollapseFallback verifies the routing
-// convention used when a backend is named after its own primary tool: a bare
-// call equal to the backend name dispatches to that backend's same-named
-// tool. This is what makes the expose_tools collapse testToolWebSearch (instead
-// of "web_search_web_search") actually invokable end-to-end.
-func TestCompositeBackend_Execute_CollapseFallback(t *testing.T) {
-	b := &stubBackend{name: testToolWebSearch, tools: []ToolDescriptor{{Name: testToolWebSearch}}}
-	c := NewCompositeBackend(map[string]ToolBackend{testToolWebSearch: b})
+// TestCompositeBackend_ResolveAlias verifies the bare-name → canonical
+// dispatch translation that the MCP handler relies on. Unaliased names pass
+// through unchanged; conflicting bare names are also unaliased (they were
+// demoted to canonical at advertisement time) so a caller using their
+// canonical name routes directly without translation.
+func TestCompositeBackend_ResolveAlias(t *testing.T) {
+	tavily := &promoterStub{
+		stubBackend: stubBackend{name: testVendorTavily},
+		promoted: []Promotion{{
+			Descriptor: ToolDescriptor{Name: testToolSearch},
+			Canonical:  "tavily_" + testToolSearch,
+		}},
+	}
+	c := NewCompositeBackend(map[string]ToolBackend{testVendorTavily: tavily})
 
-	r, err := c.Execute(context.Background(), testToolWebSearch, nil)
-	if err != nil {
-		t.Fatalf("collapse execute: %v", err)
+	if got := c.ResolveAlias(testToolSearch); got != "tavily_"+testToolSearch {
+		t.Errorf("ResolveAlias(%q) = %q, want canonical", testToolSearch, got)
 	}
-	item := r.Content[0].(map[string]any)
-	if item[contentTypeText] != "web_search:web_search" {
-		t.Errorf("collapse routed elsewhere: %v", item)
+	// Canonical name should pass through unchanged.
+	if got := c.ResolveAlias("tavily_" + testToolSearch); got != "tavily_"+testToolSearch {
+		t.Errorf("ResolveAlias(canonical) changed the name: %q", got)
 	}
-}
-
-// TestCompositeBackend_Execute_PrefixWinsOverCollapse verifies that an
-// unambiguous "<backend>_<tool>" prefix dispatch still beats a coexisting
-// bare-name collapse target on a different backend. Avoids overlapping
-// prefixes (e.g. backends "web" and testToolWebSearch) because the composite's
-// existing first-match semantics over a map iteration are not deterministic
-// for overlapping prefixes — that orthogonal limitation is documented as
-// "longest prefix wins" but is not implemented and out of scope here.
-func TestCompositeBackend_Execute_PrefixWinsOverCollapse(t *testing.T) {
-	collapse := &stubBackend{name: testToolFetchURL, tools: []ToolDescriptor{{Name: testToolFetchURL}}}
-	prefixed := &stubBackend{name: "github", tools: []ToolDescriptor{{Name: "create_issue"}}}
-	c := NewCompositeBackend(map[string]ToolBackend{
-		testToolFetchURL: collapse,
-		"github":         prefixed,
-	})
-
-	// Prefix match: "github_create_issue" → backend "github", tool "create_issue".
-	r, err := c.Execute(context.Background(), "github_create_issue", nil)
-	if err != nil {
-		t.Fatalf("execute: %v", err)
-	}
-	item := r.Content[0].(map[string]any)
-	if item[contentTypeText] != "github:create_issue" {
-		t.Errorf("expected prefix dispatch, got %v", item)
-	}
-
-	// Collapse match: testToolFetchURL → backend testToolFetchURL, tool testToolFetchURL.
-	r, err = c.Execute(context.Background(), testToolFetchURL, nil)
-	if err != nil {
-		t.Fatalf("execute (collapse): %v", err)
-	}
-	item = r.Content[0].(map[string]any)
-	if item[contentTypeText] != testToolFetchURL+":"+testToolFetchURL {
-		t.Errorf("expected collapse dispatch, got %v", item)
+	// Unrelated name should pass through unchanged.
+	if got := c.ResolveAlias("other_thing"); got != "other_thing" {
+		t.Errorf("ResolveAlias(unknown) = %q, want pass-through", got)
 	}
 }
 

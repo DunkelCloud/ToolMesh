@@ -89,11 +89,11 @@ func TestMCPAdapter_RegisterTools_Extra(t *testing.T) {
 	}
 }
 
-func TestMCPAdapter_PromotedTools_PrefixesAndFilters(t *testing.T) {
+func TestMCPAdapter_PromotedTools_BareNameAndCanonical(t *testing.T) {
 	a := &MCPAdapter{
 		backends: map[string]*backendConn{
-			"brave": {
-				entry: BackendEntry{Name: "brave", ExposeTools: []string{testToolWebSearch, "missing"}},
+			testVendorBrave: {
+				entry: BackendEntry{Name: testVendorBrave, ExposeTools: []string{testToolWebSearch, "missing"}},
 				tools: []ToolDescriptor{
 					{Name: testToolWebSearch, Description: testDescWebSearch, InputSchema: map[string]any{"type": "object"}, Access: accessRead},
 					{Name: "summarize", Description: "summarize text"},
@@ -111,21 +111,28 @@ func TestMCPAdapter_PromotedTools_PrefixesAndFilters(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("got %d promoted tools, want 1 (missing entry should be skipped)", len(got))
 	}
-	if got[0].Name != "brave_web_search" {
-		t.Errorf("promoted name = %q, want brave_web_search", got[0].Name)
+	if got[0].Descriptor.Name != testToolWebSearch {
+		t.Errorf("public name = %q, want bare %q", got[0].Descriptor.Name, testToolWebSearch)
 	}
-	if got[0].Description != testDescWebSearch {
-		t.Errorf("description = %q", got[0].Description)
+	if got[0].Canonical != "brave_"+testToolWebSearch {
+		t.Errorf("canonical = %q, want %q", got[0].Canonical, "brave_"+testToolWebSearch)
 	}
-	if got[0].Backend != "mcp:brave" {
-		t.Errorf("backend = %q, want mcp:brave", got[0].Backend)
+	if got[0].Descriptor.Description != testDescWebSearch {
+		t.Errorf("description = %q", got[0].Descriptor.Description)
 	}
-	if got[0].Access != accessRead {
-		t.Errorf("access = %q, want %q (carried from upstream descriptor)", got[0].Access, accessRead)
+	if got[0].Descriptor.Backend != "mcp:brave" {
+		t.Errorf("backend = %q, want mcp:brave", got[0].Descriptor.Backend)
+	}
+	if got[0].Descriptor.Access != accessRead {
+		t.Errorf("access = %q, want %q (carried from upstream descriptor)", got[0].Descriptor.Access, accessRead)
 	}
 }
 
-func TestMCPAdapter_PromotedTools_CollapsesWhenBackendNameEqualsToolName(t *testing.T) {
+// TestMCPAdapter_PromotedTools_BareNameWhenBackendEqualsTool: when a backend
+// is named after its single primary tool, the public surface still uses the
+// bare name (no "<backend>_<tool>" prefix in the wire form). Canonical
+// carries the doubled-up "<backend>_<tool>" form for routing.
+func TestMCPAdapter_PromotedTools_BareNameWhenBackendEqualsTool(t *testing.T) {
 	a := &MCPAdapter{
 		backends: map[string]*backendConn{
 			testToolWebSearch: {
@@ -139,45 +146,12 @@ func TestMCPAdapter_PromotedTools_CollapsesWhenBackendNameEqualsToolName(t *test
 	if len(got) != 1 {
 		t.Fatalf("got %d, want 1", len(got))
 	}
-	if got[0].Name != testToolWebSearch {
-		t.Errorf("public name = %q, want %q (collapsed)", got[0].Name, testToolWebSearch)
+	if got[0].Descriptor.Name != testToolWebSearch {
+		t.Errorf("public name = %q, want bare %q", got[0].Descriptor.Name, testToolWebSearch)
 	}
-}
-
-func TestMCPAdapter_MatchBackend_CollapseFallback(t *testing.T) {
-	a := &MCPAdapter{
-		backends: map[string]*backendConn{
-			testToolWebSearch: {
-				entry: BackendEntry{Name: testToolWebSearch},
-				tools: []ToolDescriptor{{Name: testToolWebSearch}},
-			},
-		},
-	}
-	name, tool, conn := a.matchBackend(testToolWebSearch)
-	if conn == nil {
-		t.Fatal("collapse match returned nil conn")
-	}
-	if name != testToolWebSearch || tool != testToolWebSearch {
-		t.Errorf("collapse match: name=%q tool=%q, want both web_search", name, tool)
-	}
-}
-
-// TestMCPAdapter_MatchBackend_CollapseInactiveWithoutSameNamedTool verifies
-// the collapse fallback only activates when the backend actually has a tool
-// of the same name. Otherwise stray bare calls would be misrouted to a
-// backend that never exposed them.
-func TestMCPAdapter_MatchBackend_CollapseInactiveWithoutSameNamedTool(t *testing.T) {
-	a := &MCPAdapter{
-		backends: map[string]*backendConn{
-			"news": {
-				entry: BackendEntry{Name: "news"},
-				tools: []ToolDescriptor{{Name: "search"}}, // no tool named "news"
-			},
-		},
-	}
-	_, _, conn := a.matchBackend("news")
-	if conn != nil {
-		t.Errorf("expected no match, got conn for %q", "news")
+	wantCanonical := testToolWebSearch + "_" + testToolWebSearch
+	if got[0].Canonical != wantCanonical {
+		t.Errorf("canonical = %q, want %q", got[0].Canonical, wantCanonical)
 	}
 }
 

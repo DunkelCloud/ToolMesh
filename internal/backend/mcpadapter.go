@@ -504,19 +504,18 @@ func (a *MCPAdapter) BackendSummaries() []BackendInfo {
 	return infos
 }
 
-// PromotedTools returns descriptors for tools that connected backends opted to
-// expose as direct top-level MCP tools (configured via backends.yaml
-// expose_tools). The returned names follow the same shape as RESTAdapter:
-// "<backend>_<tool>" by default, collapsed to "<tool>" when backend is named
-// after that single tool. Names listed in expose_tools that have not yet
-// been discovered (e.g. a backend that is still reconnecting) are silently
-// skipped here; the late-bind on every call lets discovery catch up without
-// restart.
-func (a *MCPAdapter) PromotedTools() []ToolDescriptor {
+// PromotedTools returns one Promotion per tool that connected backends opted
+// to expose as a direct top-level MCP tool (configured via backends.yaml
+// expose_tools). Descriptor.Name is the bare tool name from the upstream
+// MCP server; Canonical is "<backend>_<tool>" so the composite can dispatch.
+// Names listed in expose_tools that have not yet been discovered (e.g. a
+// backend that is still reconnecting) are silently skipped here; the
+// late-bind on every call lets discovery catch up without restart.
+func (a *MCPAdapter) PromotedTools() []Promotion {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 
-	var out []ToolDescriptor
+	var out []Promotion
 	for name, conn := range a.backends {
 		if len(conn.entry.ExposeTools) == 0 {
 			continue
@@ -530,12 +529,15 @@ func (a *MCPAdapter) PromotedTools() []ToolDescriptor {
 			if !ok {
 				continue
 			}
-			out = append(out, ToolDescriptor{
-				Name:        promotedPublicName(name, t.Name),
-				Description: t.Description,
-				InputSchema: t.InputSchema,
-				Backend:     "mcp:" + name,
-				Access:      t.Access,
+			out = append(out, Promotion{
+				Descriptor: ToolDescriptor{
+					Name:        t.Name,
+					Description: t.Description,
+					InputSchema: t.InputSchema,
+					Backend:     "mcp:" + name,
+					Access:      t.Access,
+				},
+				Canonical: name + "_" + t.Name,
 			})
 		}
 	}
@@ -561,73 +563,38 @@ func (a *MCPAdapter) RegisterTools(backendName string, tools []ToolDescriptor) {
 // ("backendname_tooltoolname"). Upstream MCP servers do not currently emit
 // an access classification, so the returned descriptor's Access is empty —
 // policies that need an explicit value should treat it as unclassified.
-//
-// Honors the same collapse fallback as Execute: a bare tool name that
-// equals a backend name resolves to that backend's same-named tool when
-// it exists, supporting the expose_tools collapsed naming convention.
 func (a *MCPAdapter) LookupTool(toolName string) (ToolDescriptor, bool) {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
-
-	build := func(backend string, t ToolDescriptor) ToolDescriptor {
-		return ToolDescriptor{
-			Name:        toolName,
-			Description: t.Description,
-			InputSchema: t.InputSchema,
-			Backend:     "mcp:" + backend,
-			Access:      t.Access,
-		}
-	}
-
 	for name, conn := range a.backends {
 		prefix := name + "_"
-		switch {
-		case strings.HasPrefix(toolName, prefix):
-			realTool := strings.TrimPrefix(toolName, prefix)
-			for _, t := range conn.tools {
-				if t.Name == realTool {
-					return build(name, t), true
-				}
-			}
-			return ToolDescriptor{}, false
-		case toolName == name:
-			for _, t := range conn.tools {
-				if t.Name == name {
-					return build(name, t), true
-				}
+		if !strings.HasPrefix(toolName, prefix) {
+			continue
+		}
+		realTool := strings.TrimPrefix(toolName, prefix)
+		for _, t := range conn.tools {
+			if t.Name == realTool {
+				return ToolDescriptor{
+					Name:        toolName,
+					Description: t.Description,
+					InputSchema: t.InputSchema,
+					Backend:     "mcp:" + name,
+					Access:      t.Access,
+				}, true
 			}
 		}
 	}
 	return ToolDescriptor{}, false
 }
 
-// matchBackend finds the backend whose name is a prefix of the tool name,
-// or matches it exactly via the expose_tools collapse fallback.
+// matchBackend finds the backend whose name is a prefix of the tool name.
 // Returns the backend name, the real tool name (without prefix), and the connection.
 func (a *MCPAdapter) matchBackend(toolName string) (name, realTool string, conn *backendConn) {
-	var collapseName string
-	var collapseConn *backendConn
 	for name, conn := range a.backends {
 		prefix := name + "_"
 		if strings.HasPrefix(toolName, prefix) {
 			return name, strings.TrimPrefix(toolName, prefix), conn
 		}
-		if toolName == name {
-			// Defer so a real prefix match elsewhere still wins. Only
-			// activate the collapse when the backend actually has a
-			// same-named tool — otherwise we would route a stray bare
-			// call to a backend that never exposed it.
-			for _, t := range conn.tools {
-				if t.Name == name {
-					collapseName = name
-					collapseConn = conn
-					break
-				}
-			}
-		}
-	}
-	if collapseConn != nil {
-		return collapseName, collapseName, collapseConn
 	}
 	return "", toolName, nil
 }

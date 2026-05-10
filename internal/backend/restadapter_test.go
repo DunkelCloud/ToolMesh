@@ -374,14 +374,17 @@ func TestRESTAdapter_PromotedTools_HappyPath(t *testing.T) {
 	if len(promoted) != 1 {
 		t.Fatalf("got %d promoted tools, want 1", len(promoted))
 	}
-	wantName := testBackendNameTestAPI + "_" + testToolListItems
-	if promoted[0].Name != wantName {
-		t.Errorf("promoted name = %q, want %q", promoted[0].Name, wantName)
+	if promoted[0].Descriptor.Name != testToolListItems {
+		t.Errorf("public name = %q, want bare %q", promoted[0].Descriptor.Name, testToolListItems)
 	}
-	if promoted[0].Description != testDescListItems {
-		t.Errorf("description = %q", promoted[0].Description)
+	wantCanonical := testBackendNameTestAPI + "_" + testToolListItems
+	if promoted[0].Canonical != wantCanonical {
+		t.Errorf("canonical = %q, want %q", promoted[0].Canonical, wantCanonical)
 	}
-	if promoted[0].InputSchema == nil {
+	if promoted[0].Descriptor.Description != testDescListItems {
+		t.Errorf("description = %q", promoted[0].Descriptor.Description)
+	}
+	if promoted[0].Descriptor.InputSchema == nil {
 		t.Error("promoted descriptor has nil InputSchema")
 	}
 }
@@ -408,12 +411,17 @@ func TestRESTAdapter_PromotedTools_DropsUnknownNames(t *testing.T) {
 	if len(promoted) != 1 {
 		t.Fatalf("got %d promoted tools, want 1 (unknown name should be dropped)", len(promoted))
 	}
-	if promoted[0].Name != testBackendNameTestAPI+"_"+testToolGetItem {
-		t.Errorf("unexpected promoted tool: %q", promoted[0].Name)
+	if promoted[0].Descriptor.Name != testToolGetItem {
+		t.Errorf("public name = %q, want bare %q", promoted[0].Descriptor.Name, testToolGetItem)
 	}
 }
 
-func TestRESTAdapter_PromotedTools_CollapsesWhenBackendNameEqualsToolName(t *testing.T) {
+// TestRESTAdapter_PromotedTools_BareNameWhenBackendEqualsTool covers the
+// "single-purpose backend" case (e.g. a backend named after its sole tool):
+// the public surface stays bare ("web_search"), and Canonical carries the
+// "<backend>_<tool>" form ("web_search_web_search") for the composite to
+// dispatch on.
+func TestRESTAdapter_PromotedTools_BareNameWhenBackendEqualsTool(t *testing.T) {
 	spec := &dadl.Spec{
 		Backend: dadl.BackendDef{
 			Name:    testToolWebSearch,
@@ -435,8 +443,12 @@ func TestRESTAdapter_PromotedTools_CollapsesWhenBackendNameEqualsToolName(t *tes
 	if len(promoted) != 1 {
 		t.Fatalf("got %d promoted tools, want 1", len(promoted))
 	}
-	if promoted[0].Name != testToolWebSearch {
-		t.Errorf("public name = %q, want %q (collapsed, not %q)", promoted[0].Name, testToolWebSearch, "web_search_web_search")
+	if promoted[0].Descriptor.Name != testToolWebSearch {
+		t.Errorf("public name = %q, want bare %q", promoted[0].Descriptor.Name, testToolWebSearch)
+	}
+	wantCanonical := testToolWebSearch + "_" + testToolWebSearch
+	if promoted[0].Canonical != wantCanonical {
+		t.Errorf("canonical = %q, want %q", promoted[0].Canonical, wantCanonical)
 	}
 }
 

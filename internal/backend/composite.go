@@ -67,31 +67,20 @@ func (c *CompositeBackend) AddPassthrough(b ToolBackend) {
 // Tool names use underscore as separator: "backend_toolname".
 // We match against known backend names (longest prefix wins).
 //
-// Collapse fallback: when the tool name exactly equals a registered backend
-// name, the call is routed to that backend's same-named tool. This supports
-// the expose_tools convention where a backend named after its single primary
-// tool advertises the bare name (e.g. backend "web_search" exposes tool
-// "web_search" as just "web_search", not "web_search_web_search"). Standard
-// prefix routing still wins when both apply.
+// Bare-name promoted tools (configured via backends.yaml expose_tools) are
+// resolved to their canonical "<backend>_<tool>" form by the MCP handler
+// before this method is called, so Execute itself only needs the standard
+// prefix dispatch.
 func (c *CompositeBackend) Execute(ctx context.Context, toolName string, params map[string]any) (*ToolResult, error) {
 	s := c.state.Load()
 
 	// Check named backends by prefix match
-	var collapseTarget ToolBackend
 	for name, b := range s.backends {
 		prefix := name + "_"
 		if strings.HasPrefix(toolName, prefix) {
 			realTool := strings.TrimPrefix(toolName, prefix)
 			return b.Execute(ctx, realTool, params)
 		}
-		if toolName == name {
-			// Defer the collapse dispatch until after the prefix loop so a
-			// real prefix match elsewhere still wins.
-			collapseTarget = b
-		}
-	}
-	if collapseTarget != nil {
-		return collapseTarget.Execute(ctx, toolName, params)
 	}
 
 	// Try passthrough backends (they handle their own routing)
@@ -179,39 +168,29 @@ func (c *CompositeBackend) Swap(backends map[string]ToolBackend, passthroughs []
 // the Access classification when available, or false if no backend owns the
 // tool. Backends that do not implement ToolMetadataLookup are skipped silently.
 //
-// Mirrors [CompositeBackend.Execute] in honoring the collapse fallback: a
-// bare tool name that exactly matches a backend name resolves to that
-// backend's same-named tool, supporting the expose_tools collapse convention.
+// As with Execute, callers are expected to pass canonical "<backend>_<tool>"
+// names; the handler resolves bare-name aliases ahead of this call.
 func (c *CompositeBackend) LookupTool(toolName string) (ToolDescriptor, bool) {
 	s := c.state.Load()
 
 	for name, b := range s.backends {
 		prefix := name + "_"
-		switch {
-		case strings.HasPrefix(toolName, prefix):
-			lookup, ok := b.(ToolMetadataLookup)
-			if !ok {
-				return ToolDescriptor{}, false
-			}
-			realTool := strings.TrimPrefix(toolName, prefix)
-			desc, found := lookup.LookupTool(realTool)
-			if !found {
-				return ToolDescriptor{}, false
-			}
-			// Re-apply the public prefix so callers receive the same name they
-			// passed in (named backends store tools under their bare names).
-			desc.Name = toolName
-			return desc, true
-		case toolName == name:
-			lookup, ok := b.(ToolMetadataLookup)
-			if !ok {
-				continue
-			}
-			if desc, found := lookup.LookupTool(toolName); found {
-				desc.Name = toolName
-				return desc, true
-			}
+		if !strings.HasPrefix(toolName, prefix) {
+			continue
 		}
+		lookup, ok := b.(ToolMetadataLookup)
+		if !ok {
+			return ToolDescriptor{}, false
+		}
+		realTool := strings.TrimPrefix(toolName, prefix)
+		desc, found := lookup.LookupTool(realTool)
+		if !found {
+			return ToolDescriptor{}, false
+		}
+		// Re-apply the public prefix so callers receive the same name they
+		// passed in (named backends store tools under their bare names).
+		desc.Name = toolName
+		return desc, true
 	}
 
 	for _, b := range s.passthroughs {
@@ -246,39 +225,72 @@ func (c *CompositeBackend) BackendSummaries() []BackendInfo {
 }
 
 // PromotedTools aggregates direct-exposed tools from all child backends that
-// implement [ToolPromoter]. Each child returns descriptors with public,
-// prefixed MCP names already applied so the composite's only job is to merge
-// and de-duplicate by name (last writer wins for a given name — collisions
-// would indicate a configuration bug, not normal operation).
-func (c *CompositeBackend) PromotedTools() []ToolDescriptor {
+// implement [ToolPromoter] and resolves cross-backend bare-name conflicts.
+//
+// Each child returns Promotions with bare Descriptor.Name (e.g. "web_search")
+// and an explicit Canonical "<backend>_<tool>" routing form. When two
+// backends would advertise the same bare name, both fall back to their
+// Canonical form for advertisement so the resulting MCP surface stays
+// unambiguous; non-conflicting bare names pass through unchanged.
+//
+// Returns Promotions in their resolved form so the handler can advertise
+// Descriptor directly. Use [CompositeBackend.ResolveAlias] to translate the
+// advertised name back to the canonical routing form on dispatch.
+func (c *CompositeBackend) PromotedTools() []Promotion {
 	s := c.state.Load()
 
-	collect := func(b ToolBackend) []ToolDescriptor {
+	collect := func(b ToolBackend) []Promotion {
 		if p, ok := b.(ToolPromoter); ok {
 			return p.PromotedTools()
 		}
 		return nil
 	}
 
-	seen := make(map[string]struct{})
-	var all []ToolDescriptor
-	add := func(descs []ToolDescriptor) {
-		for _, d := range descs {
-			if _, dup := seen[d.Name]; dup {
-				continue
-			}
-			seen[d.Name] = struct{}{}
-			all = append(all, d)
-		}
-	}
-
+	all := make([]Promotion, 0, len(s.backends)+len(s.passthroughs))
 	for _, b := range s.backends {
-		add(collect(b))
+		all = append(all, collect(b)...)
 	}
 	for _, b := range s.passthroughs {
-		add(collect(b))
+		all = append(all, collect(b)...)
 	}
-	return all
+
+	// Count bare names so we can detect cross-backend collisions.
+	bareCounts := make(map[string]int, len(all))
+	for _, p := range all {
+		bareCounts[p.Descriptor.Name]++
+	}
+
+	// Resolve: conflicting bare names get demoted to their canonical form.
+	// De-dup by final advertised name in case two backends both ended up
+	// with the same canonical (shouldn't happen — backend names are unique —
+	// but a cheap safeguard keeps the public surface well-defined).
+	out := make([]Promotion, 0, len(all))
+	seen := make(map[string]struct{}, len(all))
+	for _, p := range all {
+		if bareCounts[p.Descriptor.Name] > 1 {
+			p.Descriptor.Name = p.Canonical
+		}
+		if _, dup := seen[p.Descriptor.Name]; dup {
+			continue
+		}
+		seen[p.Descriptor.Name] = struct{}{}
+		out = append(out, p)
+	}
+	return out
+}
+
+// ResolveAlias maps a bare promoted-tool name to its routing canonical
+// "<backend>_<tool>" form, returning the input unchanged when no alias
+// applies (i.e. the caller already used the canonical name, or the name is
+// not a promoted tool at all). Computed against the live state on every
+// call — no caching — so hot-reload of backends takes effect immediately.
+func (c *CompositeBackend) ResolveAlias(name string) string {
+	for _, p := range c.PromotedTools() {
+		if p.Descriptor.Name == name && p.Descriptor.Name != p.Canonical {
+			return p.Canonical
+		}
+	}
+	return name
 }
 
 // Healthy returns nil if at least one backend is healthy.

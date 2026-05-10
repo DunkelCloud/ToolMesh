@@ -132,9 +132,9 @@ func TestLoadRESTBackends_AbsoluteDADLPath(t *testing.T) {
 
 // TestLoadRESTBackends_ExposeTools verifies that the expose_tools list from
 // backends.yaml is plumbed through to the RESTAdapter and surfaces via the
-// composite backend's PromotedTools aggregation. Tools listed there must
-// appear under their public, prefixed name; unknown names are silently
-// dropped (with a warning log).
+// composite backend's PromotedTools aggregation. Tools listed there appear
+// under their bare public name with the "<backend>_<tool>" routing form
+// stored in Canonical; unknown names are silently dropped (with a warning).
 func TestLoadRESTBackends_ExposeTools(t *testing.T) {
 	dir := t.TempDir()
 
@@ -168,7 +168,13 @@ backends:
 	if len(promoted) != 1 {
 		t.Fatalf("got %d promoted tools, want 1 (unknown name should be dropped): %v", len(promoted), promoted)
 	}
-	if promoted[0].Name != "testapi_get_ping" {
-		t.Errorf("promoted name = %q, want testapi_get_ping", promoted[0].Name)
+	if promoted[0].Descriptor.Name != "get_ping" {
+		t.Errorf("public name = %q, want bare \"get_ping\"", promoted[0].Descriptor.Name)
+	}
+	if promoted[0].Canonical != "testapi_get_ping" {
+		t.Errorf("canonical = %q, want testapi_get_ping", promoted[0].Canonical)
+	}
+	if got := composite.ResolveAlias("get_ping"); got != "testapi_get_ping" {
+		t.Errorf("ResolveAlias(\"get_ping\") = %q, want testapi_get_ping", got)
 	}
 }

@@ -23,9 +23,12 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/DunkelCloud/ToolMesh/internal/backend"
 	"github.com/DunkelCloud/ToolMesh/internal/config"
+	"github.com/DunkelCloud/ToolMesh/internal/executor"
+	"github.com/DunkelCloud/ToolMesh/internal/userctx"
 )
 
 func newQuietMCPLogger() *slog.Logger {
@@ -319,7 +322,7 @@ func TestBuildGroupedHints(t *testing.T) {
 				{Name: testHostDokuWikiCloud, Hint: testHintDokuWiki, SpecID: testCredDokuWiki},
 				{Name: testBackendMemorizer, Hint: testHintLocalMemory},
 				{Name: testHostnameDokuWiki, Hint: testHintDokuWiki, SpecID: testCredDokuWiki},
-				{Name: "web_search", Hint: "Web search"},
+				{Name: testToolWebSearch, Hint: "Web search"},
 			},
 			want: "dokuwiki-dunkel.cloud, dokuwiki-dunkel.io: DokuWiki JSON-RPC API; memorizer: Local memory store; web_search: Web search",
 		},
@@ -328,7 +331,7 @@ func TestBuildGroupedHints(t *testing.T) {
 			infos: []backend.BackendInfo{
 				{Name: testBackendMemorizer, Hint: testHintLocalMemory},
 				{Name: "opnsense_a", Hint: testHintOPNsense, SpecID: testCredOPNsense},
-				{Name: "web_search", Hint: "Web search"},
+				{Name: testToolWebSearch, Hint: "Web search"},
 				{Name: "opnsense_b", Hint: testHintOPNsense, SpecID: testCredOPNsense},
 			},
 			want: "memorizer: Local memory store; opnsense_a, opnsense_b: OPNsense REST API; web_search: Web search",
@@ -451,31 +454,53 @@ func TestBuildToolList_BackendHintsOnExecuteCodeOnly(t *testing.T) {
 	}
 }
 
-// promotingBackend wraps mockTestBackend and also implements
-// backend.ToolPromoter so we can test BuildToolList's expose_tools handling.
+// promotingBackend wraps mockTestBackend and also implements both
+// backend.ToolPromoter and backend.ToolAliasResolver so handler tests can
+// exercise advertisement and dispatch translation in one fixture.
 type promotingBackend struct {
 	mockTestBackend
-	promoted []backend.ToolDescriptor
+	promoted []backend.Promotion
+	called   []string // toolNames passed to Execute, captured for routing assertions
 }
 
-func (p *promotingBackend) PromotedTools() []backend.ToolDescriptor { return p.promoted }
+func (p *promotingBackend) PromotedTools() []backend.Promotion { return p.promoted }
+
+func (p *promotingBackend) ResolveAlias(name string) string {
+	for _, prom := range p.promoted {
+		if prom.Descriptor.Name == name && prom.Descriptor.Name != prom.Canonical {
+			return prom.Canonical
+		}
+	}
+	return name
+}
+
+func (p *promotingBackend) Execute(_ context.Context, toolName string, _ map[string]any) (*backend.ToolResult, error) {
+	p.called = append(p.called, toolName)
+	return &backend.ToolResult{Content: []any{map[string]any{contentKeyType: contentKeyText, contentKeyText: toolName}}}, nil
+}
 
 // TestBuildToolList_PromotedToolsAppended verifies that backends opting into
 // expose_tools surface their promoted tools at the MCP root in addition to
-// discover_tools and execute_code. The promoted descriptors must be passed
-// through unchanged so the LLM sees the real input schema and description.
+// discover_tools and execute_code, and that the public names are bare
+// (no "<backend>_" prefix) when there is no cross-backend conflict.
 func TestBuildToolList_PromotedToolsAppended(t *testing.T) {
 	mb := &promotingBackend{
-		promoted: []backend.ToolDescriptor{
+		promoted: []backend.Promotion{
 			{
-				Name:        "brave_web_search",
-				Description: "Search the web via Brave",
-				InputSchema: map[string]any{contentKeyType: jsonTypeObject},
+				Descriptor: backend.ToolDescriptor{
+					Name:        testToolWebSearch,
+					Description: "Search the web via Brave",
+					InputSchema: map[string]any{contentKeyType: jsonTypeObject},
+				},
+				Canonical: testCanonicalBraveWebSearch,
 			},
 			{
-				Name:        "fetch_fetch_url",
-				Description: "Fetch a URL",
-				InputSchema: map[string]any{contentKeyType: jsonTypeObject},
+				Descriptor: backend.ToolDescriptor{
+					Name:        "fetch_url",
+					Description: "Fetch a URL",
+					InputSchema: map[string]any{contentKeyType: jsonTypeObject},
+				},
+				Canonical: "fetch_fetch_url",
 			},
 		},
 	}
@@ -491,14 +516,53 @@ func TestBuildToolList_PromotedToolsAppended(t *testing.T) {
 		got[td.Name] = td
 	}
 
-	for _, must := range []string{toolDiscoverTools, toolExecuteCode, "brave_web_search", "fetch_fetch_url"} {
+	for _, must := range []string{toolDiscoverTools, toolExecuteCode, testToolWebSearch, "fetch_url"} {
 		if _, ok := got[must]; !ok {
 			t.Errorf("missing tool %q in BuildToolList output: %v", must, keysOf(got))
 		}
 	}
 
-	if d := got["brave_web_search"]; d.Description != "Search the web via Brave" {
+	if d := got[testToolWebSearch]; d.Description != "Search the web via Brave" {
 		t.Errorf("promoted description not propagated: %q", d.Description)
+	}
+}
+
+// TestHandleToolCall_ResolvesPromotedAliasBeforeDispatch verifies that a
+// caller invoking the bare advertised name (e.g. testToolWebSearch) sees its
+// call dispatched to the canonical "<backend>_<tool>" form, so authz /
+// gate / audit downstream all observe a single consistent identifier.
+func TestHandleToolCall_ResolvesPromotedAliasBeforeDispatch(t *testing.T) {
+	mb := &promotingBackend{
+		promoted: []backend.Promotion{
+			{
+				Descriptor: backend.ToolDescriptor{
+					Name:        testToolWebSearch,
+					Description: "Search the web",
+					InputSchema: map[string]any{contentKeyType: jsonTypeObject},
+				},
+				Canonical: testCanonicalBraveWebSearch,
+			},
+		},
+	}
+	exec := executor.New(nil, nil, mb, nil, nil, 5*time.Second, newQuietMCPLogger(), nil, nil)
+	h := NewHandler(exec, mb, nil, "", nil, newQuietMCPLogger(), false)
+
+	ctx := userctx.WithUserContext(context.Background(), &userctx.UserContext{
+		UserID:        "u",
+		Authenticated: true,
+	})
+	result, err := h.HandleToolCall(ctx, testToolWebSearch, map[string]any{"q": "anything"})
+	if err != nil {
+		t.Fatalf("HandleToolCall: %v", err)
+	}
+	if result == nil || result.IsError {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	if len(mb.called) != 1 {
+		t.Fatalf("backend was called %d times, want 1", len(mb.called))
+	}
+	if mb.called[0] != testCanonicalBraveWebSearch {
+		t.Errorf("backend received %q, want canonical \"brave_web_search\" (alias unresolved)", mb.called[0])
 	}
 }
 

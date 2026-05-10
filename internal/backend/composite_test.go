@@ -175,6 +175,65 @@ func TestCompositeBackend_BackendSummaries(t *testing.T) {
 	}
 }
 
+// promoterStub is a stubBackend that also implements ToolPromoter.
+type promoterStub struct {
+	stubBackend
+	promoted []ToolDescriptor
+}
+
+func (p *promoterStub) PromotedTools() []ToolDescriptor { return p.promoted }
+
+func TestCompositeBackend_PromotedTools_AggregatesNamedAndPassthrough(t *testing.T) {
+	named := &promoterStub{
+		stubBackend: stubBackend{name: "rest"},
+		promoted:    []ToolDescriptor{{Name: "rest_" + testToolSearch, Description: testToolSearch}},
+	}
+	pass := &promoterStub{
+		stubBackend: stubBackend{name: "mcp"},
+		promoted:    []ToolDescriptor{{Name: "mcp_fetch_url", Description: "fetch_url"}},
+	}
+
+	c := NewCompositeBackend(map[string]ToolBackend{"rest": named})
+	c.AddPassthrough(pass)
+
+	got := c.PromotedTools()
+	if len(got) != 2 {
+		t.Fatalf("got %d promoted tools, want 2", len(got))
+	}
+	names := map[string]bool{}
+	for _, d := range got {
+		names[d.Name] = true
+	}
+	if !names["rest_"+testToolSearch] || !names["mcp_fetch_url"] {
+		t.Errorf("missing expected names: %v", names)
+	}
+}
+
+func TestCompositeBackend_PromotedTools_DeduplicatesByName(t *testing.T) {
+	a := &promoterStub{
+		stubBackend: stubBackend{name: "a"},
+		promoted:    []ToolDescriptor{{Name: "shared_x", Description: "first"}},
+	}
+	b := &promoterStub{
+		stubBackend: stubBackend{name: "b"},
+		promoted:    []ToolDescriptor{{Name: "shared_x", Description: "second"}},
+	}
+	c := NewCompositeBackend(map[string]ToolBackend{"a": a})
+	c.AddPassthrough(b)
+
+	got := c.PromotedTools()
+	if len(got) != 1 {
+		t.Fatalf("got %d promoted tools, want 1 (deduped)", len(got))
+	}
+}
+
+func TestCompositeBackend_PromotedTools_SkipsNonPromoter(t *testing.T) {
+	c := NewCompositeBackend(map[string]ToolBackend{"a": &stubBackend{name: "a"}})
+	if got := c.PromotedTools(); len(got) != 0 {
+		t.Errorf("expected no promoted tools, got %d", len(got))
+	}
+}
+
 // TestCompositeBackend_ConcurrentAccess exercises AddNamed / Execute /
 // ListTools in parallel. The point is to detect data races under -race,
 // not to assert on outputs.

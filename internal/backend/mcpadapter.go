@@ -51,6 +51,7 @@ type BackendEntry struct {
 	TLSSkipVerify   bool              `yaml:"tls_skip_verify"`   // accept invalid/self-signed TLS certificates
 	Options         map[string]string `yaml:"options"`           // backend-specific options (e.g. blob_ttl: "1h")
 	Env             map[string]string `yaml:"env"`               // credential env remapping (DADL name → actual env var)
+	ExposeTools     []string          `yaml:"expose_tools"`      // tool names to also expose as direct top-level MCP tools (in addition to discover_tools)
 }
 
 // BackendInfo provides a summary of a backend for tool description enrichment.
@@ -263,6 +264,22 @@ func (a *MCPAdapter) discoverTools(ctx context.Context, name string, conn *backe
 	}
 
 	a.logger.Info("discovered tools", "backend", name, "count", len(conn.tools))
+
+	if len(conn.entry.ExposeTools) > 0 {
+		known := make(map[string]struct{}, len(conn.tools))
+		for _, t := range conn.tools {
+			known[t.Name] = struct{}{}
+		}
+		for _, want := range conn.entry.ExposeTools {
+			if _, ok := known[want]; !ok {
+				a.logger.Warn("expose_tools entry does not match any tool from backend, skipping",
+					"backend", name,
+					"tool", want,
+				)
+			}
+		}
+	}
+
 	return nil
 }
 
@@ -485,6 +502,43 @@ func (a *MCPAdapter) BackendSummaries() []BackendInfo {
 		})
 	}
 	return infos
+}
+
+// PromotedTools returns descriptors for tools that connected backends opted to
+// expose as direct top-level MCP tools (configured via backends.yaml
+// expose_tools). The returned names already carry the public MCP prefix
+// "<backend>_<tool>". Names listed in expose_tools that have not yet been
+// discovered (e.g. a backend that is still reconnecting) are silently skipped
+// here; the late-bind on every call lets discovery catch up without restart.
+func (a *MCPAdapter) PromotedTools() []ToolDescriptor {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+
+	var out []ToolDescriptor
+	for name, conn := range a.backends {
+		if len(conn.entry.ExposeTools) == 0 {
+			continue
+		}
+		known := make(map[string]ToolDescriptor, len(conn.tools))
+		for _, t := range conn.tools {
+			known[t.Name] = t
+		}
+		prefix := name + "_"
+		for _, want := range conn.entry.ExposeTools {
+			t, ok := known[want]
+			if !ok {
+				continue
+			}
+			out = append(out, ToolDescriptor{
+				Name:        prefix + t.Name,
+				Description: t.Description,
+				InputSchema: t.InputSchema,
+				Backend:     "mcp:" + name,
+				Access:      t.Access,
+			})
+		}
+	}
+	return out
 }
 
 // RegisterTools adds tools for a specific backend (used during discovery or testing).

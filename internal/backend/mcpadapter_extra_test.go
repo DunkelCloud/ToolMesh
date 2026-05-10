@@ -89,6 +89,57 @@ func TestMCPAdapter_RegisterTools_Extra(t *testing.T) {
 	}
 }
 
+func TestMCPAdapter_PromotedTools_PrefixesAndFilters(t *testing.T) {
+	a := &MCPAdapter{
+		backends: map[string]*backendConn{
+			"brave": {
+				entry: BackendEntry{Name: "brave", ExposeTools: []string{"web_search", "missing"}},
+				tools: []ToolDescriptor{
+					{Name: "web_search", Description: "search the web", InputSchema: map[string]any{"type": "object"}, Access: accessRead},
+					{Name: "summarize", Description: "summarize text"},
+				},
+			},
+			"other": {
+				entry: BackendEntry{Name: "other"}, // no expose_tools
+				tools: []ToolDescriptor{{Name: "noop"}},
+			},
+		},
+		logger: slog.Default(),
+	}
+
+	got := a.PromotedTools()
+	if len(got) != 1 {
+		t.Fatalf("got %d promoted tools, want 1 (missing entry should be skipped)", len(got))
+	}
+	if got[0].Name != "brave_web_search" {
+		t.Errorf("promoted name = %q, want brave_web_search", got[0].Name)
+	}
+	if got[0].Description != "search the web" {
+		t.Errorf("description = %q", got[0].Description)
+	}
+	if got[0].Backend != "mcp:brave" {
+		t.Errorf("backend = %q, want mcp:brave", got[0].Backend)
+	}
+	if got[0].Access != accessRead {
+		t.Errorf("access = %q, want %q (carried from upstream descriptor)", got[0].Access, accessRead)
+	}
+}
+
+func TestMCPAdapter_PromotedTools_EmptyWhenNoExpose(t *testing.T) {
+	a := &MCPAdapter{
+		backends: map[string]*backendConn{
+			"b1": {
+				entry: BackendEntry{Name: "b1"},
+				tools: []ToolDescriptor{{Name: "t1"}},
+			},
+		},
+		logger: slog.Default(),
+	}
+	if got := a.PromotedTools(); len(got) != 0 {
+		t.Errorf("expected no promoted tools, got %d", len(got))
+	}
+}
+
 func TestBearerTransport_RoundTrip(t *testing.T) {
 	var gotAuth string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

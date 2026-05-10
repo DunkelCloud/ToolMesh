@@ -216,6 +216,42 @@ func (c *CompositeBackend) BackendSummaries() []BackendInfo {
 	return all
 }
 
+// PromotedTools aggregates direct-exposed tools from all child backends that
+// implement [ToolPromoter]. Each child returns descriptors with public,
+// prefixed MCP names already applied so the composite's only job is to merge
+// and de-duplicate by name (last writer wins for a given name — collisions
+// would indicate a configuration bug, not normal operation).
+func (c *CompositeBackend) PromotedTools() []ToolDescriptor {
+	s := c.state.Load()
+
+	collect := func(b ToolBackend) []ToolDescriptor {
+		if p, ok := b.(ToolPromoter); ok {
+			return p.PromotedTools()
+		}
+		return nil
+	}
+
+	seen := make(map[string]struct{})
+	var all []ToolDescriptor
+	add := func(descs []ToolDescriptor) {
+		for _, d := range descs {
+			if _, dup := seen[d.Name]; dup {
+				continue
+			}
+			seen[d.Name] = struct{}{}
+			all = append(all, d)
+		}
+	}
+
+	for _, b := range s.backends {
+		add(collect(b))
+	}
+	for _, b := range s.passthroughs {
+		add(collect(b))
+	}
+	return all
+}
+
 // Healthy returns nil if at least one backend is healthy.
 func (c *CompositeBackend) Healthy(ctx context.Context) error {
 	s := c.state.Load()

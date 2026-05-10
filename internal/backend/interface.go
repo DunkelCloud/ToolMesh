@@ -68,3 +68,25 @@ type ToolMetadataLookup interface {
 	// be safe for concurrent use.
 	LookupTool(toolName string) (ToolDescriptor, bool)
 }
+
+// ToolPromoter is implemented by backends that opt to expose specific tools
+// as direct top-level MCP tools (in addition to discover_tools / execute_code).
+// The returned descriptors carry the public, prefixed tool name as it appears
+// on the MCP wire (e.g. "<backend>_<tool>"), so the handler can advertise them
+// without further name munging and the existing composite routing dispatches
+// calls correctly.
+//
+// The exposed surface is intended for high-frequency tools (web_search,
+// fetch_url, ...) where forcing an LLM through discover_tools + execute_code
+// burns context and round-trips for no benefit. Tools not listed here remain
+// reachable only via discover_tools, keeping the default surface minimal.
+//
+// Implementations resolve the listed names lazily against current backend
+// state on every call so hot-reload / late MCP discovery work transparently.
+// A name that does not (yet) match any known tool is silently skipped here —
+// backends are expected to log a startup warning when applicable.
+type ToolPromoter interface {
+	// PromotedTools returns the descriptors of tools that should be
+	// advertised as direct MCP tools. May return nil/empty.
+	PromotedTools() []ToolDescriptor
+}

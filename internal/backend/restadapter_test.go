@@ -56,8 +56,8 @@ func TestRESTAdapter_ListTools(t *testing.T) {
 			Tools: map[string]dadl.ToolDef{
 				testToolGetItem: {
 					Method:      testMethodGET,
-					Path:        "/items/{id}",
-					Description: "Get an item",
+					Path:        testPathItemsByID,
+					Description: testDescGetItem,
 					Params: map[string]dadl.ParamDef{
 						"id": {Type: schemaTypeInteger, In: paramInPath, Required: true},
 					},
@@ -65,7 +65,7 @@ func TestRESTAdapter_ListTools(t *testing.T) {
 				testToolListItems: {
 					Method:      testMethodGET,
 					Path:        testPathItems,
-					Description: "List items",
+					Description: testDescListItems,
 					Params: map[string]dadl.ParamDef{
 						testParamPage: {Type: schemaTypeInteger, In: paramInQuery},
 					},
@@ -164,7 +164,7 @@ func TestRESTAdapter_Execute(t *testing.T) {
 			Tools: map[string]dadl.ToolDef{
 				testToolGetItem: {
 					Method: testMethodGET,
-					Path:   "/items/{id}",
+					Path:   testPathItemsByID,
 					Params: map[string]dadl.ParamDef{
 						"id": {Type: schemaTypeInteger, In: paramInPath, Required: true},
 					},
@@ -348,6 +348,88 @@ func TestRESTAdapter_FormEncodedNestedObject(t *testing.T) {
 	}
 	if parsed.Get("currency") != "eur" {
 		t.Errorf("currency = %q, want eur", parsed.Get("currency"))
+	}
+}
+
+func TestRESTAdapter_PromotedTools_HappyPath(t *testing.T) {
+	spec := &dadl.Spec{
+		Backend: dadl.BackendDef{
+			Name:    testBackendNameTestAPI,
+			Type:    transportTypeREST,
+			BaseURL: testBaseURLExample,
+			Tools: map[string]dadl.ToolDef{
+				testToolGetItem:   {Method: testMethodGET, Path: testPathItemsByID, Description: "Get an item"},
+				testToolListItems: {Method: testMethodGET, Path: testPathItems, Description: testDescListItems},
+			},
+		},
+	}
+	opts := testRESTOpts
+	opts.ExposeTools = []string{testToolListItems}
+	adapter, err := NewRESTAdapter(spec, &testCredStore{}, slog.Default(), opts)
+	if err != nil {
+		t.Fatalf("NewRESTAdapter: %v", err)
+	}
+
+	promoted := adapter.PromotedTools()
+	if len(promoted) != 1 {
+		t.Fatalf("got %d promoted tools, want 1", len(promoted))
+	}
+	wantName := testBackendNameTestAPI + "_" + testToolListItems
+	if promoted[0].Name != wantName {
+		t.Errorf("promoted name = %q, want %q", promoted[0].Name, wantName)
+	}
+	if promoted[0].Description != testDescListItems {
+		t.Errorf("description = %q", promoted[0].Description)
+	}
+	if promoted[0].InputSchema == nil {
+		t.Error("promoted descriptor has nil InputSchema")
+	}
+}
+
+func TestRESTAdapter_PromotedTools_DropsUnknownNames(t *testing.T) {
+	spec := &dadl.Spec{
+		Backend: dadl.BackendDef{
+			Name:    testBackendNameTestAPI,
+			Type:    transportTypeREST,
+			BaseURL: testBaseURLExample,
+			Tools: map[string]dadl.ToolDef{
+				testToolGetItem: {Method: testMethodGET, Path: testPathItemsByID, Description: "Get an item"},
+			},
+		},
+	}
+	opts := testRESTOpts
+	opts.ExposeTools = []string{testToolGetItem, "does_not_exist"}
+	adapter, err := NewRESTAdapter(spec, &testCredStore{}, slog.Default(), opts)
+	if err != nil {
+		t.Fatalf("NewRESTAdapter: %v", err)
+	}
+
+	promoted := adapter.PromotedTools()
+	if len(promoted) != 1 {
+		t.Fatalf("got %d promoted tools, want 1 (unknown name should be dropped)", len(promoted))
+	}
+	if promoted[0].Name != testBackendNameTestAPI+"_"+testToolGetItem {
+		t.Errorf("unexpected promoted tool: %q", promoted[0].Name)
+	}
+}
+
+func TestRESTAdapter_PromotedTools_Empty(t *testing.T) {
+	spec := &dadl.Spec{
+		Backend: dadl.BackendDef{
+			Name:    testBackendNameTestAPI,
+			Type:    transportTypeREST,
+			BaseURL: testBaseURLExample,
+			Tools: map[string]dadl.ToolDef{
+				testToolGetItem: {Method: testMethodGET, Path: testPathItemsByID},
+			},
+		},
+	}
+	adapter, err := NewRESTAdapter(spec, &testCredStore{}, slog.Default(), testRESTOpts)
+	if err != nil {
+		t.Fatalf("NewRESTAdapter: %v", err)
+	}
+	if got := adapter.PromotedTools(); len(got) != 0 {
+		t.Errorf("expected no promoted tools by default, got %d", len(got))
 	}
 }
 

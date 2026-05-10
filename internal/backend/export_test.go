@@ -43,10 +43,14 @@ const (
 	testToolGetItem   = "get_item"
 	testToolListItems = "list_items"
 	testToolGetAudio  = "get_audio"
+	testToolSearch    = "search"
 
 	// Fixture path literals.
-	testPathItems = "/items"
-	testPathAudio = "/audio"
+	testPathItems     = "/items"
+	testPathItemsByID = "/items/{id}"
+	testPathAudio     = "/audio"
+	testDescGetItem   = "Get an item"
+	testDescListItems = "List items"
 
 	// Fixture HTTP method literals (separate from "GET"/"POST" because tests
 	// also assert on them as strings).

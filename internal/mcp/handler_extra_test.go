@@ -450,3 +450,75 @@ func TestBuildToolList_BackendHintsOnExecuteCodeOnly(t *testing.T) {
 			len(discoverDesc), len(execDesc))
 	}
 }
+
+// promotingBackend wraps mockTestBackend and also implements
+// backend.ToolPromoter so we can test BuildToolList's expose_tools handling.
+type promotingBackend struct {
+	mockTestBackend
+	promoted []backend.ToolDescriptor
+}
+
+func (p *promotingBackend) PromotedTools() []backend.ToolDescriptor { return p.promoted }
+
+// TestBuildToolList_PromotedToolsAppended verifies that backends opting into
+// expose_tools surface their promoted tools at the MCP root in addition to
+// discover_tools and execute_code. The promoted descriptors must be passed
+// through unchanged so the LLM sees the real input schema and description.
+func TestBuildToolList_PromotedToolsAppended(t *testing.T) {
+	mb := &promotingBackend{
+		promoted: []backend.ToolDescriptor{
+			{
+				Name:        "brave_web_search",
+				Description: "Search the web via Brave",
+				InputSchema: map[string]any{contentKeyType: jsonTypeObject},
+			},
+			{
+				Name:        "fetch_fetch_url",
+				Description: "Fetch a URL",
+				InputSchema: map[string]any{contentKeyType: jsonTypeObject},
+			},
+		},
+	}
+	h := NewHandler(nil, mb, nil, "", nil, newQuietMCPLogger(), false)
+
+	tools, err := h.BuildToolList(context.Background())
+	if err != nil {
+		t.Fatalf("BuildToolList: %v", err)
+	}
+
+	got := map[string]ToolDefinition{}
+	for _, td := range tools {
+		got[td.Name] = td
+	}
+
+	for _, must := range []string{toolDiscoverTools, toolExecuteCode, "brave_web_search", "fetch_fetch_url"} {
+		if _, ok := got[must]; !ok {
+			t.Errorf("missing tool %q in BuildToolList output: %v", must, keysOf(got))
+		}
+	}
+
+	if d := got["brave_web_search"]; d.Description != "Search the web via Brave" {
+		t.Errorf("promoted description not propagated: %q", d.Description)
+	}
+}
+
+// TestBuildToolList_NoPromoterMeansNoPromotedTools verifies that backends not
+// implementing ToolPromoter add nothing — the default surface stays discover/exec.
+func TestBuildToolList_NoPromoterMeansNoPromotedTools(t *testing.T) {
+	h := NewHandler(nil, &mockTestBackend{}, nil, "", nil, newQuietMCPLogger(), false)
+	tools, err := h.BuildToolList(context.Background())
+	if err != nil {
+		t.Fatalf("BuildToolList: %v", err)
+	}
+	if len(tools) != 2 {
+		t.Errorf("expected 2 tools (discover_tools, execute_code), got %d: %v", len(tools), tools)
+	}
+}
+
+func keysOf(m map[string]ToolDefinition) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
+}

@@ -129,3 +129,46 @@ func TestLoadRESTBackends_AbsoluteDADLPath(t *testing.T) {
 	named := make(map[string]backend.ToolBackend)
 	loadRESTBackendsInto(named, backendsPath, "/some/other/dir", nil, credentials.NewEmbeddedStore(), nil, quietLogger(), nil, nil, nil)
 }
+
+// TestLoadRESTBackends_ExposeTools verifies that the expose_tools list from
+// backends.yaml is plumbed through to the RESTAdapter and surfaces via the
+// composite backend's PromotedTools aggregation. Tools listed there must
+// appear under their public, prefixed name; unknown names are silently
+// dropped (with a warning log).
+func TestLoadRESTBackends_ExposeTools(t *testing.T) {
+	dir := t.TempDir()
+
+	dadlPath := filepath.Join(dir, "api.dadl")
+	if err := os.WriteFile(dadlPath, []byte(testDADLContent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	backendsPath := filepath.Join(dir, "backends.yaml")
+	yaml := []byte(`
+backends:
+  - name: testapi
+    transport: rest
+    dadl: api.dadl
+    expose_tools:
+      - get_ping
+      - does_not_exist
+`)
+	if err := os.WriteFile(backendsPath, yaml, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	composite := backend.NewCompositeBackend(map[string]backend.ToolBackend{})
+	named := make(map[string]backend.ToolBackend)
+	loadRESTBackendsInto(named, backendsPath, dir, nil, credentials.NewEmbeddedStore(), nil, quietLogger(), nil, nil, nil)
+	for k, v := range named {
+		composite.AddNamed(k, v)
+	}
+
+	promoted := composite.PromotedTools()
+	if len(promoted) != 1 {
+		t.Fatalf("got %d promoted tools, want 1 (unknown name should be dropped): %v", len(promoted), promoted)
+	}
+	if promoted[0].Name != "testapi_get_ping" {
+		t.Errorf("promoted name = %q, want testapi_get_ping", promoted[0].Name)
+	}
+}

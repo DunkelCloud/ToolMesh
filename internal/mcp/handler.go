@@ -318,15 +318,49 @@ func (h *Handler) BuildToolList(ctx context.Context) ([]ToolDefinition, error) {
 		},
 	}
 
-	// Backend tools are intentionally NOT exposed as individual MCP tools.
-	// They are only accessible via execute_code (Code Mode) and discover_tools.
-	// This keeps the MCP surface minimal and avoids tool name validation issues.
+	// Append backend-promoted tools (configured per-backend via the YAML
+	// `expose_tools` field). These are reachable via Code Mode and
+	// discover_tools too — listing them at the MCP root is purely a
+	// convenience for high-frequency tools where the discovery round-trip
+	// would waste context.
+	tools = append(tools, h.promotedToolDefinitions(ctx)...)
 
 	if h.debugTools {
 		tools = append(tools, debugToolDefinitions()...)
 	}
 
 	return tools, nil
+}
+
+// promotedToolDefinitions returns the direct tool definitions for backends
+// that opted in via expose_tools, filtered through the executor's
+// authorization check just like discover_tools so callers never see entries
+// they cannot invoke.
+func (h *Handler) promotedToolDefinitions(ctx context.Context) []ToolDefinition {
+	promoter, ok := h.backend.(backend.ToolPromoter)
+	if !ok {
+		return nil
+	}
+	descs := promoter.PromotedTools()
+	if len(descs) == 0 {
+		return nil
+	}
+
+	if h.executor != nil {
+		if uc := userctx.FromContext(ctx); uc != nil {
+			descs = h.executor.FilterAuthorizedTools(ctx, uc.UserID, descs)
+		}
+	}
+
+	out := make([]ToolDefinition, 0, len(descs))
+	for _, d := range descs {
+		out = append(out, ToolDefinition{
+			Name:        d.Name,
+			Description: d.Description,
+			InputSchema: d.InputSchema,
+		})
+	}
+	return out
 }
 
 // buildBackendDescription generates a summary of available backends and their hints

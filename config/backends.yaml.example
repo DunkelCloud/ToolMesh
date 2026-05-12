@@ -5,6 +5,16 @@ backends:
   #   url: "https://my-service.example.com/mcp"
   #   api_key_env: "MY_SERVICE_API_KEY"
   #   hint: "Short description shown to AI agents"
+  #   # Optional: promote selected tools to direct top-level MCP tools (in
+  #   # addition to the always-available discover_tools / execute_code surface).
+  #   # Use for high-frequency tools so the LLM can call them without a
+  #   # discovery round-trip. The public MCP name is the bare tool name (e.g.
+  #   # "web_search", "fetch_url"). When two backends would expose the same
+  #   # bare name, both fall back to "<backend>_<tool>" automatically so the
+  #   # surface stays unambiguous.
+  #   expose_tools:
+  #     - web_search
+  #     - fetch_url
 
   # MCP server over STDIO (local process)
   # - name: local-tools

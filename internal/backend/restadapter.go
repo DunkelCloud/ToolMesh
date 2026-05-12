@@ -67,6 +67,7 @@ type RESTAdapter struct {
 	fileBroker          *FileBrokerClient // nil = use blob store or error
 	blobStore           *blob.Store       // embedded blob store for binary responses
 	blobTTL             time.Duration     // TTL for blob URLs (from backends.yaml options.blob_ttl)
+	exposeTools         []string          // bare tool names to promote as direct MCP tools (from backends.yaml expose_tools)
 }
 
 // RESTAdapterOptions controls per-backend security settings.
@@ -76,6 +77,12 @@ type RESTAdapterOptions struct {
 	AllowPrivateURL bool
 	// TLSSkipVerify accepts invalid or self-signed TLS certificates.
 	TLSSkipVerify bool
+	// ExposeTools lists bare tool names from this backend that should be
+	// promoted to direct top-level MCP tools (in addition to discover_tools).
+	// Names are bare (no backend prefix); the public MCP name is built as
+	// "<backend>_<tool>" by the adapter. Names that do not match a known
+	// tool or composite are dropped with a warning at construction time.
+	ExposeTools []string
 }
 
 // NewRESTAdapter creates a RESTAdapter from a parsed DADL spec.
@@ -120,6 +127,8 @@ func NewRESTAdapter(spec *dadl.Spec, creds credentials.CredentialStore, logger *
 		streamingClient.Jar = jar
 	}
 
+	exposeTools := filterExposeTools(spec, opts.ExposeTools, logger)
+
 	return &RESTAdapter{
 		spec:                spec,
 		httpClient:          httpClient,
@@ -129,7 +138,34 @@ func NewRESTAdapter(spec *dadl.Spec, creds credentials.CredentialStore, logger *
 		logger:              logger,
 		allowedUploadDir:    defaultAllowedUploadDir,
 		blobTTL:             time.Hour,
+		exposeTools:         exposeTools,
 	}, nil
+}
+
+// filterExposeTools drops names that do not match any tool or composite in
+// the spec, logging a warning per drop. The returned slice preserves the
+// caller's order and contains only names that resolve at construction time —
+// hot-reload of the spec is not in scope here, so a one-shot validation is
+// sufficient for the REST path. MCP backends apply the same shape after
+// upstream tool discovery.
+func filterExposeTools(spec *dadl.Spec, names []string, logger *slog.Logger) []string {
+	if len(names) == 0 {
+		return nil
+	}
+	filtered := make([]string, 0, len(names))
+	for _, name := range names {
+		_, hasTool := spec.Backend.Tools[name]
+		_, hasComposite := spec.Backend.Composites[name]
+		if !hasTool && !hasComposite {
+			logger.Warn("expose_tools entry does not match any tool or composite, skipping",
+				"backend", spec.Backend.Name,
+				"tool", name,
+			)
+			continue
+		}
+		filtered = append(filtered, name)
+	}
+	return filtered
 }
 
 // SetFileBroker configures an external file broker client for binary response uploads.
@@ -385,6 +421,35 @@ func (a *RESTAdapter) BackendSummaries() []BackendInfo {
 		Hint:   a.spec.Backend.Description,
 		SpecID: a.spec.ContentHash,
 	}}
+}
+
+// PromotedTools returns one Promotion per tool this backend opted to expose
+// as a direct top-level MCP tool (via backends.yaml expose_tools). The
+// Descriptor.Name is the bare tool name (no backend prefix) — the natural
+// public form like "web_search" or "fetch_url"; Canonical carries the
+// "<backend>_<tool>" routing form. The composite backend resolves bare
+// names back to Canonical at dispatch time and falls back to Canonical as
+// the public name only when two backends would advertise the same bare
+// name (cross-backend conflict).
+func (a *RESTAdapter) PromotedTools() []Promotion {
+	if len(a.exposeTools) == 0 {
+		return nil
+	}
+	out := make([]Promotion, 0, len(a.exposeTools))
+	for _, name := range a.exposeTools {
+		desc, ok := a.LookupTool(name)
+		if !ok {
+			// Spec was validated at construction; if it disappeared after that
+			// we silently skip rather than emit an error tool.
+			continue
+		}
+		desc.Name = name
+		out = append(out, Promotion{
+			Descriptor: desc,
+			Canonical:  a.spec.Backend.Name + "_" + name,
+		})
+	}
+	return out
 }
 
 func (a *RESTAdapter) doRequest(ctx context.Context, tool *dadl.ToolDef, params map[string]any) (*http.Response, []byte, error) {

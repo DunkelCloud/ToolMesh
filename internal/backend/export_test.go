@@ -43,10 +43,21 @@ const (
 	testToolGetItem   = "get_item"
 	testToolListItems = "list_items"
 	testToolGetAudio  = "get_audio"
+	testToolSearch    = "search"
+	testToolWebSearch = "web_search"
+	testToolFetchURL  = "fetch_url"
+	testDescWebSearch = "search the web"
+
+	// Vendor backend names used across promotion tests.
+	testVendorBrave  = "brave"
+	testVendorTavily = "tavily"
 
 	// Fixture path literals.
-	testPathItems = "/items"
-	testPathAudio = "/audio"
+	testPathItems     = "/items"
+	testPathItemsByID = "/items/{id}"
+	testPathAudio     = "/audio"
+	testDescGetItem   = "Get an item"
+	testDescListItems = "List items"
 
 	// Fixture HTTP method literals (separate from "GET"/"POST" because tests
 	// also assert on them as strings).

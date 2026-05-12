@@ -599,6 +599,7 @@ func loadRESTBackendsInto(named map[string]backend.ToolBackend, backendsConfigPa
 		adapter, err := backend.NewRESTAdapter(spec, backendCreds, bl, backend.RESTAdapterOptions{
 			AllowPrivateURL: allowPrivate,
 			TLSSkipVerify:   entry.TLSSkipVerify,
+			ExposeTools:     entry.ExposeTools,
 		})
 		if err != nil {
 			logger.Error("failed to create REST adapter", "name", entry.Name, "error", err)

@@ -199,7 +199,7 @@ func TestMCPAdapter_ListTools(t *testing.T) {
 			"backend1": {
 				entry: BackendEntry{Name: "backend1"},
 				tools: []ToolDescriptor{
-					{Name: "search", Description: "Search things"},
+					{Name: testToolSearch, Description: "Search things"},
 					{Name: "fetch", Description: "Fetch data"},
 				},
 			},

@@ -129,3 +129,52 @@ func TestLoadRESTBackends_AbsoluteDADLPath(t *testing.T) {
 	named := make(map[string]backend.ToolBackend)
 	loadRESTBackendsInto(named, backendsPath, "/some/other/dir", nil, credentials.NewEmbeddedStore(), nil, quietLogger(), nil, nil, nil)
 }
+
+// TestLoadRESTBackends_ExposeTools verifies that the expose_tools list from
+// backends.yaml is plumbed through to the RESTAdapter and surfaces via the
+// composite backend's PromotedTools aggregation. Tools listed there appear
+// under their bare public name with the "<backend>_<tool>" routing form
+// stored in Canonical; unknown names are silently dropped (with a warning).
+func TestLoadRESTBackends_ExposeTools(t *testing.T) {
+	dir := t.TempDir()
+
+	dadlPath := filepath.Join(dir, "api.dadl")
+	if err := os.WriteFile(dadlPath, []byte(testDADLContent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	backendsPath := filepath.Join(dir, "backends.yaml")
+	yaml := []byte(`
+backends:
+  - name: testapi
+    transport: rest
+    dadl: api.dadl
+    expose_tools:
+      - get_ping
+      - does_not_exist
+`)
+	if err := os.WriteFile(backendsPath, yaml, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	composite := backend.NewCompositeBackend(map[string]backend.ToolBackend{})
+	named := make(map[string]backend.ToolBackend)
+	loadRESTBackendsInto(named, backendsPath, dir, nil, credentials.NewEmbeddedStore(), nil, quietLogger(), nil, nil, nil)
+	for k, v := range named {
+		composite.AddNamed(k, v)
+	}
+
+	promoted := composite.PromotedTools()
+	if len(promoted) != 1 {
+		t.Fatalf("got %d promoted tools, want 1 (unknown name should be dropped): %v", len(promoted), promoted)
+	}
+	if promoted[0].Descriptor.Name != "get_ping" {
+		t.Errorf("public name = %q, want bare \"get_ping\"", promoted[0].Descriptor.Name)
+	}
+	if promoted[0].Canonical != "testapi_get_ping" {
+		t.Errorf("canonical = %q, want testapi_get_ping", promoted[0].Canonical)
+	}
+	if got := composite.ResolveAlias("get_ping"); got != "testapi_get_ping" {
+		t.Errorf("ResolveAlias(\"get_ping\") = %q, want testapi_get_ping", got)
+	}
+}

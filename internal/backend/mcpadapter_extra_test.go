@@ -89,6 +89,87 @@ func TestMCPAdapter_RegisterTools_Extra(t *testing.T) {
 	}
 }
 
+func TestMCPAdapter_PromotedTools_BareNameAndCanonical(t *testing.T) {
+	a := &MCPAdapter{
+		backends: map[string]*backendConn{
+			testVendorBrave: {
+				entry: BackendEntry{Name: testVendorBrave, ExposeTools: []string{testToolWebSearch, "missing"}},
+				tools: []ToolDescriptor{
+					{Name: testToolWebSearch, Description: testDescWebSearch, InputSchema: map[string]any{"type": "object"}, Access: accessRead},
+					{Name: "summarize", Description: "summarize text"},
+				},
+			},
+			"other": {
+				entry: BackendEntry{Name: "other"}, // no expose_tools
+				tools: []ToolDescriptor{{Name: "noop"}},
+			},
+		},
+		logger: slog.Default(),
+	}
+
+	got := a.PromotedTools()
+	if len(got) != 1 {
+		t.Fatalf("got %d promoted tools, want 1 (missing entry should be skipped)", len(got))
+	}
+	if got[0].Descriptor.Name != testToolWebSearch {
+		t.Errorf("public name = %q, want bare %q", got[0].Descriptor.Name, testToolWebSearch)
+	}
+	if got[0].Canonical != "brave_"+testToolWebSearch {
+		t.Errorf("canonical = %q, want %q", got[0].Canonical, "brave_"+testToolWebSearch)
+	}
+	if got[0].Descriptor.Description != testDescWebSearch {
+		t.Errorf("description = %q", got[0].Descriptor.Description)
+	}
+	if got[0].Descriptor.Backend != "mcp:brave" {
+		t.Errorf("backend = %q, want mcp:brave", got[0].Descriptor.Backend)
+	}
+	if got[0].Descriptor.Access != accessRead {
+		t.Errorf("access = %q, want %q (carried from upstream descriptor)", got[0].Descriptor.Access, accessRead)
+	}
+}
+
+// TestMCPAdapter_PromotedTools_BareNameWhenBackendEqualsTool: when a backend
+// is named after its single primary tool, the public surface still uses the
+// bare name (no "<backend>_<tool>" prefix in the wire form). Canonical
+// carries the doubled-up "<backend>_<tool>" form for routing.
+func TestMCPAdapter_PromotedTools_BareNameWhenBackendEqualsTool(t *testing.T) {
+	a := &MCPAdapter{
+		backends: map[string]*backendConn{
+			testToolWebSearch: {
+				entry: BackendEntry{Name: testToolWebSearch, ExposeTools: []string{testToolWebSearch}},
+				tools: []ToolDescriptor{{Name: testToolWebSearch, Description: testDescWebSearch}},
+			},
+		},
+		logger: slog.Default(),
+	}
+	got := a.PromotedTools()
+	if len(got) != 1 {
+		t.Fatalf("got %d, want 1", len(got))
+	}
+	if got[0].Descriptor.Name != testToolWebSearch {
+		t.Errorf("public name = %q, want bare %q", got[0].Descriptor.Name, testToolWebSearch)
+	}
+	wantCanonical := testToolWebSearch + "_" + testToolWebSearch
+	if got[0].Canonical != wantCanonical {
+		t.Errorf("canonical = %q, want %q", got[0].Canonical, wantCanonical)
+	}
+}
+
+func TestMCPAdapter_PromotedTools_EmptyWhenNoExpose(t *testing.T) {
+	a := &MCPAdapter{
+		backends: map[string]*backendConn{
+			"b1": {
+				entry: BackendEntry{Name: "b1"},
+				tools: []ToolDescriptor{{Name: "t1"}},
+			},
+		},
+		logger: slog.Default(),
+	}
+	if got := a.PromotedTools(); len(got) != 0 {
+		t.Errorf("expected no promoted tools, got %d", len(got))
+	}
+}
+
 func TestBearerTransport_RoundTrip(t *testing.T) {
 	var gotAuth string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -23,9 +23,12 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/DunkelCloud/ToolMesh/internal/backend"
 	"github.com/DunkelCloud/ToolMesh/internal/config"
+	"github.com/DunkelCloud/ToolMesh/internal/executor"
+	"github.com/DunkelCloud/ToolMesh/internal/userctx"
 )
 
 func newQuietMCPLogger() *slog.Logger {
@@ -319,7 +322,7 @@ func TestBuildGroupedHints(t *testing.T) {
 				{Name: testHostDokuWikiCloud, Hint: testHintDokuWiki, SpecID: testCredDokuWiki},
 				{Name: testBackendMemorizer, Hint: testHintLocalMemory},
 				{Name: testHostnameDokuWiki, Hint: testHintDokuWiki, SpecID: testCredDokuWiki},
-				{Name: "web_search", Hint: "Web search"},
+				{Name: testToolWebSearch, Hint: "Web search"},
 			},
 			want: "dokuwiki-dunkel.cloud, dokuwiki-dunkel.io: DokuWiki JSON-RPC API; memorizer: Local memory store; web_search: Web search",
 		},
@@ -328,7 +331,7 @@ func TestBuildGroupedHints(t *testing.T) {
 			infos: []backend.BackendInfo{
 				{Name: testBackendMemorizer, Hint: testHintLocalMemory},
 				{Name: "opnsense_a", Hint: testHintOPNsense, SpecID: testCredOPNsense},
-				{Name: "web_search", Hint: "Web search"},
+				{Name: testToolWebSearch, Hint: "Web search"},
 				{Name: "opnsense_b", Hint: testHintOPNsense, SpecID: testCredOPNsense},
 			},
 			want: "memorizer: Local memory store; opnsense_a, opnsense_b: OPNsense REST API; web_search: Web search",
@@ -449,4 +452,137 @@ func TestBuildToolList_BackendHintsOnExecuteCodeOnly(t *testing.T) {
 		t.Errorf("discover_tools description (%d chars) is longer than execute_code (%d chars) — backend block may have leaked back in",
 			len(discoverDesc), len(execDesc))
 	}
+}
+
+// promotingBackend wraps mockTestBackend and also implements both
+// backend.ToolPromoter and backend.ToolAliasResolver so handler tests can
+// exercise advertisement and dispatch translation in one fixture.
+type promotingBackend struct {
+	mockTestBackend
+	promoted []backend.Promotion
+	called   []string // toolNames passed to Execute, captured for routing assertions
+}
+
+func (p *promotingBackend) PromotedTools() []backend.Promotion { return p.promoted }
+
+func (p *promotingBackend) ResolveAlias(name string) string {
+	for _, prom := range p.promoted {
+		if prom.Descriptor.Name == name && prom.Descriptor.Name != prom.Canonical {
+			return prom.Canonical
+		}
+	}
+	return name
+}
+
+func (p *promotingBackend) Execute(_ context.Context, toolName string, _ map[string]any) (*backend.ToolResult, error) {
+	p.called = append(p.called, toolName)
+	return &backend.ToolResult{Content: []any{map[string]any{contentKeyType: contentKeyText, contentKeyText: toolName}}}, nil
+}
+
+// TestBuildToolList_PromotedToolsAppended verifies that backends opting into
+// expose_tools surface their promoted tools at the MCP root in addition to
+// discover_tools and execute_code, and that the public names are bare
+// (no "<backend>_" prefix) when there is no cross-backend conflict.
+func TestBuildToolList_PromotedToolsAppended(t *testing.T) {
+	mb := &promotingBackend{
+		promoted: []backend.Promotion{
+			{
+				Descriptor: backend.ToolDescriptor{
+					Name:        testToolWebSearch,
+					Description: "Search the web via Brave",
+					InputSchema: map[string]any{contentKeyType: jsonTypeObject},
+				},
+				Canonical: testCanonicalBraveWebSearch,
+			},
+			{
+				Descriptor: backend.ToolDescriptor{
+					Name:        "fetch_url",
+					Description: "Fetch a URL",
+					InputSchema: map[string]any{contentKeyType: jsonTypeObject},
+				},
+				Canonical: "fetch_fetch_url",
+			},
+		},
+	}
+	h := NewHandler(nil, mb, nil, "", nil, newQuietMCPLogger(), false)
+
+	tools, err := h.BuildToolList(context.Background())
+	if err != nil {
+		t.Fatalf("BuildToolList: %v", err)
+	}
+
+	got := map[string]ToolDefinition{}
+	for _, td := range tools {
+		got[td.Name] = td
+	}
+
+	for _, must := range []string{toolDiscoverTools, toolExecuteCode, testToolWebSearch, "fetch_url"} {
+		if _, ok := got[must]; !ok {
+			t.Errorf("missing tool %q in BuildToolList output: %v", must, keysOf(got))
+		}
+	}
+
+	if d := got[testToolWebSearch]; d.Description != "Search the web via Brave" {
+		t.Errorf("promoted description not propagated: %q", d.Description)
+	}
+}
+
+// TestHandleToolCall_ResolvesPromotedAliasBeforeDispatch verifies that a
+// caller invoking the bare advertised name (e.g. testToolWebSearch) sees its
+// call dispatched to the canonical "<backend>_<tool>" form, so authz /
+// gate / audit downstream all observe a single consistent identifier.
+func TestHandleToolCall_ResolvesPromotedAliasBeforeDispatch(t *testing.T) {
+	mb := &promotingBackend{
+		promoted: []backend.Promotion{
+			{
+				Descriptor: backend.ToolDescriptor{
+					Name:        testToolWebSearch,
+					Description: "Search the web",
+					InputSchema: map[string]any{contentKeyType: jsonTypeObject},
+				},
+				Canonical: testCanonicalBraveWebSearch,
+			},
+		},
+	}
+	exec := executor.New(nil, nil, mb, nil, nil, 5*time.Second, newQuietMCPLogger(), nil, nil)
+	h := NewHandler(exec, mb, nil, "", nil, newQuietMCPLogger(), false)
+
+	ctx := userctx.WithUserContext(context.Background(), &userctx.UserContext{
+		UserID:        "u",
+		Authenticated: true,
+	})
+	result, err := h.HandleToolCall(ctx, testToolWebSearch, map[string]any{"q": "anything"})
+	if err != nil {
+		t.Fatalf("HandleToolCall: %v", err)
+	}
+	if result == nil || result.IsError {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	if len(mb.called) != 1 {
+		t.Fatalf("backend was called %d times, want 1", len(mb.called))
+	}
+	if mb.called[0] != testCanonicalBraveWebSearch {
+		t.Errorf("backend received %q, want canonical \"brave_web_search\" (alias unresolved)", mb.called[0])
+	}
+}
+
+// TestBuildToolList_NoPromoterMeansNoPromotedTools verifies that backends not
+// implementing ToolPromoter add nothing — the default surface stays discover/exec.
+func TestBuildToolList_NoPromoterMeansNoPromotedTools(t *testing.T) {
+	h := NewHandler(nil, &mockTestBackend{}, nil, "", nil, newQuietMCPLogger(), false)
+	tools, err := h.BuildToolList(context.Background())
+	if err != nil {
+		t.Fatalf("BuildToolList: %v", err)
+	}
+	if len(tools) != 2 {
+		t.Errorf("expected 2 tools (discover_tools, execute_code), got %d: %v", len(tools), tools)
+	}
+}
+
+func keysOf(m map[string]ToolDefinition) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
 }

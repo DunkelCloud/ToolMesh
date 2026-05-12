@@ -50,4 +50,8 @@ const (
 	testToolTmtestAlpha   = "tmtest_alpha"
 	testToolTmtestBeta    = "tmtest_beta"
 	testIP198_51_100_7    = "198.51.100.7"
+
+	// Promotion-related test fixtures.
+	testToolWebSearch           = "web_search"
+	testCanonicalBraveWebSearch = "brave_web_search"
 )

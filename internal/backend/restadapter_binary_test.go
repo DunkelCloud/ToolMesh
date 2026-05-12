@@ -138,8 +138,8 @@ func TestRESTAdapter_QueryParams(t *testing.T) {
 		Backend: dadl.BackendDef{
 			Name: testBackendNameAPI, Type: transportTypeREST, BaseURL: srv.URL,
 			Tools: map[string]dadl.ToolDef{
-				"search": {
-					Method: testMethodGET, Path: "/search",
+				testToolSearch: {
+					Method: testMethodGET, Path: "/" + testToolSearch,
 					Params: map[string]dadl.ParamDef{
 						"q":     {Type: schemaTypeString, In: paramInQuery, Required: true},
 						"limit": {Type: schemaTypeInteger, In: paramInQuery},
@@ -149,7 +149,7 @@ func TestRESTAdapter_QueryParams(t *testing.T) {
 		},
 	}
 	a, _ := NewRESTAdapter(spec, &testCredStore{}, slog.Default(), testRESTOpts)
-	_, err := a.Execute(context.Background(), "search", map[string]any{"q": testHelloLiteral, "limit": 10})
+	_, err := a.Execute(context.Background(), testToolSearch, map[string]any{"q": testHelloLiteral, "limit": 10})
 	if err != nil {
 		t.Fatal(err)
 	}

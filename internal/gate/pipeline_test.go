@@ -138,7 +138,7 @@ func TestPipeline_Evaluate(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			p := NewPipeline(tt.evaluators)
-			err := p.Evaluate(tt.ctx)
+			_, err := p.Evaluate(tt.ctx)
 
 			if tt.wantErr {
 				if err == nil {
@@ -179,8 +179,7 @@ func TestPipeline_Evaluate_ModifiedResult(t *testing.T) {
 		Response: &backend.ToolResult{Content: []any{map[string]any{testContentKeyType: testContentText, testContentText: "original"}}},
 	}
 
-	err := p.Evaluate(ctx)
-	if err != nil {
+	if _, err := p.Evaluate(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -195,22 +194,20 @@ func TestPipeline_EvaluatePre_And_EvaluatePost(t *testing.T) {
 	p := NewPipeline([]Evaluator{preBlocker})
 
 	// EvaluatePre should set phase to PhasePre and trigger block
-	err := p.EvaluatePre(GateContext{
+	if _, err := p.EvaluatePre(GateContext{
 		User:     userctx.UserContext{UserID: "u1"},
 		Tool:     testToolName,
 		Response: &backend.ToolResult{},
-	})
-	if err == nil {
+	}); err == nil {
 		t.Error("expected EvaluatePre to fail with phase-blocking evaluator")
 	}
 
 	// EvaluatePost should set phase to PhasePost and pass
-	err = p.EvaluatePost(GateContext{
+	if _, err := p.EvaluatePost(GateContext{
 		User:     userctx.UserContext{UserID: "u1"},
 		Tool:     testToolName,
 		Response: &backend.ToolResult{},
-	})
-	if err != nil {
+	}); err != nil {
 		t.Errorf("expected EvaluatePost to pass, got: %v", err)
 	}
 }

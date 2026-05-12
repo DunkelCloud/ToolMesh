@@ -17,9 +17,35 @@ package audit
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"time"
 )
+
+// Modification targets emitted in PolicyModification.Target. The set is
+// closed: policies may only mutate params (pre-execution) or response
+// content (post-execution). Anything else is a bug in the gate evaluator.
+const (
+	// ModificationTargetParams marks a mutation of request parameters
+	// performed by a pre-execution policy.
+	ModificationTargetParams = "params"
+	// ModificationTargetResponseContent marks a mutation of the response
+	// content blocks performed by a post-execution policy.
+	ModificationTargetResponseContent = "response.content"
+)
+
+// PolicyModification captures a single before/after snapshot proving that a
+// policy mutated the tool call. Recorded only when the bytes actually differ —
+// a no-op policy run produces no PolicyModification. Before and After are
+// stored as raw JSON so the audit trail keeps the exact value as the policy
+// saw it, including ordering and types.
+type PolicyModification struct {
+	Policy string          `json:"policy"`
+	Phase  string          `json:"phase"`  // "pre" or "post"
+	Target string          `json:"target"` // ModificationTarget* constant
+	Before json.RawMessage `json:"before"`
+	After  json.RawMessage `json:"after"`
+}
 
 // AuditEntry represents a single tool execution record.
 type AuditEntry struct {
@@ -45,6 +71,11 @@ type AuditEntry struct {
 	IsComposite bool              `json:"is_composite,omitempty"`
 	ChildEvents []AuditEntry      `json:"child_events,omitempty"`
 	Metadata    map[string]string `json:"metadata,omitempty"`
+	// Modifications lists policy-driven mutations of params or response
+	// content with full before/after snapshots. Populated only when at
+	// least one policy actually changed the data; an unchanged tool call
+	// leaves this nil so audit consumers can filter on existence.
+	Modifications []PolicyModification `json:"modifications,omitempty"`
 }
 
 // AuditFilter defines query parameters for audit searches.

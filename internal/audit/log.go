@@ -79,6 +79,25 @@ func (s *LogStore) Record(_ context.Context, entry AuditEntry) error {
 		slog.Info("audit.child", childAttrs...)
 	}
 
+	// Emit one dedicated audit.policy_modification line per recorded
+	// before/after pair. Done only when the policy actually changed the
+	// data — an unchanged tool call produces zero modification events,
+	// so the presence of "audit.policy_modification" in the log stream
+	// is itself the proof that a mutation occurred.
+	for _, mod := range entry.Modifications {
+		slog.Info("audit.policy_modification",
+			"trace_id", entry.TraceID,
+			"tool", entry.Tool,
+			"user_id", entry.UserID,
+			"caller_id", entry.CallerID,
+			"policy", mod.Policy,
+			"phase", mod.Phase,
+			"target", mod.Target,
+			"before", string(mod.Before),
+			"after", string(mod.After),
+		)
+	}
+
 	return nil
 }
 

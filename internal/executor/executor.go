@@ -217,7 +217,8 @@ func (e *Executor) ExecuteTool(ctx context.Context, req ExecuteToolRequest) (*ba
 			ToolAccess: toolAccess,
 			Params:     req.Params,
 		}
-		if err := e.gate.EvaluatePre(gctx); err != nil {
+		preMods, err := e.gate.EvaluatePre(gctx)
+		if err != nil {
 			e.logger.WarnContext(ctx, "gate pre-execution rejected",
 				"tool", req.ToolName,
 				"user", uc.UserID,
@@ -234,6 +235,9 @@ func (e *Executor) ExecuteTool(ctx context.Context, req ExecuteToolRequest) (*ba
 					contentKeyText: fmt.Sprintf("Gate rejected (pre-execution): %s", err),
 				}},
 			}, nil
+		}
+		if len(preMods) > 0 {
+			entry.Modifications = append(entry.Modifications, preMods...)
 		}
 		e.logger.DebugContext(ctx, "gate pre-execution passed", "tool", req.ToolName)
 	}
@@ -272,7 +276,8 @@ func (e *Executor) ExecuteTool(ctx context.Context, req ExecuteToolRequest) (*ba
 			Params:     req.Params,
 			Response:   result,
 		}
-		if err := e.gate.EvaluatePost(gctx); err != nil {
+		postMods, err := e.gate.EvaluatePost(gctx)
+		if err != nil {
 			e.logger.WarnContext(ctx, "gate post-execution rejected",
 				"tool", req.ToolName,
 				"user", uc.UserID,
@@ -289,6 +294,9 @@ func (e *Executor) ExecuteTool(ctx context.Context, req ExecuteToolRequest) (*ba
 					contentKeyText: fmt.Sprintf("Gate rejected (post-execution): %s", err),
 				}},
 			}, nil
+		}
+		if len(postMods) > 0 {
+			entry.Modifications = append(entry.Modifications, postMods...)
 		}
 		e.logger.DebugContext(ctx, "gate post-execution passed", "tool", req.ToolName)
 	}

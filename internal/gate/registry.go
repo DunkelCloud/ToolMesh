@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/DunkelCloud/ToolMesh/internal/audit"
 	"github.com/DunkelCloud/ToolMesh/internal/backend"
 )
 
@@ -36,6 +37,10 @@ type EvalResult struct {
 	Allowed  bool                // Whether the result may be returned to the caller.
 	Modified *backend.ToolResult // Optional: modified result (fields removed, etc.).
 	Reason   string              // If rejected: reason.
+	// Modifications lists any policy-driven mutations performed during this
+	// evaluation, one entry per (policy, target) where before != after. Nil
+	// when no policy changed the data.
+	Modifications []audit.PolicyModification
 }
 
 // EvaluatorFactory creates an Evaluator instance from configuration.

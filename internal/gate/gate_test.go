@@ -15,11 +15,14 @@
 package gate
 
 import (
+	"encoding/json"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/DunkelCloud/ToolMesh/internal/audit"
 	"github.com/DunkelCloud/ToolMesh/internal/backend"
 	"github.com/DunkelCloud/ToolMesh/internal/userctx"
 )
@@ -481,22 +484,20 @@ func TestPipeline_EvaluatePre(t *testing.T) {
 
 	p := NewPipeline([]Evaluator{g})
 
-	err = p.EvaluatePre(GateContext{
+	if _, err := p.EvaluatePre(GateContext{
 		User:   userctx.UserContext{UserID: "u1", Authenticated: true},
 		Tool:   "dangerous_tool",
 		Params: map[string]any{},
-	})
-	if err == nil {
+	}); err == nil {
 		t.Error("expected EvaluatePre to reject dangerous_tool")
 	}
 
-	err = p.EvaluatePost(GateContext{
+	if _, err := p.EvaluatePost(GateContext{
 		User:     userctx.UserContext{UserID: "u1", Authenticated: true},
 		Tool:     "dangerous_tool",
 		Params:   map[string]any{},
 		Response: &backend.ToolResult{},
-	})
-	if err != nil {
+	}); err != nil {
 		t.Errorf("expected EvaluatePost to pass dangerous_tool, got: %v", err)
 	}
 }
@@ -935,5 +936,213 @@ func writePolicy(t *testing.T, dir, name, content string) {
 	path := filepath.Join(dir, name)
 	if err := os.WriteFile(path, []byte(content), 0600); err != nil { //nolint:gosec // G703: test helper with controlled path
 		t.Fatalf("write policy: %v", err)
+	}
+}
+
+func TestGate_Evaluate_RecordsResponseContentModification(t *testing.T) {
+	dir := t.TempDir()
+	writePolicy(t, dir, "redact.js", `
+		if (ctx.response && ctx.response.content) {
+			for (var i = 0; i < ctx.response.content.length; i++) {
+				if (ctx.response.content[i].type === "text") {
+					ctx.response.content[i].text = "[REDACTED]";
+				}
+			}
+		}
+	`)
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	g, err := New(dir, logger)
+	if err != nil {
+		t.Fatalf("failed to create gate: %v", err)
+	}
+
+	result := &backend.ToolResult{
+		Content: []any{map[string]any{
+			testContentKeyType: testContentText,
+			testContentText:    "user email: alice@example.com",
+		}},
+	}
+
+	evalResult, err := g.Evaluate(GateContext{
+		User:     userctx.UserContext{UserID: "u1", Authenticated: true},
+		Tool:     testToolName,
+		Phase:    PhasePost,
+		Response: result,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !evalResult.Allowed {
+		t.Fatal("policy that modifies content should still allow")
+	}
+	if len(evalResult.Modifications) != 1 {
+		t.Fatalf("expected exactly one modification, got %d", len(evalResult.Modifications))
+	}
+
+	mod := evalResult.Modifications[0]
+	if mod.Policy != "redact.js" {
+		t.Errorf("expected policy 'redact.js', got %q", mod.Policy)
+	}
+	if mod.Phase != string(PhasePost) {
+		t.Errorf("expected phase 'post', got %q", mod.Phase)
+	}
+	if mod.Target != audit.ModificationTargetResponseContent {
+		t.Errorf("expected target %q, got %q", audit.ModificationTargetResponseContent, mod.Target)
+	}
+	if !strings.Contains(string(mod.Before), "alice@example.com") {
+		t.Errorf("before snapshot should contain original email, got %s", string(mod.Before))
+	}
+	if !strings.Contains(string(mod.After), "[REDACTED]") {
+		t.Errorf("after snapshot should contain redaction marker, got %s", string(mod.After))
+	}
+	if strings.Contains(string(mod.After), "alice@example.com") {
+		t.Errorf("after snapshot should not contain the original email, got %s", string(mod.After))
+	}
+}
+
+func TestGate_Evaluate_NoModificationWhenPolicyDoesNotChangeData(t *testing.T) {
+	dir := t.TempDir()
+	// Pure inspection policy — reads fields but writes nothing.
+	writePolicy(t, dir, "inspect.js", `
+		var n = (ctx.response && ctx.response.content) ? ctx.response.content.length : 0;
+		// no mutation
+	`)
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	g, err := New(dir, logger)
+	if err != nil {
+		t.Fatalf("failed to create gate: %v", err)
+	}
+
+	result := &backend.ToolResult{
+		Content: []any{map[string]any{
+			testContentKeyType: testContentText,
+			testContentText:    "harmless data",
+		}},
+	}
+
+	evalResult, err := g.Evaluate(GateContext{
+		User:     userctx.UserContext{UserID: "u1", Authenticated: true},
+		Tool:     testToolName,
+		Phase:    PhasePost,
+		Response: result,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !evalResult.Allowed {
+		t.Fatal("inspection-only policy should allow")
+	}
+	if len(evalResult.Modifications) != 0 {
+		t.Errorf("expected no modifications for inspection-only policy, got %d: %+v",
+			len(evalResult.Modifications), evalResult.Modifications)
+	}
+}
+
+func TestGate_Evaluate_RecordsParamsModification(t *testing.T) {
+	dir := t.TempDir()
+	writePolicy(t, dir, "lowercase_owner.js", `
+		if (ctx.params && typeof ctx.params.owner === "string") {
+			ctx.params.owner = ctx.params.owner.toLowerCase();
+		}
+	`)
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	g, err := New(dir, logger)
+	if err != nil {
+		t.Fatalf("failed to create gate: %v", err)
+	}
+
+	evalResult, err := g.Evaluate(GateContext{
+		User:   userctx.UserContext{UserID: "u1", Authenticated: true},
+		Tool:   testToolName,
+		Phase:  PhasePre,
+		Params: map[string]any{"owner": "DunkelCloud"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !evalResult.Allowed {
+		t.Fatal("policy that rewrites params should still allow")
+	}
+	if len(evalResult.Modifications) != 1 {
+		t.Fatalf("expected exactly one modification, got %d: %+v",
+			len(evalResult.Modifications), evalResult.Modifications)
+	}
+	mod := evalResult.Modifications[0]
+	if mod.Target != audit.ModificationTargetParams {
+		t.Errorf("expected target %q, got %q", audit.ModificationTargetParams, mod.Target)
+	}
+	if mod.Phase != string(PhasePre) {
+		t.Errorf("expected phase 'pre', got %q", mod.Phase)
+	}
+
+	var before, after map[string]any
+	if err := json.Unmarshal(mod.Before, &before); err != nil {
+		t.Fatalf("decode before: %v", err)
+	}
+	if err := json.Unmarshal(mod.After, &after); err != nil {
+		t.Fatalf("decode after: %v", err)
+	}
+	if before["owner"] != "DunkelCloud" {
+		t.Errorf("expected before.owner = DunkelCloud, got %v", before["owner"])
+	}
+	if after["owner"] != "dunkelcloud" {
+		t.Errorf("expected after.owner = dunkelcloud, got %v", after["owner"])
+	}
+}
+
+func TestGate_Evaluate_AggregatesAcrossMultiplePolicies(t *testing.T) {
+	dir := t.TempDir()
+	writePolicy(t, dir, "01_first.js", `
+		if (ctx.response && ctx.response.content) {
+			ctx.response.content[0].text = "first";
+		}
+	`)
+	writePolicy(t, dir, "02_second.js", `
+		if (ctx.response && ctx.response.content) {
+			ctx.response.content[0].text = "second";
+		}
+	`)
+	// Third policy is a no-op — must NOT produce a modification entry.
+	writePolicy(t, dir, "03_noop.js", `// read-only inspection`)
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	g, err := New(dir, logger)
+	if err != nil {
+		t.Fatalf("failed to create gate: %v", err)
+	}
+
+	result := &backend.ToolResult{
+		Content: []any{map[string]any{
+			testContentKeyType: testContentText,
+			testContentText:    "original",
+		}},
+	}
+
+	evalResult, err := g.Evaluate(GateContext{
+		User:     userctx.UserContext{UserID: "u1", Authenticated: true},
+		Tool:     testToolName,
+		Phase:    PhasePost,
+		Response: result,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(evalResult.Modifications) != 2 {
+		t.Fatalf("expected 2 modifications (one per writing policy), got %d: %+v",
+			len(evalResult.Modifications), evalResult.Modifications)
+	}
+	if evalResult.Modifications[0].Policy != "01_first.js" {
+		t.Errorf("expected first policy = 01_first.js, got %q", evalResult.Modifications[0].Policy)
+	}
+	if evalResult.Modifications[1].Policy != "02_second.js" {
+		t.Errorf("expected second policy = 02_second.js, got %q", evalResult.Modifications[1].Policy)
+	}
+	// The second policy's before should reflect the first policy's after.
+	if !strings.Contains(string(evalResult.Modifications[1].Before), "first") {
+		t.Errorf("second policy's before should see 'first', got %s",
+			string(evalResult.Modifications[1].Before))
 	}
 }

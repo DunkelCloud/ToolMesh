@@ -18,6 +18,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -149,5 +150,135 @@ func TestExecuteTool_GateSeesToolAccess(t *testing.T) {
 	}
 	if !write.IsError {
 		t.Errorf("write tool: expected gate rejection, got IsError=false")
+	}
+}
+
+// TestExecuteTool_AuditCapturesPolicyModification wires a post-execution
+// gate that redacts the backend response and verifies that the resulting
+// audit entry carries a before/after PolicyModification — the contract the
+// gate guarantees to operators auditing the system.
+func TestExecuteTool_AuditCapturesPolicyModification(t *testing.T) {
+	// Documented AWS example key used as fixture for the redaction policy
+	// under test — constructed at runtime to avoid tripping gosec G101 on
+	// the literal pattern.
+	secretFixture := "raw secret: " + "AKIA" + "IOSFODNN7EXAMPLE"
+	be := &mockBackend{
+		executeFunc: func(_ context.Context, _ string, _ map[string]any) (*backend.ToolResult, error) {
+			return &backend.ToolResult{
+				Content: []any{map[string]any{
+					contentKeyType: contentKeyText,
+					contentKeyText: secretFixture,
+				}},
+			}, nil
+		},
+	}
+
+	dir := t.TempDir()
+	policy := `
+		if (ctx.phase === "post" && ctx.response && ctx.response.content) {
+			for (var i = 0; i < ctx.response.content.length; i++) {
+				if (ctx.response.content[i].type === "text") {
+					ctx.response.content[i].text =
+						ctx.response.content[i].text.replace(/AKIA[A-Z0-9]{16}/g, "[AWS_KEY]");
+				}
+			}
+		}
+	`
+	if err := os.WriteFile(filepath.Join(dir, "redact_aws.js"), []byte(policy), 0o600); err != nil {
+		t.Fatalf("write policy: %v", err)
+	}
+
+	g, err := gate.New(dir, newTestLogger())
+	if err != nil {
+		t.Fatalf("gate.New: %v", err)
+	}
+
+	rec := &recordingAudit{}
+	exec := New(nil, nil, be, gate.NewPipeline([]gate.Evaluator{g}), rec,
+		30*time.Second, newTestLogger(), nil, nil)
+
+	ctx := userctx.WithUserContext(context.Background(), &userctx.UserContext{
+		UserID:        testUserID,
+		Authenticated: true,
+	})
+
+	result, err := exec.ExecuteTool(ctx, ExecuteToolRequest{ToolName: testGitHubListRepos})
+	if err != nil {
+		t.Fatalf("ExecuteTool: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("expected success, got IsError=true: %+v", result)
+	}
+
+	// The fragment we expect to see only in the before-snapshot. Built the
+	// same way as the fixture so gosec ignores the literal.
+	secretFragment := "AKIA" + "IOSFODNN7EXAMPLE"
+
+	// The response that left the executor must already be redacted.
+	if got := result.Content[0].(map[string]any)[contentKeyText].(string); strings.Contains(got, secretFragment) {
+		t.Errorf("response leaked unredacted AWS key: %q", got)
+	}
+
+	// And the audit entry must prove what was changed.
+	if len(rec.last.Modifications) != 1 {
+		t.Fatalf("expected 1 audit modification, got %d: %+v",
+			len(rec.last.Modifications), rec.last.Modifications)
+	}
+	mod := rec.last.Modifications[0]
+	if mod.Policy != "redact_aws.js" {
+		t.Errorf("policy = %q, want redact_aws.js", mod.Policy)
+	}
+	if mod.Phase != "post" {
+		t.Errorf("phase = %q, want post", mod.Phase)
+	}
+	if mod.Target != audit.ModificationTargetResponseContent {
+		t.Errorf("target = %q, want %q", mod.Target, audit.ModificationTargetResponseContent)
+	}
+	if !strings.Contains(string(mod.Before), secretFragment) {
+		t.Errorf("audit before snapshot must contain the original secret: %s", string(mod.Before))
+	}
+	if strings.Contains(string(mod.After), secretFragment) {
+		t.Errorf("audit after snapshot must NOT contain the secret: %s", string(mod.After))
+	}
+	if !strings.Contains(string(mod.After), "[AWS_KEY]") {
+		t.Errorf("audit after snapshot should contain the redaction marker: %s", string(mod.After))
+	}
+}
+
+// TestExecuteTool_NoModificationsForUnchangedCall verifies the negative
+// contract: when the post-gate inspects but does not mutate the response,
+// the audit entry must NOT carry a Modifications list. "No audit modification
+// event" is the proof that nothing was changed.
+func TestExecuteTool_NoModificationsForUnchangedCall(t *testing.T) {
+	be := &mockBackend{}
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "inspect_only.js"),
+		[]byte(`// read-only: counts content blocks but never writes
+		var n = (ctx.response && ctx.response.content) ? ctx.response.content.length : 0;
+		`), 0o600); err != nil {
+		t.Fatalf("write policy: %v", err)
+	}
+
+	g, err := gate.New(dir, newTestLogger())
+	if err != nil {
+		t.Fatalf("gate.New: %v", err)
+	}
+
+	rec := &recordingAudit{}
+	exec := New(nil, nil, be, gate.NewPipeline([]gate.Evaluator{g}), rec,
+		30*time.Second, newTestLogger(), nil, nil)
+
+	ctx := userctx.WithUserContext(context.Background(), &userctx.UserContext{
+		UserID:        testUserID,
+		Authenticated: true,
+	})
+
+	if _, err := exec.ExecuteTool(ctx, ExecuteToolRequest{ToolName: testGitHubListRepos}); err != nil {
+		t.Fatalf("ExecuteTool: %v", err)
+	}
+	if len(rec.last.Modifications) != 0 {
+		t.Errorf("inspection-only policy should not produce audit modifications, got %d: %+v",
+			len(rec.last.Modifications), rec.last.Modifications)
 	}
 }

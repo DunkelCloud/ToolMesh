@@ -14,7 +14,11 @@
 
 package gate
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/DunkelCloud/ToolMesh/internal/audit"
+)
 
 // Pipeline runs a chain of Evaluators in order. If any evaluator rejects
 // the request, the pipeline stops and returns the rejection.
@@ -27,41 +31,49 @@ func NewPipeline(evaluators []Evaluator) *Pipeline {
 	return &Pipeline{evaluators: evaluators}
 }
 
-// EvaluatePre runs all evaluators in the pre-execution phase.
-// Policies receive the tool name and input parameters but no response.
-func (p *Pipeline) EvaluatePre(ctx GateContext) error {
+// EvaluatePre runs all evaluators in the pre-execution phase. Policies
+// receive the tool name and input parameters but no response. The returned
+// modification slice is nil when no policy mutated the data.
+func (p *Pipeline) EvaluatePre(ctx GateContext) ([]audit.PolicyModification, error) {
 	ctx.Phase = PhasePre
 	return p.evaluate(ctx)
 }
 
-// EvaluatePost runs all evaluators in the post-execution phase.
-// Policies receive the tool name, input parameters, and the backend response.
-func (p *Pipeline) EvaluatePost(ctx GateContext) error {
+// EvaluatePost runs all evaluators in the post-execution phase. Policies
+// receive the tool name, input parameters, and the backend response. The
+// returned modification slice captures every (policy, target) pair where
+// the JSON representation changed during the run.
+func (p *Pipeline) EvaluatePost(ctx GateContext) ([]audit.PolicyModification, error) {
 	ctx.Phase = PhasePost
 	return p.evaluate(ctx)
 }
 
 // Evaluate runs all evaluators in sequence. If Phase is not set, it defaults
-// to PhasePost for backward compatibility.
-func (p *Pipeline) Evaluate(ctx GateContext) error {
+// to PhasePost for backward compatibility. Callers that only care about
+// reject/allow may discard the returned modifications slice.
+func (p *Pipeline) Evaluate(ctx GateContext) ([]audit.PolicyModification, error) {
 	if ctx.Phase == "" {
 		ctx.Phase = PhasePost
 	}
 	return p.evaluate(ctx)
 }
 
-func (p *Pipeline) evaluate(ctx GateContext) error {
+func (p *Pipeline) evaluate(ctx GateContext) ([]audit.PolicyModification, error) {
+	var mods []audit.PolicyModification
 	for _, ev := range p.evaluators {
 		result, err := ev.Evaluate(ctx)
 		if err != nil {
-			return fmt.Errorf("evaluator %s: %w", ev.Name(), err)
+			return nil, fmt.Errorf("evaluator %s: %w", ev.Name(), err)
 		}
 		if !result.Allowed {
-			return fmt.Errorf("evaluator %s rejected: %s", ev.Name(), result.Reason)
+			return nil, fmt.Errorf("evaluator %s rejected: %s", ev.Name(), result.Reason)
 		}
 		if result.Modified != nil {
 			ctx.Response = result.Modified
 		}
+		if len(result.Modifications) > 0 {
+			mods = append(mods, result.Modifications...)
+		}
 	}
-	return nil
+	return mods, nil
 }

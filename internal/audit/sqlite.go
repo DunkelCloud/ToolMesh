@@ -105,7 +105,8 @@ func createSchema(db *sql.DB) error {
 			backend       TEXT NOT NULL DEFAULT '',
 			is_composite  INTEGER NOT NULL DEFAULT 0,
 			child_events  TEXT,
-			metadata      TEXT
+			metadata      TEXT,
+			modifications TEXT
 		);
 
 		CREATE INDEX IF NOT EXISTS idx_audit_user_id ON audit_events(user_id);
@@ -118,35 +119,37 @@ func createSchema(db *sql.DB) error {
 		return err
 	}
 
-	// Migration: add tool_access column to pre-existing databases that were
-	// created before the access-aware gate landed. SQLite has no
-	// "ADD COLUMN IF NOT EXISTS", so we probe pragma_table_info first.
-	return ensureToolAccessColumn(db)
+	// Migrations: SQLite has no "ADD COLUMN IF NOT EXISTS", so we probe
+	// pragma_table_info for each column added after the initial schema.
+	if err := ensureColumn(db, "tool_access", `TEXT NOT NULL DEFAULT ''`); err != nil {
+		return err
+	}
+	return ensureColumn(db, "modifications", `TEXT`)
 }
 
-// ensureToolAccessColumn adds the tool_access column to legacy audit
-// databases that predate the access-aware gate. No-op when the column
-// already exists.
-func ensureToolAccessColumn(db *sql.DB) error {
+// ensureColumn adds a column to the audit_events table if it does not yet
+// exist. Used for backward-compatible migrations against databases created
+// by earlier ToolMesh versions.
+func ensureColumn(db *sql.DB, column, definition string) error {
 	row := db.QueryRowContext(context.Background(),
-		`SELECT COUNT(*) FROM pragma_table_info('audit_events') WHERE name = 'tool_access'`)
+		`SELECT COUNT(*) FROM pragma_table_info('audit_events') WHERE name = ?`, column)
 	var count int
 	if err := row.Scan(&count); err != nil {
-		return fmt.Errorf("audit sqlite: probe tool_access column: %w", err)
+		return fmt.Errorf("audit sqlite: probe %s column: %w", column, err)
 	}
 	if count > 0 {
 		return nil
 	}
-	if _, err := db.ExecContext(context.Background(),
-		`ALTER TABLE audit_events ADD COLUMN tool_access TEXT NOT NULL DEFAULT ''`); err != nil {
-		return fmt.Errorf("audit sqlite: add tool_access column: %w", err)
+	stmt := fmt.Sprintf(`ALTER TABLE audit_events ADD COLUMN %s %s`, column, definition) //nolint:gosec // G202: column and definition are package-internal literals
+	if _, err := db.ExecContext(context.Background(), stmt); err != nil {
+		return fmt.Errorf("audit sqlite: add %s column: %w", column, err)
 	}
 	return nil
 }
 
 // Record persists a single audit entry to SQLite.
 func (s *SQLiteStore) Record(ctx context.Context, entry AuditEntry) error {
-	var paramsJSON, childJSON, metaJSON []byte
+	var paramsJSON, childJSON, metaJSON, modsJSON []byte
 	var err error
 
 	if len(entry.Params) > 0 {
@@ -167,18 +170,25 @@ func (s *SQLiteStore) Record(ctx context.Context, entry AuditEntry) error {
 			return fmt.Errorf("audit sqlite: marshal metadata: %w", err)
 		}
 	}
+	if len(entry.Modifications) > 0 {
+		modsJSON, err = json.Marshal(entry.Modifications)
+		if err != nil {
+			return fmt.Errorf("audit sqlite: marshal modifications: %w", err)
+		}
+	}
 
 	_, err = s.db.ExecContext(ctx, `
 		INSERT INTO audit_events (
 			trace_id, timestamp, user_id, company_id, caller_id, caller_name, caller_class,
 			tool, tool_access, params, duration_ms, status, error, backend,
-			is_composite, child_events, metadata
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			is_composite, child_events, metadata, modifications
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		entry.TraceID, entry.Timestamp.UTC().Format(time.RFC3339Nano), entry.UserID, entry.CompanyID,
 		entry.CallerID, entry.CallerName, entry.CallerClass, entry.Tool, entry.ToolAccess,
 		nullableBytes(paramsJSON), entry.DurationMs, entry.Status,
 		nullableString(entry.Error), entry.Backend,
 		boolToInt(entry.IsComposite), nullableBytes(childJSON), nullableBytes(metaJSON),
+		nullableBytes(modsJSON),
 	)
 	if err != nil {
 		return fmt.Errorf("audit sqlite: insert: %w", err)
@@ -224,7 +234,7 @@ func (s *SQLiteStore) Query(ctx context.Context, filter AuditFilter) ([]AuditEnt
 		args = append(args, filter.Status)
 	}
 
-	query := "SELECT trace_id, timestamp, user_id, company_id, caller_id, caller_name, caller_class, tool, tool_access, params, duration_ms, status, error, backend, is_composite, child_events, metadata FROM audit_events"
+	query := "SELECT trace_id, timestamp, user_id, company_id, caller_id, caller_name, caller_class, tool, tool_access, params, duration_ms, status, error, backend, is_composite, child_events, metadata, modifications FROM audit_events"
 	if len(conditions) > 0 {
 		query += " WHERE " + strings.Join(conditions, " AND ")
 	}
@@ -245,7 +255,7 @@ func (s *SQLiteStore) Query(ctx context.Context, filter AuditFilter) ([]AuditEnt
 	var entries []AuditEntry
 	for rows.Next() {
 		var e AuditEntry
-		var paramsJSON, childJSON, metaJSON sql.NullString
+		var paramsJSON, childJSON, metaJSON, modsJSON sql.NullString
 		var errStr sql.NullString
 		var isComposite int
 		var ts string
@@ -255,7 +265,7 @@ func (s *SQLiteStore) Query(ctx context.Context, filter AuditFilter) ([]AuditEnt
 			&e.CallerID, &e.CallerName, &e.CallerClass, &e.Tool, &e.ToolAccess,
 			&paramsJSON, &e.DurationMs, &e.Status,
 			&errStr, &e.Backend, &isComposite,
-			&childJSON, &metaJSON,
+			&childJSON, &metaJSON, &modsJSON,
 		); err != nil {
 			return nil, fmt.Errorf("audit sqlite: scan: %w", err)
 		}
@@ -273,6 +283,9 @@ func (s *SQLiteStore) Query(ctx context.Context, filter AuditFilter) ([]AuditEnt
 		}
 		if metaJSON.Valid && metaJSON.String != "" {
 			_ = json.Unmarshal([]byte(metaJSON.String), &e.Metadata)
+		}
+		if modsJSON.Valid && modsJSON.String != "" {
+			_ = json.Unmarshal([]byte(modsJSON.String), &e.Modifications)
 		}
 
 		entries = append(entries, e)

@@ -15,8 +15,12 @@
 package audit
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"log/slog"
+	"strings"
 	"testing"
 	"time"
 )
@@ -251,6 +255,136 @@ func TestSQLiteStore_QueryLimit(t *testing.T) {
 	}
 	if len(results) != 3 {
 		t.Errorf("expected 3 entries with limit, got %d", len(results))
+	}
+}
+
+func TestSQLiteStore_ModificationsRoundtrip(t *testing.T) {
+	store, err := NewSQLiteStore(t.TempDir(), 90)
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	ctx := context.Background()
+	entry := sampleEntry()
+	entry.Modifications = []PolicyModification{
+		{
+			Policy: "pii_protection.js",
+			Phase:  "post",
+			Target: ModificationTargetResponseContent,
+			Before: json.RawMessage(`[{"type":"text","text":"alice@example.com"}]`),
+			After:  json.RawMessage(`[{"type":"text","text":"[EMAIL]"}]`),
+		},
+	}
+
+	if err := store.Record(ctx, entry); err != nil {
+		t.Fatalf("Record() error = %v", err)
+	}
+
+	results, err := store.Query(ctx, AuditFilter{})
+	if err != nil {
+		t.Fatalf("Query() error = %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(results))
+	}
+	got := results[0]
+	if len(got.Modifications) != 1 {
+		t.Fatalf("expected 1 modification, got %d", len(got.Modifications))
+	}
+	mod := got.Modifications[0]
+	if mod.Policy != "pii_protection.js" {
+		t.Errorf("policy = %q, want pii_protection.js", mod.Policy)
+	}
+	if mod.Target != ModificationTargetResponseContent {
+		t.Errorf("target = %q, want %q", mod.Target, ModificationTargetResponseContent)
+	}
+	if !strings.Contains(string(mod.Before), "alice@example.com") {
+		t.Errorf("before missing original email: %s", string(mod.Before))
+	}
+	if !strings.Contains(string(mod.After), "[EMAIL]") {
+		t.Errorf("after missing redaction marker: %s", string(mod.After))
+	}
+}
+
+func TestSQLiteStore_NoModifications_StoresNull(t *testing.T) {
+	store, err := NewSQLiteStore(t.TempDir(), 90)
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	ctx := context.Background()
+	if err := store.Record(ctx, sampleEntry()); err != nil {
+		t.Fatalf("Record() error = %v", err)
+	}
+
+	results, err := store.Query(ctx, AuditFilter{})
+	if err != nil {
+		t.Fatalf("Query() error = %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(results))
+	}
+	if results[0].Modifications != nil {
+		t.Errorf("expected nil modifications when none were recorded, got %+v",
+			results[0].Modifications)
+	}
+}
+
+func TestLogStore_EmitsPolicyModificationLineOnlyWhenModified(t *testing.T) {
+	// Capture slog output so we can verify which lines were emitted.
+	prev := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	var buf bytes.Buffer
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+
+	store := NewLogStore()
+	ctx := context.Background()
+
+	// Case 1: unchanged entry — no policy_modification line.
+	if err := store.Record(ctx, sampleEntry()); err != nil {
+		t.Fatalf("Record() error = %v", err)
+	}
+	if strings.Contains(buf.String(), "audit.policy_modification") {
+		t.Errorf("unchanged entry must not produce audit.policy_modification, got: %s", buf.String())
+	}
+	buf.Reset()
+
+	// Case 2: modified entry — exactly one policy_modification line per mod.
+	mod := PolicyModification{
+		Policy: "role_field_filter.js",
+		Phase:  "post",
+		Target: ModificationTargetResponseContent,
+		Before: json.RawMessage(`{"secret":"shhh"}`),
+		After:  json.RawMessage(`{"secret":"[REDACTED]"}`),
+	}
+	modified := sampleEntry()
+	modified.TraceID = "trace-002"
+	modified.Modifications = []PolicyModification{mod}
+	if err := store.Record(ctx, modified); err != nil {
+		t.Fatalf("Record() modified error = %v", err)
+	}
+
+	out := buf.String()
+	count := strings.Count(out, `"msg":"audit.policy_modification"`)
+	if count != 1 {
+		t.Errorf("expected exactly 1 audit.policy_modification line, got %d. Output:\n%s",
+			count, out)
+	}
+	if !strings.Contains(out, "role_field_filter.js") {
+		t.Errorf("modification line should reference policy name, got: %s", out)
+	}
+	if !strings.Contains(out, `"trace_id":"trace-002"`) {
+		t.Errorf("modification line should carry trace_id, got: %s", out)
+	}
+	// The before/after must round-trip through the log unaltered.
+	if !strings.Contains(out, `"before":"{\"secret\":\"shhh\"}"`) {
+		t.Errorf("expected before JSON in log, got: %s", out)
+	}
+	if !strings.Contains(out, `"after":"{\"secret\":\"[REDACTED]\"}"`) {
+		t.Errorf("expected after JSON in log, got: %s", out)
 	}
 }
 

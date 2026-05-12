@@ -18,6 +18,7 @@
 package gate
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -27,6 +28,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/DunkelCloud/ToolMesh/internal/audit"
 	"github.com/DunkelCloud/ToolMesh/internal/composite"
 	"github.com/dop251/goja"
 )
@@ -102,13 +104,19 @@ func (g *Gate) Name() string {
 
 // Evaluate runs all policies against the given context.
 // Policies can modify the response or throw an error to reject the request.
+// Returned EvalResult.Modifications captures every before/after mutation
+// produced by a policy — one entry per (policy, target) where the JSON
+// representation changed. Policies that leave the data untouched produce
+// no entries, so an empty list is a positive proof of "no mutation".
 func (g *Gate) Evaluate(gctx GateContext) (*EvalResult, error) {
 	// Record the request once for rate limiting, separate from the Check call
 	// exposed to policies (which is read-only to prevent counter pollution).
 	g.rateLimiter.Record(gctx.User.UserID)
 
+	var mods []audit.PolicyModification
 	for _, p := range g.policies {
-		if err := g.evalPolicy(p, gctx); err != nil {
+		policyMods, err := g.evalPolicy(p, gctx)
+		if err != nil {
 			g.logger.Warn("policy rejected request",
 				"policy", p.name,
 				"tool", gctx.Tool,
@@ -117,14 +125,17 @@ func (g *Gate) Evaluate(gctx GateContext) (*EvalResult, error) {
 			)
 			return &EvalResult{Allowed: false, Reason: fmt.Sprintf("policy %s: %s", p.name, err)}, nil
 		}
+		if len(policyMods) > 0 {
+			mods = append(mods, policyMods...)
+		}
 	}
-	return &EvalResult{Allowed: true}, nil
+	return &EvalResult{Allowed: true, Modifications: mods}, nil
 }
 
 // gatePolicyTimeout is the maximum time a gate policy may run before being interrupted.
 const gatePolicyTimeout = 5 * time.Second
 
-func (g *Gate) evalPolicy(p policy, gctx GateContext) error {
+func (g *Gate) evalPolicy(p policy, gctx GateContext) ([]audit.PolicyModification, error) {
 	vm := goja.New()
 
 	// Defense-in-depth: lock down the runtime even though policies are from trusted files
@@ -143,12 +154,25 @@ func (g *Gate) evalPolicy(p policy, gctx GateContext) error {
 	// Marshal the context to a JS-friendly object
 	ctxJSON, err := json.Marshal(gctx)
 	if err != nil {
-		return fmt.Errorf("marshal gate context: %w", err)
+		return nil, fmt.Errorf("marshal gate context: %w", err)
 	}
 
 	var ctxObj map[string]any
 	if err := json.Unmarshal(ctxJSON, &ctxObj); err != nil {
-		return fmt.Errorf("unmarshal gate context: %w", err)
+		return nil, fmt.Errorf("unmarshal gate context: %w", err)
+	}
+
+	// Snapshot before policy run. We capture the exact JSON the policy will
+	// see for params (pre-phase) and response.content (post-phase) so we
+	// can diff against the post-run state and emit an audit modification
+	// only if the policy actually changed something.
+	beforeParams, err := marshalForDiff(ctxObj["params"])
+	if err != nil {
+		return nil, fmt.Errorf("snapshot params before %s: %w", p.name, err)
+	}
+	beforeResponseContent, err := snapshotResponseContent(ctxObj)
+	if err != nil {
+		return nil, fmt.Errorf("snapshot response.content before %s: %w", p.name, err)
 	}
 
 	// Add rate limit check function
@@ -164,30 +188,97 @@ func (g *Gate) evalPolicy(p policy, gctx GateContext) error {
 	}
 
 	if err := vm.Set("ctx", ctxObj); err != nil {
-		return fmt.Errorf("set ctx: %w", err)
+		return nil, fmt.Errorf("set ctx: %w", err)
 	}
 
 	_, err = vm.RunString(p.source)
 	if err != nil {
 		var jsErr *goja.Exception
 		if errors.As(err, &jsErr) {
-			return fmt.Errorf("%s", jsErr.Value().String())
+			return nil, fmt.Errorf("%s", jsErr.Value().String())
 		}
-		return err
+		return nil, err
 	}
 
-	// Read back potentially modified response content from the JS context.
-	// Policies can mutate ctx.response.content (e.g., mask PII, filter fields).
+	// Read back the post-run state. Policies can mutate ctx.response.content
+	// (mask PII, filter fields) or, by extension, ctx.params. Both targets
+	// are checked for changes against the pre-run snapshots.
+	exported := exportCtx(vm)
+	afterParams, err := marshalForDiff(exported["params"])
+	if err != nil {
+		return nil, fmt.Errorf("snapshot params after %s: %w", p.name, err)
+	}
+	afterResponseContent, err := snapshotResponseContent(exported)
+	if err != nil {
+		return nil, fmt.Errorf("snapshot response.content after %s: %w", p.name, err)
+	}
+
+	// Propagate response-content mutations back to the live GateContext so
+	// downstream evaluators and the executor observe the masked/filtered
+	// content. Done unconditionally for post-phase so a policy that
+	// rewrites content blocks (even if the JSON happens to be byte-equal)
+	// is still reflected in the live struct.
+	if resp, ok := exported["response"].(map[string]any); ok && gctx.Response != nil {
+		if content, ok := resp["content"].([]any); ok {
+			gctx.Response.Content = content
+		}
+	}
+
+	var mods []audit.PolicyModification
+	if !bytes.Equal(beforeParams, afterParams) {
+		mods = append(mods, audit.PolicyModification{
+			Policy: p.name,
+			Phase:  string(gctx.Phase),
+			Target: audit.ModificationTargetParams,
+			Before: append(json.RawMessage(nil), beforeParams...),
+			After:  append(json.RawMessage(nil), afterParams...),
+		})
+	}
+	if !bytes.Equal(beforeResponseContent, afterResponseContent) {
+		mods = append(mods, audit.PolicyModification{
+			Policy: p.name,
+			Phase:  string(gctx.Phase),
+			Target: audit.ModificationTargetResponseContent,
+			Before: append(json.RawMessage(nil), beforeResponseContent...),
+			After:  append(json.RawMessage(nil), afterResponseContent...),
+		})
+	}
+
+	return mods, nil
+}
+
+// exportCtx returns the post-run ctx object as a map, or an empty map when
+// the policy somehow removed or replaced ctx with a non-object value (which
+// our lockdown should prevent, but we still degrade gracefully).
+func exportCtx(vm *goja.Runtime) map[string]any {
 	val := vm.Get("ctx")
-	if val != nil {
-		if exported, ok := val.Export().(map[string]any); ok {
-			if resp, ok := exported["response"].(map[string]any); ok {
-				if content, ok := resp["content"].([]any); ok {
-					gctx.Response.Content = content
-				}
-			}
-		}
+	if val == nil {
+		return map[string]any{}
 	}
+	exported, ok := val.Export().(map[string]any)
+	if !ok {
+		return map[string]any{}
+	}
+	return exported
+}
 
-	return nil
+// snapshotResponseContent returns the JSON encoding of ctx.response.content
+// for diffing. A missing or non-array content slot collapses to JSON null,
+// so policies that leave it untouched produce byte-equal snapshots.
+func snapshotResponseContent(ctxObj map[string]any) ([]byte, error) {
+	resp, ok := ctxObj["response"].(map[string]any)
+	if !ok {
+		return marshalForDiff(nil)
+	}
+	return marshalForDiff(resp["content"])
+}
+
+// marshalForDiff JSON-encodes v for byte-equality diffing. nil collapses to
+// the JSON literal null so an absent and a present-but-nil value compare
+// equal — matching how the policy sees them.
+func marshalForDiff(v any) ([]byte, error) {
+	if v == nil {
+		return []byte("null"), nil
+	}
+	return json.Marshal(v)
 }

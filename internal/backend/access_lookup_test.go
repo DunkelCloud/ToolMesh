@@ -69,7 +69,7 @@ backend:
 		want     string
 		wantOK   bool
 	}{
-		{toolName: "list_repos", want: "read", wantOK: true},
+		{toolName: "list_repos", want: accessRead, wantOK: true},
 		{toolName: "create_repo", want: "write", wantOK: true},
 		{toolName: "no_access_tag", want: "", wantOK: true},
 		{toolName: "refresh_all", want: "admin", wantOK: true},
@@ -104,8 +104,8 @@ func TestCompositeBackend_LookupTool_RoutesByPrefix(t *testing.T) {
 	if got.Name != "builtin_echo" {
 		t.Errorf("Name = %q, want %q (public prefix should be re-applied)", got.Name, "builtin_echo")
 	}
-	if got.Access != "read" {
-		t.Errorf("Access = %q, want %q", got.Access, "read")
+	if got.Access != accessRead {
+		t.Errorf("Access = %q, want %q", got.Access, accessRead)
 	}
 
 	if _, ok := c.LookupTool("nonexistent_tool"); ok {

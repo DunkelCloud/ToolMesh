@@ -41,15 +41,16 @@ const (
 
 // Handler processes incoming MCP tool calls and routes them through the executor.
 type Handler struct {
-	executor   *executor.Executor
-	backend    backend.ToolBackend
-	codeParser *CodeModeParser // kept for GenerateToolDefinitions / discover_tools
-	codeRunner *CodeRunner
-	coercer    *tsdef.Coercer
-	rawTS      string // raw TypeScript content for built-in tools
-	metrics    *metrics.Registry
-	logger     *slog.Logger
-	debugTools bool // when true, expose debug_echo and debug_generate
+	executor      *executor.Executor
+	backend       backend.ToolBackend
+	aliasResolver backend.ToolAliasResolver // resolves promoted bare tool names → canonical
+	codeParser    *CodeModeParser           // kept for GenerateToolDefinitions / discover_tools
+	codeRunner    *CodeRunner
+	coercer       *tsdef.Coercer
+	rawTS         string // raw TypeScript content for built-in tools
+	metrics       *metrics.Registry
+	logger        *slog.Logger
+	debugTools    bool // when true, expose debug_echo and debug_generate
 }
 
 // NewHandler creates a new MCP tool call handler. The metrics registry is
@@ -66,7 +67,7 @@ func NewHandler(exec *executor.Executor, back backend.ToolBackend, coercer *tsde
 
 	runner := NewCodeRunner(parser.nameMap, exec, coercer, logger)
 
-	return &Handler{
+	h := &Handler{
 		executor:   exec,
 		backend:    back,
 		codeParser: parser,
@@ -77,6 +78,10 @@ func NewHandler(exec *executor.Executor, back backend.ToolBackend, coercer *tsde
 		logger:     logger,
 		debugTools: debugTools,
 	}
+	if r, ok := back.(backend.ToolAliasResolver); ok {
+		h.aliasResolver = r
+	}
+	return h
 }
 
 // isBuiltinTool reports whether a tool name is dispatched directly by the
@@ -95,6 +100,22 @@ func (h *Handler) isBuiltinTool(name string) bool {
 func (h *Handler) HandleToolCall(ctx context.Context, toolName string, params map[string]any) (result *backend.ToolResult, err error) {
 	h.logger.InfoContext(ctx, "handling tool call", logKeyTool, toolName)
 	h.logger.DebugContext(ctx, "tool call params", logKeyTool, toolName, "params", params)
+
+	// Resolve promoted bare-name aliases (e.g. "web_search") to their
+	// canonical "<backend>_<tool>" form before anything downstream sees the
+	// name. This keeps authz, gate, audit, and metrics consistently keyed on
+	// the canonical identifier regardless of which surface the caller used.
+	// Built-in meta-tools (discover_tools, execute_code, ...) never have
+	// aliases registered, so the resolver is a no-op for them.
+	if h.aliasResolver != nil {
+		if canonical := h.aliasResolver.ResolveAlias(toolName); canonical != toolName {
+			h.logger.DebugContext(ctx, "resolved promoted tool alias",
+				"alias", toolName,
+				"canonical", canonical,
+			)
+			toolName = canonical
+		}
+	}
 
 	// Instrument only the built-in meta-tools here. Real tool calls — both
 	// direct ones from the default branch and individual calls extracted from
@@ -318,15 +339,71 @@ func (h *Handler) BuildToolList(ctx context.Context) ([]ToolDefinition, error) {
 		},
 	}
 
-	// Backend tools are intentionally NOT exposed as individual MCP tools.
-	// They are only accessible via execute_code (Code Mode) and discover_tools.
-	// This keeps the MCP surface minimal and avoids tool name validation issues.
+	// Append backend-promoted tools (configured per-backend via the YAML
+	// `expose_tools` field). These are reachable via Code Mode and
+	// discover_tools too — listing them at the MCP root is purely a
+	// convenience for high-frequency tools where the discovery round-trip
+	// would waste context.
+	tools = append(tools, h.promotedToolDefinitions(ctx)...)
 
 	if h.debugTools {
 		tools = append(tools, debugToolDefinitions()...)
 	}
 
 	return tools, nil
+}
+
+// promotedToolDefinitions returns the direct tool definitions for backends
+// that opted in via expose_tools, filtered through the executor's
+// authorization check just like discover_tools so callers never see entries
+// they cannot invoke.
+//
+// Authz operates on the canonical "<backend>_<tool>" name (matching the
+// keys policy tuples and audit logs use), but the advertised tool keeps
+// the public Descriptor.Name (bare alias when unambiguous, or canonical
+// when a cross-backend bare-name conflict forced a fallback).
+func (h *Handler) promotedToolDefinitions(ctx context.Context) []ToolDefinition {
+	promoter, ok := h.backend.(backend.ToolPromoter)
+	if !ok {
+		return nil
+	}
+	proms := promoter.PromotedTools()
+	if len(proms) == 0 {
+		return nil
+	}
+
+	if h.executor != nil {
+		if uc := userctx.FromContext(ctx); uc != nil {
+			canonicalDescs := make([]backend.ToolDescriptor, len(proms))
+			for i, p := range proms {
+				d := p.Descriptor
+				d.Name = p.Canonical
+				canonicalDescs[i] = d
+			}
+			allowed := h.executor.FilterAuthorizedTools(ctx, uc.UserID, canonicalDescs)
+			allowedSet := make(map[string]struct{}, len(allowed))
+			for _, d := range allowed {
+				allowedSet[d.Name] = struct{}{}
+			}
+			filtered := proms[:0]
+			for _, p := range proms {
+				if _, ok := allowedSet[p.Canonical]; ok {
+					filtered = append(filtered, p)
+				}
+			}
+			proms = filtered
+		}
+	}
+
+	out := make([]ToolDefinition, 0, len(proms))
+	for _, p := range proms {
+		out = append(out, ToolDefinition{
+			Name:        p.Descriptor.Name,
+			Description: p.Descriptor.Description,
+			InputSchema: p.Descriptor.InputSchema,
+		})
+	}
+	return out
 }
 
 // buildBackendDescription generates a summary of available backends and their hints

@@ -175,6 +175,119 @@ func TestCompositeBackend_BackendSummaries(t *testing.T) {
 	}
 }
 
+// promoterStub is a stubBackend that also implements ToolPromoter.
+type promoterStub struct {
+	stubBackend
+	promoted []Promotion
+}
+
+func (p *promoterStub) PromotedTools() []Promotion { return p.promoted }
+
+func TestCompositeBackend_PromotedTools_AggregatesNamedAndPassthrough(t *testing.T) {
+	named := &promoterStub{
+		stubBackend: stubBackend{name: "rest"},
+		promoted: []Promotion{{
+			Descriptor: ToolDescriptor{Name: testToolSearch, Description: testToolSearch},
+			Canonical:  "rest_" + testToolSearch,
+		}},
+	}
+	pass := &promoterStub{
+		stubBackend: stubBackend{name: "mcp"},
+		promoted: []Promotion{{
+			Descriptor: ToolDescriptor{Name: testToolFetchURL, Description: testToolFetchURL},
+			Canonical:  "mcp_" + testToolFetchURL,
+		}},
+	}
+
+	c := NewCompositeBackend(map[string]ToolBackend{"rest": named})
+	c.AddPassthrough(pass)
+
+	got := c.PromotedTools()
+	if len(got) != 2 {
+		t.Fatalf("got %d promoted tools, want 2", len(got))
+	}
+	names := map[string]bool{}
+	for _, p := range got {
+		names[p.Descriptor.Name] = true
+	}
+	if !names[testToolSearch] || !names[testToolFetchURL] {
+		t.Errorf("missing expected bare names: %v", names)
+	}
+}
+
+// TestCompositeBackend_PromotedTools_ConflictDemotedToCanonical: when two
+// backends would advertise the same bare name, both fall back to their
+// canonical "<backend>_<tool>" form for advertisement so the public surface
+// stays unambiguous.
+func TestCompositeBackend_PromotedTools_ConflictDemotedToCanonical(t *testing.T) {
+	a := &promoterStub{
+		stubBackend: stubBackend{name: testVendorBrave},
+		promoted: []Promotion{{
+			Descriptor: ToolDescriptor{Name: testToolWebSearch, Description: testVendorBrave},
+			Canonical:  "brave_" + testToolWebSearch,
+		}},
+	}
+	b := &promoterStub{
+		stubBackend: stubBackend{name: testVendorTavily},
+		promoted: []Promotion{{
+			Descriptor: ToolDescriptor{Name: testToolWebSearch, Description: testVendorTavily},
+			Canonical:  "tavily_" + testToolWebSearch,
+		}},
+	}
+	c := NewCompositeBackend(map[string]ToolBackend{testVendorBrave: a})
+	c.AddPassthrough(b)
+
+	got := c.PromotedTools()
+	if len(got) != 2 {
+		t.Fatalf("got %d promoted tools, want 2 (both backends keep their entries)", len(got))
+	}
+	names := map[string]bool{}
+	for _, p := range got {
+		names[p.Descriptor.Name] = true
+	}
+	if names[testToolWebSearch] {
+		t.Errorf("bare name %q must NOT be advertised when conflicting; got %v", testToolWebSearch, names)
+	}
+	if !names["brave_"+testToolWebSearch] || !names["tavily_"+testToolWebSearch] {
+		t.Errorf("expected canonical fallback names, got %v", names)
+	}
+}
+
+func TestCompositeBackend_PromotedTools_SkipsNonPromoter(t *testing.T) {
+	c := NewCompositeBackend(map[string]ToolBackend{"a": &stubBackend{name: "a"}})
+	if got := c.PromotedTools(); len(got) != 0 {
+		t.Errorf("expected no promoted tools, got %d", len(got))
+	}
+}
+
+// TestCompositeBackend_ResolveAlias verifies the bare-name → canonical
+// dispatch translation that the MCP handler relies on. Unaliased names pass
+// through unchanged; conflicting bare names are also unaliased (they were
+// demoted to canonical at advertisement time) so a caller using their
+// canonical name routes directly without translation.
+func TestCompositeBackend_ResolveAlias(t *testing.T) {
+	tavily := &promoterStub{
+		stubBackend: stubBackend{name: testVendorTavily},
+		promoted: []Promotion{{
+			Descriptor: ToolDescriptor{Name: testToolSearch},
+			Canonical:  "tavily_" + testToolSearch,
+		}},
+	}
+	c := NewCompositeBackend(map[string]ToolBackend{testVendorTavily: tavily})
+
+	if got := c.ResolveAlias(testToolSearch); got != "tavily_"+testToolSearch {
+		t.Errorf("ResolveAlias(%q) = %q, want canonical", testToolSearch, got)
+	}
+	// Canonical name should pass through unchanged.
+	if got := c.ResolveAlias("tavily_" + testToolSearch); got != "tavily_"+testToolSearch {
+		t.Errorf("ResolveAlias(canonical) changed the name: %q", got)
+	}
+	// Unrelated name should pass through unchanged.
+	if got := c.ResolveAlias("other_thing"); got != "other_thing" {
+		t.Errorf("ResolveAlias(unknown) = %q, want pass-through", got)
+	}
+}
+
 // TestCompositeBackend_ConcurrentAccess exercises AddNamed / Execute /
 // ListTools in parallel. The point is to detect data races under -race,
 // not to assert on outputs.

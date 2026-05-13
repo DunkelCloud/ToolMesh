@@ -12,6 +12,13 @@ backends:
   #   # "web_search", "fetch_url"). When two backends would expose the same
   #   # bare name, both fall back to "<backend>_<tool>" automatically so the
   #   # surface stays unambiguous.
+  #   #
+  #   # Names reserved by upstream LLM clients (currently web_search,
+  #   # code_interpreter, file_search, computer_use — OpenAI's built-in tool
+  #   # types) are also auto-demoted to "<backend>_<tool>" form even when no
+  #   # cross-backend conflict exists. Without this fallback ChatGPT's MCP
+  #   # connector rejects the entire tools/list with "Invalid MCP tool schema".
+  #   # The first demotion emits a WARN log so operators can see it kicked in.
   #   expose_tools:
   #     - web_search
   #     - fetch_url

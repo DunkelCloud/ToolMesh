@@ -304,7 +304,7 @@ func (h *Handler) BuildToolList(ctx context.Context) ([]ToolDefinition, error) {
 	backendDesc := h.buildBackendDescription()
 
 	discoverToolsDesc := "Discovery tool for ToolMesh. Returns TypeScript namespace declarations with full function signatures for the available backend tools. Pattern is an OPTIONAL case-insensitive regex matched against tool names and descriptions; omit it (or pass \".*\") to list all tools. Filter examples: \"github\" returns GitHub-related tools, \"pull\" finds pull-related tools across all backends. Call this as a SEPARATE MCP tool before execute_code — discover_tools is NOT a toolmesh.* member and must NOT be invoked from inside execute_code's `code` parameter."
-	executeCodeDesc := "Executes JavaScript that calls backend tools via toolmesh.<backend>.<function>(...). Example: `const repos = await toolmesh.github.list_user_repos({username: \"octocat\"}); return repos.slice(0, 5);`. The last expression or an explicit `return` is sent back; tool calls are recorded in order. IMPORTANT: Call discover_tools as a SEPARATE MCP tool first to learn current function names and parameter types — discover_tools is NOT a toolmesh.* member and must NOT be invoked from inside this `code` parameter. Do not guess function names or parameters from the hints below"
+	executeCodeDesc := "Executes JavaScript that calls backend tools via toolmesh.<backend>_<function>(...). Tools are exposed as a flat snake_case namespace — `toolmesh.github_list_user_repos`, NOT `toolmesh.github.list_user_repos`. Example: `const repos = await toolmesh.github_list_user_repos({username: \"octocat\"}); return repos.slice(0, 5);`. The last expression or an explicit `return` is sent back; tool calls are recorded in order. IMPORTANT: Call discover_tools as a SEPARATE MCP tool first to learn current function names and parameter types — discover_tools is NOT a toolmesh.* member and must NOT be invoked from inside this `code` parameter. Do not guess function names or parameters from the hints below"
 	if backendDesc != "" {
 		executeCodeDesc += ". " + backendDesc
 	}
@@ -331,7 +331,7 @@ func (h *Handler) BuildToolList(ctx context.Context) ([]ToolDefinition, error) {
 				schemaKeyProperties: map[string]any{
 					argNameCode: map[string]any{
 						contentKeyType:       jsonTypeString,
-						schemaKeyDescription: "JavaScript body that calls toolmesh.<backend>.<function>(...). Top-level await is supported. Example: `const r = await toolmesh.github.list_user_repos({username: \"octocat\"}); return r[0].name;`",
+						schemaKeyDescription: "JavaScript body that calls toolmesh.<backend>_<function>(...). Tools are flat snake_case — `toolmesh.github_list_user_repos`, NOT `toolmesh.github.list_user_repos` (the latter throws TypeError because `toolmesh.<backend>` is undefined). Top-level await is supported. Example: `const r = await toolmesh.github_list_user_repos({username: \"octocat\"}); return r[0].name;`",
 					},
 				},
 				schemaKeyRequired: []string{argNameCode},

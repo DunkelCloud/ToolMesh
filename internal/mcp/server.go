@@ -875,11 +875,11 @@ button:hover{background:#1d4ed8}</style></head>
 <h2>ToolMesh</h2>
 <p>Enter your credentials to authorize access.</p>
 <form method="POST" action="/authorize">
-<input type="hidden" name=oauthClientID value="{{.ClientID}}">
-<input type="hidden" name=oauthRedirectURI value="{{.RedirectURI}}">
-<input type="hidden" name=oauthState value="{{.State}}">
-<input type="hidden" name=oauthCodeChallenge value="{{.CodeChallenge}}">
-<input type="hidden" name=oauthScope value="{{.Scope}}">
+<input type="hidden" name="client_id" value="{{.ClientID}}">
+<input type="hidden" name="redirect_uri" value="{{.RedirectURI}}">
+<input type="hidden" name="state" value="{{.State}}">
+<input type="hidden" name="code_challenge" value="{{.CodeChallenge}}">
+<input type="hidden" name="scope" value="{{.Scope}}">
 <input type="text" name="username" placeholder="Username" autofocus>
 <input type="password" name="password" placeholder="Password">
 <button type="submit">Authorize</button>

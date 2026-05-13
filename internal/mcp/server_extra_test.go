@@ -185,8 +185,7 @@ func TestTokenGrant_ClientIDMismatch(t *testing.T) {
 		Issuer:       testIssuerToolmesh,
 	})
 
-	regBody := `{"redirect_uris": ["https://example.com/cb"], "client_name": "t"}`
-	regReq := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/register", strings.NewReader(regBody))
+	regReq := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/register", strings.NewReader(testRegisterBodyExampleCB))
 	regReq.Header.Set("Content-Type", "application/json")
 	regW := httptest.NewRecorder()
 	mux.ServeHTTP(regW, regReq)

@@ -29,8 +29,7 @@ func TestAuthorize_GetRendersLoginForm(t *testing.T) {
 	_, mux, _ := newTestServerWithRedis(t, &config.Config{AuthPassword: "pw"})
 
 	// Register first.
-	regBody := `{"redirect_uris": ["https://example.com/cb"], "client_name": "t"}`
-	regReq := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/register", strings.NewReader(regBody))
+	regReq := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/register", strings.NewReader(testRegisterBodyExampleCB))
 	regReq.Header.Set("Content-Type", "application/json")
 	regW := httptest.NewRecorder()
 	mux.ServeHTTP(regW, regReq)
@@ -47,6 +46,42 @@ func TestAuthorize_GetRendersLoginForm(t *testing.T) {
 	}
 	if !strings.Contains(w.Body.String(), "ToolMesh") {
 		t.Error("expected login form")
+	}
+}
+
+// TestAuthorize_LoginFormFieldNames pins the hidden input field names in the
+// rendered login form to the names that the POST handler reads via
+// r.FormValue. A regression in the goconst lint pass once replaced the literal
+// HTML attribute strings with Go identifier names (e.g. `name=oauthCodeChallenge`),
+// which made every browser-driven OAuth login fail with "code_challenge is
+// required (PKCE)" after credentials were submitted.
+func TestAuthorize_LoginFormFieldNames(t *testing.T) {
+	_, mux, _ := newTestServerWithRedis(t, &config.Config{AuthPassword: "pw"})
+
+	regReq := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/register", strings.NewReader(testRegisterBodyExampleCB))
+	regReq.Header.Set("Content-Type", "application/json")
+	regW := httptest.NewRecorder()
+	mux.ServeHTTP(regW, regReq)
+	var regResp map[string]any
+	_ = json.NewDecoder(regW.Body).Decode(&regResp)
+	clientID := regResp["client_id"].(string)
+
+	url := "/authorize?client_id=" + clientID + "&redirect_uri=https%3A%2F%2Fexample.com%2Fcb&state=s1&code_challenge=x&code_challenge_method=S256"
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, url, nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	body := w.Body.String()
+	for _, want := range []string{
+		`name="client_id"`,
+		`name="redirect_uri"`,
+		`name="state"`,
+		`name="code_challenge"`,
+		`name="scope"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("login form missing %s", want)
+		}
 	}
 }
 

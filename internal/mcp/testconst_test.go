@@ -54,4 +54,7 @@ const (
 	// Promotion-related test fixtures.
 	testToolWebSearch           = "web_search"
 	testCanonicalBraveWebSearch = "brave_web_search"
+
+	// OAuth client-registration fixture used by /register handler tests.
+	testRegisterBodyExampleCB = `{"redirect_uris": ["https://example.com/cb"], "client_name": "t"}`
 )

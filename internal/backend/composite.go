@@ -17,7 +17,9 @@ package backend
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
+	"sync"
 	"sync/atomic"
 )
 
@@ -36,6 +38,15 @@ type compositeState struct {
 // (Execute, ListTools). Mutations create a shallow copy and atomically swap.
 type CompositeBackend struct {
 	state atomic.Pointer[compositeState]
+
+	// logger receives WARN events when bare expose_tools aliases collide
+	// with names reserved by upstream LLM clients (see reserved.go). nil
+	// disables logging entirely. Set via SetLogger after construction.
+	logger atomic.Pointer[slog.Logger]
+	// warnedReservedAlias deduplicates the reserved-name WARN so the
+	// message appears at most once per canonical name even though
+	// PromotedTools is called on every tools/list request.
+	warnedReservedAlias sync.Map // key: canonical "<backend>_<tool>", value: struct{}
 }
 
 // NewCompositeBackend creates a CompositeBackend from named backends.
@@ -46,6 +57,13 @@ func NewCompositeBackend(backends map[string]ToolBackend) *CompositeBackend {
 		passthroughs: nil,
 	})
 	return c
+}
+
+// SetLogger configures the slog logger used to surface promotion-aliasing
+// warnings. Pass nil to disable. Safe to call any time; the next
+// PromotedTools call picks the new logger up.
+func (c *CompositeBackend) SetLogger(logger *slog.Logger) {
+	c.logger.Store(logger)
 }
 
 // AddPassthrough adds a backend that manages its own tool name prefixes.
@@ -225,13 +243,19 @@ func (c *CompositeBackend) BackendSummaries() []BackendInfo {
 }
 
 // PromotedTools aggregates direct-exposed tools from all child backends that
-// implement [ToolPromoter] and resolves cross-backend bare-name conflicts.
+// implement [ToolPromoter] and resolves bare-name conflicts.
 //
 // Each child returns Promotions with bare Descriptor.Name (e.g. "web_search")
-// and an explicit Canonical "<backend>_<tool>" routing form. When two
-// backends would advertise the same bare name, both fall back to their
-// Canonical form for advertisement so the resulting MCP surface stays
-// unambiguous; non-conflicting bare names pass through unchanged.
+// and an explicit Canonical "<backend>_<tool>" routing form. The composite
+// demotes a bare name to its Canonical form when either:
+//
+//  1. two backends would advertise the same bare name, or
+//  2. the bare name collides with a built-in tool type reserved by a known
+//     upstream LLM client (see [IsReservedClientToolName]).
+//
+// Non-conflicting bare names pass through unchanged. Case (2) emits a WARN
+// log once per canonical name so operators can see that their expose_tools
+// configuration triggered the reserved-name fallback.
 //
 // Returns Promotions in their resolved form so the handler can advertise
 // Descriptor directly. Use [CompositeBackend.ResolveAlias] to translate the
@@ -260,15 +284,21 @@ func (c *CompositeBackend) PromotedTools() []Promotion {
 		bareCounts[p.Descriptor.Name]++
 	}
 
-	// Resolve: conflicting bare names get demoted to their canonical form.
-	// De-dup by final advertised name in case two backends both ended up
-	// with the same canonical (shouldn't happen — backend names are unique —
-	// but a cheap safeguard keeps the public surface well-defined).
+	// Resolve: conflicting bare names AND names reserved by upstream LLM
+	// clients get demoted to their canonical form. De-dup by final advertised
+	// name in case two backends both ended up with the same canonical
+	// (shouldn't happen — backend names are unique — but a cheap safeguard
+	// keeps the public surface well-defined).
 	out := make([]Promotion, 0, len(all))
 	seen := make(map[string]struct{}, len(all))
 	for _, p := range all {
-		if bareCounts[p.Descriptor.Name] > 1 {
+		bareName := p.Descriptor.Name
+		switch {
+		case bareCounts[bareName] > 1:
 			p.Descriptor.Name = p.Canonical
+		case IsReservedClientToolName(bareName):
+			p.Descriptor.Name = p.Canonical
+			c.warnReservedAlias(bareName, p.Canonical)
 		}
 		if _, dup := seen[p.Descriptor.Name]; dup {
 			continue
@@ -277,6 +307,25 @@ func (c *CompositeBackend) PromotedTools() []Promotion {
 		out = append(out, p)
 	}
 	return out
+}
+
+// warnReservedAlias emits a one-shot WARN log when a bare expose_tools
+// alias collides with a name reserved by an upstream LLM client. The
+// dedup keys on the canonical name, so each backend's reserved-name
+// promotion logs at most once per process lifetime — PromotedTools may
+// be called per tools/list request and we do not want to spam.
+func (c *CompositeBackend) warnReservedAlias(bareName, canonical string) {
+	if _, already := c.warnedReservedAlias.LoadOrStore(canonical, struct{}{}); already {
+		return
+	}
+	logger := c.logger.Load()
+	if logger == nil {
+		return
+	}
+	logger.Warn("expose_tools alias collides with a reserved upstream tool name; promoting under canonical form to keep the MCP surface compatible with OpenAI's Responses API",
+		"bare_name", bareName,
+		"canonical_name", canonical,
+	)
 }
 
 // ResolveAlias maps a bare promoted-tool name to its routing canonical

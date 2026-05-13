@@ -194,6 +194,7 @@ func main() {
 
 	// Compose all backends: built-in echo + external MCP + REST
 	compositeBackend := backend.NewCompositeBackend(res.named)
+	compositeBackend.SetLogger(logger)
 	compositeBackend.AddNamed("echo", echoBackend)
 	for _, p := range res.passthroughs {
 		compositeBackend.AddPassthrough(p)

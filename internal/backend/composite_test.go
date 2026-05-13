@@ -15,9 +15,12 @@
 package backend
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -285,6 +288,158 @@ func TestCompositeBackend_ResolveAlias(t *testing.T) {
 	// Unrelated name should pass through unchanged.
 	if got := c.ResolveAlias("other_thing"); got != "other_thing" {
 		t.Errorf("ResolveAlias(unknown) = %q, want pass-through", got)
+	}
+}
+
+// TestCompositeBackend_PromotedTools_ReservedNameDemoted covers the
+// OpenAI-compatibility fallback: when a single backend's expose_tools
+// entry uses a bare name reserved by an upstream LLM client (web_search,
+// code_interpreter, file_search, computer_use), the composite must
+// advertise it under the canonical "<backend>_<tool>" form even though
+// no cross-backend conflict exists. Without this, ChatGPT's MCP
+// connector rejects the entire tools/list with "Invalid MCP tool schema".
+//
+// ResolveAlias must continue to round-trip the canonical name through
+// unchanged so the executor / authz / audit pipeline keep using the
+// single canonical key for the tool.
+func TestCompositeBackend_PromotedTools_ReservedNameDemoted(t *testing.T) {
+	cases := []struct {
+		name      string
+		bare      string
+		canonical string
+	}{
+		{name: "web_search", bare: "web_search", canonical: "search_web_search"},
+		{name: "code_interpreter", bare: "code_interpreter", canonical: "sandbox_code_interpreter"},
+		{name: "file_search", bare: "file_search", canonical: "docs_file_search"},
+		{name: "computer_use", bare: "computer_use", canonical: "remote_computer_use"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			b := &promoterStub{
+				stubBackend: stubBackend{name: tc.canonical[:strings.Index(tc.canonical, "_")]},
+				promoted: []Promotion{{
+					Descriptor: ToolDescriptor{Name: tc.bare, Description: tc.bare},
+					Canonical:  tc.canonical,
+				}},
+			}
+			c := NewCompositeBackend(map[string]ToolBackend{b.name: b})
+
+			got := c.PromotedTools()
+			if len(got) != 1 {
+				t.Fatalf("got %d promoted tools, want 1", len(got))
+			}
+			if got[0].Descriptor.Name != tc.canonical {
+				t.Errorf("Descriptor.Name = %q, want demotion to canonical %q",
+					got[0].Descriptor.Name, tc.canonical)
+			}
+			// ResolveAlias of the canonical must be a pass-through; the
+			// bare reserved name must not resolve back to anything
+			// (we removed it from the public surface).
+			if got := c.ResolveAlias(tc.canonical); got != tc.canonical {
+				t.Errorf("ResolveAlias(canonical) = %q, want pass-through %q", got, tc.canonical)
+			}
+			if got := c.ResolveAlias(tc.bare); got != tc.bare {
+				t.Errorf("ResolveAlias(reserved bare) = %q, want pass-through %q (no longer advertised)",
+					got, tc.bare)
+			}
+		})
+	}
+}
+
+// TestCompositeBackend_PromotedTools_NonReservedNameKeptBare guards the
+// converse: a non-reserved bare name (e.g. fetch_url) must NOT be demoted
+// when only one backend advertises it. Otherwise the OpenAI-compat fix
+// over-fires and degrades every expose_tools entry.
+func TestCompositeBackend_PromotedTools_NonReservedNameKeptBare(t *testing.T) {
+	const bare = "fetch_url"
+	const canonical = "web_fetch_url"
+	b := &promoterStub{
+		stubBackend: stubBackend{name: "web"},
+		promoted: []Promotion{{
+			Descriptor: ToolDescriptor{Name: bare, Description: bare},
+			Canonical:  canonical,
+		}},
+	}
+	c := NewCompositeBackend(map[string]ToolBackend{"web": b})
+
+	got := c.PromotedTools()
+	if len(got) != 1 || got[0].Descriptor.Name != bare {
+		t.Fatalf("non-reserved bare name %q was demoted; got %+v", bare, got)
+	}
+	if r := c.ResolveAlias(bare); r != canonical {
+		t.Errorf("ResolveAlias(%q) = %q, want canonical %q", bare, r, canonical)
+	}
+}
+
+// TestCompositeBackend_PromotedTools_ReservedNameWarnsOnce verifies the
+// WARN log is emitted on the first request that demotes a reserved alias
+// and silenced on subsequent requests. The dedup is critical because
+// PromotedTools is called on every tools/list — without it a chatty
+// client would flood the log.
+func TestCompositeBackend_PromotedTools_ReservedNameWarnsOnce(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+	b := &promoterStub{
+		stubBackend: stubBackend{name: testToolSearch},
+		promoted: []Promotion{{
+			Descriptor: ToolDescriptor{Name: testToolWebSearch, Description: testToolSearch},
+			Canonical:  testToolSearch + "_" + testToolWebSearch,
+		}},
+	}
+	c := NewCompositeBackend(map[string]ToolBackend{testToolSearch: b})
+	c.SetLogger(logger)
+
+	for i := 0; i < 5; i++ {
+		_ = c.PromotedTools()
+	}
+	output := buf.String()
+	count := strings.Count(output, "expose_tools alias collides with a reserved upstream tool name")
+	if count != 1 {
+		t.Errorf("WARN logged %d times, want exactly 1; output:\n%s", count, output)
+	}
+	if !strings.Contains(output, "bare_name=web_search") {
+		t.Errorf("WARN missing bare_name=web_search; output:\n%s", output)
+	}
+	if !strings.Contains(output, "canonical_name=search_web_search") {
+		t.Errorf("WARN missing canonical_name=search_web_search; output:\n%s", output)
+	}
+}
+
+// TestCompositeBackend_PromotedTools_ConflictBeatsReserved guards the
+// precedence: when two backends both expose the reserved name "web_search",
+// the cross-backend conflict path already demotes both to canonical, so
+// the reserved-name path never fires and no WARN is emitted (the
+// existing conflict log path covers it under a separate concern).
+func TestCompositeBackend_PromotedTools_ConflictBeatsReserved(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+	a := &promoterStub{
+		stubBackend: stubBackend{name: testVendorBrave},
+		promoted: []Promotion{{
+			Descriptor: ToolDescriptor{Name: testToolWebSearch, Description: testVendorBrave},
+			Canonical:  "brave_" + testToolWebSearch,
+		}},
+	}
+	b := &promoterStub{
+		stubBackend: stubBackend{name: testVendorTavily},
+		promoted: []Promotion{{
+			Descriptor: ToolDescriptor{Name: testToolWebSearch, Description: testVendorTavily},
+			Canonical:  "tavily_" + testToolWebSearch,
+		}},
+	}
+	c := NewCompositeBackend(map[string]ToolBackend{testVendorBrave: a, testVendorTavily: b})
+	c.SetLogger(logger)
+
+	got := c.PromotedTools()
+	if len(got) != 2 {
+		t.Fatalf("got %d promoted tools, want 2", len(got))
+	}
+	// Both must have been demoted via the conflict path, NOT the
+	// reserved-name path; therefore no reserved-name WARN.
+	if strings.Contains(buf.String(), "reserved upstream tool name") {
+		t.Errorf("reserved-name WARN fired but should be silenced by conflict path; output:\n%s", buf.String())
 	}
 }
 

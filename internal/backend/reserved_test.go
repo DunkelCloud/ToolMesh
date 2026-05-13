@@ -21,18 +21,18 @@ import "testing"
 // canonical form. The set is small enough to enumerate exhaustively, which
 // makes regressions when someone edits reserved.go obvious.
 func TestIsReservedClientToolName(t *testing.T) {
-	reserved := []string{"web_search", "code_interpreter", "file_search", "computer_use"}
+	reserved := []string{reservedWebSearch, reservedCodeInterpreter, reservedFileSearch, reservedComputerUse}
 	for _, name := range reserved {
 		if !IsReservedClientToolName(name) {
 			t.Errorf("IsReservedClientToolName(%q) = false, want true", name)
 		}
 	}
 	notReserved := []string{
-		"fetch_url",         // dunkel-cloud-internal tool that must keep its bare alias
-		"brave_web_search",  // canonical form — only the bare name is reserved
-		"WebSearch",         // case mismatch — exact match only
-		"web_search_extra",  // prefix collision — exact match only
-		"",                  // empty
+		"fetch_url",        // dunkel-cloud-internal tool that must keep its bare alias
+		"brave_web_search", // canonical form — only the bare name is reserved
+		"WebSearch",        // case mismatch — exact match only
+		"web_search_extra", // prefix collision — exact match only
+		"",                 // empty
 	}
 	for _, name := range notReserved {
 		if IsReservedClientToolName(name) {

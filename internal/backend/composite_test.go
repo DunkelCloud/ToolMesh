@@ -304,8 +304,8 @@ func TestCompositeBackend_ResolveAlias(t *testing.T) {
 // single canonical key for the tool.
 func TestCompositeBackend_PromotedTools_ReservedNameDemoted(t *testing.T) {
 	cases := []struct {
-		name     string
-		bare     string
+		name      string
+		bare      string
 		canonical string
 	}{
 		{name: "web_search", bare: "web_search", canonical: "search_web_search"},
@@ -381,13 +381,13 @@ func TestCompositeBackend_PromotedTools_ReservedNameWarnsOnce(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
 
 	b := &promoterStub{
-		stubBackend: stubBackend{name: "search"},
+		stubBackend: stubBackend{name: testToolSearch},
 		promoted: []Promotion{{
-			Descriptor: ToolDescriptor{Name: "web_search", Description: "search"},
-			Canonical:  "search_web_search",
+			Descriptor: ToolDescriptor{Name: testToolWebSearch, Description: testToolSearch},
+			Canonical:  testToolSearch + "_" + testToolWebSearch,
 		}},
 	}
-	c := NewCompositeBackend(map[string]ToolBackend{"search": b})
+	c := NewCompositeBackend(map[string]ToolBackend{testToolSearch: b})
 	c.SetLogger(logger)
 
 	for i := 0; i < 5; i++ {

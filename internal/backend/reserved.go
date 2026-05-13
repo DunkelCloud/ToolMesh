@@ -39,11 +39,21 @@ package backend
 // tool type that occupies a name an operator might plausibly choose via
 // expose_tools. The list ships with the toolmesh binary so every operator
 // inherits the update on the next release — no per-deployment config.
+// Names of upstream-client built-in tool types currently reserved.
+// Kept as named constants so callers (especially tests) can reference
+// them by symbol instead of duplicated string literals.
+const (
+	reservedWebSearch       = "web_search"
+	reservedCodeInterpreter = "code_interpreter"
+	reservedFileSearch      = "file_search"
+	reservedComputerUse     = "computer_use"
+)
+
 var reservedClientToolNames = map[string]struct{}{
-	"web_search":       {},
-	"code_interpreter": {},
-	"file_search":      {},
-	"computer_use":     {},
+	reservedWebSearch:       {},
+	reservedCodeInterpreter: {},
+	reservedFileSearch:      {},
+	reservedComputerUse:     {},
 }
 
 // IsReservedClientToolName reports whether name collides with a built-in

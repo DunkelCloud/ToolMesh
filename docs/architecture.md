@@ -38,7 +38,7 @@ The authorization check happens before any tool execution (fail-closed). If Open
 
 The MCPAdapter connects to multiple external MCP servers and aggregates their tools:
 
-- Tools are prefixed with the backend name: `memorizer:retrieve_knowledge`
+- Tools are prefixed with the backend name: `memorizer_retrieve_knowledge`
 - Routing is automatic based on the prefix
 - Both HTTP (Streamable HTTP) and STDIO transports are supported
 

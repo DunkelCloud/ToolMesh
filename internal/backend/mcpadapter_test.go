@@ -114,7 +114,7 @@ func TestMCPAdapter_Execute_UnknownBackend(t *testing.T) {
 		logger:   logger,
 	}
 
-	_, err := adapter.Execute(context.Background(), "unknown:tool", nil)
+	_, err := adapter.Execute(context.Background(), "unknown_tool", nil)
 	if err == nil {
 		t.Fatal("expected error for unknown backend, got nil")
 	}
@@ -130,9 +130,9 @@ func TestMCPAdapter_Execute_InvalidToolName(t *testing.T) {
 		logger:   logger,
 	}
 
-	_, err := adapter.Execute(context.Background(), "no-colon-tool", nil)
+	_, err := adapter.Execute(context.Background(), "no-prefix-tool", nil)
 	if err == nil {
-		t.Fatal("expected error for tool name without colon, got nil")
+		t.Fatal("expected error for tool name without backend prefix, got nil")
 	}
 }
 

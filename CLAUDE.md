@@ -108,7 +108,8 @@ Credentials are injected at execution time — the AI model never sees the raw s
 docker compose restart toolmesh
 ```
 
-Tools are now available as `deepl:translate`, `deepl:list_languages`, etc.
+Tools are now available as `deepl_translate`, `deepl_list_languages`, etc.
+(ToolMesh prefixes tool names with `<backend>_` — the MCP spec restricts names to `[a-zA-Z0-9_-]`, so the separator is an underscore, not a colon.)
 
 ## DADL at a Glance
 

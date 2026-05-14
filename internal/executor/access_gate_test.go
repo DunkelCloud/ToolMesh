@@ -282,3 +282,77 @@ func TestExecuteTool_NoModificationsForUnchangedCall(t *testing.T) {
 			len(rec.last.Modifications), rec.last.Modifications)
 	}
 }
+
+// TestExecuteTool_PreGateParamsMutationReachesBackend is the regression
+// test for the silent-no-op bug: a pre-phase policy that rewrites
+// ctx.params must change what the backend actually receives, not just
+// produce an audit entry the system never honored. Mirrors the real
+// "Strip Co-Authored-By trailers from PR bodies" use case.
+func TestExecuteTool_PreGateParamsMutationReachesBackend(t *testing.T) {
+	var seenBody string
+	be := &mockBackend{
+		executeFunc: func(_ context.Context, _ string, params map[string]any) (*backend.ToolResult, error) {
+			if v, ok := params["body"].(string); ok {
+				seenBody = v
+			}
+			return &backend.ToolResult{
+				Content: []any{map[string]any{contentKeyType: contentKeyText, contentKeyText: "ok"}},
+			}, nil
+		},
+	}
+
+	dir := t.TempDir()
+	policy := `
+		if (ctx.phase === "pre" && ctx.params && typeof ctx.params.body === "string") {
+			ctx.params.body = ctx.params.body.replace(/^Co-Authored-By:.*$/gmi, "").replace(/\n{3,}/g, "\n\n");
+		}
+	`
+	if err := os.WriteFile(filepath.Join(dir, "strip_coauthor.js"), []byte(policy), 0o600); err != nil {
+		t.Fatalf("write policy: %v", err)
+	}
+
+	g, err := gate.New(dir, newTestLogger())
+	if err != nil {
+		t.Fatalf("gate.New: %v", err)
+	}
+
+	rec := &recordingAudit{}
+	exec := New(nil, nil, be, gate.NewPipeline([]gate.Evaluator{g}), rec,
+		30*time.Second, newTestLogger(), nil, nil)
+
+	ctx := userctx.WithUserContext(context.Background(), &userctx.UserContext{
+		UserID:        testUserID,
+		Authenticated: true,
+	})
+
+	const originalBody = "Real change\n\nCo-Authored-By: bot <bot@example.com>\n"
+
+	if _, err := exec.ExecuteTool(ctx, ExecuteToolRequest{
+		ToolName: testGitHubListRepos,
+		Params:   map[string]any{"body": originalBody},
+	}); err != nil {
+		t.Fatalf("ExecuteTool: %v", err)
+	}
+
+	// The decisive assertion: the backend must see the rewritten body,
+	// not the original. Before the fix this failed because the policy
+	// mutated a deep copy that was thrown away.
+	if seenBody == originalBody {
+		t.Fatalf("backend received the original body — pre-phase params mutation was discarded.\ngot: %q", seenBody)
+	}
+	if strings.Contains(seenBody, "Co-Authored-By") {
+		t.Errorf("backend should have received body without Co-Authored-By trailer, got: %q", seenBody)
+	}
+	if !strings.Contains(seenBody, "Real change") {
+		t.Errorf("backend should still have the real body content, got: %q", seenBody)
+	}
+
+	// And the audit must record the change.
+	if len(rec.last.Modifications) != 1 {
+		t.Fatalf("expected 1 audit modification, got %d: %+v",
+			len(rec.last.Modifications), rec.last.Modifications)
+	}
+	if rec.last.Modifications[0].Target != audit.ModificationTargetParams {
+		t.Errorf("expected params target, got %q", rec.last.Modifications[0].Target)
+	}
+}

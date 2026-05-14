@@ -24,4 +24,5 @@ const (
 	testToolDeleteUser = "db_delete_user"
 	testEvalNamePass   = "pass-eval"
 	testEvalNameAlpha  = "alpha"
+	testOwnerMixedCase = "DunkelCloud"
 )

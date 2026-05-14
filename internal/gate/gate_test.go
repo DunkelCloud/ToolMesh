@@ -1054,17 +1054,25 @@ func TestGate_Evaluate_RecordsParamsModification(t *testing.T) {
 		t.Fatalf("failed to create gate: %v", err)
 	}
 
+	// Pass a real map the gate is expected to mutate in place. The test
+	// asserts both that the audit records the diff AND that the caller's
+	// map sees the change — that contract is what makes pre-phase params
+	// mutations actually reach the backend.
+	params := map[string]any{"owner": testOwnerMixedCase}
 	evalResult, err := g.Evaluate(GateContext{
 		User:   userctx.UserContext{UserID: "u1", Authenticated: true},
 		Tool:   testToolName,
 		Phase:  PhasePre,
-		Params: map[string]any{"owner": "DunkelCloud"},
+		Params: params,
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !evalResult.Allowed {
 		t.Fatal("policy that rewrites params should still allow")
+	}
+	if got := params["owner"]; got != "dunkelcloud" {
+		t.Errorf("caller's params map was not updated: owner = %v, want dunkelcloud", got)
 	}
 	if len(evalResult.Modifications) != 1 {
 		t.Fatalf("expected exactly one modification, got %d: %+v",
@@ -1085,11 +1093,93 @@ func TestGate_Evaluate_RecordsParamsModification(t *testing.T) {
 	if err := json.Unmarshal(mod.After, &after); err != nil {
 		t.Fatalf("decode after: %v", err)
 	}
-	if before["owner"] != "DunkelCloud" {
+	if before["owner"] != testOwnerMixedCase {
 		t.Errorf("expected before.owner = DunkelCloud, got %v", before["owner"])
 	}
 	if after["owner"] != "dunkelcloud" {
 		t.Errorf("expected after.owner = dunkelcloud, got %v", after["owner"])
+	}
+}
+
+func TestGate_Evaluate_PreParams_AddAndDeleteKeys(t *testing.T) {
+	dir := t.TempDir()
+	writePolicy(t, dir, "rewrite_params.js", `
+		if (ctx.phase === "pre") {
+			// Add a new key, delete an existing one, mutate a third.
+			delete ctx.params.secret;
+			ctx.params.added = "from-policy";
+			ctx.params.kept = ctx.params.kept + "!";
+		}
+	`)
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	g, err := New(dir, logger)
+	if err != nil {
+		t.Fatalf("failed to create gate: %v", err)
+	}
+
+	params := map[string]any{
+		"secret": "shhh",
+		"kept":   "hello",
+	}
+	if _, err := g.Evaluate(GateContext{
+		User:   userctx.UserContext{UserID: "u1", Authenticated: true},
+		Tool:   testToolName,
+		Phase:  PhasePre,
+		Params: params,
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if _, exists := params["secret"]; exists {
+		t.Error("policy deletion of 'secret' did not propagate to caller's map")
+	}
+	if params["added"] != "from-policy" {
+		t.Errorf("policy insertion of 'added' did not propagate: got %v", params["added"])
+	}
+	if params["kept"] != "hello!" {
+		t.Errorf("policy mutation of 'kept' did not propagate: got %v", params["kept"])
+	}
+}
+
+func TestGate_Evaluate_PostPhase_DoesNotMutateParams(t *testing.T) {
+	dir := t.TempDir()
+	// A misbehaving post-phase policy that tries to rewrite params. The
+	// backend already ran with the original params, so we MUST NOT
+	// propagate the change back and MUST NOT report it in the audit —
+	// otherwise operators are told a change occurred that the system
+	// could not act on.
+	writePolicy(t, dir, "post_rewrites_params.js", `
+		if (ctx.phase === "post" && ctx.params) {
+			ctx.params.owner = "rewritten-too-late";
+		}
+	`)
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	g, err := New(dir, logger)
+	if err != nil {
+		t.Fatalf("failed to create gate: %v", err)
+	}
+
+	params := map[string]any{"owner": testOwnerMixedCase}
+	evalResult, err := g.Evaluate(GateContext{
+		User:     userctx.UserContext{UserID: "u1", Authenticated: true},
+		Tool:     testToolName,
+		Phase:    PhasePost,
+		Params:   params,
+		Response: &backend.ToolResult{Content: []any{}},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if params["owner"] != testOwnerMixedCase {
+		t.Errorf("post-phase must not mutate caller's params: got owner = %v", params["owner"])
+	}
+	for _, m := range evalResult.Modifications {
+		if m.Target == audit.ModificationTargetParams {
+			t.Errorf("post-phase params modification leaked into audit: %+v", m)
+		}
 	}
 }
 

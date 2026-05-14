@@ -224,8 +224,32 @@ func (g *Gate) evalPolicy(p policy, gctx GateContext) ([]audit.PolicyModificatio
 		}
 	}
 
+	// Propagate params mutations back to the live params map in pre-phase
+	// so the executor's req.Params reflects the change before the backend
+	// call. ctxObj is a deep JSON copy of the params, so any mutation the
+	// policy performs lives only on the copy until we explicitly merge it
+	// back. We update in place (delete + insert) because gctx is passed by
+	// value — replacing gctx.Params with a new map would not be visible to
+	// the caller. Post-phase mutations of params are intentionally ignored:
+	// the backend has already run, so changes would only mislead the audit.
+	if gctx.Phase == PhasePre && gctx.Params != nil {
+		if newParams, ok := exported["params"].(map[string]any); ok {
+			for k := range gctx.Params {
+				delete(gctx.Params, k)
+			}
+			for k, v := range newParams {
+				gctx.Params[k] = v
+			}
+		}
+	}
+
 	var mods []audit.PolicyModification
-	if !bytes.Equal(beforeParams, afterParams) {
+	// Params modifications are only persisted in pre-phase (see the
+	// writeback above). In post-phase the backend has already executed, so
+	// recording a params diff would be pure noise — the change has no
+	// effect. The audit must reflect what actually happened, not what the
+	// policy attempted on a discarded copy.
+	if gctx.Phase == PhasePre && !bytes.Equal(beforeParams, afterParams) {
 		mods = append(mods, audit.PolicyModification{
 			Policy: p.name,
 			Phase:  string(gctx.Phase),

@@ -21,7 +21,7 @@ backends:
     dadl: hackernews.dadl
 ```
 
-Restart ToolMesh, and tools like `hackernews:get_top_stories` are available
+Restart ToolMesh, and tools like `hackernews_get_top_stories` are available
 to your AI agent — no API key required.
 
 ## Adding more DADLs

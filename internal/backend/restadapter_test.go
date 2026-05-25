@@ -740,8 +740,12 @@ func TestBuildQuery_NilWithDefault(t *testing.T) {
 	}
 }
 
-// TestBuildBody_NilValues verifies that nil body values are omitted. Fixes #46.
-func TestBuildBody_NilValues(t *testing.T) {
+// TestBuildBody_NilValuePreserved verifies that an explicit nil value is kept
+// in the body so json.Marshal emits "field":null. This is required for PATCH
+// against APIs (NetBox, GitLab, ...) where JSON null means "clear this nullable
+// field" while a missing key means "leave unchanged". Stripping nil here would
+// silently turn a clear request into a no-op.
+func TestBuildBody_NilValuePreserved(t *testing.T) {
 	spec := &dadl.Spec{
 		Backend: dadl.BackendDef{
 			Name:    testBackendNameTestAPI,
@@ -763,11 +767,99 @@ func TestBuildBody_NilValues(t *testing.T) {
 	}
 
 	body := adapter.buildBody(tool, map[string]any{testParamName: testBackendNameTest, testParamFilter: nil})
-	if _, exists := body[testParamFilter]; exists {
-		t.Errorf("body should not contain nil param 'filter': %v", body)
+
+	val, exists := body[testParamFilter]
+	if !exists {
+		t.Errorf("body should contain nil param 'filter' (explicit null must be preserved): %v", body)
+	}
+	if val != nil {
+		t.Errorf("body[filter] = %v, want nil", val)
 	}
 	if body[testParamName] != testBackendNameTest {
 		t.Errorf("body missing valid param 'name': %v", body)
+	}
+
+	gotJSON, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(gotJSON), `"filter":null`) {
+		t.Errorf("marshaled body should contain \"filter\":null, got %s", gotJSON)
+	}
+}
+
+// TestBuildBody_MissingKeyOmitted verifies that a key that is not in params
+// is not written to the body. The "missing key" path is what callers use to
+// say "leave this field unchanged" on PATCH — it must remain distinguishable
+// from an explicit nil (which means "clear").
+func TestBuildBody_MissingKeyOmitted(t *testing.T) {
+	spec := &dadl.Spec{
+		Backend: dadl.BackendDef{
+			Name:    testBackendNameTestAPI,
+			Type:    transportTypeREST,
+			BaseURL: testBaseURLExample,
+			Tools:   map[string]dadl.ToolDef{"t": {Method: testMethodPOST, Path: "/"}},
+		},
+	}
+	adapter, err := NewRESTAdapter(spec, &testCredStore{}, slog.Default(), testRESTOpts)
+	if err != nil {
+		t.Fatalf("create adapter: %v", err)
+	}
+
+	tool := &dadl.ToolDef{
+		Params: map[string]dadl.ParamDef{
+			testParamName:   {Type: schemaTypeString, In: paramInBody},
+			testParamFilter: {Type: schemaTypeString, In: paramInBody},
+		},
+	}
+
+	body := adapter.buildBody(tool, map[string]any{testParamName: testBackendNameTest})
+	if _, exists := body[testParamFilter]; exists {
+		t.Errorf("body should not contain missing param 'filter': %v", body)
+	}
+	if body[testParamName] != testBackendNameTest {
+		t.Errorf("body missing valid param 'name': %v", body)
+	}
+
+	gotJSON, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(gotJSON), "filter") {
+		t.Errorf("marshaled body should not contain 'filter' key, got %s", gotJSON)
+	}
+}
+
+// TestBuildFormEncoded_NilStillSkipped verifies that on the form-encoded path
+// nil values are still dropped (not serialized as "<nil>" or the literal
+// string "null"), because form encoding has no representation for null.
+// The JSON-body change must not regress form encoding.
+func TestBuildFormEncoded_NilStillSkipped(t *testing.T) {
+	spec := &dadl.Spec{
+		Backend: dadl.BackendDef{
+			Name:    testBackendNameTestAPI,
+			Type:    transportTypeREST,
+			BaseURL: testBaseURLExample,
+			Tools:   map[string]dadl.ToolDef{"t": {Method: testMethodPOST, Path: "/"}},
+		},
+	}
+	adapter, err := NewRESTAdapter(spec, &testCredStore{}, slog.Default(), testRESTOpts)
+	if err != nil {
+		t.Fatalf("create adapter: %v", err)
+	}
+
+	encoded := adapter.buildFormEncoded(map[string]any{
+		testParamName:   testBackendNameTest,
+		testParamFilter: nil,
+	})
+	if strings.Contains(encoded, "nil") {
+		t.Errorf("form body should not contain literal 'nil': %s", encoded)
+	}
+	if strings.Contains(encoded, "filter=") {
+		t.Errorf("form body should not contain nil param 'filter': %s", encoded)
+	}
+	if !strings.Contains(encoded, "name=test") {
+		t.Errorf("form body missing valid param 'name': %s", encoded)
 	}
 }
 

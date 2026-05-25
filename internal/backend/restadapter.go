@@ -625,13 +625,25 @@ func (a *RESTAdapter) buildQuery(tool *dadl.ToolDef, params map[string]any) stri
 	return strings.Join(parts, "&")
 }
 
+// buildBody collects all `in: body` parameters into a map for JSON marshaling.
+//
+// An explicit nil value is preserved (the key is kept in the body so json.Marshal
+// emits `"field":null`) because JSON null is semantically distinct from a missing
+// key: on PATCH, many APIs (NetBox, GitLab, etc.) treat `field:null` as "clear
+// this nullable field" while a missing key means "leave unchanged". Stripping
+// nil here would silently change a clear request into a no-op.
+//
+// A key that is not present in params is skipped (no entry written), which
+// correctly conveys "field omitted". The form-encoded path handles nil
+// separately in flattenFormValues (where `field=null` would be a meaningless
+// string), so this change is JSON-only.
 func (a *RESTAdapter) buildBody(tool *dadl.ToolDef, params map[string]any) map[string]any {
 	body := make(map[string]any)
 	for name, def := range tool.Params {
 		if def.In != paramInBody {
 			continue
 		}
-		if val, ok := params[name]; ok && val != nil {
+		if val, ok := params[name]; ok {
 			body[name] = val
 		}
 	}

@@ -580,6 +580,48 @@ func joinURL(baseURL, toolPath string) (string, error) {
 	return base.ResolveReference(relRef).String(), nil
 }
 
+// formatScalarParam converts a primitive parameter value to its string form
+// for use in URL paths, query strings, request headers, and form fields.
+//
+// JSON unmarshalling decodes every numeric value into float64. Formatting that
+// float64 with fmt.Sprintf("%v", ...) routes through %g, which switches to
+// scientific notation once the value reaches ~1e6 — so an integer ID like
+// 1234567 becomes "1.234567e+06" and the request URL ends up at
+// /networking/firewalls/1.234567e%2B06, which backends correctly reject as
+// 404. strconv.FormatFloat with verb 'f' and precision -1 always produces the
+// shortest exact decimal representation without exponents.
+func formatScalarParam(v any) string {
+	switch val := v.(type) {
+	case string:
+		return val
+	case bool:
+		if val {
+			return boolTrue
+		}
+		return boolFalse
+	case float64:
+		return strconv.FormatFloat(val, 'f', -1, 64)
+	case float32:
+		return strconv.FormatFloat(float64(val), 'f', -1, 32)
+	case int:
+		return strconv.Itoa(val)
+	case int32:
+		return strconv.FormatInt(int64(val), 10)
+	case int64:
+		return strconv.FormatInt(val, 10)
+	case uint:
+		return strconv.FormatUint(uint64(val), 10)
+	case uint32:
+		return strconv.FormatUint(uint64(val), 10)
+	case uint64:
+		return strconv.FormatUint(val, 10)
+	case json.Number:
+		return string(val)
+	default:
+		return fmt.Sprintf("%v", v)
+	}
+}
+
 // buildPath substitutes path parameters into the tool's URL template. Every
 // parameter declared with `in: path` is treated as required: a missing or nil
 // value returns an error instead of leaving the literal `{name}` placeholder
@@ -596,7 +638,7 @@ func (a *RESTAdapter) buildPath(tool *dadl.ToolDef, params map[string]any) (stri
 		if !ok || val == nil {
 			return "", fmt.Errorf("missing required path parameter %q", name)
 		}
-		str := fmt.Sprintf("%v", val)
+		str := formatScalarParam(val)
 		if str == "" {
 			return "", fmt.Errorf("path parameter %q cannot be empty", name)
 		}
@@ -619,7 +661,7 @@ func (a *RESTAdapter) buildQuery(tool *dadl.ToolDef, params map[string]any) stri
 				continue
 			}
 		}
-		parts = append(parts, url.QueryEscape(name)+"="+url.QueryEscape(fmt.Sprintf("%v", val)))
+		parts = append(parts, url.QueryEscape(name)+"="+url.QueryEscape(formatScalarParam(val)))
 	}
 	sort.Strings(parts)
 	return strings.Join(parts, "&")
@@ -691,7 +733,7 @@ func (a *RESTAdapter) applyHeaderParams(req *http.Request, tool *dadl.ToolDef, p
 				continue
 			}
 		}
-		str := fmt.Sprintf("%v", val)
+		str := formatScalarParam(val)
 		if str == "" {
 			if def.Required {
 				return fmt.Errorf("header parameter %q cannot be empty", name)
@@ -729,25 +771,10 @@ func flattenFormValues(vals url.Values, prefix string, v any) {
 			key := fmt.Sprintf("%s[%d]", prefix, i)
 			flattenFormValues(vals, key, child)
 		}
-	case string:
-		vals.Set(prefix, val)
-	case bool:
-		if val {
-			vals.Set(prefix, "true")
-		} else {
-			vals.Set(prefix, "false")
-		}
-	case float64:
-		vals.Set(prefix, strconv.FormatFloat(val, 'f', -1, 64))
-	case int:
-		vals.Set(prefix, strconv.Itoa(val))
-	case int64:
-		vals.Set(prefix, strconv.FormatInt(val, 10))
 	case nil:
 		// skip nil values
 	default:
-		// fallback: fmt
-		vals.Set(prefix, fmt.Sprintf("%v", val))
+		vals.Set(prefix, formatScalarParam(val))
 	}
 }
 
@@ -811,7 +838,7 @@ func (a *RESTAdapter) buildMultipartBody(tool *dadl.ToolDef, params map[string]a
 			}
 			_ = f.Close()
 		} else {
-			if err := writer.WriteField(name, fmt.Sprintf("%v", val)); err != nil {
+			if err := writer.WriteField(name, formatScalarParam(val)); err != nil {
 				return nil, "", fmt.Errorf("write field %q: %w", name, err)
 			}
 		}
@@ -1101,7 +1128,7 @@ func (a *RESTAdapter) paginateResults(ctx context.Context, tool *dadl.ToolDef, p
 	for name, def := range tool.Params {
 		if def.In == paramInQuery {
 			if val, ok := params[name]; ok {
-				currentParams[name] = fmt.Sprintf("%v", val)
+				currentParams[name] = formatScalarParam(val)
 			}
 		}
 	}

@@ -980,3 +980,108 @@ func TestBuildPath_SubstitutesAllRequiredParams(t *testing.T) {
 		t.Errorf("path = %q, want %q", path, want)
 	}
 }
+
+// TestBuildPath_IntegerIDsViaJSON ensures that integer IDs arriving as
+// json-decoded float64 are substituted into the URL as plain decimal digits.
+// Without explicit type handling, fmt.Sprintf("%v", float64(1234567)) emits
+// "1.234567e+06", which url.PathEscape turns into "1.234567e%2B06" — a URL
+// the backend cannot route, producing confusing 404s. Linode firewall and
+// instance IDs routinely exceed 1e6, so this path is hot.
+func TestBuildPath_IntegerIDsViaJSON(t *testing.T) {
+	spec := &dadl.Spec{
+		Backend: dadl.BackendDef{
+			Name:    testBackendNameTestAPI,
+			Type:    transportTypeREST,
+			BaseURL: testBaseURLExample,
+			Tools:   map[string]dadl.ToolDef{"t": {Method: testMethodGET, Path: "/"}},
+		},
+	}
+	adapter, err := NewRESTAdapter(spec, &testCredStore{}, slog.Default(), testRESTOpts)
+	if err != nil {
+		t.Fatalf("create adapter: %v", err)
+	}
+
+	tool := &dadl.ToolDef{
+		Path: "/networking/firewalls/{firewallId}/devices/{deviceId}",
+		Params: map[string]dadl.ParamDef{
+			"firewallId": {Type: schemaTypeInteger, In: paramInPath, Required: true},
+			"deviceId":   {Type: schemaTypeInteger, In: paramInPath, Required: true},
+		},
+	}
+
+	cases := []struct {
+		name      string
+		decodeAs  string
+		want      string
+		wantBuild string
+	}{
+		{
+			name:      "small ID via json",
+			decodeAs:  `{"firewallId": 12345, "deviceId": 42}`,
+			wantBuild: "/networking/firewalls/12345/devices/42",
+		},
+		{
+			name:      "mid-six-digit ID via json",
+			decodeAs:  `{"firewallId": 999999, "deviceId": 1}`,
+			wantBuild: "/networking/firewalls/999999/devices/1",
+		},
+		{
+			name:      "seven-digit ID via json (triggers %v scientific notation)",
+			decodeAs:  `{"firewallId": 1234567, "deviceId": 7654321}`,
+			wantBuild: "/networking/firewalls/1234567/devices/7654321",
+		},
+		{
+			name:      "billion-scale ID via json",
+			decodeAs:  `{"firewallId": 1234567890, "deviceId": 9876543210}`,
+			wantBuild: "/networking/firewalls/1234567890/devices/9876543210",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var params map[string]any
+			if err := json.Unmarshal([]byte(tc.decodeAs), &params); err != nil {
+				t.Fatalf("json.Unmarshal: %v", err)
+			}
+			got, err := adapter.buildPath(tool, params)
+			if err != nil {
+				t.Fatalf("buildPath: %v", err)
+			}
+			if got != tc.wantBuild {
+				t.Errorf("path = %q, want %q (params=%v)", got, tc.wantBuild, params)
+			}
+		})
+	}
+}
+
+// TestFormatScalarParam exercises the scalar-formatting helper directly across
+// the value shapes that arrive from JSON decoding, sandbox calls, and YAML
+// defaults. The float64 cases are the load-bearing ones — see the helper's
+// godoc for the underlying %v / %g pitfall.
+func TestFormatScalarParam(t *testing.T) {
+	cases := []struct {
+		name string
+		in   any
+		want string
+	}{
+		{"string", "linode-fw-12345", "linode-fw-12345"},
+		{"empty string", "", ""},
+		{"bool true", true, boolTrue},
+		{"bool false", false, boolFalse},
+		{"int", 42, "42"},
+		{"int64 large", int64(1234567890123), "1234567890123"},
+		{"float64 small integer", float64(12345), "12345"},
+		{"float64 large integer", float64(1234567), "1234567"},
+		{"float64 billion integer", float64(1234567890), "1234567890"},
+		{"float64 fractional", float64(1.5), "1.5"},
+		{"json.Number integer", json.Number("1234567890"), "1234567890"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := formatScalarParam(tc.in)
+			if got != tc.want {
+				t.Errorf("formatScalarParam(%v) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}

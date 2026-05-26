@@ -54,7 +54,7 @@ func TestFlattenFormValues(t *testing.T) {
 	if vals.Get("i64") != "100" {
 		t.Errorf("i64 = %q", vals.Get("i64"))
 	}
-	if vals.Get("bool") != "true" {
+	if vals.Get("bool") != boolTrue {
 		t.Errorf("bool = %q", vals.Get("bool"))
 	}
 	if vals.Get("arr[0]") != "a" || vals.Get("arr[1]") != "b" {
@@ -68,7 +68,7 @@ func TestFlattenFormValues(t *testing.T) {
 func TestFlattenFormValues_BoolFalse(t *testing.T) {
 	vals := url.Values{}
 	flattenFormValues(vals, "flag", false)
-	if vals.Get("flag") != "false" {
+	if vals.Get("flag") != boolFalse {
 		t.Errorf("got %q", vals.Get("flag"))
 	}
 }

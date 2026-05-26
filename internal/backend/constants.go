@@ -65,6 +65,11 @@ const (
 	// Tool access classifications.
 	accessRead = "read"
 
+	// Stringified booleans used when serializing primitive params into URL
+	// query strings, headers, and form fields.
+	boolTrue  = "true"
+	boolFalse = "false"
+
 	// URL scheme & host literals used by SSRF/redirect validation.
 	urlSchemeHTTP          = "http"
 	hostnameLocalhost      = "localhost"

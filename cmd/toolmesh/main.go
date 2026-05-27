@@ -43,6 +43,7 @@ import (
 	"github.com/DunkelCloud/ToolMesh/internal/metrics"
 	"github.com/DunkelCloud/ToolMesh/internal/telemetry"
 	"github.com/DunkelCloud/ToolMesh/internal/tsdef"
+	"github.com/DunkelCloud/ToolMesh/internal/unit"
 	"github.com/DunkelCloud/ToolMesh/internal/version"
 	"github.com/redis/go-redis/v9"
 	"gopkg.in/yaml.v3"
@@ -200,6 +201,16 @@ func main() {
 		compositeBackend.AddPassthrough(p)
 	}
 	tc.SetMCPServerCount(res.mcpAdapter.BackendCount())
+
+	// Load unit-backends. Each unit appears in the composite under its own
+	// name and is indistinguishable from any other backend for authz,
+	// audit and gate purposes. Failed units are logged and skipped.
+	unitAdapters := loadUnits(ctx, cfg.UnitsDir, credStore, compositeBackend, logger)
+	defer func() {
+		for _, a := range unitAdapters {
+			a.Close()
+		}
+	}()
 
 	// Watch backends.yaml for changes and hot-reload
 	go watchBackendsConfig(ctx, cfg.BackendsConfigPath, 5*time.Second, func() {
@@ -646,4 +657,31 @@ func loadRESTBackendsInto(named map[string]backend.ToolBackend, backendsConfigPa
 // backendsYAMLUnmarshal unmarshals backends YAML config.
 func backendsYAMLUnmarshal(data []byte, cfg *backend.BackendConfig) error {
 	return yaml.Unmarshal(data, cfg)
+}
+
+// loadUnits scans the units directory, loads every unit it finds, and adds
+// each one to the composite backend under its declared name. Returns the
+// list of MCPAdapter instances owning the per-unit sub-backend sessions so
+// the caller can close them on shutdown.
+func loadUnits(ctx context.Context, unitsDir string, creds credentials.CredentialStore, comp *backend.CompositeBackend, logger *slog.Logger) []*backend.MCPAdapter {
+	dirs, err := unit.ScanDir(unitsDir)
+	if err != nil {
+		logger.Error("failed to scan units dir", "dir", unitsDir, "error", err)
+		return nil
+	}
+	if len(dirs) == 0 {
+		return nil
+	}
+	adapters := make([]*backend.MCPAdapter, 0, len(dirs))
+	for _, d := range dirs {
+		res, loadErr := unit.LoadUnit(ctx, d, creds, logger)
+		if loadErr != nil {
+			logger.Error("failed to load unit", "dir", d, "error", loadErr)
+			continue
+		}
+		comp.AddNamed(res.Backend.Name(), res.Backend)
+		adapters = append(adapters, res.Adapter)
+		logger.Info("unit loaded", "name", res.Backend.Name(), "dir", d)
+	}
+	return adapters
 }

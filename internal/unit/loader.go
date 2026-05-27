@@ -1,0 +1,133 @@
+// Copyright 2026 Dunkel Cloud GmbH
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package unit
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"os"
+	"path/filepath"
+
+	"github.com/DunkelCloud/ToolMesh/internal/backend"
+	"github.com/DunkelCloud/ToolMesh/internal/credentials"
+	"gopkg.in/yaml.v3"
+)
+
+// LoadResult bundles a fully-initialized unit Backend with the MCPAdapter
+// that holds its private sub-backend sessions. The caller is responsible
+// for invoking adapter.Close() during shutdown.
+type LoadResult struct {
+	Backend *Backend
+	Adapter *backend.MCPAdapter
+}
+
+// ScanDir returns the absolute paths of every unit directory under
+// unitsDir. A unit directory is any direct child of unitsDir that contains
+// a file named unit.yaml. Subdirectories that do not contain a unit.yaml
+// are silently ignored so authors can keep auxiliary files (notes, sample
+// inputs, fixtures) next to their unit code.
+func ScanDir(unitsDir string) ([]string, error) {
+	entries, err := os.ReadDir(unitsDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("scan units dir %s: %w", unitsDir, err)
+	}
+	var out []string
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		dir := filepath.Join(unitsDir, entry.Name())
+		if _, err := os.Stat(filepath.Join(dir, configFileName)); err != nil {
+			continue
+		}
+		out = append(out, dir)
+	}
+	return out, nil
+}
+
+// LoadUnit parses one unit directory and returns a ready-to-register
+// Backend along with the MCPAdapter that owns its private sessions. The
+// sub-backend sessions are connected synchronously so describe() sees
+// fully-discovered tool lists; failures on individual sub-backends do not
+// abort the unit (the MCPAdapter logs and skips them), matching the
+// global startup semantics.
+func LoadUnit(ctx context.Context, dir string, creds credentials.CredentialStore, logger *slog.Logger) (*LoadResult, error) {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	cfgPath := filepath.Join(dir, configFileName)
+	data, err := os.ReadFile(cfgPath) //nolint:gosec // path from trusted config
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", cfgPath, err)
+	}
+
+	var cfg Config
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return nil, fmt.Errorf("parse %s: %w", cfgPath, err)
+	}
+	if cfg.Unit == "" {
+		return nil, fmt.Errorf("%s: unit name is required", cfgPath)
+	}
+	if cfg.Implementation == "" {
+		return nil, fmt.Errorf("%s: implementation path is required", cfgPath)
+	}
+
+	implPath := cfg.Implementation
+	if !filepath.IsAbs(implPath) {
+		implPath = filepath.Join(dir, implPath)
+	}
+	source, err := os.ReadFile(implPath) //nolint:gosec // path under unit directory
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", implPath, err)
+	}
+
+	// Build the MCPAdapter for this unit. We connect synchronously here so
+	// describe() can read the discovered tool lists.
+	adapter := backend.NewMCPAdapterFromEntries(cfg.Backends, creds, logger)
+	if err := adapter.Connect(ctx); err != nil {
+		// Connect logs individual failures but never returns an error
+		// today; treat any future return as fatal for the unit so we do
+		// not silently expose a half-wired sandbox.
+		return nil, fmt.Errorf("connect sub-backends for %s: %w", cfg.Unit, err)
+	}
+
+	subBackends := make(map[string]backend.ToolBackend, len(cfg.Backends))
+	for _, e := range cfg.Backends {
+		if e.Name == "" {
+			continue
+		}
+		if e.Transport == "rest" {
+			// REST sub-backends are deliberately deferred — the dice
+			// walking-skeleton does not need them, and wiring them up
+			// requires the blob store/telemetry threading that lives
+			// in cmd/toolmesh. Track this as a follow-up.
+			logger.Warn("unit sub-backend with transport=rest skipped (not yet supported in units)",
+				"unit", cfg.Unit, "backend", e.Name)
+			continue
+		}
+		subBackends[e.Name] = &mcpSubBackend{adapter: adapter, subName: e.Name}
+	}
+
+	b := New(cfg.Unit, string(source), implPath, subBackends, cfg.Expose, logger)
+	if err := b.Init(ctx); err != nil {
+		adapter.Close()
+		return nil, err
+	}
+	return &LoadResult{Backend: b, Adapter: adapter}, nil
+}

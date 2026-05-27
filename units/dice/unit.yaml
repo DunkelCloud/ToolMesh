@@ -1,0 +1,16 @@
+# Walking-skeleton unit-backend used by ToolMesh integration tests.
+#
+# Bundles a single private stdio MCP backend (randombit-mcp) and exposes a
+# roll(n) tool. The integration test calls roll(1000) and asserts that the
+# returned distribution matches the configured 75/25 bias within statistical
+# bounds — proving the sandbox → api.* → MCP-adapter → sub-process chain
+# is intact end-to-end (no stub could produce a 75/25 split).
+unit: dice
+implementation: ./dice.js
+expose:
+  meta_signals: [bias_num, bias_den]
+  audit: full
+backends:
+  - name: randombit
+    transport: stdio
+    command: ./bin/randombit-mcp

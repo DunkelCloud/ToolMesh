@@ -96,18 +96,11 @@ func (a *MCPAdapter) BackendCount() int {
 
 // NewMCPAdapter creates an MCPAdapter from a YAML configuration file.
 func NewMCPAdapter(configPath string, creds credentials.CredentialStore, logger *slog.Logger) (*MCPAdapter, error) {
-	adapter := &MCPAdapter{
-		backends: make(map[string]*backendConn),
-		creds:    creds,
-		logger:   logger,
-		client:   mcp.NewClient(&mcp.Implementation{Name: "toolmesh", Version: "0.1.0"}, nil),
-	}
-
 	data, err := os.ReadFile(configPath) //nolint:gosec // path from trusted config
 	if err != nil {
 		if os.IsNotExist(err) {
 			logger.Warn("backends config not found, starting with no backends", "path", configPath)
-			return adapter, nil
+			return newEmptyMCPAdapter(creds, logger), nil
 		}
 		return nil, fmt.Errorf("read backends config: %w", err)
 	}
@@ -116,22 +109,39 @@ func NewMCPAdapter(configPath string, creds credentials.CredentialStore, logger 
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parse backends config: %w", err)
 	}
+	return NewMCPAdapterFromEntries(cfg.Backends, creds, logger), nil
+}
 
-	for _, entry := range cfg.Backends {
+// NewMCPAdapterFromEntries builds an MCPAdapter from an in-memory list of
+// backend entries. This is used by callers that synthesize the entry list
+// outside of the global backends.yaml — most notably unit-backends, which
+// declare their private MCP dependencies inside unit.yaml and never want
+// those dependencies to appear in the global tool surface.
+//
+// REST entries are skipped because the MCPAdapter handles only MCP
+// transports; non-MCP transports are wired separately by the caller.
+func NewMCPAdapterFromEntries(entries []BackendEntry, creds credentials.CredentialStore, logger *slog.Logger) *MCPAdapter {
+	adapter := newEmptyMCPAdapter(creds, logger)
+	for _, entry := range entries {
 		if entry.Name == "" {
 			continue
 		}
-		// Skip REST Proxy backends — they are handled by RESTAdapter, not MCPAdapter
 		if entry.Transport == transportTypeREST {
 			continue
 		}
-		adapter.backends[entry.Name] = &backendConn{
-			entry: entry,
-		}
+		adapter.backends[entry.Name] = &backendConn{entry: entry}
 		logger.Info("registered backend", "name", entry.Name, "transport", entry.Transport)
 	}
+	return adapter
+}
 
-	return adapter, nil
+func newEmptyMCPAdapter(creds credentials.CredentialStore, logger *slog.Logger) *MCPAdapter {
+	return &MCPAdapter{
+		backends: make(map[string]*backendConn),
+		creds:    creds,
+		logger:   logger,
+		client:   mcp.NewClient(&mcp.Implementation{Name: "toolmesh", Version: "0.1.0"}, nil),
+	}
 }
 
 // Connect establishes MCP client sessions to all configured backends.

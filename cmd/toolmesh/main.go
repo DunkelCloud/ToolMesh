@@ -672,6 +672,18 @@ func loadUnits(ctx context.Context, unitsDir string, creds credentials.Credentia
 	if len(dirs) == 0 {
 		return nil
 	}
+
+	// Snapshot the names already taken by REST, echo and MCP-passthrough
+	// sub-backends so unit registration can detect collisions and skip
+	// rather than silently overwrite. Two units with the same yaml-declared
+	// name are caught by the loaded map below; collisions with non-unit
+	// backends are caught by the taken set.
+	taken := make(map[string]struct{})
+	for _, n := range comp.BackendNames() {
+		taken[n] = struct{}{}
+	}
+	loaded := make(map[string]string, len(dirs)) // unit name -> dir of first acceptance
+
 	adapters := make([]*backend.MCPAdapter, 0, len(dirs))
 	for _, d := range dirs {
 		res, loadErr := unit.LoadUnit(ctx, d, creds, logger)
@@ -679,9 +691,28 @@ func loadUnits(ctx context.Context, unitsDir string, creds credentials.Credentia
 			logger.Error("failed to load unit", "dir", d, "error", loadErr)
 			continue
 		}
-		comp.AddNamed(res.Backend.Name(), res.Backend)
+		name := res.Backend.Name()
+		if firstDir, dup := loaded[name]; dup {
+			logger.Error("duplicate unit name, skipping",
+				"name", name,
+				"first_dir", firstDir,
+				"duplicate_dir", d,
+			)
+			res.Adapter.Close()
+			continue
+		}
+		if _, clash := taken[name]; clash {
+			logger.Error("unit name collides with existing backend, skipping",
+				"name", name,
+				"dir", d,
+			)
+			res.Adapter.Close()
+			continue
+		}
+		comp.AddNamed(name, res.Backend)
 		adapters = append(adapters, res.Adapter)
-		logger.Info("unit loaded", "name", res.Backend.Name(), "dir", d)
+		loaded[name] = d
+		logger.Info("unit loaded", "name", name, "dir", d)
 	}
 	return adapters
 }

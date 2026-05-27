@@ -224,6 +224,35 @@ func (c *CompositeBackend) LookupTool(toolName string) (ToolDescriptor, bool) {
 	return ToolDescriptor{}, false
 }
 
+// BackendNames returns the names under which this CompositeBackend will
+// route tool calls — both directly-named entries and the sub-backends
+// surfaced via passthrough BackendSummaries. Use this for collision
+// detection before registering a new named backend so a name conflict can
+// be rejected at startup rather than silently overwriting state.
+func (c *CompositeBackend) BackendNames() []string {
+	s := c.state.Load()
+	seen := make(map[string]struct{}, len(s.backends))
+	for name := range s.backends {
+		seen[name] = struct{}{}
+	}
+	for _, b := range s.passthroughs {
+		sum, ok := b.(BackendSummarizer)
+		if !ok {
+			continue
+		}
+		for _, info := range sum.BackendSummaries() {
+			if info.Name != "" {
+				seen[info.Name] = struct{}{}
+			}
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for name := range seen {
+		out = append(out, name)
+	}
+	return out
+}
+
 // BackendSummaries collects summaries from all backends that implement BackendSummarizer.
 func (c *CompositeBackend) BackendSummaries() []BackendInfo {
 	s := c.state.Load()

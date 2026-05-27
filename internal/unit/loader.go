@@ -16,9 +16,7 @@ package unit
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -36,38 +34,35 @@ type LoadResult struct {
 	Adapter *backend.MCPAdapter
 }
 
-// ScanDir walks unitsDir recursively and returns every directory that
-// contains a unit.yaml. Recursion stops at the first unit.yaml on a path,
-// so a unit's own subdirectories (fixtures, sample inputs, sub-modules)
-// are not mistaken for nested units. Authors are free to group units by
-// any structure they like — e.g. examples/<name>, prod/<name>,
-// tenants/<id>/<name>.
+// ScanDir returns the absolute paths of every unit directory that is a
+// direct child of unitsDir and contains a unit.yaml. The scan is
+// deliberately NOT recursive: a unit must be present at
+// <unitsDir>/<name>/unit.yaml to be activated. Anything deeper — for
+// example shipped examples in <unitsDir>/examples/<name>/ — is ignored,
+// so users opt in to running a unit by copying or linking it into the
+// top level. This mirrors the project's policy of never auto-enabling
+// security-relevant defaults.
 //
 // Returns (nil, nil) when unitsDir does not exist so an absent units
 // directory is not a hard error at startup.
 func ScanDir(unitsDir string) ([]string, error) {
-	var out []string
-	err := filepath.WalkDir(unitsDir, func(path string, d fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			if errors.Is(walkErr, fs.ErrNotExist) {
-				return filepath.SkipDir
-			}
-			return walkErr
-		}
-		if !d.IsDir() {
-			return nil
-		}
-		if _, err := os.Stat(filepath.Join(path, configFileName)); err == nil {
-			out = append(out, path)
-			return filepath.SkipDir
-		}
-		return nil
-	})
+	entries, err := os.ReadDir(unitsDir)
 	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
+		if os.IsNotExist(err) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("scan units dir %s: %w", unitsDir, err)
+	}
+	var out []string
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		dir := filepath.Join(unitsDir, entry.Name())
+		if _, err := os.Stat(filepath.Join(dir, configFileName)); err != nil {
+			continue
+		}
+		out = append(out, dir)
 	}
 	return out, nil
 }

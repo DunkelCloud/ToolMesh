@@ -63,13 +63,12 @@ type Config struct {
 	// Policies directory
 	PoliciesDir string
 
-	// Units directory. Scanned recursively for unit.yaml files; every
-	// directory that contains one is treated as a unit. Subdirectories of a
-	// unit directory are NOT descended into, so the layout
-	//   <units_dir>/<group>/<unit-name>/unit.yaml
-	// is the natural form (e.g. examples/dice, prod/imap-trust). Lives
-	// under config/ by default so the existing config volume mount covers
-	// it without extra plumbing.
+	// Units directory. Only DIRECT children that contain a unit.yaml are
+	// loaded — the scan is intentionally not recursive so that shipped
+	// examples under <units_dir>/examples/<name>/ do not auto-activate.
+	// Users opt in to a unit by placing or linking it at
+	// <units_dir>/<name>/unit.yaml. Lives under config/ by default so the
+	// existing config volume mount covers it without extra plumbing.
 	UnitsDir string
 
 	// Tool definitions directory (TypeScript canonical source)

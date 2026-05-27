@@ -1,0 +1,12 @@
+# Minimal unit-backend example: rolls a biased coin n times in pure
+# JavaScript. No external sub-backends, no extra mounts — drop this
+# directory under TOOLMESH_UNITS_DIR (default /app/config/units) and
+# the tool `dice_roll` is available on the next restart.
+#
+# The same construct supports sub-backends via a top-level `backends:`
+# block — see konzept_unit_backends in the project wiki for examples
+# that compose MCP and DADL backends behind a single unit tool.
+unit: dice
+implementation: ./dice.js
+expose:
+  audit: full

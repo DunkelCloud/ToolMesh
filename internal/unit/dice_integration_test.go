@@ -72,9 +72,13 @@ func TestDiceUnit_StatisticalDistribution(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(unitDir, "unit.yaml"), []byte(unitYAML), 0o600); err != nil {
 		t.Fatalf("write unit.yaml: %v", err)
 	}
-	jsSrc, err := os.ReadFile(filepath.Join(repoRoot, "units", "dice", "dice.js")) //nolint:gosec // path under controlled repoRoot
+	// The user-facing dice example (config/units/examples/dice/dice.js)
+	// uses Math.random and has no sub-backends, so it cannot prove the
+	// MCP chain works. The MCP variant of the same logic lives in
+	// testdata/ and is wired through api.randombit.flip().
+	jsSrc, err := os.ReadFile(filepath.Join(repoRoot, "internal", "unit", "testdata", "mcp_dice.js")) //nolint:gosec // path under controlled repoRoot
 	if err != nil {
-		t.Fatalf("read dice.js source: %v", err)
+		t.Fatalf("read mcp_dice.js source: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(unitDir, "dice.js"), jsSrc, 0o600); err != nil { //nolint:gosec // path under t.TempDir()
 		t.Fatalf("write dice.js: %v", err)

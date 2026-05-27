@@ -1,8 +1,8 @@
-// Walking-skeleton unit-backend implementation.
-//
-// Exposes roll(n) which calls api.randombit.flip() n times and returns an
-// aggregate of the outcomes. The MCP tool descriptors are derived from the
-// top-level describe() function — no separate schema sidecar.
+// Test-only unit implementation: drives randombit-mcp via api.randombit.flip
+// to validate the full sandbox → api.* → MCP stdio chain. The user-facing
+// dice example in config/units/examples/dice uses Math.random() and has no
+// sub-backends; this variant exists only so the integration test can prove
+// the cross-backend path with a statistically meaningful signal.
 
 /* global api */
 
@@ -11,14 +11,10 @@ function describe() {
         tools: [
             {
                 name: "roll",
-                description: "Roll the bit n times and return per-outcome counts plus the raw sequence.",
+                description: "Roll the bit n times via api.randombit.flip and return per-outcome counts.",
                 access: "read",
                 params: {
-                    n: {
-                        type: "integer",
-                        required: true,
-                        description: "Number of flips (1..10000)"
-                    }
+                    n: { type: "integer", required: true }
                 }
             }
         ]
@@ -32,7 +28,6 @@ async function roll(args) {
     }
 
     const counts = { A: 0, B: 0 };
-    const sequence = [];
     for (let i = 0; i < n; i++) {
         const result = await api.randombit.flip({});
         const text = extractText(result);
@@ -40,23 +35,13 @@ async function roll(args) {
             throw new Error("randombit returned unexpected value: " + text);
         }
         counts[text]++;
-        sequence.push(text);
     }
 
     return {
-        content: [{
-            type: "text",
-            text: JSON.stringify({ n: n, counts: counts })
-        }],
-        _meta: {
-            counts: counts,
-            sequence: sequence
-        }
+        content: [{ type: "text", text: JSON.stringify({ n: n, counts: counts }) }]
     };
 }
 
-// extractText pulls the first text block out of an MCP tool result. The
-// MCP adapter shape is { content: [{ type: "text", text: "..." }, ...] }.
 function extractText(result) {
     if (!result || !Array.isArray(result.content)) {
         return null;

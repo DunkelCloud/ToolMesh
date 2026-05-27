@@ -16,7 +16,9 @@ package unit
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -34,29 +36,38 @@ type LoadResult struct {
 	Adapter *backend.MCPAdapter
 }
 
-// ScanDir returns the absolute paths of every unit directory under
-// unitsDir. A unit directory is any direct child of unitsDir that contains
-// a file named unit.yaml. Subdirectories that do not contain a unit.yaml
-// are silently ignored so authors can keep auxiliary files (notes, sample
-// inputs, fixtures) next to their unit code.
+// ScanDir walks unitsDir recursively and returns every directory that
+// contains a unit.yaml. Recursion stops at the first unit.yaml on a path,
+// so a unit's own subdirectories (fixtures, sample inputs, sub-modules)
+// are not mistaken for nested units. Authors are free to group units by
+// any structure they like — e.g. examples/<name>, prod/<name>,
+// tenants/<id>/<name>.
+//
+// Returns (nil, nil) when unitsDir does not exist so an absent units
+// directory is not a hard error at startup.
 func ScanDir(unitsDir string) ([]string, error) {
-	entries, err := os.ReadDir(unitsDir)
+	var out []string
+	err := filepath.WalkDir(unitsDir, func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			if errors.Is(walkErr, fs.ErrNotExist) {
+				return filepath.SkipDir
+			}
+			return walkErr
+		}
+		if !d.IsDir() {
+			return nil
+		}
+		if _, err := os.Stat(filepath.Join(path, configFileName)); err == nil {
+			out = append(out, path)
+			return filepath.SkipDir
+		}
+		return nil
+	})
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, fs.ErrNotExist) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("scan units dir %s: %w", unitsDir, err)
-	}
-	var out []string
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-		dir := filepath.Join(unitsDir, entry.Name())
-		if _, err := os.Stat(filepath.Join(dir, configFileName)); err != nil {
-			continue
-		}
-		out = append(out, dir)
 	}
 	return out, nil
 }

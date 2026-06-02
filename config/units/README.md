@@ -34,6 +34,4 @@ A unit is a directory with:
   function per tool.
 
 See `examples/dice/` for the smallest possible version
-(pure JavaScript, no sub-backends) and the project wiki page
-[`konzept_unit_backends`](https://dokuwiki.dunkel.cloud/doku.php?id=konzept_unit_backends)
-for the full design.
+(pure JavaScript, no sub-backends).

@@ -63,6 +63,14 @@ type Config struct {
 	// Policies directory
 	PoliciesDir string
 
+	// Units directory. Only DIRECT children that contain a unit.yaml are
+	// loaded — the scan is intentionally not recursive so that shipped
+	// examples under <units_dir>/examples/<name>/ do not auto-activate.
+	// Users opt in to a unit by placing or linking it at
+	// <units_dir>/<name>/unit.yaml. Lives under config/ by default so the
+	// existing config volume mount covers it without extra plumbing.
+	UnitsDir string
+
 	// Tool definitions directory (TypeScript canonical source)
 	ToolsDir string
 
@@ -121,6 +129,7 @@ func Load() (*Config, error) {
 		BackendsConfigPath:      envStr("TOOLMESH_BACKENDS_CONFIG", "/app/config/backends.yaml"),
 		DADLDir:                 envStr("TOOLMESH_DADL_DIR", "/app/dadl"),
 		PoliciesDir:             envStr("TOOLMESH_POLICIES_DIR", "/app/policies"),
+		UnitsDir:                envStr("TOOLMESH_UNITS_DIR", "/app/config/units"),
 		ToolsDir:                envStr("TOOLMESH_TOOLS_DIR", "/app/tools"),
 		UsersConfigPath:         envStr("TOOLMESH_USERS_CONFIG", "/app/config/users.yaml"),
 		APIKeysConfigPath:       envStr("TOOLMESH_APIKEYS_CONFIG", "/app/config/apikeys.yaml"),

@@ -830,6 +830,48 @@ func TestBuildBody_MissingKeyOmitted(t *testing.T) {
 	}
 }
 
+// TestBuildBody_DefaultApplied verifies that a body param omitted by the caller
+// falls back to its declared `default` (matching path/header param behavior),
+// while a param without a default stays omitted and an explicitly provided value
+// still wins. This is what lets a JSON-RPC envelope ("jsonrpc"/"method"/"id") be
+// declared once via `default:` instead of repeated on every call.
+func TestBuildBody_DefaultApplied(t *testing.T) {
+	spec := &dadl.Spec{
+		Backend: dadl.BackendDef{
+			Name:    testBackendNameTestAPI,
+			Type:    transportTypeREST,
+			BaseURL: testBaseURLExample,
+			Tools:   map[string]dadl.ToolDef{"t": {Method: testMethodPOST, Path: "/"}},
+		},
+	}
+	adapter, err := NewRESTAdapter(spec, &testCredStore{}, slog.Default(), testRESTOpts)
+	if err != nil {
+		t.Fatalf("create adapter: %v", err)
+	}
+
+	tool := &dadl.ToolDef{
+		Params: map[string]dadl.ParamDef{
+			testParamName:   {Type: schemaTypeString, In: paramInBody, Default: "getEndpointsList"},
+			testParamFilter: {Type: schemaTypeString, In: paramInBody},
+		},
+	}
+
+	// Caller omits both params: the one with a default is emitted, the other not.
+	body := adapter.buildBody(tool, map[string]any{})
+	if body[testParamName] != "getEndpointsList" {
+		t.Errorf("body[name] = %v, want default %q", body[testParamName], "getEndpointsList")
+	}
+	if _, exists := body[testParamFilter]; exists {
+		t.Errorf("body should omit param 'filter' (no default, not provided): %v", body)
+	}
+
+	// An explicitly provided value overrides the default.
+	body = adapter.buildBody(tool, map[string]any{testParamName: testBackendNameTest})
+	if body[testParamName] != testBackendNameTest {
+		t.Errorf("body[name] = %v, want provided value (default must not override)", body[testParamName])
+	}
+}
+
 // TestBuildFormEncoded_NilStillSkipped verifies that on the form-encoded path
 // nil values are still dropped (not serialized as "<nil>" or the literal
 // string "null"), because form encoding has no representation for null.

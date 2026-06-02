@@ -676,9 +676,11 @@ func (a *RESTAdapter) buildQuery(tool *dadl.ToolDef, params map[string]any) stri
 // nil here would silently change a clear request into a no-op.
 //
 // A key that is not present in params is skipped (no entry written), which
-// correctly conveys "field omitted". The form-encoded path handles nil
-// separately in flattenFormValues (where `field=null` would be a meaningless
-// string), so this change is JSON-only.
+// correctly conveys "field omitted" — unless the param declares a `default`, in
+// which case the default value is emitted, matching path params (buildPath) and
+// header params. The form-encoded path handles nil separately in
+// flattenFormValues (where `field=null` would be a meaningless string), so this
+// change is JSON-only.
 func (a *RESTAdapter) buildBody(tool *dadl.ToolDef, params map[string]any) map[string]any {
 	body := make(map[string]any)
 	for name, def := range tool.Params {
@@ -687,6 +689,13 @@ func (a *RESTAdapter) buildBody(tool *dadl.ToolDef, params map[string]any) map[s
 		}
 		if val, ok := params[name]; ok {
 			body[name] = val
+		} else if def.Default != nil {
+			// An omitted body param falls back to its declared default, the same
+			// way path and header params do. This lets DADL authors declare
+			// constant body fields — e.g. a JSON-RPC envelope's "jsonrpc": "2.0"
+			// and "method": "<name>" — via `default:` instead of forcing every
+			// caller to repeat them.
+			body[name] = def.Default
 		}
 	}
 	if len(body) == 0 {

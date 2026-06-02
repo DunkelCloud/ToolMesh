@@ -20,15 +20,28 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/DunkelCloud/ToolMesh/internal/backend"
+	"github.com/DunkelCloud/ToolMesh/internal/blob"
 	"github.com/DunkelCloud/ToolMesh/internal/credentials"
+	"github.com/DunkelCloud/ToolMesh/internal/dadl"
 	"gopkg.in/yaml.v3"
+)
+
+// transport identifiers accepted in unit.yaml backends entries. Kept as
+// constants so the dispatch switch in LoadUnit stays grep-friendly.
+const (
+	transportMCPStdio = "stdio"
+	transportMCPHTTP  = "http"
+	transportREST     = "rest"
 )
 
 // LoadResult bundles a fully-initialized unit Backend with the MCPAdapter
 // that holds its private sub-backend sessions. The caller is responsible
-// for invoking adapter.Close() during shutdown.
+// for invoking adapter.Close() during shutdown. The blob store and other
+// resources owned by REST sub-backends are not tracked here — they are
+// reclaimed by the garbage collector when the unit Backend is dropped.
 type LoadResult struct {
 	Backend *Backend
 	Adapter *backend.MCPAdapter
@@ -68,12 +81,17 @@ func ScanDir(unitsDir string) ([]string, error) {
 }
 
 // LoadUnit parses one unit directory and returns a ready-to-register
-// Backend along with the MCPAdapter that owns its private sessions. The
-// sub-backend sessions are connected synchronously so describe() sees
-// fully-discovered tool lists; failures on individual sub-backends do not
-// abort the unit (the MCPAdapter logs and skips them), matching the
-// global startup semantics.
-func LoadUnit(ctx context.Context, dir string, creds credentials.CredentialStore, logger *slog.Logger) (*LoadResult, error) {
+// Backend along with the MCPAdapter that owns its private MCP sessions.
+// REST sub-backends are wired in-place against blobStore; pass nil for
+// units that do not declare any REST sub-backend (an absent blob store
+// downgrades REST entries to a logged error rather than a panic).
+//
+// MCP sub-backend sessions are connected synchronously so describe() can
+// observe fully-discovered tool lists. Failures on individual sub-backends
+// do not abort the unit — the MCPAdapter logs and skips them, matching the
+// global startup semantics — but a hard parse or wiring failure on a REST
+// entry aborts the unit so a half-wired sandbox is never exposed.
+func LoadUnit(ctx context.Context, dir string, creds credentials.CredentialStore, blobStore *blob.Store, logger *slog.Logger) (*LoadResult, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -104,12 +122,11 @@ func LoadUnit(ctx context.Context, dir string, creds credentials.CredentialStore
 	}
 
 	// Build the MCPAdapter for this unit. We connect synchronously here so
-	// describe() can read the discovered tool lists.
+	// describe() can read the discovered tool lists. NewMCPAdapterFromEntries
+	// already filters non-MCP transports, so passing the full backend list
+	// is safe — REST entries fall through to the dedicated branch below.
 	adapter := backend.NewMCPAdapterFromEntries(cfg.Backends, creds, logger)
 	if err := adapter.Connect(ctx); err != nil {
-		// Connect logs individual failures but never returns an error
-		// today; treat any future return as fatal for the unit so we do
-		// not silently expose a half-wired sandbox.
 		return nil, fmt.Errorf("connect sub-backends for %s: %w", cfg.Unit, err)
 	}
 
@@ -118,16 +135,20 @@ func LoadUnit(ctx context.Context, dir string, creds credentials.CredentialStore
 		if e.Name == "" {
 			continue
 		}
-		if e.Transport == "rest" {
-			// REST sub-backends are deliberately deferred — the dice
-			// walking-skeleton does not need them, and wiring them up
-			// requires the blob store/telemetry threading that lives
-			// in cmd/toolmesh. Track this as a follow-up.
-			logger.Warn("unit sub-backend with transport=rest skipped (not yet supported in units)",
-				"unit", cfg.Unit, "backend", e.Name)
-			continue
+		switch e.Transport {
+		case transportMCPStdio, transportMCPHTTP:
+			subBackends[e.Name] = &mcpSubBackend{adapter: adapter, subName: e.Name}
+		case transportREST:
+			rest, err := loadRESTSubBackend(dir, e, creds, blobStore, logger)
+			if err != nil {
+				adapter.Close()
+				return nil, fmt.Errorf("unit %s: sub-backend %q: %w", cfg.Unit, e.Name, err)
+			}
+			subBackends[e.Name] = rest
+		default:
+			adapter.Close()
+			return nil, fmt.Errorf("unit %s: sub-backend %q: unknown transport %q", cfg.Unit, e.Name, e.Transport)
 		}
-		subBackends[e.Name] = &mcpSubBackend{adapter: adapter, subName: e.Name}
 	}
 
 	b := New(cfg.Unit, string(source), implPath, subBackends, cfg.Expose, logger)
@@ -136,4 +157,86 @@ func LoadUnit(ctx context.Context, dir string, creds credentials.CredentialStore
 		return nil, err
 	}
 	return &LoadResult{Backend: b, Adapter: adapter}, nil
+}
+
+// loadRESTSubBackend parses the DADL file referenced by the unit entry
+// and constructs a RESTAdapter ready for use as a sub-backend. The DADL
+// path is resolved against the unit's own directory so units bundle their
+// API descriptions self-contained — there is no fallback to the global
+// TOOLMESH_DADL_DIR, by design.
+//
+// SSRF (allow_private_url) and TLS (tls_skip_verify) options carry the
+// same defaults as global REST backends; per-tenant credential aliasing
+// via env: works the same way.
+func loadRESTSubBackend(
+	unitDir string,
+	entry backend.BackendEntry,
+	creds credentials.CredentialStore,
+	blobStore *blob.Store,
+	logger *slog.Logger,
+) (backend.ToolBackend, error) {
+	if entry.DADL == "" {
+		return nil, fmt.Errorf("transport=rest requires a dadl path")
+	}
+	dadlPath := entry.DADL
+	if !filepath.IsAbs(dadlPath) {
+		dadlPath = filepath.Join(unitDir, dadlPath)
+	}
+	spec, err := dadl.Parse(dadlPath)
+	if err != nil {
+		return nil, fmt.Errorf("parse %s: %w", dadlPath, err)
+	}
+	if entry.URL != "" {
+		spec.Backend.BaseURL = entry.URL
+	}
+	// Force the in-spec backend name to match the unit-local entry name so
+	// the RESTAdapter's tool descriptors line up with what the sandbox
+	// binds under api.<entry.Name>.
+	if entry.Name != "" && entry.Name != spec.Backend.Name {
+		spec.Backend.Name = entry.Name
+	}
+
+	backendCreds := creds
+	if len(entry.Env) > 0 {
+		backendCreds = credentials.NewRemappingStore(creds, entry.Env)
+	}
+
+	allowPrivate := true
+	if entry.AllowPrivateURL != nil {
+		allowPrivate = *entry.AllowPrivateURL
+	}
+
+	rest, err := backend.NewRESTAdapter(spec, backendCreds, logger, backend.RESTAdapterOptions{
+		AllowPrivateURL: allowPrivate,
+		TLSSkipVerify:   entry.TLSSkipVerify,
+		ExposeTools:     entry.ExposeTools,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("build REST adapter: %w", err)
+	}
+	if blobStore != nil {
+		rest.SetBlobStore(blobStore)
+	}
+	if ttlStr, ok := entry.Options["blob_ttl"]; ok {
+		if d, perr := time.ParseDuration(ttlStr); perr == nil {
+			rest.SetBlobTTL(d)
+		} else {
+			logger.Warn("unit REST sub-backend: invalid blob_ttl, using default", "backend", entry.Name, "value", ttlStr)
+		}
+	}
+	if timeoutStr, ok := entry.Options["timeout"]; ok {
+		if d, perr := time.ParseDuration(timeoutStr); perr == nil {
+			rest.SetHTTPTimeout(d)
+		} else {
+			logger.Warn("unit REST sub-backend: invalid timeout, using default", "backend", entry.Name, "value", timeoutStr)
+		}
+	}
+	if timeoutStr, ok := entry.Options["streaming_timeout"]; ok {
+		if d, perr := time.ParseDuration(timeoutStr); perr == nil {
+			rest.SetStreamingHTTPTimeout(d)
+		} else {
+			logger.Warn("unit REST sub-backend: invalid streaming_timeout, using default", "backend", entry.Name, "value", timeoutStr)
+		}
+	}
+	return rest, nil
 }

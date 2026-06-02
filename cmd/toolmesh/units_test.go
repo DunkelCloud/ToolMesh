@@ -77,7 +77,7 @@ func TestLoadUnits_DuplicateNameSkipped(t *testing.T) {
 	comp := backend.NewCompositeBackend(nil)
 	creds := credentials.NewEmbeddedStore()
 
-	adapters := loadUnits(context.Background(), root, creds, comp, logger)
+	adapters := loadUnits(context.Background(), root, creds, nil, comp, logger)
 	t.Cleanup(func() {
 		for _, a := range adapters {
 			a.Close()
@@ -121,7 +121,7 @@ func TestLoadUnits_NameCollidesWithExistingBackend(t *testing.T) {
 	comp := backend.NewCompositeBackend(map[string]backend.ToolBackend{"ghost": pre})
 	creds := credentials.NewEmbeddedStore()
 
-	adapters := loadUnits(context.Background(), root, creds, comp, logger)
+	adapters := loadUnits(context.Background(), root, creds, nil, comp, logger)
 	t.Cleanup(func() {
 		for _, a := range adapters {
 			a.Close()
@@ -147,7 +147,7 @@ func TestLoadUnits_HappyPath(t *testing.T) {
 	comp := backend.NewCompositeBackend(nil)
 	creds := credentials.NewEmbeddedStore()
 
-	adapters := loadUnits(context.Background(), root, creds, comp, logger)
+	adapters := loadUnits(context.Background(), root, creds, nil, comp, logger)
 	t.Cleanup(func() {
 		for _, a := range adapters {
 			a.Close()

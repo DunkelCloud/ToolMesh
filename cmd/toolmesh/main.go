@@ -205,7 +205,7 @@ func main() {
 	// Load unit-backends. Each unit appears in the composite under its own
 	// name and is indistinguishable from any other backend for authz,
 	// audit and gate purposes. Failed units are logged and skipped.
-	unitAdapters := loadUnits(ctx, cfg.UnitsDir, credStore, compositeBackend, logger)
+	unitAdapters := loadUnits(ctx, cfg.UnitsDir, credStore, blobStore, compositeBackend, logger)
 	defer func() {
 		for _, a := range unitAdapters {
 			a.Close()
@@ -663,7 +663,7 @@ func backendsYAMLUnmarshal(data []byte, cfg *backend.BackendConfig) error {
 // each one to the composite backend under its declared name. Returns the
 // list of MCPAdapter instances owning the per-unit sub-backend sessions so
 // the caller can close them on shutdown.
-func loadUnits(ctx context.Context, unitsDir string, creds credentials.CredentialStore, comp *backend.CompositeBackend, logger *slog.Logger) []*backend.MCPAdapter {
+func loadUnits(ctx context.Context, unitsDir string, creds credentials.CredentialStore, blobStore *blob.Store, comp *backend.CompositeBackend, logger *slog.Logger) []*backend.MCPAdapter {
 	dirs, err := unit.ScanDir(unitsDir)
 	if err != nil {
 		logger.Error("failed to scan units dir", "dir", unitsDir, "error", err)
@@ -686,7 +686,7 @@ func loadUnits(ctx context.Context, unitsDir string, creds credentials.Credentia
 
 	adapters := make([]*backend.MCPAdapter, 0, len(dirs))
 	for _, d := range dirs {
-		res, loadErr := unit.LoadUnit(ctx, d, creds, logger)
+		res, loadErr := unit.LoadUnit(ctx, d, creds, blobStore, logger)
 		if loadErr != nil {
 			logger.Error("failed to load unit", "dir", d, "error", loadErr)
 			continue

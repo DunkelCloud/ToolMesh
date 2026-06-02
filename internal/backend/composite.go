@@ -83,7 +83,15 @@ func (c *CompositeBackend) AddPassthrough(b ToolBackend) {
 
 // Execute routes the tool call to the correct backend based on the name prefix.
 // Tool names use underscore as separator: "backend_toolname".
-// We match against known backend names (longest prefix wins).
+//
+// Routing rule: **longest matching prefix wins, across both layers**.
+// Both directly-named backends and passthrough sub-backends (advertised via
+// BackendSummarizer) contribute candidate prefixes; the longest match
+// determines the target. This matters when one backend's name is itself a
+// prefix of another's — e.g. unit "netdata" alongside an MCP sub-backend
+// "netdata-raw": without longest-match the call "netdata_raw_query" would
+// hit the unit, since Go map iteration is randomized. With longest-match
+// it always lands on netdata-raw via the passthrough that owns it.
 //
 // Bare-name promoted tools (configured via backends.yaml expose_tools) are
 // resolved to their canonical "<backend>_<tool>" form by the MCP handler
@@ -92,16 +100,14 @@ func (c *CompositeBackend) AddPassthrough(b ToolBackend) {
 func (c *CompositeBackend) Execute(ctx context.Context, toolName string, params map[string]any) (*ToolResult, error) {
 	s := c.state.Load()
 
-	// Check named backends by prefix match
-	for name, b := range s.backends {
-		prefix := name + "_"
-		if strings.HasPrefix(toolName, prefix) {
-			realTool := strings.TrimPrefix(toolName, prefix)
-			return b.Execute(ctx, realTool, params)
-		}
+	if match, ok := c.longestPrefix(toolName, s); ok && match.isNamed {
+		realTool := strings.TrimPrefix(toolName, match.name+"_")
+		return match.backend.Execute(ctx, realTool, params)
 	}
 
-	// Try passthrough backends (they handle their own routing)
+	// Either no prefix matched at all, or a passthrough sub-backend
+	// owns the longest prefix. Passthroughs handle their own routing,
+	// so hand them the full tool name in their registered order.
 	for _, b := range s.passthroughs {
 		result, err := b.Execute(ctx, toolName, params)
 		if err == nil {
@@ -115,6 +121,68 @@ func (c *CompositeBackend) Execute(ctx context.Context, toolName string, params 
 	}
 
 	return nil, fmt.Errorf("no backend found for tool %q", toolName)
+}
+
+// prefixMatch is the result of CompositeBackend.longestPrefix.
+type prefixMatch struct {
+	// isNamed is true when the matched backend is a directly-named entry
+	// that the composite can dispatch to itself; false when the matched
+	// prefix belongs to a passthrough sub-backend (the passthrough owns
+	// the actual routing).
+	isNamed bool
+	// name is the backend name (the part before the underscore separator),
+	// useful for trimming the prefix off the tool name.
+	name string
+	// backend is the named backend to dispatch to; only set when isNamed.
+	backend ToolBackend
+	// length is the byte length of the matching prefix including the
+	// trailing underscore. Used as the tie-breaker key.
+	length int
+}
+
+// longestPrefix scans every candidate prefix — both directly-named
+// backends and passthrough sub-backends advertised via BackendSummarizer
+// — and returns the longest match for toolName. Ties prefer named
+// backends so explicit registration wins over aggregated discovery.
+func (c *CompositeBackend) longestPrefix(toolName string, s *compositeState) (prefixMatch, bool) {
+	var best prefixMatch
+	found := false
+
+	for name, b := range s.backends {
+		prefix := name + "_"
+		if !strings.HasPrefix(toolName, prefix) {
+			continue
+		}
+		if !found || len(prefix) > best.length {
+			best = prefixMatch{isNamed: true, name: name, backend: b, length: len(prefix)}
+			found = true
+		}
+	}
+
+	for _, b := range s.passthroughs {
+		sum, ok := b.(BackendSummarizer)
+		if !ok {
+			continue
+		}
+		for _, info := range sum.BackendSummaries() {
+			if info.Name == "" {
+				continue
+			}
+			prefix := info.Name + "_"
+			if !strings.HasPrefix(toolName, prefix) {
+				continue
+			}
+			// Strict > so a named backend with equal-length prefix wins
+			// the tie (named registration is explicit; passthrough
+			// surfacing is derivative).
+			if !found || len(prefix) > best.length {
+				best = prefixMatch{isNamed: false, name: info.Name, length: len(prefix)}
+				found = true
+			}
+		}
+	}
+
+	return best, found
 }
 
 // ListTools aggregates tools from all backends.
@@ -186,21 +254,20 @@ func (c *CompositeBackend) Swap(backends map[string]ToolBackend, passthroughs []
 // the Access classification when available, or false if no backend owns the
 // tool. Backends that do not implement ToolMetadataLookup are skipped silently.
 //
+// Uses the same longest-prefix-wins rule as Execute so AuthZ/Gate
+// classification observes the same routing decision as the actual call.
+//
 // As with Execute, callers are expected to pass canonical "<backend>_<tool>"
 // names; the handler resolves bare-name aliases ahead of this call.
 func (c *CompositeBackend) LookupTool(toolName string) (ToolDescriptor, bool) {
 	s := c.state.Load()
 
-	for name, b := range s.backends {
-		prefix := name + "_"
-		if !strings.HasPrefix(toolName, prefix) {
-			continue
-		}
-		lookup, ok := b.(ToolMetadataLookup)
+	if match, ok := c.longestPrefix(toolName, s); ok && match.isNamed {
+		lookup, ok := match.backend.(ToolMetadataLookup)
 		if !ok {
 			return ToolDescriptor{}, false
 		}
-		realTool := strings.TrimPrefix(toolName, prefix)
+		realTool := strings.TrimPrefix(toolName, match.name+"_")
 		desc, found := lookup.LookupTool(realTool)
 		if !found {
 			return ToolDescriptor{}, false
@@ -211,6 +278,7 @@ func (c *CompositeBackend) LookupTool(toolName string) (ToolDescriptor, bool) {
 		return desc, true
 	}
 
+	// Either no prefix matched, or a passthrough owns the longest prefix.
 	for _, b := range s.passthroughs {
 		lookup, ok := b.(ToolMetadataLookup)
 		if !ok {

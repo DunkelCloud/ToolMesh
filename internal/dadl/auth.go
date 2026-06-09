@@ -373,22 +373,16 @@ func (a *RestAuth) doSessionLogin(ctx context.Context) error {
 
 	loginURL := a.baseURL + a.config.Login.Path
 
-	// Resolve credential references in body
-	body := make(map[string]string, len(a.config.Login.Body))
-	for k, v := range a.config.Login.Body {
-		if strings.HasPrefix(v, "credential:") {
-			credName := strings.TrimPrefix(v, "credential:")
-			resolved, err := a.creds.Get(ctx, credName, credentials.TenantInfo{})
-			if err != nil {
-				return fmt.Errorf("resolve login credential %q: %w", credName, err)
-			}
-			body[k] = resolved
-		} else {
-			body[k] = v
-		}
+	// Resolve credential references anywhere in the (possibly nested) login body.
+	// Body is map[string]any, so a JSON-RPC-style login can nest credentials inside
+	// an object — e.g. {"method":"account.login","params":{"user":"credential:..",
+	// "pass":"credential:.."}} — not just at the top level.
+	resolvedBody, err := a.resolveLoginCredentials(ctx, a.config.Login.Body)
+	if err != nil {
+		return err
 	}
 
-	bodyJSON, err := json.Marshal(body)
+	bodyJSON, err := json.Marshal(resolvedBody)
 	if err != nil {
 		return fmt.Errorf("marshal login body: %w", err)
 	}
@@ -438,4 +432,46 @@ func (a *RestAuth) doSessionLogin(ctx context.Context) error {
 	a.sessionTokenTTL = time.Now().Add(defaultSessionTTL)
 	a.logger.Info("session login successful", "tokens", len(a.sessionTokens), "ttl", defaultSessionTTL)
 	return nil
+}
+
+// resolveLoginCredentials walks a session-login body and replaces any string of
+// the form "credential:<name>" with the resolved secret, at any depth. This lets
+// a login body nest credentials inside an object (e.g. a JSON-RPC envelope's
+// params:{user,pass}) instead of only at the top level. Maps and slices are
+// rebuilt; all other values pass through unchanged.
+func (a *RestAuth) resolveLoginCredentials(ctx context.Context, v any) (any, error) {
+	switch val := v.(type) {
+	case string:
+		name, ok := strings.CutPrefix(val, "credential:")
+		if !ok {
+			return val, nil
+		}
+		resolved, err := a.creds.Get(ctx, name, credentials.TenantInfo{})
+		if err != nil {
+			return nil, fmt.Errorf("resolve login credential %q: %w", name, err)
+		}
+		return resolved, nil
+	case map[string]any:
+		out := make(map[string]any, len(val))
+		for k, child := range val {
+			resolved, err := a.resolveLoginCredentials(ctx, child)
+			if err != nil {
+				return nil, err
+			}
+			out[k] = resolved
+		}
+		return out, nil
+	case []any:
+		out := make([]any, len(val))
+		for i, child := range val {
+			resolved, err := a.resolveLoginCredentials(ctx, child)
+			if err != nil {
+				return nil, err
+			}
+			out[i] = resolved
+		}
+		return out, nil
+	default:
+		return v, nil
+	}
 }

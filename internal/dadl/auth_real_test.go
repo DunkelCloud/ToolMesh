@@ -238,7 +238,7 @@ func TestRestAuth_InjectSession(t *testing.T) {
 		Login: &SessionLogin{
 			Path:    "/",
 			Method:  httpMethodPOST,
-			Body:    map[string]string{"username": testUserAlice, "password": "credential:PW"}, //nolint:gosec // test credential reference
+			Body:    map[string]any{"username": testUserAlice, "password": "credential:PW"}, //nolint:gosec // test credential reference
 			Extract: map[string]string{"tok": "$.token"},
 		},
 		Inject: []InjectRule{
@@ -261,6 +261,57 @@ func TestRestAuth_InjectSession(t *testing.T) {
 	}
 }
 
+// TestRestAuth_SessionLogin_NestedCredentialBody verifies that a JSON-RPC-style
+// login body resolves "credential:" references nested inside an object (e.g.
+// params:{user,pass}) and preserves non-credential literals at every level.
+func TestRestAuth_SessionLogin_NestedCredentialBody(t *testing.T) {
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		//nolint:gosec // test cookie over plain HTTP httptest server
+		http.SetCookie(w, &http.Cookie{Name: "domrobot", Value: "sess1", Path: "/"})
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"code":1000,"resData":{"tfa":0}}`))
+	}))
+	defer srv.Close()
+
+	creds := &realMockCreds{creds: map[string]string{"U": testUserAlice, "P": "s3cret"}}
+	auth := NewRestAuth(AuthConfig{
+		Type: authTypeSession,
+		Login: &SessionLogin{
+			Path:   "/",
+			Method: httpMethodPOST,
+			Body: map[string]any{
+				"method": "account.login",
+				"params": map[string]any{"user": "credential:U", "pass": "credential:P", "lang": "en"}, //nolint:gosec // test credential references
+			},
+			Extract: map[string]string{"tfa": "$.resData.tfa"},
+		},
+	}, srv.URL, creds, newQuietLogger())
+
+	req, _ := http.NewRequestWithContext(context.Background(), httpMethodGET, srv.URL+"/x", nil)
+	if err := auth.InjectAuth(context.Background(), req); err != nil {
+		t.Fatalf("InjectAuth: %v", err)
+	}
+
+	if gotBody["method"] != "account.login" {
+		t.Errorf("top-level literal not preserved: method=%v", gotBody["method"])
+	}
+	params, ok := gotBody["params"].(map[string]any)
+	if !ok {
+		t.Fatalf("params is not a nested object: %#v", gotBody["params"])
+	}
+	if params["user"] != testUserAlice {
+		t.Errorf("nested credential user not resolved: got %v, want %v", params["user"], testUserAlice)
+	}
+	if params["pass"] != "s3cret" {
+		t.Errorf("nested credential pass not resolved: got %v", params["pass"])
+	}
+	if params["lang"] != "en" {
+		t.Errorf("nested literal not preserved: lang=%v", params["lang"])
+	}
+}
+
 func TestRestAuth_InjectSession_LoginFailure(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "nope", http.StatusUnauthorized)
@@ -273,7 +324,7 @@ func TestRestAuth_InjectSession_LoginFailure(t *testing.T) {
 		Login: &SessionLogin{
 			Path:   "/",
 			Method: httpMethodPOST,
-			Body:   map[string]string{"u": "v"},
+			Body:   map[string]any{"u": "v"},
 		},
 		Inject: []InjectRule{{Header: "X-Token", Value: "{{tok}}"}},
 	}, srv.URL, creds, newQuietLogger())
@@ -330,7 +381,7 @@ func TestRestAuth_SessionCookieForward(t *testing.T) {
 		Login: &SessionLogin{
 			Path:   "/login",
 			Method: httpMethodPOST,
-			Body:   map[string]string{"user": testAccessAdmin},
+			Body:   map[string]any{"user": testAccessAdmin},
 		},
 	}, srv.URL, &realMockCreds{}, newQuietLogger())
 
@@ -389,7 +440,7 @@ func TestRestAuth_SessionCookieForward_ResetOnReLogin(t *testing.T) {
 		Login: &SessionLogin{
 			Path:   "/",
 			Method: httpMethodPOST,
-			Body:   map[string]string{},
+			Body:   map[string]any{},
 		},
 		Refresh: &RefreshConfig{Action: sessionRefreshLogin},
 	}, srv.URL, &realMockCreds{}, newQuietLogger())

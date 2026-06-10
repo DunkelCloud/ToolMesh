@@ -139,7 +139,7 @@ type AuthConfig struct {
 type SessionLogin struct {
 	Method  string            `yaml:"method"`
 	Path    string            `yaml:"path"`
-	Body    map[string]string `yaml:"body"`    // values can be credential refs
+	Body    map[string]any    `yaml:"body"`    // values (any depth) can be credential refs
 	Extract map[string]string `yaml:"extract"` // token name → JSONPath
 }
 

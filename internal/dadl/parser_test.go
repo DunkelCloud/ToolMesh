@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestParseBytes_ValidMinimal(t *testing.T) {
@@ -567,6 +568,218 @@ backend:
 			}
 			if !strings.Contains(err.Error(), "backend.version") {
 				t.Errorf("error %q should mention backend.version", err.Error())
+			}
+		})
+	}
+}
+
+func TestParseBytes_FileURLResponse(t *testing.T) {
+	yaml := `
+spec: "https://dadl.ai/spec/dadl-spec-v0.1.md"
+backend:
+  name: tika
+  type: rest
+  base_url: https://tika.example.com
+  tools:
+    unpack:
+      method: PUT
+      path: /unpack
+      content_type: application/octet-stream
+      params:
+        file: { type: file_url, in: body, required: true }
+      response:
+        type: file_url
+        ttl: 24h
+`
+	spec, err := ParseBytes([]byte(yaml))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	rc := spec.Backend.Tools["unpack"].Response
+	if !rc.IsFileURL() {
+		t.Errorf("IsFileURL() = false, want true (Type = %q)", rc.Type)
+	}
+	if got := rc.FileURLTTL(); got != 24*time.Hour {
+		t.Errorf("FileURLTTL() = %v, want 24h", got)
+	}
+
+	file := spec.Backend.Tools["unpack"].Params["file"]
+	if file.Type != ParamTypeFileURL {
+		t.Errorf("param type = %q, want file_url", file.Type)
+	}
+}
+
+func TestResponseConfig_FileURLHelpers_Nil(t *testing.T) {
+	var rc *ResponseConfig
+	if rc.IsFileURL() {
+		t.Error("nil ResponseConfig IsFileURL() = true, want false")
+	}
+	if got := rc.FileURLTTL(); got != 0 {
+		t.Errorf("nil ResponseConfig FileURLTTL() = %v, want 0", got)
+	}
+	if got := (&ResponseConfig{TTL: "bogus"}).FileURLTTL(); got != 0 {
+		t.Errorf("invalid TTL FileURLTTL() = %v, want 0", got)
+	}
+}
+
+func TestParseBytes_FileURLValidationErrors(t *testing.T) {
+	const tmpl = `
+spec: "https://dadl.ai/spec/dadl-spec-v0.1.md"
+backend:
+  name: x
+  type: rest
+  base_url: https://api.example.com
+  tools:
+%s`
+
+	tests := []struct {
+		name    string
+		tool    string
+		wantErr string
+	}{
+		{
+			name: "response type unknown",
+			tool: `
+    t1:
+      method: GET
+      path: /x
+      response:
+        type: base64
+`,
+			wantErr: `response.type must be "file_url" or empty`,
+		},
+		{
+			name: "response ttl invalid",
+			tool: `
+    t1:
+      method: GET
+      path: /x
+      response:
+        type: file_url
+        ttl: "3 days"
+`,
+			wantErr: "not a valid duration",
+		},
+		{
+			name: "response ttl negative",
+			tool: `
+    t1:
+      method: GET
+      path: /x
+      response:
+        type: file_url
+        ttl: -1h
+`,
+			wantErr: "ttl must be positive",
+		},
+		{
+			name: "response ttl without file_url type",
+			tool: `
+    t1:
+      method: GET
+      path: /x
+      response:
+        ttl: 1h
+`,
+			wantErr: "ttl requires type: file_url",
+		},
+		{
+			name: "file_url param not in body",
+			tool: `
+    t1:
+      method: PUT
+      path: /x
+      params:
+        file: { type: file_url, in: query, required: true }
+`,
+			wantErr: "must be in: body",
+		},
+		{
+			name: "multiple file_url params without multipart",
+			tool: `
+    t1:
+      method: PUT
+      path: /x
+      content_type: application/octet-stream
+      params:
+        file: { type: file_url, in: body, required: true }
+        attachment: { type: file_url, in: body }
+`,
+			wantErr: "multiple file_url parameters require content_type: multipart/form-data",
+		},
+		{
+			name: "file_url plus body param without multipart",
+			tool: `
+    t1:
+      method: PUT
+      path: /x
+      content_type: application/octet-stream
+      params:
+        file: { type: file_url, in: body, required: true }
+        title: { type: string, in: body }
+`,
+			wantErr: "must be the only body parameter",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := ParseBytes([]byte(fmt.Sprintf(tmpl, tt.tool)))
+			if err == nil {
+				t.Fatal("expected validation error, got nil")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("error %q does not contain %q", err.Error(), tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestParseBytes_FileURLValid(t *testing.T) {
+	tests := []struct {
+		name string
+		tool string
+	}{
+		{
+			name: "raw body single file_url",
+			tool: `
+    t1:
+      method: PUT
+      path: /x
+      content_type: application/octet-stream
+      params:
+        file: { type: file_url, in: body, required: true }
+        Accept: { type: string, in: header, default: "text/plain" }
+`,
+		},
+		{
+			name: "multipart with file_url and form fields",
+			tool: `
+    t1:
+      method: POST
+      path: /x
+      content_type: multipart/form-data
+      params:
+        file: { type: file_url, in: body, required: true }
+        glossary: { type: file_url, in: body }
+        target_lang: { type: string, in: body, required: true }
+`,
+		},
+	}
+
+	const tmpl = `
+spec: "https://dadl.ai/spec/dadl-spec-v0.1.md"
+backend:
+  name: x
+  type: rest
+  base_url: https://api.example.com
+  tools:
+%s`
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := ParseBytes([]byte(fmt.Sprintf(tmpl, tt.tool))); err != nil {
+				t.Fatalf("unexpected error: %v", err)
 			}
 		})
 	}

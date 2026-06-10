@@ -42,6 +42,9 @@ const (
 	// DADL ParamDef "type:" value for file uploads.
 	paramTypeFile = "file"
 
+	// Fallback content type for binary payloads of unknown type.
+	contentTypeOctetStream = "application/octet-stream"
+
 	// ToolResult metadata keys.
 	metadataKeyBackend    = "backend"
 	metadataKeyTransport  = "transport"

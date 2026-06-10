@@ -51,6 +51,7 @@ const (
 const (
 	backendTypeREST = "rest"
 	paramInPath     = "path"
+	paramInBody     = "body"
 )
 
 // supportedSpecs lists spec URLs accepted by this version of ToolMesh.
@@ -156,6 +157,11 @@ func Validate(spec *Spec) error {
 		}
 	}
 
+	// Validate default response config
+	if err := validateResponse(b.Defaults.Response, "defaults.response"); err != nil {
+		return err
+	}
+
 	// Validate tools
 	if len(b.Tools) == 0 {
 		return fmt.Errorf("backend must define at least one tool")
@@ -201,6 +207,61 @@ func validateTool(name string, tool *ToolDef) error {
 		}
 	}
 
+	if err := validateFileURLParams(name, tool); err != nil {
+		return err
+	}
+
+	return validateResponse(tool.Response, fmt.Sprintf("tool %q: response", name))
+}
+
+// validateFileURLParams enforces the file_url constraints of DADL spec §6.2.1:
+// file_url params carry the request payload, so they must be `in: body`, and
+// outside multipart/form-data mode the fetched bytes ARE the raw request body —
+// a second body param would have nowhere to go.
+func validateFileURLParams(name string, tool *ToolDef) error {
+	fileURLCount := 0
+	otherBodyCount := 0
+	for pname, p := range tool.Params {
+		if p.Type == ParamTypeFileURL {
+			if p.In != paramInBody {
+				return fmt.Errorf("tool %q: file_url parameter %q must be in: body, got in: %q", name, pname, p.In)
+			}
+			fileURLCount++
+		} else if p.In == paramInBody {
+			otherBodyCount++
+		}
+	}
+	if fileURLCount > 0 && tool.ContentType != ContentTypeMultipartForm {
+		if fileURLCount > 1 {
+			return fmt.Errorf("tool %q: multiple file_url parameters require content_type: %s", name, ContentTypeMultipartForm)
+		}
+		if otherBodyCount > 0 {
+			return fmt.Errorf("tool %q: a file_url parameter must be the only body parameter unless content_type is %s", name, ContentTypeMultipartForm)
+		}
+	}
+	return nil
+}
+
+// validateResponse checks the response block of a tool or the backend defaults.
+func validateResponse(rc *ResponseConfig, prefix string) error {
+	if rc == nil {
+		return nil
+	}
+	if rc.Type != "" && rc.Type != ResponseTypeFileURL {
+		return fmt.Errorf("%s.type must be %q or empty, got %q", prefix, ResponseTypeFileURL, rc.Type)
+	}
+	if rc.TTL != "" {
+		if rc.Type != ResponseTypeFileURL {
+			return fmt.Errorf("%s.ttl requires type: %s", prefix, ResponseTypeFileURL)
+		}
+		d, err := time.ParseDuration(rc.TTL)
+		if err != nil {
+			return fmt.Errorf("%s.ttl %q is not a valid duration (e.g. \"24h\"): %w", prefix, rc.TTL, err)
+		}
+		if d <= 0 {
+			return fmt.Errorf("%s.ttl must be positive, got %q", prefix, rc.TTL)
+		}
+	}
 	return nil
 }
 

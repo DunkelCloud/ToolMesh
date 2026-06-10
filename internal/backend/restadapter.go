@@ -60,6 +60,7 @@ type RESTAdapter struct {
 	spec                *dadl.Spec
 	httpClient          *http.Client
 	streamingHTTPClient *http.Client // separate client with longer timeout for streaming responses
+	fileFetchClient     *http.Client // dedicated client for file_url input fetches (no backend cookies/auth)
 	auth                *dadl.RestAuth
 	creds               credentials.CredentialStore
 	logger              *slog.Logger
@@ -120,6 +121,17 @@ func NewRESTAdapter(spec *dadl.Spec, creds credentials.CredentialStore, logger *
 		CheckRedirect: redirectCheck,
 	}
 
+	// Dedicated client for fetching caller-provided file_url inputs. It shares
+	// the backend's private-address policy but never its cookie jar (set below),
+	// credential injection, or relaxed TLS settings — caller URLs are a separate
+	// trust domain from the configured backend. The long timeout accommodates
+	// large files; per-call deadlines come from the request context.
+	fileFetchClient := &http.Client{
+		Timeout:       defaultStreamingHTTPTimeout,
+		Transport:     SSRFSafeTransport(defaultHTTPTimeout, opts.AllowPrivateURL, false),
+		CheckRedirect: redirectCheck,
+	}
+
 	// Share cookie jar from auth so cookies set during login (e.g. UniFi
 	// session cookies) are forwarded to subsequent tool requests.
 	if jar := auth.CookieJar(); jar != nil {
@@ -133,6 +145,7 @@ func NewRESTAdapter(spec *dadl.Spec, creds credentials.CredentialStore, logger *
 		spec:                spec,
 		httpClient:          httpClient,
 		streamingHTTPClient: streamingClient,
+		fileFetchClient:     fileFetchClient,
 		auth:                auth,
 		creds:               creds,
 		logger:              logger,
@@ -251,7 +264,7 @@ func (a *RESTAdapter) Execute(ctx context.Context, toolName string, params map[s
 
 	// Streaming binary path: stream directly to file broker without buffering
 	rc := a.effectiveResponseConfig(&tool)
-	if rc != nil && rc.Binary && rc.Streaming && rc.StreamHandling == "collect" && a.fileBroker != nil {
+	if isBinaryResponse(rc) && rc.Streaming && rc.StreamHandling == "collect" && a.fileBroker != nil {
 		return a.executeStreamingBinary(ctx, &tool, params, rc)
 	}
 
@@ -329,9 +342,10 @@ func (a *RESTAdapter) Execute(ctx context.Context, toolName string, params map[s
 		}, nil
 	}
 
-	// Check for binary response — skip pagination/transform, route through binary handler
+	// Check for binary/file_url response — skip pagination/transform, route
+	// through the binary handler which stores the bytes and returns a URL
 	respConfig := a.effectiveResponseConfig(&tool)
-	if respConfig != nil && respConfig.Binary {
+	if isBinaryResponse(respConfig) {
 		return a.handleBinaryResponse(ctx, &tool, resp, body, respConfig)
 	}
 
@@ -453,52 +467,84 @@ func (a *RESTAdapter) PromotedTools() []Promotion {
 }
 
 func (a *RESTAdapter) doRequest(ctx context.Context, tool *dadl.ToolDef, params map[string]any) (*http.Response, []byte, error) {
-	// Build URL
-	toolPath, err := a.buildPath(tool, params)
-	if err != nil {
-		return nil, nil, err
-	}
-	urlStr, err := joinURL(a.spec.Backend.BaseURL, toolPath)
+	req, err := a.buildHTTPRequest(ctx, tool, params)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	// Build query string
+	// Log full request details (URL without auth headers)
+	a.logger.DebugContext(ctx, "REST request",
+		"backend", a.spec.Backend.Name,
+		"method", req.Method,
+		"url", req.URL.String(),
+	)
+
+	resp, err := a.httpClient.Do(req)
+	if err != nil {
+		return nil, nil, fmt.Errorf("http request: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	// Binary/file_url responses get the streaming ceiling, and exceeding it is
+	// an error rather than silent truncation — a truncated archive stored in
+	// the blob store would be served as a corrupt download.
+	limit := int64(maxResponseBytes)
+	binaryResp := isBinaryResponse(a.effectiveResponseConfig(tool))
+	if binaryResp {
+		limit = maxStreamingBytes
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
+	if err != nil {
+		return nil, nil, fmt.Errorf("read response: %w", err)
+	}
+	if int64(len(body)) > limit {
+		if binaryResp {
+			return nil, nil, fmt.Errorf("binary response exceeds the %d byte limit — enable response.streaming to pipe it to the file broker", limit)
+		}
+		body = body[:limit]
+		a.logger.Warn("response body truncated at max size", "backend", a.spec.Backend.Name, "maxBytes", limit)
+	}
+
+	return resp, body, nil
+}
+
+// buildHTTPRequest assembles the full HTTP request for a tool invocation:
+// URL, query string, body (JSON, form-encoded, multipart, or a fetched
+// file_url stream), headers, content type, and auth. On any error a streaming
+// body is closed before returning; once the request reaches an http.Client,
+// the transport owns closing the body.
+func (a *RESTAdapter) buildHTTPRequest(ctx context.Context, tool *dadl.ToolDef, params map[string]any) (*http.Request, error) {
+	toolPath, err := a.buildPath(tool, params)
+	if err != nil {
+		return nil, err
+	}
+	urlStr, err := joinURL(a.spec.Backend.BaseURL, toolPath)
+	if err != nil {
+		return nil, err
+	}
+
 	query := a.buildQuery(tool, params)
 	if query != "" {
 		urlStr += "?" + query
 	}
 
-	// Build body — multipart/form-data for file uploads, form-encoded or JSON otherwise
-	var bodyReader io.Reader
-	var contentTypeOverride string
-
-	if a.hasFileParams(tool) {
-		mr, ct, err := a.buildMultipartBody(tool, params)
-		if err != nil {
-			return nil, nil, fmt.Errorf("build multipart body: %w", err)
-		}
-		bodyReader = mr
-		contentTypeOverride = ct
-	} else if tool.ContentType == "application/x-www-form-urlencoded" {
-		bodyData := a.buildBody(tool, params)
-		if bodyData != nil {
-			bodyReader = strings.NewReader(a.buildFormEncoded(bodyData))
-		}
-	} else {
-		bodyData := a.buildBody(tool, params)
-		if bodyData != nil {
-			bodyJSON, err := json.Marshal(bodyData)
-			if err != nil {
-				return nil, nil, fmt.Errorf("marshal body: %w", err)
-			}
-			bodyReader = bytes.NewReader(bodyJSON)
+	bodyReader, contentTypeOverride, contentLen, err := a.buildRequestBody(ctx, tool, params)
+	if err != nil {
+		return nil, err
+	}
+	closeBody := func() {
+		if c, ok := bodyReader.(io.Closer); ok {
+			_ = c.Close()
 		}
 	}
 
 	req, err := http.NewRequestWithContext(ctx, strings.ToUpper(tool.Method), urlStr, bodyReader)
 	if err != nil {
-		return nil, nil, fmt.Errorf("create request: %w", err)
+		closeBody()
+		return nil, fmt.Errorf("create request: %w", err)
+	}
+	if contentLen >= 0 {
+		req.ContentLength = contentLen
 	}
 
 	// Set default headers
@@ -509,10 +555,12 @@ func (a *RESTAdapter) doRequest(ctx context.Context, tool *dadl.ToolDef, params 
 	// Apply per-tool `in: header` params (overrides defaults, but Content-Type
 	// and auth are reasserted below so they cannot be clobbered).
 	if err := a.applyHeaderParams(req, tool, params); err != nil {
-		return nil, nil, err
+		closeBody()
+		return nil, err
 	}
 
-	// Override content type: multipart boundary takes precedence, then tool-level override
+	// Override content type: multipart boundary / fetched file type takes
+	// precedence, then tool-level override
 	if contentTypeOverride != "" {
 		req.Header.Set("Content-Type", contentTypeOverride)
 	} else if tool.ContentType != "" {
@@ -521,31 +569,51 @@ func (a *RESTAdapter) doRequest(ctx context.Context, tool *dadl.ToolDef, params 
 
 	// Inject auth
 	if err := a.auth.InjectAuth(ctx, req); err != nil {
-		return nil, nil, fmt.Errorf("inject auth: %w", err)
+		closeBody()
+		return nil, fmt.Errorf("inject auth: %w", err)
 	}
 
-	// Log full request details (URL without auth headers)
-	a.logger.DebugContext(ctx, "REST request",
-		"backend", a.spec.Backend.Name,
-		"method", req.Method,
-		"url", urlStr,
-	)
+	return req, nil
+}
 
-	resp, err := a.httpClient.Do(req)
-	if err != nil {
-		return nil, nil, fmt.Errorf("http request: %w", err)
+// buildRequestBody assembles the request body for a tool invocation and
+// returns the reader, a Content-Type override (empty = tool/default applies),
+// and the body length in bytes (-1 = unknown or inferred from the reader).
+//
+// Body modes, in precedence order:
+//   - file_url param with non-multipart content_type → fetched bytes streamed
+//     as the raw body (DADL spec §6.2.1, e.g. Tika PUT /tika)
+//   - file_url params with content_type multipart/form-data, or legacy local
+//     "file" params → multipart/form-data (e.g. DeepL POST /v2/document)
+//   - content_type application/x-www-form-urlencoded → form encoding
+//   - otherwise → JSON
+func (a *RESTAdapter) buildRequestBody(ctx context.Context, tool *dadl.ToolDef, params map[string]any) (body io.Reader, contentType string, size int64, err error) {
+	switch {
+	case a.hasFileURLParams(tool) && tool.ContentType != dadl.ContentTypeMultipartForm:
+		return a.buildRawFileBody(ctx, tool, params)
+	case a.hasFileURLParams(tool) || a.hasFileParams(tool):
+		mr, ct, err := a.buildMultipartBody(ctx, tool, params)
+		if err != nil {
+			return nil, "", -1, fmt.Errorf("build multipart body: %w", err)
+		}
+		return mr, ct, -1, nil
+	case tool.ContentType == "application/x-www-form-urlencoded":
+		bodyData := a.buildBody(tool, params)
+		if bodyData == nil {
+			return nil, "", -1, nil
+		}
+		return strings.NewReader(a.buildFormEncoded(bodyData)), "", -1, nil
+	default:
+		bodyData := a.buildBody(tool, params)
+		if bodyData == nil {
+			return nil, "", -1, nil
+		}
+		bodyJSON, err := json.Marshal(bodyData)
+		if err != nil {
+			return nil, "", -1, fmt.Errorf("marshal body: %w", err)
+		}
+		return bytes.NewReader(bodyJSON), "", -1, nil
 	}
-	defer func() { _ = resp.Body.Close() }()
-
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
-	if err != nil {
-		return nil, nil, fmt.Errorf("read response: %w", err)
-	}
-	if int64(len(body)) == maxResponseBytes {
-		a.logger.Warn("response body truncated at max size", "backend", a.spec.Backend.Name, "maxBytes", maxResponseBytes)
-	}
-
-	return resp, body, nil
 }
 
 // joinURL combines a backend base URL with a tool path using RFC 3986
@@ -798,10 +866,12 @@ func (a *RESTAdapter) hasFileParams(tool *dadl.ToolDef) bool {
 }
 
 // buildMultipartBody creates a multipart/form-data request body with file uploads.
-// File params (type: file) are read from the filesystem and attached as file parts.
-// Non-file body params are added as form fields.
-// Returns the body reader and the Content-Type header (with boundary).
-func (a *RESTAdapter) buildMultipartBody(tool *dadl.ToolDef, params map[string]any) (io.Reader, string, error) {
+// File params are attached as file parts: type file_url is fetched from the
+// caller-provided URL (DADL spec §6.2.1), the legacy type "file" is read from
+// the local allowed upload directory. Non-file body params are added as form
+// fields, falling back to their declared default when omitted (matching
+// buildBody). Returns the body reader and the Content-Type header (with boundary).
+func (a *RESTAdapter) buildMultipartBody(ctx context.Context, tool *dadl.ToolDef, params map[string]any) (io.Reader, string, error) {
 	var buf bytes.Buffer
 	writer := multipart.NewWriter(&buf)
 
@@ -811,26 +881,34 @@ func (a *RESTAdapter) buildMultipartBody(tool *dadl.ToolDef, params map[string]a
 		}
 		val, ok := params[name]
 		if !ok {
+			if def.Default == nil {
+				continue
+			}
+			val = def.Default
+		}
+		if val == nil {
+			// Multipart has no null representation — an explicit nil means
+			// "omit the field" here, unlike the JSON body path.
 			continue
 		}
 
-		if def.Type == paramTypeFile {
+		switch def.Type {
+		case dadl.ParamTypeFileURL:
+			rawURL, ok := val.(string)
+			if !ok {
+				return nil, "", fmt.Errorf("file parameter %q: expected URL string, got %T", name, val)
+			}
+			if err := a.writeFileURLPart(ctx, writer, name, rawURL); err != nil {
+				return nil, "", err
+			}
+		case paramTypeFile:
 			filePath, ok := val.(string)
 			if !ok {
 				return nil, "", fmt.Errorf("file param %q: expected string path, got %T", name, val)
 			}
-			absPath, err := filepath.Abs(filePath)
+			cleanPath, err := a.validateUploadPath(name, filePath)
 			if err != nil {
-				return nil, "", fmt.Errorf("file param %q: resolve path: %w", name, err)
-			}
-			cleanPath := filepath.Clean(absPath)
-			if strings.Contains(cleanPath, "..") {
-				return nil, "", fmt.Errorf("file param %q: path traversal not allowed", name)
-			}
-			allowedAbs, _ := filepath.Abs(a.allowedUploadDir)
-			allowedClean := filepath.Clean(allowedAbs)
-			if !strings.HasPrefix(cleanPath, allowedClean+string(filepath.Separator)) && cleanPath != allowedClean {
-				return nil, "", fmt.Errorf("file param %q: path %q is outside allowed upload directory", name, cleanPath)
+				return nil, "", err
 			}
 			f, err := os.Open(cleanPath) //nolint:gosec // validated against allowedUploadDir above
 			if err != nil {
@@ -846,7 +924,7 @@ func (a *RESTAdapter) buildMultipartBody(tool *dadl.ToolDef, params map[string]a
 				return nil, "", fmt.Errorf("copy file %q: %w", name, err)
 			}
 			_ = f.Close()
-		} else {
+		default:
 			if err := writer.WriteField(name, formatScalarParam(val)); err != nil {
 				return nil, "", fmt.Errorf("write field %q: %w", name, err)
 			}
@@ -884,6 +962,22 @@ func (a *RESTAdapter) effectiveResponseConfig(tool *dadl.ToolDef) *dadl.Response
 	return a.spec.Backend.Defaults.Response
 }
 
+// isBinaryResponse reports whether the response config routes the body
+// through the binary handler — either the explicit binary flag (DADL spec
+// §6.3) or a file_url response type (§6.2.2).
+func isBinaryResponse(rc *dadl.ResponseConfig) bool {
+	return rc != nil && (rc.Binary || rc.IsFileURL())
+}
+
+// effectiveBlobTTL returns the per-tool response TTL when declared
+// (response.ttl, DADL spec §6.2.2), falling back to the adapter-wide blob TTL.
+func (a *RESTAdapter) effectiveBlobTTL(rc *dadl.ResponseConfig) time.Duration {
+	if ttl := rc.FileURLTTL(); ttl > 0 {
+		return ttl
+	}
+	return a.blobTTL
+}
+
 // handleBinaryResponse processes a binary backend response by either uploading
 // to the file broker (if configured) or encoding as a base64 data URL.
 func (a *RESTAdapter) handleBinaryResponse(ctx context.Context, _ *dadl.ToolDef, resp *http.Response, body []byte, respConfig *dadl.ResponseConfig) (*ToolResult, error) {
@@ -893,7 +987,7 @@ func (a *RESTAdapter) handleBinaryResponse(ctx context.Context, _ *dadl.ToolDef,
 		contentType = respConfig.ContentType
 	}
 	if contentType == "" {
-		contentType = "application/octet-stream"
+		contentType = contentTypeOctetStream
 	}
 
 	sizeBytes := int64(len(body))
@@ -910,10 +1004,25 @@ func (a *RESTAdapter) handleBinaryResponse(ctx context.Context, _ *dadl.ToolDef,
 		"binary":              true,
 	}
 
+	// An empty body (e.g. HTTP 204, or Tika /unpack on a document without
+	// embedded files) stores nothing — a download URL to a zero-byte blob
+	// would only confuse the caller.
+	if sizeBytes == 0 {
+		resultJSON, _ := json.Marshal(map[string]any{
+			fileKeyURL:       nil,
+			fileKeySizeBytes: 0,
+			"note":           "backend returned an empty body — no file stored",
+		})
+		return &ToolResult{
+			Content:  []any{textContent(string(resultJSON))},
+			Metadata: metadata,
+		}, nil
+	}
+
 	// Try file broker first
 	if a.fileBroker != nil {
 		filename := filenameFromHeaders(resp, contentType)
-		ttl := a.blobTTL
+		ttl := a.effectiveBlobTTL(respConfig)
 
 		result, err := a.fileBroker.Upload(ctx, filename, contentType, bytes.NewReader(body), ttl)
 		if err != nil {
@@ -938,7 +1047,7 @@ func (a *RESTAdapter) handleBinaryResponse(ctx context.Context, _ *dadl.ToolDef,
 
 	// Fallback: embedded blob store
 	if a.blobStore != nil {
-		ttl := a.blobTTL
+		ttl := a.effectiveBlobTTL(respConfig)
 		blobID, _, err := a.blobStore.Put(bytes.NewReader(body), contentType, ttl)
 		if err != nil {
 			return &ToolResult{
@@ -995,11 +1104,11 @@ func (a *RESTAdapter) executeStreamingBinary(ctx context.Context, tool *dadl.Too
 		contentType = respConfig.ContentType
 	}
 	if contentType == "" {
-		contentType = "application/octet-stream"
+		contentType = contentTypeOctetStream
 	}
 
 	filename := filenameFromHeaders(resp, contentType)
-	ttl := a.blobTTL
+	ttl := a.effectiveBlobTTL(respConfig)
 
 	// Limit streaming size to prevent unbounded memory/disk usage (H-5).
 	limited := io.LimitReader(resp.Body, maxStreamingBytes)
@@ -1041,73 +1150,15 @@ func (a *RESTAdapter) executeStreamingBinary(ctx context.Context, tool *dadl.Too
 // doRequestRaw performs the HTTP request but returns the raw response without
 // reading the body. The caller is responsible for closing resp.Body.
 func (a *RESTAdapter) doRequestRaw(ctx context.Context, tool *dadl.ToolDef, params map[string]any) (*http.Response, error) {
-	toolPath, err := a.buildPath(tool, params)
+	req, err := a.buildHTTPRequest(ctx, tool, params)
 	if err != nil {
 		return nil, err
-	}
-	urlStr, err := joinURL(a.spec.Backend.BaseURL, toolPath)
-	if err != nil {
-		return nil, err
-	}
-
-	query := a.buildQuery(tool, params)
-	if query != "" {
-		urlStr += "?" + query
-	}
-
-	var bodyReader io.Reader
-	var contentTypeOverride string
-
-	if a.hasFileParams(tool) {
-		mr, ct, err := a.buildMultipartBody(tool, params)
-		if err != nil {
-			return nil, fmt.Errorf("build multipart body: %w", err)
-		}
-		bodyReader = mr
-		contentTypeOverride = ct
-	} else if tool.ContentType == "application/x-www-form-urlencoded" {
-		bodyData := a.buildBody(tool, params)
-		if bodyData != nil {
-			bodyReader = strings.NewReader(a.buildFormEncoded(bodyData))
-		}
-	} else {
-		bodyData := a.buildBody(tool, params)
-		if bodyData != nil {
-			bodyJSON, err := json.Marshal(bodyData)
-			if err != nil {
-				return nil, fmt.Errorf("marshal body: %w", err)
-			}
-			bodyReader = bytes.NewReader(bodyJSON)
-		}
-	}
-
-	req, err := http.NewRequestWithContext(ctx, strings.ToUpper(tool.Method), urlStr, bodyReader)
-	if err != nil {
-		return nil, fmt.Errorf("create request: %w", err)
-	}
-
-	for k, v := range a.spec.Backend.Defaults.Headers {
-		req.Header.Set(k, v)
-	}
-
-	if err := a.applyHeaderParams(req, tool, params); err != nil {
-		return nil, err
-	}
-
-	if contentTypeOverride != "" {
-		req.Header.Set("Content-Type", contentTypeOverride)
-	} else if tool.ContentType != "" {
-		req.Header.Set("Content-Type", tool.ContentType)
-	}
-
-	if err := a.auth.InjectAuth(ctx, req); err != nil {
-		return nil, fmt.Errorf("inject auth: %w", err)
 	}
 
 	a.logger.DebugContext(ctx, "REST streaming request",
 		"backend", a.spec.Backend.Name,
 		"method", req.Method,
-		"url", urlStr,
+		"url", req.URL.String(),
 	)
 
 	resp, err := a.streamingHTTPClient.Do(req)

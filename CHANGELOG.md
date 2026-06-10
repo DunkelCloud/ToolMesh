@@ -11,6 +11,20 @@ for the full narrative and details.
 
 ## [Unreleased]
 
+### Added
+
+- DADL spec §6.2 file handling in the REST transport. Parameters declared
+  `type: file_url, in: body` are fetched from the caller-provided URL
+  (`http`/`https`, or `file` inside the allowed upload directory) and sent to
+  the backend as the raw streamed request body — or as a multipart/form-data
+  file part when the tool declares `content_type: multipart/form-data`
+  (e.g. DeepL document upload). Tools declaring `response: {type: file_url,
+  ttl: ...}` store binary responses in the file broker / blob store and
+  return a download URL honoring the per-tool TTL, instead of inlining raw
+  bytes as text. File fetches use a dedicated HTTP client that never carries
+  the backend's cookies, credentials, or relaxed TLS settings, and are
+  capped at 100 MB.
+
 ### Changed (BREAKING)
 
 - The `list_tools` MCP meta-tool was renamed to `discover_tools`. There is no

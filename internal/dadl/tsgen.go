@@ -159,6 +159,9 @@ func dadlTypeToTS(t string) string {
 		return "any[]"
 	case jsTypeObject:
 		return "Record<string, any>"
+	case ParamTypeFileURL, "file":
+		// file_url is a URL string; the legacy "file" type is a local path string.
+		return jsTypeString
 	default:
 		return "any"
 	}

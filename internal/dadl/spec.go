@@ -84,11 +84,25 @@ type ToolDef struct {
 
 // ParamDef describes a single parameter for a tool.
 type ParamDef struct {
-	Type     string `yaml:"type"` // string, integer, number, boolean, array, object
+	Type     string `yaml:"type"` // string, integer, number, boolean, array, object, file_url, file
 	In       string `yaml:"in"`   // path, query, header, body
 	Required bool   `yaml:"required"`
 	Default  any    `yaml:"default"`
 }
+
+// ParamTypeFileURL is the ParamDef.Type for file inputs referenced by URL
+// (DADL spec §6.2.1). The caller provides a URL; ToolMesh fetches the bytes
+// and builds the backend request from them.
+const ParamTypeFileURL = "file_url"
+
+// ResponseTypeFileURL is the ResponseConfig.Type for binary responses that
+// are stored in the file broker / blob store and returned as a download URL
+// (DADL spec §6.2.2).
+const ResponseTypeFileURL = "file_url"
+
+// ContentTypeMultipartForm is the tool content_type that switches file_url
+// parameters from raw-body mode to multipart/form-data upload mode.
+const ContentTypeMultipartForm = "multipart/form-data"
 
 // BodyDef describes a request body schema.
 type BodyDef struct {
@@ -97,6 +111,8 @@ type BodyDef struct {
 
 // ResponseConfig controls how API responses are processed.
 type ResponseConfig struct {
+	Type            string `yaml:"type"`          // "" (inline) or "file_url" (store + return download URL)
+	TTL             string `yaml:"ttl"`           // Go duration for file_url downloads, e.g. "24h"
 	ResultPath      string `yaml:"result_path"`   // JSONPath, e.g. "$.data"
 	MetadataPath    string `yaml:"metadata_path"` // JSONPath for metadata
 	Transform       string `yaml:"transform"`     // jq expression
@@ -108,6 +124,26 @@ type ResponseConfig struct {
 	MaxDuration     string `yaml:"max_duration"`
 	MaxStreamItems  int    `yaml:"max_stream_items"`
 	ContentType     string `yaml:"content_type"`
+}
+
+// IsFileURL reports whether the response is stored in the file broker / blob
+// store and returned to the caller as a download URL (DADL spec §6.2.2).
+func (r *ResponseConfig) IsFileURL() bool {
+	return r != nil && r.Type == ResponseTypeFileURL
+}
+
+// FileURLTTL returns the parsed download-URL TTL, or 0 when unset or invalid.
+// Validation rejects invalid TTLs at parse time; the zero fallback here only
+// guards against specs constructed programmatically without validation.
+func (r *ResponseConfig) FileURLTTL() time.Duration {
+	if r == nil || r.TTL == "" {
+		return 0
+	}
+	d, err := time.ParseDuration(r.TTL)
+	if err != nil || d <= 0 {
+		return 0
+	}
+	return d
 }
 
 // AuthConfig describes how to authenticate with the REST API.

@@ -20,6 +20,7 @@ import (
 	"log/slog"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -321,7 +322,9 @@ func discoverErrorResult(msg string) *backend.ToolResult {
 
 // discoverLimitParam extracts the optional limit argument. JSON numbers
 // arrive as float64; other numeric types are accepted for direct Go callers.
-// Invalid or negative values fall back to 0 (no explicit limit).
+// Numeric strings are accepted too — clients holding a stale tool schema
+// serialize unknown parameters as strings. Invalid or negative values fall
+// back to 0 (no explicit limit).
 func discoverLimitParam(params map[string]any) int {
 	switch n := params[argNameLimit].(type) {
 	case float64:
@@ -335,6 +338,10 @@ func discoverLimitParam(params map[string]any) int {
 	case int64:
 		if n > 0 {
 			return int(n)
+		}
+	case string:
+		if v, err := strconv.Atoi(strings.TrimSpace(n)); err == nil && v > 0 {
+			return v
 		}
 	}
 	return 0

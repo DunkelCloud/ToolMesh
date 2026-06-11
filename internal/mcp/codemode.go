@@ -18,6 +18,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/DunkelCloud/ToolMesh/internal/backend"
 	"github.com/DunkelCloud/ToolMesh/internal/toolindex"
@@ -167,11 +169,22 @@ func GenerateBackendOverview(tools []backend.ToolDescriptor) string {
 }
 
 // firstSentence returns the text up to the first sentence boundary,
-// truncated to summaryDescMax bytes on a rune boundary.
+// truncated to summaryDescMax bytes on a rune boundary. A period only
+// counts as a boundary when followed by an uppercase letter so that
+// abbreviations like "e.g. " or "i.e. " do not truncate the summary
+// mid-thought.
 func firstSentence(s string) string {
 	s = strings.TrimSpace(s)
-	for _, sep := range []string{". ", "! ", "? ", "\n"} {
-		if i := strings.Index(s, sep); i >= 0 {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		s = strings.TrimSpace(s[:i])
+	}
+	for i := 0; i+1 < len(s); i++ {
+		if (s[i] != '.' && s[i] != '!' && s[i] != '?') || s[i+1] != ' ' {
+			continue
+		}
+		rest := strings.TrimLeft(s[i+1:], " ")
+		r, _ := utf8.DecodeRuneInString(rest)
+		if unicode.IsUpper(r) {
 			s = s[:i+1]
 			break
 		}

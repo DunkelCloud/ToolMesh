@@ -158,16 +158,65 @@ func TestDiscoverTools_DetailOverride(t *testing.T) {
 func TestDiscoverTools_Limit(t *testing.T) {
 	h := newHandlerWithTools(t, makeDiscoveryTools(40))
 
-	text := discoverText(t, h, map[string]any{argNameLimit: float64(5)})
-	if !strings.Contains(text, "40 of 40 tools matched, showing first 5") {
-		t.Errorf("expected limit footer, got: %s", text)
+	// Clients with a current schema send limit as a JSON number (float64);
+	// clients holding a stale schema serialize unknown params as strings.
+	// Both must work.
+	for name, limit := range map[string]any{"number": float64(5), "string": "5"} {
+		t.Run(name, func(t *testing.T) {
+			text := discoverText(t, h, map[string]any{argNameLimit: limit})
+			if !strings.Contains(text, "40 of 40 tools matched, showing first 5") {
+				t.Errorf("expected limit footer, got: %s", text)
+			}
+			// 5 shown tools fall under the full threshold.
+			if !strings.Contains(text, "declare namespace toolmesh") {
+				t.Error("expected full declarations for limited result set")
+			}
+			if got := strings.Count(text, "function fake"); got != 5 {
+				t.Errorf("expected 5 function declarations, got %d", got)
+			}
+		})
 	}
-	// 5 shown tools fall under the full threshold.
-	if !strings.Contains(text, "declare namespace toolmesh") {
-		t.Error("expected full declarations for limited result set")
+}
+
+func TestFirstSentence(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "plain sentence boundary",
+			in:   "Get details of a device. Returns all fields.",
+			want: "Get details of a device.",
+		},
+		{
+			name: "abbreviation is not a boundary",
+			in:   "Set device key properties (e.g. key expiry, key duration). Replaces existing values.",
+			want: "Set device key properties (e.g. key expiry, key duration).",
+		},
+		{
+			name: "no boundary returns whole text",
+			in:   "List all zones",
+			want: "List all zones",
+		},
+		{
+			name: "newline always cuts",
+			in:   "First line\nsecond line",
+			want: "First line",
+		},
+		{
+			name: "lowercase after period keeps going",
+			in:   "Manages keys (i.e. api tokens) for the tailnet",
+			want: "Manages keys (i.e. api tokens) for the tailnet",
+		},
 	}
-	if got := strings.Count(text, "function fake"); got != 5 {
-		t.Errorf("expected 5 function declarations, got %d", got)
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := firstSentence(tt.in); got != tt.want {
+				t.Errorf("firstSentence(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
 	}
 }
 

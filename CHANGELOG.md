@@ -13,6 +13,21 @@ for the full narrative and details.
 
 ### Added
 
+- Progressive discovery for large tool catalogs. `discover_tools` now
+  auto-scales its output with the number of matches (≤25 full TypeScript
+  signatures, ≤250 one-line summaries, ≤2000 names only, above that a
+  per-backend overview), supports BM25-ranked free-text search via the new
+  `query` parameter (top 25 by default), accepts explicit `detail` and
+  `limit` overrides, always appends a matched/shown footer with refine
+  hints, and hard-caps every response at 50 KB. Previously a broad pattern
+  like `netbox` returned ~320 KB of full declarations on a large instance.
+- In-sandbox discovery for Code Mode: `toolmesh.discover("<free text>",
+  limit?)` returns ranked `{name, description, backend}` matches and
+  `toolmesh.describe("<tool_name>")` returns the full parameter schema —
+  both run locally against the descriptor index, do not count toward the
+  per-execution tool-call budget, and respect per-user authorization.
+- New dependency-free `internal/toolindex` package: in-memory BM25 index
+  over tool names, descriptions, and parameter names.
 - DADL spec §6.2 file handling in the REST transport. Parameters declared
   `type: file_url, in: body` are fetched from the caller-provided URL
   (`http`/`https`, or `file` inside the allowed upload directory) and sent to

@@ -26,6 +26,7 @@ import (
 	"github.com/DunkelCloud/ToolMesh/internal/backend"
 	"github.com/DunkelCloud/ToolMesh/internal/executor"
 	"github.com/DunkelCloud/ToolMesh/internal/metrics"
+	"github.com/DunkelCloud/ToolMesh/internal/toolindex"
 	"github.com/DunkelCloud/ToolMesh/internal/tsdef"
 	"github.com/DunkelCloud/ToolMesh/internal/userctx"
 )
@@ -65,7 +66,7 @@ func NewHandler(exec *executor.Executor, back backend.ToolBackend, coercer *tsde
 	}
 	logger.Info("codeParser initialized", "nameMapSize", len(parser.nameMap), "toolCount", len(tools))
 
-	runner := NewCodeRunner(parser.nameMap, exec, coercer, logger)
+	runner := NewCodeRunner(parser.nameMap, tools, exec, coercer, logger)
 
 	h := &Handler{
 		executor:   exec,
@@ -189,15 +190,25 @@ func (h *Handler) handleDiscoverTools(ctx context.Context, params map[string]any
 		patternStr = ".*"
 	}
 
+	queryStr, _ := params[argNameQuery].(string)
+
+	detail, _ := params[argNameDetail].(string)
+	if detail == "" {
+		detail = detailAuto
+	}
+	switch detail {
+	case detailAuto, detailFull, detailSummary, detailNames, detailOverview:
+	default:
+		return discoverErrorResult(fmt.Sprintf(
+			"Invalid detail %q: must be one of %q, %q, %q, %q, %q",
+			detail, detailAuto, detailFull, detailSummary, detailNames, detailOverview)), nil
+	}
+
+	limit := discoverLimitParam(params)
+
 	re, err := regexp.Compile("(?i)" + patternStr)
 	if err != nil {
-		return &backend.ToolResult{
-			IsError: true,
-			Content: []any{map[string]any{
-				contentKeyType: contentKeyText,
-				contentKeyText: fmt.Sprintf("Invalid regex pattern %q: %s", patternStr, err),
-			}},
-		}, nil
+		return discoverErrorResult(fmt.Sprintf("Invalid regex pattern %q: %s", patternStr, err)), nil
 	}
 
 	tools, err := h.backend.ListTools(ctx)
@@ -221,17 +232,71 @@ func (h *Handler) handleDiscoverTools(ctx context.Context, params map[string]any
 		}
 	}
 
-	// Include raw TypeScript for built-in tools only when pattern matches their content
-	var definitions string
-	if h.rawTS != "" && re.MatchString(h.rawTS) {
-		definitions = h.rawTS + "\n\n"
+	// Ranked free-text mode: re-order the (pattern- and authz-filtered)
+	// candidates by BM25 relevance. The corpus is small and changes with
+	// hot-reload, so the index is built per call — a few milliseconds for
+	// a few thousand short docs.
+	if queryStr != "" {
+		filtered = rankByQuery(filtered, queryStr)
+		if limit == 0 {
+			limit = discoverQueryLimit
+		}
 	}
-	definitions += GenerateToolDefinitions(filtered)
+
+	matched := len(filtered)
+	shown := filtered
+	if limit > 0 && len(shown) > limit {
+		shown = shown[:limit]
+	}
+
+	effectiveDetail := detail
+	if effectiveDetail == detailAuto {
+		effectiveDetail = autoDetail(len(shown))
+	}
+
+	var body string
+	switch effectiveDetail {
+	case detailFull:
+		// Include raw TypeScript for built-in tools only when the pattern
+		// matches their content; skipped in query mode (no regex semantics)
+		// and in cheaper tiers (it would dwarf the tool list itself).
+		if queryStr == "" && h.rawTS != "" && re.MatchString(h.rawTS) {
+			body = h.rawTS + "\n\n"
+		}
+		body += GenerateToolDefinitions(shown)
+	case detailSummary:
+		body = GenerateToolSummaries(shown)
+	case detailNames:
+		body = GenerateToolNames(shown)
+	case detailOverview:
+		// Counts are computed over every match — cutting them to `limit`
+		// would defeat the purpose of an overview.
+		body = GenerateBackendOverview(filtered)
+	}
+
+	// Fail-safe: no single discovery response may exceed the byte cap,
+	// regardless of tier and explicit detail choice.
+	truncated := false
+	if len(body) > discoverMaxBytes {
+		cut := strings.LastIndexByte(body[:discoverMaxBytes], '\n')
+		if cut <= 0 {
+			cut = discoverMaxBytes
+		}
+		body = body[:cut] + "\n// [TRUNCATED: output exceeded the " +
+			fmt.Sprintf("%d", discoverMaxBytes/1000) + " KB cap — narrow the search or use a coarser detail tier]\n"
+		truncated = true
+	}
+
+	definitions := body + discoveryFooter(matched, len(tools), len(shown), effectiveDetail, detail == detailAuto, queryStr)
 
 	h.logger.InfoContext(ctx, "discover_tools",
 		argNamePattern, patternStr,
-		"matched", len(filtered),
+		argNameQuery, queryStr,
+		argNameDetail, effectiveDetail,
+		"matched", matched,
+		"shown", len(shown),
 		"total", len(tools),
+		"truncated", truncated,
 	)
 
 	return &backend.ToolResult{
@@ -240,6 +305,82 @@ func (h *Handler) handleDiscoverTools(ctx context.Context, params map[string]any
 			contentKeyText: definitions,
 		}},
 	}, nil
+}
+
+// discoverErrorResult wraps a parameter validation message into an MCP error
+// result (the call itself succeeded; the arguments were unusable).
+func discoverErrorResult(msg string) *backend.ToolResult {
+	return &backend.ToolResult{
+		IsError: true,
+		Content: []any{map[string]any{
+			contentKeyType: contentKeyText,
+			contentKeyText: msg,
+		}},
+	}
+}
+
+// discoverLimitParam extracts the optional limit argument. JSON numbers
+// arrive as float64; other numeric types are accepted for direct Go callers.
+// Invalid or negative values fall back to 0 (no explicit limit).
+func discoverLimitParam(params map[string]any) int {
+	switch n := params[argNameLimit].(type) {
+	case float64:
+		if n > 0 {
+			return int(n)
+		}
+	case int:
+		if n > 0 {
+			return n
+		}
+	case int64:
+		if n > 0 {
+			return int(n)
+		}
+	}
+	return 0
+}
+
+// rankByQuery orders descriptors by BM25 relevance to the free-text query.
+// Descriptors that match no query term are dropped.
+func rankByQuery(descs []backend.ToolDescriptor, query string) []backend.ToolDescriptor {
+	docs := make([]toolindex.Doc, len(descs))
+	byName := make(map[string]backend.ToolDescriptor, len(descs))
+	for i, d := range descs {
+		docs[i] = descriptorDoc(d, d.Name)
+		byName[d.Name] = d
+	}
+
+	ranked := toolindex.Build(docs).Search(query, 0)
+	out := make([]backend.ToolDescriptor, 0, len(ranked))
+	for _, r := range ranked {
+		if d, ok := byName[r.Doc.Name]; ok {
+			out = append(out, d)
+		}
+	}
+	return out
+}
+
+// discoveryFooter renders the trailing status line appended to every
+// discover_tools response. Always present so the caller can tell how much
+// of the catalog it is looking at and how to refine.
+func discoveryFooter(matched, total, shown int, detail string, auto bool, query string) string {
+	mode := detail
+	if auto {
+		mode += " (auto)"
+	}
+
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "\n// ── %d of %d tools matched", matched, total)
+	if shown < matched {
+		if query != "" {
+			fmt.Fprintf(&sb, ", showing top %d", shown)
+		} else {
+			fmt.Fprintf(&sb, ", showing first %d", shown)
+		}
+	}
+	fmt.Fprintf(&sb, " — detail: %s.\n", mode)
+	sb.WriteString("// Refine: narrower pattern, query:\"<free text>\" for ranked results, detail:\"full\"|\"summary\"|\"names\"|\"overview\", limit:N.\n")
+	return sb.String()
 }
 
 func (h *Handler) handleExecuteCode(ctx context.Context, params map[string]any) *backend.ToolResult {
@@ -303,8 +444,8 @@ func (h *Handler) handleExecuteCode(ctx context.Context, params map[string]any) 
 func (h *Handler) BuildToolList(ctx context.Context) ([]ToolDefinition, error) {
 	backendDesc := h.buildBackendDescription()
 
-	discoverToolsDesc := "Discovery tool for ToolMesh. Returns TypeScript namespace declarations with full function signatures for the available backend tools. Pattern is an OPTIONAL case-insensitive regex matched against tool names and descriptions; omit it (or pass \".*\") to list all tools. Filter examples: \"github\" returns GitHub-related tools, \"pull\" finds pull-related tools across all backends. Call this as a SEPARATE MCP tool before execute_code — discover_tools is NOT a toolmesh.* member and must NOT be invoked from inside execute_code's `code` parameter."
-	executeCodeDesc := "Executes JavaScript that calls backend tools via toolmesh.<backend>_<function>(...). Tools are exposed as a flat snake_case namespace — `toolmesh.github_list_user_repos`, NOT `toolmesh.github.list_user_repos`. Example: `const repos = await toolmesh.github_list_user_repos({username: \"octocat\"}); return repos.slice(0, 5);`. The last expression or an explicit `return` is sent back; tool calls are recorded in order. IMPORTANT: Call discover_tools as a SEPARATE MCP tool first to learn current function names and parameter types — discover_tools is NOT a toolmesh.* member and must NOT be invoked from inside this `code` parameter. Do not guess function names or parameters from the hints below"
+	discoverToolsDesc := "Discovery tool for ToolMesh. Two search modes: `pattern` (case-insensitive regex matched against tool names and descriptions, e.g. \"github\" or \"^netbox_list\") and `query` (free text, BM25-ranked, returns the top 25 most relevant tools — preferred for exploratory searches like \"dns record management\"). Output detail auto-scales with result count: few matches return full TypeScript signatures, more matches return one-line summaries, then names only, then a per-backend overview; override with detail:\"full\"|\"summary\"|\"names\"|\"overview\" and cap results with limit:N. Every response ends with a footer stating matched/shown counts and refine hints. Call this as a SEPARATE MCP tool — inside execute_code use toolmesh.discover(query) and toolmesh.describe(name) instead."
+	executeCodeDesc := "Executes JavaScript that calls backend tools via toolmesh.<backend>_<function>(...). Tools are exposed as a flat snake_case namespace — `toolmesh.github_list_user_repos`, NOT `toolmesh.github.list_user_repos`. Example: `const repos = await toolmesh.github_list_user_repos({username: \"octocat\"}); return repos.slice(0, 5);`. The last expression or an explicit `return` is sent back; tool calls are recorded in order. In-sandbox discovery: `toolmesh.discover(\"<free text>\", limit?)` returns ranked {name, description, backend} matches and `toolmesh.describe(\"<tool_name>\")` returns the full parameter schema — use them instead of guessing function names or parameters. discover_tools is NOT a toolmesh.* member and must NOT be invoked from inside this `code` parameter"
 	if backendDesc != "" {
 		executeCodeDesc += ". " + backendDesc
 	}
@@ -319,6 +460,22 @@ func (h *Handler) BuildToolList(ctx context.Context) ([]ToolDefinition, error) {
 					argNamePattern: map[string]any{
 						contentKeyType:       jsonTypeString,
 						schemaKeyDescription: "Optional case-insensitive regex matched against tool names and descriptions. Defaults to \".*\" (all tools) when omitted or empty.",
+					},
+					argNameQuery: map[string]any{
+						contentKeyType:       jsonTypeString,
+						schemaKeyDescription: "Optional free-text search (e.g. \"dns record management\"). Results are BM25-ranked by relevance; the top 25 are returned unless limit is set. Combinable with pattern (pattern filters first, query ranks within).",
+					},
+					argNameDetail: map[string]any{
+						contentKeyType: jsonTypeString,
+						"enum":         []string{detailAuto, detailFull, detailSummary, detailNames, detailOverview},
+						schemaKeyDescription: "Output detail level. \"auto\" (default) scales with result count: ≤" +
+							fmt.Sprintf("%d", discoverFullMax) + " full TypeScript signatures, ≤" +
+							fmt.Sprintf("%d", discoverSummaryMax) + " one-line summaries, ≤" +
+							fmt.Sprintf("%d", discoverNamesMax) + " names only, above that a per-backend overview.",
+					},
+					argNameLimit: map[string]any{
+						contentKeyType:       jsonTypeInteger,
+						schemaKeyDescription: "Optional maximum number of tools to return. Defaults to 25 for query searches, unlimited for pattern searches.",
 					},
 				},
 			},

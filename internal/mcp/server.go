@@ -234,8 +234,8 @@ func (s *Server) handleInitialize(w http.ResponseWriter, req *jsonRPCRequest) {
 			},
 		},
 		"serverInfo": map[string]any{
-			"name":    "toolmesh",
-			"version": version.Version,
+			jsonKeyName: "toolmesh",
+			"version":   version.Version,
 		},
 	})
 }

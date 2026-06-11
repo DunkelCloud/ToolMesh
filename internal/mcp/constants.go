@@ -27,8 +27,15 @@ const (
 	schemaKeyRequired    = "required"
 	schemaKeyDescription = "description"
 
+	// Common JSON object key shared by tool listings, serverInfo, and the
+	// in-sandbox discovery helpers.
+	jsonKeyName = "name"
+
 	// MCP tool argument names referenced in built-in tool schemas.
 	argNamePattern = "pattern"
+	argNameQuery   = "query"
+	argNameDetail  = "detail"
+	argNameLimit   = "limit"
 	argNameCode    = "code"
 	argNamePayload = "payload"
 

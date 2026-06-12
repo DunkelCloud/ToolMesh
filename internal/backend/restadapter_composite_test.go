@@ -16,6 +16,7 @@ package backend
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -24,6 +25,89 @@ import (
 
 	"github.com/DunkelCloud/ToolMesh/internal/dadl"
 )
+
+const testCompositeCountItems = "count_items"
+
+// recordingChildGuard is a test ChildGuard that records the canonical tool
+// names it is asked to authorize and returns a fixed error (nil = allow).
+type recordingChildGuard struct {
+	seen []string
+	err  error
+}
+
+func (g *recordingChildGuard) CheckChild(_ context.Context, toolName string, _ map[string]any) error {
+	g.seen = append(g.seen, toolName)
+	return g.err
+}
+
+func TestRESTAdapter_CompositeChildGuard(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == testPathItems {
+			w.Header().Set(testHeaderContentType, testContentTypeJSON)
+			_, _ = w.Write([]byte(`[{"id": 1}, {"id": 2}]`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	newAdapter := func(t *testing.T) *RESTAdapter {
+		t.Helper()
+		spec := &dadl.Spec{
+			Spec: testDADLSpecURL,
+			Backend: dadl.BackendDef{
+				Name:    testBackendNameAPI,
+				Type:    transportTypeREST,
+				BaseURL: srv.URL,
+				Tools: map[string]dadl.ToolDef{
+					testToolListItems: {Method: testMethodGET, Path: testPathItems},
+				},
+				Composites: map[string]dadl.CompositeDef{
+					testCompositeCountItems: {
+						Description: "Count items",
+						Code:        "const items = await api.list_items(); return items.length;",
+						Timeout:     "5s",
+					},
+				},
+			},
+		}
+		a, err := NewRESTAdapter(spec, &testCredStore{}, slog.Default(), testRESTOpts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return a
+	}
+
+	t.Run("guard authorizes each child with its canonical name", func(t *testing.T) {
+		adapter := newAdapter(t)
+		guard := &recordingChildGuard{}
+		adapter.SetChildGuard(guard)
+
+		result, err := adapter.Execute(context.Background(), testCompositeCountItems, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.IsError {
+			t.Fatalf("composite returned error: %v", result.Content)
+		}
+		if len(guard.seen) != 1 || guard.seen[0] != testBackendNameAPI+"_"+testToolListItems {
+			t.Errorf("guard saw %v, want [%s_%s]", guard.seen, testBackendNameAPI, testToolListItems)
+		}
+	})
+
+	t.Run("guard denial aborts the composite (fail closed)", func(t *testing.T) {
+		adapter := newAdapter(t)
+		adapter.SetChildGuard(&recordingChildGuard{err: errors.New("not authorized")})
+
+		result, err := adapter.Execute(context.Background(), testCompositeCountItems, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !result.IsError {
+			t.Error("expected composite to fail closed when the child guard denies the child call")
+		}
+	})
+}
 
 func TestRESTAdapter_ExecuteComposite(t *testing.T) {
 	// Upstream: GET /items returns a JSON array.
@@ -50,7 +134,7 @@ func TestRESTAdapter_ExecuteComposite(t *testing.T) {
 				},
 			},
 			Composites: map[string]dadl.CompositeDef{
-				"count_items": {
+				testCompositeCountItems: {
 					Description: "Count items",
 					Params:      map[string]dadl.ParamDef{},
 					Code:        "const items = await api.list_items(); return items.length;",
@@ -69,7 +153,7 @@ func TestRESTAdapter_ExecuteComposite(t *testing.T) {
 	tools, _ := adapter.ListTools(context.Background())
 	found := false
 	for _, tool := range tools {
-		if tool.Name == "count_items" {
+		if tool.Name == testCompositeCountItems {
 			found = true
 		}
 	}
@@ -78,7 +162,7 @@ func TestRESTAdapter_ExecuteComposite(t *testing.T) {
 	}
 
 	// Execute the composite.
-	result, err := adapter.Execute(context.Background(), "count_items", nil)
+	result, err := adapter.Execute(context.Background(), testCompositeCountItems, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

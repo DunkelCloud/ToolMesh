@@ -69,6 +69,16 @@ type RESTAdapter struct {
 	blobStore           *blob.Store       // embedded blob store for binary responses
 	blobTTL             time.Duration     // TTL for blob URLs (from backends.yaml options.blob_ttl)
 	exposeTools         []string          // bare tool names to promote as direct MCP tools (from backends.yaml expose_tools)
+	fileURLAllowedHosts map[string]bool   // optional allowlist of lowercase hostnames for caller file_url fetches; nil/empty = no restriction
+	childGuard          ChildGuard        // authorizes composite child api.* calls; nil = no per-child checks (e.g. standalone/tests)
+}
+
+// SetChildGuard installs the guard used to authorize composite child api.*
+// calls. It is wired after construction because the guard (the executor) is
+// built after the adapters. A nil guard leaves child calls unchecked, which
+// preserves behavior for standalone use and tests.
+func (a *RESTAdapter) SetChildGuard(g ChildGuard) {
+	a.childGuard = g
 }
 
 // RESTAdapterOptions controls per-backend security settings.
@@ -76,6 +86,19 @@ type RESTAdapterOptions struct {
 	// AllowPrivateURL skips SSRF base_url validation, permitting private/loopback
 	// addresses. This is the default for admin-configured backends.
 	AllowPrivateURL bool
+	// AllowPrivateFileURL permits caller-supplied file_url parameters to resolve
+	// to private/loopback/link-local/metadata addresses. It is deliberately
+	// separate from AllowPrivateURL: base_url is admin-configured and trusted,
+	// whereas file_url values come from the tool caller. Default false (fail
+	// closed) so a caller cannot turn the file fetch into an SSRF primitive
+	// against internal services unless an operator opts in per backend.
+	AllowPrivateFileURL bool
+	// FileURLAllowedHosts, when non-empty, restricts caller file_url fetches to
+	// this exact set of hostnames (matched case-insensitively). This is the
+	// recommended control for backends that must fetch from a known internal
+	// host: combine it with AllowPrivateFileURL so only those hosts are
+	// reachable, rather than the whole private range.
+	FileURLAllowedHosts []string
 	// TLSSkipVerify accepts invalid or self-signed TLS certificates.
 	TLSSkipVerify bool
 	// ExposeTools lists bare tool names from this backend that should be
@@ -121,15 +144,18 @@ func NewRESTAdapter(spec *dadl.Spec, creds credentials.CredentialStore, logger *
 		CheckRedirect: redirectCheck,
 	}
 
-	// Dedicated client for fetching caller-provided file_url inputs. It shares
-	// the backend's private-address policy but never its cookie jar (set below),
-	// credential injection, or relaxed TLS settings — caller URLs are a separate
-	// trust domain from the configured backend. The long timeout accommodates
-	// large files; per-call deadlines come from the request context.
+	// Dedicated client for fetching caller-provided file_url inputs. Caller URLs
+	// are a separate trust domain from the configured backend, so the fetch
+	// policy is governed by AllowPrivateFileURL (default false) — NOT the
+	// backend's AllowPrivateURL — and the client never carries the cookie jar
+	// (set below), credential injection, or relaxed TLS settings. The long
+	// timeout accommodates large files; per-call deadlines come from the request
+	// context.
+	fileRedirectCheck := newRedirectChecker(opts.AllowPrivateFileURL)
 	fileFetchClient := &http.Client{
 		Timeout:       defaultStreamingHTTPTimeout,
-		Transport:     SSRFSafeTransport(defaultHTTPTimeout, opts.AllowPrivateURL, false),
-		CheckRedirect: redirectCheck,
+		Transport:     SSRFSafeTransport(defaultHTTPTimeout, opts.AllowPrivateFileURL, false),
+		CheckRedirect: fileRedirectCheck,
 	}
 
 	// Share cookie jar from auth so cookies set during login (e.g. UniFi
@@ -140,6 +166,16 @@ func NewRESTAdapter(spec *dadl.Spec, creds credentials.CredentialStore, logger *
 	}
 
 	exposeTools := filterExposeTools(spec, opts.ExposeTools, logger)
+
+	var fileURLAllowedHosts map[string]bool
+	if len(opts.FileURLAllowedHosts) > 0 {
+		fileURLAllowedHosts = make(map[string]bool, len(opts.FileURLAllowedHosts))
+		for _, h := range opts.FileURLAllowedHosts {
+			if h = strings.TrimSpace(strings.ToLower(h)); h != "" {
+				fileURLAllowedHosts[h] = true
+			}
+		}
+	}
 
 	return &RESTAdapter{
 		spec:                spec,
@@ -152,6 +188,7 @@ func NewRESTAdapter(spec *dadl.Spec, creds credentials.CredentialStore, logger *
 		allowedUploadDir:    defaultAllowedUploadDir,
 		blobTTL:             time.Hour,
 		exposeTools:         exposeTools,
+		fileURLAllowedHosts: fileURLAllowedHosts,
 	}, nil
 }
 
@@ -472,7 +509,11 @@ func (a *RESTAdapter) doRequest(ctx context.Context, tool *dadl.ToolDef, params 
 		return nil, nil, err
 	}
 
-	// Log full request details (URL without auth headers)
+	// Debug-level request trace. Header-based auth is not in the URL, but a
+	// query-injected API key (auth.inject_into: query) is — so this line can
+	// contain a credential at debug level. That is intentional for diagnosing
+	// auth problems; the default LOG_LEVEL is "info" so it is not emitted unless
+	// an operator explicitly opts into debug logging.
 	a.logger.DebugContext(ctx, "REST request",
 		"backend", a.spec.Backend.Name,
 		"method", req.Method,
@@ -1362,6 +1403,16 @@ func (a *RESTAdapter) executeComposite(ctx context.Context, name string, comp *d
 	// The executor delegates api.* calls to the RESTAdapter's own Execute,
 	// converting ToolResult to a plain value for the sandbox.
 	executor := func(ctx context.Context, toolName string, toolParams map[string]any) (any, error) {
+		// A child api.* call bypasses the top-level executor pipeline, so apply
+		// the same authorization and pre-execution gate here, keyed on the
+		// canonical "<backend>_<tool>" name. Fail closed: a guard error aborts
+		// the child (and the composite).
+		if a.childGuard != nil {
+			canonical := a.spec.Backend.Name + "_" + toolName
+			if err := a.childGuard.CheckChild(ctx, canonical, toolParams); err != nil {
+				return nil, err
+			}
+		}
 		result, err := a.Execute(ctx, toolName, toolParams)
 		if err != nil {
 			return nil, err

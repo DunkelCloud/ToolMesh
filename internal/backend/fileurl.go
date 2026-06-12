@@ -26,6 +26,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"strings"
 
 	"github.com/DunkelCloud/ToolMesh/internal/dadl"
 )
@@ -140,10 +141,16 @@ func (a *RESTAdapter) fetchFileURL(ctx context.Context, paramName, rawURL string
 }
 
 // fetchHTTPFile downloads a file over HTTP(S) using the adapter's dedicated
-// fetch client. The client shares the backend's private-address policy but
-// never its cookie jar, credentials, or relaxed TLS settings — caller-provided
-// URLs are a separate trust domain from the configured backend.
+// fetch client. Caller-provided URLs are a separate trust domain from the
+// configured backend: the client never carries the backend's cookie jar,
+// credentials, or relaxed TLS settings, its address-class policy is governed by
+// AllowPrivateFileURL (default deny), and an optional per-backend host
+// allowlist further restricts which destinations are reachable.
 func (a *RESTAdapter) fetchHTTPFile(ctx context.Context, paramName, rawURL string) (*fetchedFile, error) {
+	if err := a.checkFileURLHostAllowed(paramName, rawURL); err != nil {
+		return nil, err
+	}
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, http.NoBody)
 	if err != nil {
 		return nil, fmt.Errorf("file parameter %q: create fetch request: %w", paramName, err)
@@ -155,9 +162,11 @@ func (a *RESTAdapter) fetchHTTPFile(ctx context.Context, paramName, rawURL strin
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		// Do not echo the upstream response body back to the caller — for a
+		// caller-controlled URL that body would be an SSRF read channel. The
+		// status code is enough to diagnose the failure.
 		_ = resp.Body.Close()
-		return nil, fmt.Errorf("file parameter %q: fetch %s returned HTTP %d: %s", paramName, rawURL, resp.StatusCode, string(snippet))
+		return nil, fmt.Errorf("file parameter %q: fetch %s returned HTTP %d", paramName, rawURL, resp.StatusCode)
 	}
 	if resp.ContentLength > maxFileFetchBytes {
 		_ = resp.Body.Close()
@@ -175,6 +184,25 @@ func (a *RESTAdapter) fetchHTTPFile(ctx context.Context, paramName, rawURL strin
 		Filename:    fetchedFilename(resp, rawURL),
 		Size:        resp.ContentLength,
 	}, nil
+}
+
+// checkFileURLHostAllowed enforces the optional per-backend file_url host
+// allowlist. When the allowlist is empty the call is permitted (only the
+// transport-level address-class policy applies); otherwise the URL's hostname
+// must appear in the allowlist (case-insensitive).
+func (a *RESTAdapter) checkFileURLHostAllowed(paramName, rawURL string) error {
+	if len(a.fileURLAllowedHosts) == 0 {
+		return nil
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("file parameter %q: invalid URL %q: %w", paramName, rawURL, err)
+	}
+	host := strings.ToLower(u.Hostname())
+	if !a.fileURLAllowedHosts[host] {
+		return fmt.Errorf("file parameter %q: host %q is not in the allowed file_url hosts for this backend", paramName, u.Hostname())
+	}
+	return nil
 }
 
 // openLocalFileURL opens a file:// URL. Like the legacy local "file" parameter

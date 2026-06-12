@@ -40,6 +40,34 @@ func TestSandbox_LockdownRuntimeRuns(t *testing.T) {
 	}
 }
 
+// TestSandbox_ConstructorChainBlocked verifies that the prototype-chain route
+// to the Function constructor is closed after lockdown. Each payload tries to
+// reach a callable Function constructor via `.constructor`; with the freeze in
+// place the constructor slot is undefined, so the call throws and the catch
+// branch returns "blocked" instead of the computed value.
+func TestSandbox_ConstructorChainBlocked(t *testing.T) {
+	payloads := []string{
+		`(function(){}).constructor("return 1+1")()`,
+		`[].constructor.constructor("return 7")()`,
+		`"".constructor.constructor("return 8")()`,
+		`({}).constructor.constructor("return 11")()`,
+		`(function*(){}).constructor("return 9")()`,
+		`(async function(){}).constructor("return 10")()`,
+	}
+	for _, p := range payloads {
+		code := `try { var r = ` + p + `; return "BYPASS:" + r; } catch (e) { return "blocked"; }`
+		comp := dadl.CompositeDef{Description: "x", Code: code, Timeout: "5s"}
+		r, err := Execute(context.Background(), &comp, "test", nil, mockExecutor(nil), nil)
+		if err != nil {
+			// An execution-level error is also an acceptable "blocked" outcome.
+			continue
+		}
+		if got, _ := r.Value.(string); got != "blocked" {
+			t.Errorf("constructor-chain bypass not blocked for %q: got %v", p, r.Value)
+		}
+	}
+}
+
 // TestScanCode_ClassWithForbiddenIdentifier ensures the scanner walks class
 // bodies (walkClassBody) and reports violations inside methods / fields /
 // static blocks.

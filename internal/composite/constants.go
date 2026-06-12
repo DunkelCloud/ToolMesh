@@ -14,6 +14,12 @@
 
 package composite
 
+// maxJSCallStackDepth bounds the goja runtime call stack so unbounded JS
+// recursion throws a catchable RangeError rather than growing the runtime
+// stack toward an out-of-memory condition. The value is well above any
+// legitimate composite call depth.
+const maxJSCallStackDepth = 2000
+
 // JavaScript identifier names referenced by the sandbox lockdown and the
 // AST scanner. Centralized so the goconst linter does not flag each
 // occurrence and so the two lists stay in sync.

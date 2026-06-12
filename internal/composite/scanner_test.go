@@ -117,6 +117,41 @@ func TestScanCode(t *testing.T) {
 	}
 }
 
+func TestScanCode_MemberAccessBypass(t *testing.T) {
+	tests := []struct {
+		name          string
+		code          string
+		wantViolation bool // true: at least one violation expected
+	}{
+		// Member access to blocklisted property names must be flagged.
+		{"dot constructor", `const F = (function(){}).constructor;`, true},
+		{"bracket constructor", `const F = obj["constructor"];`, true},
+		{"chained constructor", `const F = [].constructor.constructor;`, true},
+		{"dot __proto__", `const p = obj.__proto__;`, true},
+		{"bracket __proto__", `const p = r['__proto__'];`, true},
+		{"dot Reflect", `const g = obj.Reflect;`, true},
+		// Reads with non-literal members and legitimate property definitions
+		// must NOT be flagged (no false positives).
+		{"dynamic index", `const v = arr[i];`, false},
+		{"quoted object key", `const o = {"constructor": 1};`, false},
+		{"normal property", `const n = obj.value;`, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			violations, err := ScanCode(tt.code, "test")
+			if err != nil {
+				t.Fatalf("unexpected parse error: %v", err)
+			}
+			if tt.wantViolation && len(violations) == 0 {
+				t.Errorf("expected a violation for %q, got none", tt.code)
+			}
+			if !tt.wantViolation && len(violations) != 0 {
+				t.Errorf("expected no violation for %q, got %v", tt.code, violations)
+			}
+		})
+	}
+}
+
 func TestScanCode_LineNumbers(t *testing.T) {
 	code := "const a = 1;\nconst b = fetch('x');\nconst c = 3;"
 	violations, err := ScanCode(code, "test")

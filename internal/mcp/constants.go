@@ -14,6 +14,11 @@
 
 package mcp
 
+// maxJSCallStackDepth bounds the code-mode goja runtime call stack so
+// unbounded JS recursion throws a catchable RangeError rather than growing
+// the runtime stack toward an out-of-memory condition.
+const maxJSCallStackDepth = 2000
+
 // JSON Schema and MCP content-block string literals used in many
 // places across the package. Centralized so the goconst linter does not
 // flag each occurrence.

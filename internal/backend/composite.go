@@ -66,6 +66,23 @@ func (c *CompositeBackend) SetLogger(logger *slog.Logger) {
 	c.logger.Store(logger)
 }
 
+// SetChildGuard propagates a ChildGuard to every child backend that supports
+// one (currently the REST adapters, which run composites). Call it after the
+// executor is built so composite child api.* calls are authorized and gated.
+func (c *CompositeBackend) SetChildGuard(g ChildGuard) {
+	s := c.state.Load()
+	for _, b := range s.backends {
+		if setter, ok := b.(childGuardSetter); ok {
+			setter.SetChildGuard(g)
+		}
+	}
+	for _, b := range s.passthroughs {
+		if setter, ok := b.(childGuardSetter); ok {
+			setter.SetChildGuard(g)
+		}
+	}
+}
+
 // AddPassthrough adds a backend that manages its own tool name prefixes.
 // Tool calls are delegated to passthrough backends when no named backend matches.
 func (c *CompositeBackend) AddPassthrough(b ToolBackend) {

@@ -43,47 +43,51 @@ var blockedGlobals = []string{
 	"global",
 }
 
-// LockdownRuntime removes all dangerous globals from the goja runtime and
-// overrides eval/Function with error-returning stubs.
+// prototypeFreezeScripts clears the `constructor` reference on the intrinsic
+// prototypes so the prototype chain cannot be used to reach the Function
+// constructor, e.g. `(function(){}).constructor('code')()` or
+// `[].constructor.constructor('code')()`. Each statement runs in its own
+// RunString: a parse error in one (e.g. an unsupported literal) must not
+// prevent the others from applying, and a surrounding try/catch does not
+// catch SyntaxErrors.
+var prototypeFreezeScripts = []string{
+	`Object.defineProperty(Function.prototype, 'constructor', {value: undefined, writable: false, configurable: false});`,
+	`Object.defineProperty(Object.prototype, 'constructor', {value: undefined, writable: false, configurable: false});`,
+	// AsyncFunction and GeneratorFunction constructors are reached via their own
+	// prototype's `constructor` slot, independent of Function.prototype (H-11).
+	`Object.defineProperty((async function(){}).constructor.prototype, 'constructor', {value: undefined, writable: false, configurable: false});`,
+	`Object.defineProperty((function*(){}).constructor.prototype, 'constructor', {value: undefined, writable: false, configurable: false});`,
+}
+
+// LockdownRuntime removes the dangerous globals from the goja runtime and
+// disables dynamic code generation.
+//
+// Ordering is significant. The prototype-chain neutralization must run while
+// the real ECMAScript Function constructor is still the global binding. If the
+// global Function were replaced with the Go stub first, `Function.prototype`
+// would resolve to the stub's prototype and the defineProperty calls below
+// would no longer touch the real intrinsics — leaving `(function(){}).constructor`
+// callable. The previous revision set the stubs before the freeze, so the
+// constructor reference was never actually cleared; this version closes that
+// gap by freezing first and stubbing afterwards.
 func LockdownRuntime(rt *goja.Runtime) {
-	// Delete all blocked globals
+	// Remove all blocked globals.
 	for _, name := range blockedGlobals {
 		_ = rt.GlobalObject().Delete(name)
 	}
 
-	// Override eval with an error-returning function
+	// Clear the constructor reference on the intrinsic prototypes while the real
+	// Function constructor is still reachable as the global binding.
+	for _, script := range prototypeFreezeScripts {
+		_, _ = rt.RunString(script)
+	}
+
+	// Only now replace eval and the Function constructor with stubs that report
+	// a clear error if composite code calls them directly.
 	_ = rt.Set("eval", func(call goja.FunctionCall) goja.Value {
 		panic(rt.NewGoError(fmt.Errorf("eval is not allowed in composite sandbox")))
 	})
-
-	// Override Function constructor with an error-returning function
 	_ = rt.Set("Function", func(call goja.FunctionCall) goja.Value {
 		panic(rt.NewGoError(fmt.Errorf("function constructor is not allowed in composite sandbox")))
 	})
-
-	// Freeze Function.prototype.constructor to prevent prototype-chain bypass:
-	//   const F = (function(){}).constructor; F('code')()
-	// Also lock down AsyncFunction and GeneratorFunction constructors (H-11).
-	_, _ = rt.RunString(`
-		Object.defineProperty(Function.prototype, 'constructor', {
-			value: undefined, writable: false, configurable: false
-		});
-		Object.defineProperty(Object.prototype, 'constructor', {
-			value: undefined, writable: false, configurable: false
-		});
-		(function() {
-			try {
-				var AsyncFunction = (async function(){}).constructor;
-				Object.defineProperty(AsyncFunction.prototype, 'constructor', {
-					value: undefined, writable: false, configurable: false
-				});
-			} catch(e) {}
-			try {
-				var GeneratorFunction = (function*(){}).constructor;
-				Object.defineProperty(GeneratorFunction.prototype, 'constructor', {
-					value: undefined, writable: false, configurable: false
-				});
-			} catch(e) {}
-		})();
-	`)
 }

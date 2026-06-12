@@ -59,6 +59,38 @@ for the full narrative and details.
   identical lines). Native backends without a DADL spec continue to render
   individually.
 
+### Security
+
+- Sandbox lockdown: the goja `LockdownRuntime` now clears the `constructor`
+  reference on the intrinsic prototypes before the `eval`/`Function` stubs are
+  installed. The previous order left `Function.prototype` shadowed, so the
+  prototype-chain route to the Function constructor
+  (`(function(){}).constructor('code')()`) stayed reachable in the composite,
+  code-mode, unit, and gate runtimes.
+- Static scanner: `ScanCode` now flags blocklisted property names in member
+  access — both dot (`obj.constructor`) and string-literal bracket
+  (`obj["constructor"]`) forms — not only bare identifiers.
+- Composite child calls (`api.*`) are now authorized and pre-gated with the
+  same OpenFGA check and pre-execution gate as a direct call to the same tool,
+  fail-closed. Previously a composite could invoke a sibling tool the caller
+  was not authorized for or that a gate policy would have blocked.
+- `LOG_LEVEL` now defaults to `info` instead of `debug`. Debug-level logging
+  intentionally includes full request URLs (which contain query-string API
+  keys for `auth.inject_into: query` backends), so it is no longer the default.
+- Caller-supplied `file_url` fetches are now governed by a dedicated
+  `allow_private_file_url` option (default `false`) instead of inheriting the
+  admin `allow_private_url` flag, plus an optional `file_url_allowed_hosts`
+  allowlist. This closes an SSRF path to internal/metadata endpoints from the
+  default configuration. `IsPrivateIP` also now rejects the unspecified address
+  (`0.0.0.0`/`::`), and failed fetches no longer echo the upstream response
+  body.
+- goja runtimes get a soft heap limit via `TOOLMESH_MEM_LIMIT_BYTES` /
+  `GOMEMLIMIT` plus a per-runtime call-stack cap, and `docker-compose.yml` sets
+  `mem_limit` + `restart`, so a runaway sandbox allocation is contained to a
+  restartable container instead of OOM-killing the host.
+- `.mcpregistry_*` publisher credential files are now git-ignored and a
+  `gitleaks` job runs in CI.
+
 ## [0.1.3] - 2026-04-06
 
 ### Added

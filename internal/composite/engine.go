@@ -53,6 +53,9 @@ func newRuntime(
 	consoleOutput *[]string,
 ) (*goja.Runtime, error) {
 	rt := goja.New()
+	// Cap JS call-stack depth so unbounded recursion throws a catchable
+	// RangeError instead of growing the runtime stack toward an OOM.
+	rt.SetMaxCallStackSize(maxJSCallStackDepth)
 
 	// Lock down the sandbox first
 	LockdownRuntime(rt)

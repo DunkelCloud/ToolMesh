@@ -62,6 +62,8 @@ var scanBlocklist = map[unistring.String]bool{
 //   - Identifier nodes matching the blocklist
 //   - CallExpression nodes calling eval/Function
 //   - DotExpression nodes accessing globalThis/window/self
+//   - Member access to blocklisted property names, both dot (obj.constructor)
+//     and string-literal bracket (obj["constructor"]) forms
 //
 // Returns a list of violations with line numbers.
 func ScanCode(code, compositeName string) ([]Violation, error) {
@@ -119,7 +121,9 @@ func walkNode(node ast.Node, fileSet *file.FileSet, violations *[]Violation) {
 		}
 
 	case *ast.DotExpression:
-		// Check if accessing globalThis.*, window.*, self.*
+		// Check if accessing globalThis.*, window.*, self.*. This carries the
+		// more specific message, so report it and stop — don't also flag the
+		// property name below for the same expression.
 		if ident, ok := n.Left.(*ast.Identifier); ok {
 			if ident.Name == jsIdentGlobalThis || ident.Name == jsIdentWindow || ident.Name == jsIdentSelf {
 				pos := resolvePosition(fileSet, ident.Idx)
@@ -131,6 +135,18 @@ func walkNode(node ast.Node, fileSet *file.FileSet, violations *[]Violation) {
 				// Don't walk left side again — already reported
 				break
 			}
+		}
+		// Flag a forbidden property NAME on any other base, so that member access
+		// such as obj.constructor / obj.__proto__ / obj.Reflect is caught — not
+		// only the bare identifier form. The member position is always a read, so
+		// this does not affect property definitions.
+		if scanBlocklist[n.Identifier.Name] {
+			pos := resolvePosition(fileSet, n.Identifier.Idx)
+			*violations = append(*violations, Violation{
+				Line:    pos.Line,
+				Column:  pos.Column,
+				Message: fmt.Sprintf("forbidden property access: .%s", string(n.Identifier.Name)),
+			})
 		}
 		walkExpression(n.Left, fileSet, violations)
 
@@ -216,6 +232,20 @@ func walkExpression(expr ast.Expression, fileSet *file.FileSet, violations *[]Vi
 		}
 	case *ast.BracketExpression:
 		walkExpression(e.Left, fileSet, violations)
+		// Flag bracket access with a string-literal member matching the blocklist,
+		// e.g. obj["constructor"] or obj["__proto__"]. Scoped to the member
+		// position (always a read), so legitimate property definitions such as
+		// {"constructor": x} or a class method named constructor are unaffected.
+		// String concatenation and char-code-built keys remain statically
+		// uncatchable — this pairs with the runtime lockdown, not a substitute.
+		if sl, ok := e.Member.(*ast.StringLiteral); ok && scanBlocklist[sl.Value] {
+			pos := resolvePosition(fileSet, sl.Idx)
+			*violations = append(*violations, Violation{
+				Line:    pos.Line,
+				Column:  pos.Column,
+				Message: fmt.Sprintf("forbidden property access: [%q]", string(sl.Value)),
+			})
+		}
 		walkExpression(e.Member, fileSet, violations)
 	case *ast.TemplateLiteral:
 		// Tagged template: `tag`foo${x}`` has Tag set (H-12).

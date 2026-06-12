@@ -42,7 +42,77 @@ const (
 	testToolExtractText = "extract_text"
 	testToolUnpack      = "unpack_embedded"
 	testTextPlain       = "text/plain"
+	testTikaToken       = "tika_token"
 )
+
+// TestFileURL_SSRFPolicy verifies the caller-controlled file_url fetch policy:
+// private/loopback targets are blocked unless AllowPrivateFileURL is set, and
+// the optional FileURLAllowedHosts allowlist restricts which hosts are reachable.
+func TestFileURL_SSRFPolicy(t *testing.T) {
+	pdf := []byte("%PDF-1.4 minimal")
+	fileSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set(testHeaderContentType, testContentTypePDF)
+		_, _ = w.Write(pdf)
+	}))
+	defer fileSrv.Close()
+	backendSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		_, _ = w.Write([]byte("parsed"))
+	}))
+	defer backendSrv.Close()
+
+	fileURL := fileSrv.URL + "/doc.pdf"
+	fileHost := mustHostname(t, fileSrv.URL)
+
+	newAdapter := func(t *testing.T, opts RESTAdapterOptions) *RESTAdapter {
+		t.Helper()
+		a, err := NewRESTAdapter(tikaLikeSpec(backendSrv.URL),
+			&testCredStore{creds: map[string]string{testTikaToken: testTokenValue}}, slog.Default(), opts)
+		if err != nil {
+			t.Fatalf("create adapter: %v", err)
+		}
+		return a
+	}
+
+	t.Run("private file fetch blocked by default", func(t *testing.T) {
+		a := newAdapter(t, RESTAdapterOptions{AllowPrivateURL: true}) // AllowPrivateFileURL defaults false
+		if _, err := a.Execute(context.Background(), testToolExtractText, map[string]any{paramTypeFile: fileURL}); err == nil {
+			t.Fatal("expected loopback file_url fetch to be blocked, got nil error")
+		}
+	})
+
+	t.Run("allowlist rejects non-listed host", func(t *testing.T) {
+		a := newAdapter(t, RESTAdapterOptions{
+			AllowPrivateURL:     true,
+			AllowPrivateFileURL: true,
+			FileURLAllowedHosts: []string{"allowed.example"},
+		})
+		_, err := a.Execute(context.Background(), testToolExtractText, map[string]any{paramTypeFile: fileURL})
+		if err == nil || !strings.Contains(err.Error(), "allowed file_url hosts") {
+			t.Fatalf("expected allowlist rejection, got %v", err)
+		}
+	})
+
+	t.Run("allowlist permits listed host", func(t *testing.T) {
+		a := newAdapter(t, RESTAdapterOptions{
+			AllowPrivateURL:     true,
+			AllowPrivateFileURL: true,
+			FileURLAllowedHosts: []string{fileHost},
+		})
+		if _, err := a.Execute(context.Background(), testToolExtractText, map[string]any{paramTypeFile: fileURL}); err != nil {
+			t.Fatalf("expected allowed host fetch to succeed, got %v", err)
+		}
+	})
+}
+
+func mustHostname(t *testing.T, raw string) string {
+	t.Helper()
+	u, err := url.Parse(raw)
+	if err != nil {
+		t.Fatalf("parse %q: %v", raw, err)
+	}
+	return u.Hostname()
+}
 
 // tikaLikeSpec builds a spec with a single raw-body file_url upload tool,
 // shaped like the Tika DADL's extract_text (PUT /tika, octet-stream).
@@ -53,7 +123,7 @@ func tikaLikeSpec(baseURL string) *dadl.Spec {
 			Name:    "tika",
 			Type:    transportTypeREST,
 			BaseURL: baseURL,
-			Auth:    dadl.AuthConfig{Type: testTokenBearer, Credential: "tika_token"},
+			Auth:    dadl.AuthConfig{Type: testTokenBearer, Credential: testTikaToken},
 			Tools: map[string]dadl.ToolDef{
 				testToolExtractText: {
 					Method:      http.MethodPut,
@@ -71,7 +141,7 @@ func tikaLikeSpec(baseURL string) *dadl.Spec {
 
 func newFileURLAdapter(t *testing.T, spec *dadl.Spec) *RESTAdapter {
 	t.Helper()
-	adapter, err := NewRESTAdapter(spec, &testCredStore{creds: map[string]string{"tika_token": testTokenValue}}, slog.Default(), testRESTOpts)
+	adapter, err := NewRESTAdapter(spec, &testCredStore{creds: map[string]string{testTikaToken: testTokenValue}}, slog.Default(), testRESTOpts)
 	if err != nil {
 		t.Fatalf("create adapter: %v", err)
 	}

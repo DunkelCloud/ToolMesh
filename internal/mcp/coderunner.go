@@ -116,6 +116,9 @@ func (r *CodeRunner) Execute(ctx context.Context, code string) (*backend.ToolRes
 	)
 
 	rt := goja.New()
+	// Cap JS call-stack depth so unbounded recursion throws a catchable
+	// RangeError instead of growing the runtime stack toward an OOM.
+	rt.SetMaxCallStackSize(maxJSCallStackDepth)
 	composite.LockdownRuntime(rt)
 
 	// Set up console.log

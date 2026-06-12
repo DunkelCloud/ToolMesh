@@ -205,11 +205,19 @@ func loadRESTSubBackend(
 	if entry.AllowPrivateURL != nil {
 		allowPrivate = *entry.AllowPrivateURL
 	}
+	// Caller file_url fetches fail closed by default, independent of the
+	// admin-trusted base_url policy above.
+	allowPrivateFile := false
+	if entry.AllowPrivateFileURL != nil {
+		allowPrivateFile = *entry.AllowPrivateFileURL
+	}
 
 	rest, err := backend.NewRESTAdapter(spec, backendCreds, logger, backend.RESTAdapterOptions{
-		AllowPrivateURL: allowPrivate,
-		TLSSkipVerify:   entry.TLSSkipVerify,
-		ExposeTools:     entry.ExposeTools,
+		AllowPrivateURL:     allowPrivate,
+		AllowPrivateFileURL: allowPrivateFile,
+		FileURLAllowedHosts: entry.FileURLAllowedHosts,
+		TLSSkipVerify:       entry.TLSSkipVerify,
+		ExposeTools:         entry.ExposeTools,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("build REST adapter: %w", err)

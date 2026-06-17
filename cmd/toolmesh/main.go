@@ -263,6 +263,12 @@ func main() {
 	}
 	gatePipeline := gate.NewPipeline(evaluators)
 
+	// Cross-check loaded policies against the registered tool names: a
+	// policy that branches on a tool name that does not exist is a silent
+	// no-op (see PR #72). Runs in the background because listing tools may
+	// call upstream MCP servers; findings are warnings only.
+	go warnUnknownPolicyToolRefs(ctx, compositeBackend, gatePipeline, logger)
+
 	// Initialize audit store
 	auditStore, err := audit.New(cfg.AuditStore, map[string]string{
 		"data_dir":       cfg.DataDir,
@@ -505,6 +511,23 @@ func watchBackendsConfig(ctx context.Context, path string, interval time.Duratio
 			}
 		}
 	}
+}
+
+// warnUnknownPolicyToolRefs lists all registered tools and lets the gate
+// pipeline warn about policy tool-name literals that match none of them — a
+// policy branching on a nonexistent tool is a silent no-op. Failures only
+// log: the check is a startup diagnostic and must never block serving.
+func warnUnknownPolicyToolRefs(ctx context.Context, be backend.ToolBackend, pipeline *gate.Pipeline, logger *slog.Logger) {
+	tools, err := be.ListTools(ctx)
+	if err != nil {
+		logger.Warn("policy tool-name check skipped: listing tools failed", "error", err)
+		return
+	}
+	names := make([]string, 0, len(tools))
+	for _, t := range tools {
+		names = append(names, t.Name)
+	}
+	pipeline.WarnUnknownToolRefs(names)
 }
 
 // backendLogger returns a tee logger for debug-listed backends,

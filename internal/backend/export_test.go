@@ -15,9 +15,9 @@
 package backend
 
 // testRESTOpts is the default RESTAdapterOptions used by tests. It allows
-// private URLs so that tests targeting httptest servers on 127.0.0.1 work
-// without tripping SSRF validation.
-var testRESTOpts = RESTAdapterOptions{AllowPrivateURL: true}
+// private URLs (base_url and caller file_url) so that tests targeting httptest
+// servers on 127.0.0.1 work without tripping SSRF validation.
+var testRESTOpts = RESTAdapterOptions{AllowPrivateURL: true, AllowPrivateFileURL: true}
 
 // Test fixture string constants. These mirror the literals that appear most
 // often in fixture DADL specs, HTTP server stubs, and assertion strings — they

@@ -4,6 +4,12 @@ services:
     # To build locally instead of pulling the image, comment the line above
     # and uncomment the next line:
     # build: .
+    restart: unless-stopped
+    # Bound total memory so a runaway sandbox allocation (composite/code-mode
+    # JS has no per-runtime heap cap) is contained to this auto-restarting
+    # container instead of OOM-killing the host. GOMEMLIMIT below is a soft
+    # limit (~75% of mem_limit) so the GC reclaims and throttles first.
+    mem_limit: 1g
     ports:
       - "${TOOLMESH_PORT:-8123}:8080"
       # Prometheus metrics — runs on a separate listener so the scraper does
@@ -13,6 +19,9 @@ services:
       - "${TOOLMESH_METRICS_PORT:-9090}:9090"
     env_file: .env
     environment:
+      # Soft heap limit (~75% of mem_limit) so the Go GC throttles allocation
+      # before the container hard limit triggers an OOM kill.
+      - GOMEMLIMIT=${GOMEMLIMIT:-768MiB}
       - OPENFGA_MODE=${OPENFGA_MODE:-bypass}
       - AUDIT_STORE=${AUDIT_STORE:-log}
       - TOOLMESH_DATA_DIR=/app/data

@@ -51,3 +51,8 @@ backends:
   #   url: "https://192.168.1.50:8443/api"
   #   allow_private_url: true    # allow private/loopback base_url (default: true)
   #   tls_skip_verify: true      # accept self-signed or invalid TLS certificates (default: false)
+  #   # Caller-supplied file_url parameters are fetched server-side. Their SSRF
+  #   # policy is SEPARATE from allow_private_url (base_url is admin-trusted;
+  #   # file_url values come from the tool caller) and defaults to fail-closed:
+  #   allow_private_file_url: true            # allow file_url to resolve to private/loopback (default: false)
+  #   file_url_allowed_hosts: ["blobstore.internal"]  # restrict file_url fetches to these hosts (recommended over the blanket flag)

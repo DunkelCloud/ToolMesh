@@ -122,7 +122,7 @@ func Load() (*Config, error) {
 		OpenFGAStoreID:          envStr("OPENFGA_STORE_ID", ""),
 		OpenFGAMode:             envStr("OPENFGA_MODE", "bypass"),
 		RedisURL:                envStr("REDIS_URL", "redis://localhost:6379/0"),
-		LogLevel:                envStr("LOG_LEVEL", "debug"), // default "debug" for MCP diagnostics; set to "info" in production
+		LogLevel:                envStr("LOG_LEVEL", "info"), // default "info"; set LOG_LEVEL=debug to trace requests (debug logs include full request URLs, which may contain query-string credentials)
 		LogFormat:               envStr("LOG_FORMAT", "json"),
 		DebugBackends:           envStr("DEBUG_BACKENDS", ""),
 		DebugFile:               envStr("DEBUG_FILE", ""),

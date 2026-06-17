@@ -23,6 +23,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"syscall"
@@ -90,6 +91,21 @@ func main() {
 		"port", cfg.Port,
 		"transport", cfg.Transport,
 	)
+
+	// Apply a soft heap limit if configured. The goja sandboxes (composite,
+	// code-mode, unit, gate policies) have no per-runtime memory cap, so a
+	// runaway allocation grows the Go heap until the kernel OOM-kills the
+	// process. A soft limit makes the GC reclaim and throttle before that
+	// point; pair it with a container memory limit (docker-compose mem_limit /
+	// GOMEMLIMIT) so an overshoot terminates only a restartable container.
+	if v := os.Getenv("TOOLMESH_MEM_LIMIT_BYTES"); v != "" {
+		if n, parseErr := strconv.ParseInt(v, 10, 64); parseErr == nil && n > 0 {
+			debug.SetMemoryLimit(n)
+			logger.Info("soft memory limit set", "bytes", n)
+		} else {
+			logger.Warn("ignoring invalid TOOLMESH_MEM_LIMIT_BYTES", "value", v)
+		}
+	}
 
 	// Per-backend debug file logging
 	debugBackends := cfg.DebugBackendsList()
@@ -291,6 +307,11 @@ func main() {
 	// Initialize executor
 	execTimeout := time.Duration(cfg.ExecTimeout) * time.Second
 	exec := executor.New(authorizer, credStore, compositeBackend, gatePipeline, auditStore, execTimeout, logger, tc, metricsReg)
+
+	// Authorize composite child api.* calls with the same authz + pre-gate as a
+	// direct tool call. Wired here because the guard (the executor) is built
+	// after the backends.
+	compositeBackend.SetChildGuard(exec)
 
 	// Initialize token store for auth state.
 	// The file-based store always runs for persistence across restarts.
@@ -617,6 +638,17 @@ func loadRESTBackendsInto(named map[string]backend.ToolBackend, backendsConfigPa
 		if allowPrivate {
 			logger.Warn("SSRF base_url validation skipped (allow_private_url)", "name", entry.Name)
 		}
+		// allow_private_file_url is independent of allow_private_url and defaults
+		// to FALSE: caller-supplied file_url values must not reach internal
+		// addresses unless an operator explicitly opts this backend in.
+		allowPrivateFile := false
+		if entry.AllowPrivateFileURL != nil {
+			allowPrivateFile = *entry.AllowPrivateFileURL
+		}
+		if allowPrivateFile {
+			logger.Warn("private file_url fetches enabled (allow_private_file_url)",
+				"name", entry.Name, "allowed_hosts", entry.FileURLAllowedHosts)
+		}
 		if entry.TLSSkipVerify {
 			logger.Warn("TLS certificate validation disabled (tls_skip_verify)", "name", entry.Name)
 		}
@@ -632,9 +664,11 @@ func loadRESTBackendsInto(named map[string]backend.ToolBackend, backendsConfigPa
 
 		bl := backendLogger(spec.Backend.Name, logger, stdoutHandler, debugFile, debugSet)
 		adapter, err := backend.NewRESTAdapter(spec, backendCreds, bl, backend.RESTAdapterOptions{
-			AllowPrivateURL: allowPrivate,
-			TLSSkipVerify:   entry.TLSSkipVerify,
-			ExposeTools:     entry.ExposeTools,
+			AllowPrivateURL:     allowPrivate,
+			AllowPrivateFileURL: allowPrivateFile,
+			FileURLAllowedHosts: entry.FileURLAllowedHosts,
+			TLSSkipVerify:       entry.TLSSkipVerify,
+			ExposeTools:         entry.ExposeTools,
 		})
 		if err != nil {
 			logger.Error("failed to create REST adapter", "name", entry.Name, "error", err)

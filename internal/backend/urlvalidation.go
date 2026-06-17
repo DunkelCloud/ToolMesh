@@ -73,10 +73,17 @@ func ValidateBaseURL(rawURL string) error {
 	return nil
 }
 
-// IsPrivateIP returns true if the IP is loopback, private, link-local, or
-// a well-known cloud metadata address.
+// IsPrivateIP returns true if the IP is loopback, private, the unspecified
+// address, link-local, or a well-known cloud metadata address. The unspecified
+// address (0.0.0.0 / ::) is included because the kernel routes a connection to
+// it to a loopback service, so it must be treated as private. A nil (unparsable)
+// IP is treated as private to fail closed.
 func IsPrivateIP(ip net.IP) bool {
-	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+	if ip == nil {
+		return true
+	}
+	if ip.IsLoopback() || ip.IsPrivate() || ip.IsUnspecified() ||
+		ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
 		return true
 	}
 	if ip.Equal(net.ParseIP("169.254.169.254")) {

@@ -28,7 +28,7 @@ func TestAuthRolesList(t *testing.T) {
 }
 
 func TestLoadConfig(t *testing.T) {
-	t.Setenv("TOOLMESH_LOG_LEVEL", testLogLevelDebug)
+	t.Setenv("LOG_LEVEL", testLogLevelDebug)
 	cfg, err := Load()
 	if err != nil {
 		t.Fatal(err)

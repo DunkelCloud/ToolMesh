@@ -135,8 +135,16 @@ func (g *Gate) Evaluate(gctx GateContext) (*EvalResult, error) {
 // gatePolicyTimeout is the maximum time a gate policy may run before being interrupted.
 const gatePolicyTimeout = 5 * time.Second
 
+// maxJSCallStackDepth bounds the policy goja runtime call stack so unbounded
+// JS recursion throws a catchable RangeError rather than growing the runtime
+// stack toward an out-of-memory condition.
+const maxJSCallStackDepth = 2000
+
 func (g *Gate) evalPolicy(p policy, gctx GateContext) ([]audit.PolicyModification, error) {
 	vm := goja.New()
+	// Cap JS call-stack depth so unbounded recursion throws a catchable
+	// RangeError instead of growing the runtime stack toward an OOM.
+	vm.SetMaxCallStackSize(maxJSCallStackDepth)
 
 	// Defense-in-depth: lock down the runtime even though policies are from trusted files
 	composite.LockdownRuntime(vm)

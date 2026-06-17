@@ -16,6 +16,7 @@ package config
 
 const (
 	testLogLevelDebug = "debug"
+	testLogLevelInfo  = "info"
 	testCallerGitHub  = "github"
 	testCallerTrusted = "trusted"
 )

@@ -330,6 +330,48 @@ func (e *Executor) ExecuteTool(ctx context.Context, req ExecuteToolRequest) (*ba
 	return result, nil
 }
 
+// CheckChild authorizes and pre-gates a nested tool call made from inside a
+// composite. Composite api.* calls dispatch directly to the owning adapter and
+// never re-enter ExecuteTool, so without this check they would skip the per-tool
+// OpenFGA authorization and the pre-execution gate that a direct call goes
+// through. It runs ONLY those two checks — no credential re-injection, no
+// post-gate, no audit or metrics, which the composite as a whole already
+// performs. It fails closed: any authz error, denial, or gate rejection returns
+// a non-nil error that aborts the child call.
+//
+// toolName is the canonical "<backend>_<tool>" name so it matches the
+// authorization object and gate classification used on the direct path.
+func (e *Executor) CheckChild(ctx context.Context, toolName string, params map[string]any) error {
+	uc := userctx.FromContext(ctx)
+	if uc == nil {
+		return fmt.Errorf("no user context for child tool %s", toolName)
+	}
+
+	if e.authorizer != nil {
+		allowed, err := e.authorizer.Check(ctx, uc.UserID, toolName)
+		if err != nil {
+			return fmt.Errorf("authz check failed for child tool %s: %w", toolName, err)
+		}
+		if !allowed {
+			return fmt.Errorf("user %s is not authorized to execute child tool %s", uc.UserID, toolName)
+		}
+	}
+
+	if e.gate != nil {
+		gctx := gate.GateContext{
+			User:       *uc,
+			Tool:       toolName,
+			ToolAccess: e.lookupToolAccess(toolName),
+			Params:     params,
+		}
+		if _, err := e.gate.EvaluatePre(gctx); err != nil {
+			return fmt.Errorf("gate rejected child tool %s: %w", toolName, err)
+		}
+	}
+
+	return nil
+}
+
 // recordAudit persists an audit entry, logging any store errors.
 // By design, audit recording failures do not block the tool response — availability
 // is prioritized over auditability. The error is logged so operators can detect

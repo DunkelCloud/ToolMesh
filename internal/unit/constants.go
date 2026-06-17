@@ -25,6 +25,11 @@ package unit
 // practice; it is in place for the eventual nested case.
 const DefaultMaxCallDepth = 16
 
+// maxJSCallStackDepth bounds the goja runtime call stack so unbounded JS
+// recursion throws a catchable RangeError rather than growing the runtime
+// stack toward an out-of-memory condition.
+const maxJSCallStackDepth = 2000
+
 // DefaultMaxAPICalls bounds the cumulative number of api.* calls a single
 // top-level unit invocation may perform. This is the runaway-loop safety
 // net that fires today, before unit-in-unit nesting exercises the depth

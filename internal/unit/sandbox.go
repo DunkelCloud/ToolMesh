@@ -175,6 +175,9 @@ func callExportedFunction(
 // is in scope).
 func newBareRuntime() *goja.Runtime {
 	rt := goja.New()
+	// Cap JS call-stack depth so unbounded recursion throws a catchable
+	// RangeError instead of growing the runtime stack toward an OOM.
+	rt.SetMaxCallStackSize(maxJSCallStackDepth)
 	composite.LockdownRuntime(rt)
 
 	// Minimal console — discards output. Units that need to log should

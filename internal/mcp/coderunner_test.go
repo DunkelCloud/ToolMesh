@@ -69,7 +69,11 @@ func newTestCodeRunner(t *testing.T, mb *codeRunnerTestBackend) *CodeRunner {
 		"test_foo": testToolFoo,
 		"test_bar": testToolBar,
 	}
-	return NewCodeRunner(nameMap, exec, nil, logger)
+	tools, err := mb.ListTools(context.Background())
+	if err != nil {
+		t.Fatalf("ListTools: %v", err)
+	}
+	return NewCodeRunner(nameMap, tools, exec, nil, logger)
 }
 
 func testCtx() context.Context {
@@ -712,10 +716,12 @@ func TestCodeRunner_DiscoverToolsGuard_NotShadowedByRealTool(t *testing.T) {
 	mb := &codeRunnerTestBackend{}
 	logger := handlerTestLogger()
 	exec := executor.New(nil, nil, mb, nil, nil, 120*time.Second, logger, nil, nil)
+	const realDiscoverTool = "test:discover_tools"
 	nameMap := map[string]string{
-		"discover_tools": "test:discover_tools",
+		"discover_tools": realDiscoverTool,
 	}
-	runner := NewCodeRunner(nameMap, exec, nil, logger)
+	tools := []backend.ToolDescriptor{{Name: realDiscoverTool, Description: "real tool"}}
+	runner := NewCodeRunner(nameMap, tools, exec, nil, logger)
 
 	result, err := runner.Execute(testCtx(), `await toolmesh.discover_tools({foo: "bar"});`)
 	if err != nil {
@@ -724,7 +730,7 @@ func TestCodeRunner_DiscoverToolsGuard_NotShadowedByRealTool(t *testing.T) {
 	if result.IsError {
 		t.Fatalf("unexpected IsError: %v", result.Content)
 	}
-	if len(mb.calls) != 1 || mb.calls[0].ToolName != "test:discover_tools" {
+	if len(mb.calls) != 1 || mb.calls[0].ToolName != realDiscoverTool {
 		t.Errorf("expected 1 call to test:discover_tools, got %d calls: %v", len(mb.calls), mb.calls)
 	}
 }

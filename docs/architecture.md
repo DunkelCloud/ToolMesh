@@ -10,10 +10,8 @@ ToolMesh is a secure, durable execution layer (middleware) between AI agents and
 
 LLMs can write typed JavaScript instead of error-prone JSON for tool calls. ToolMesh exposes two special tools:
 
-- `discover_tools` — returns TypeScript interface definitions for all available tools
-- `execute_code` — accepts JavaScript code, extracts tool calls, and executes them through the pipeline
-
-The JavaScript is parsed (not executed) to extract function names and parameters.
+- `discover_tools` — searches the tool catalog by regex (`pattern`) or BM25-ranked free text (`query`); output detail auto-scales from full TypeScript signatures down to a per-backend overview as the match count grows, capped at 50 KB per response
+- `execute_code` — accepts JavaScript code and runs it in a sandboxed runtime (goja); `toolmesh.*` calls are dispatched through the execution pipeline, and `toolmesh.discover()` / `toolmesh.describe()` provide in-sandbox discovery without an extra MCP round-trip
 
 ### 2. Audit (Execution Trail)
 

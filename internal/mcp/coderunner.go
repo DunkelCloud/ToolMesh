@@ -27,8 +27,17 @@ import (
 	"github.com/DunkelCloud/ToolMesh/internal/backend"
 	"github.com/DunkelCloud/ToolMesh/internal/composite"
 	"github.com/DunkelCloud/ToolMesh/internal/executor"
+	"github.com/DunkelCloud/ToolMesh/internal/toolindex"
 	"github.com/DunkelCloud/ToolMesh/internal/tsdef"
+	"github.com/DunkelCloud/ToolMesh/internal/userctx"
 	"github.com/dop251/goja"
+)
+
+// Names of the in-sandbox discovery helpers exposed on the toolmesh object.
+// Installed only when no backend tool has claimed the same sanitized name.
+const (
+	sandboxDiscoverFn = "discover"
+	sandboxDescribeFn = "describe"
 )
 
 // maxCodeCalls is the maximum number of toolmesh.* calls allowed per execution.
@@ -40,19 +49,38 @@ const codeTimeout = 120 * time.Second
 // CodeRunner executes JavaScript code in a sandboxed goja runtime,
 // resolving toolmesh.* calls to real tool executions via the executor.
 type CodeRunner struct {
-	nameMap  map[string]string // sanitized JS name → canonical tool name
-	executor *executor.Executor
-	coercer  *tsdef.Coercer
-	logger   *slog.Logger
+	nameMap         map[string]string // sanitized JS name → canonical tool name
+	descBySanitized map[string]backend.ToolDescriptor
+	index           *toolindex.Index // BM25 index for toolmesh.discover()
+	executor        *executor.Executor
+	coercer         *tsdef.Coercer
+	logger          *slog.Logger
 }
 
 // NewCodeRunner creates a CodeRunner with the given name mapping and executor.
-func NewCodeRunner(nameMap map[string]string, exec *executor.Executor, coercer *tsdef.Coercer, logger *slog.Logger) *CodeRunner {
+// The descriptors back the in-sandbox toolmesh.discover()/describe() helpers;
+// the BM25 index over them is built once here since the tool set only changes
+// when the handler (and with it the runner) is rebuilt.
+func NewCodeRunner(nameMap map[string]string, tools []backend.ToolDescriptor, exec *executor.Executor, coercer *tsdef.Coercer, logger *slog.Logger) *CodeRunner {
+	descBySanitized := make(map[string]backend.ToolDescriptor, len(tools))
+	for _, t := range tools {
+		// Last entry wins on sanitized-name collisions, matching the
+		// nameMap construction in NewCodeModeParser.
+		descBySanitized[sanitizeName(t.Name)] = t
+	}
+
+	docs := make([]toolindex.Doc, 0, len(descBySanitized))
+	for sanitized, t := range descBySanitized {
+		docs = append(docs, descriptorDoc(t, sanitized))
+	}
+
 	return &CodeRunner{
-		nameMap:  nameMap,
-		executor: exec,
-		coercer:  coercer,
-		logger:   logger,
+		nameMap:         nameMap,
+		descBySanitized: descBySanitized,
+		index:           toolindex.Build(docs),
+		executor:        exec,
+		coercer:         coercer,
+		logger:          logger,
 	}
 }
 
@@ -213,6 +241,12 @@ func (r *CodeRunner) Execute(ctx context.Context, code string) (*backend.ToolRes
 		})
 	}
 
+	// In-sandbox discovery helpers: toolmesh.discover(query, limit?) and
+	// toolmesh.describe(name). These run locally against the descriptor
+	// index — no backend round-trip — so they do not count toward the
+	// maxCodeCalls budget.
+	r.installDiscovery(ctx, rt, tmObj)
+
 	// Guard against the common LLM mistake of invoking discover_tools or
 	// execute_code from inside the JS sandbox. Both are top-level MCP tools,
 	// not toolmesh.* members. The descriptions say "call discover_tools
@@ -229,7 +263,8 @@ func (r *CodeRunner) Execute(ctx context.Context, code string) (*backend.ToolRes
 		_ = tmObj.Set(guardName, func(_ goja.FunctionCall) goja.Value {
 			panic(rt.NewGoError(fmt.Errorf(
 				"toolmesh.%s is not a backend tool — %s is a separate MCP tool. "+
-					"Call it via the MCP client (outside execute_code), not from inside the `code` parameter",
+					"For in-sandbox discovery use toolmesh.discover(\"<free text>\") and "+
+					"toolmesh.describe(\"<tool_name>\") instead",
 				guardName, guardName,
 			)))
 		})
@@ -304,6 +339,113 @@ func (r *CodeRunner) Execute(ctx context.Context, code string) (*backend.ToolRes
 			contentKeyText: "no tool calls found in code",
 		}},
 	}, nil
+}
+
+// installDiscovery registers the local discovery helpers on the toolmesh
+// object. Real backend tools win sanitized-name collisions; in that case the
+// helper is simply not installed.
+func (r *CodeRunner) installDiscovery(ctx context.Context, rt *goja.Runtime, tmObj *goja.Object) {
+	if _, taken := r.nameMap[sandboxDiscoverFn]; !taken {
+		_ = tmObj.Set(sandboxDiscoverFn, func(call goja.FunctionCall) goja.Value {
+			query := strings.TrimSpace(call.Argument(0).String())
+			if query == "" || query == "undefined" {
+				panic(rt.NewGoError(fmt.Errorf(
+					"toolmesh.discover: pass a non-empty free-text query, e.g. toolmesh.discover(\"dns record\")")))
+			}
+
+			limit := int64(discoverQueryLimit)
+			if len(call.Arguments) > 1 {
+				if n := call.Argument(1).ToInteger(); n > 0 {
+					limit = n
+				}
+			}
+
+			descs := r.authorizedMatches(ctx, query)
+			if int64(len(descs)) > limit {
+				descs = descs[:limit]
+			}
+
+			out := make([]map[string]any, len(descs))
+			for i, d := range descs {
+				out[i] = map[string]any{
+					jsonKeyName:          sanitizeName(d.Name),
+					schemaKeyDescription: d.Description,
+					"backend":            d.Backend,
+				}
+			}
+			return rt.ToValue(out)
+		})
+	}
+
+	if _, taken := r.nameMap[sandboxDescribeFn]; !taken {
+		_ = tmObj.Set(sandboxDescribeFn, func(call goja.FunctionCall) goja.Value {
+			name := call.Argument(0).String()
+			d, ok := r.descBySanitized[name]
+			if !ok {
+				d, ok = r.descBySanitized[sanitizeName(name)]
+			}
+			if ok && !r.isAuthorized(ctx, d) {
+				// Deliberately indistinguishable from "not found" so the
+				// sandbox cannot probe for tools the caller may not invoke.
+				ok = false
+			}
+			if !ok {
+				panic(rt.NewGoError(fmt.Errorf(
+					"toolmesh.describe: unknown tool %q — use toolmesh.discover(\"<free text>\") to find available tools", name)))
+			}
+
+			desc := map[string]any{
+				jsonKeyName:          sanitizeName(d.Name),
+				schemaKeyDescription: d.Description,
+				"backend":            d.Backend,
+				"inputSchema":        d.InputSchema,
+			}
+			if d.Access != "" {
+				desc["access"] = d.Access
+			}
+			return rt.ToValue(desc)
+		})
+	}
+}
+
+// authorizedMatches runs a BM25 search and keeps only descriptors the
+// calling user is authorized to execute, preserving rank order.
+func (r *CodeRunner) authorizedMatches(ctx context.Context, query string) []backend.ToolDescriptor {
+	results := r.index.Search(query, 0)
+	descs := make([]backend.ToolDescriptor, 0, len(results))
+	for _, res := range results {
+		if d, ok := r.descBySanitized[res.Doc.Name]; ok {
+			descs = append(descs, d)
+		}
+	}
+
+	uc := userctx.FromContext(ctx)
+	if r.executor == nil || uc == nil {
+		return descs
+	}
+
+	allowed := r.executor.FilterAuthorizedTools(ctx, uc.UserID, descs)
+	allowedSet := make(map[string]struct{}, len(allowed))
+	for _, d := range allowed {
+		allowedSet[d.Name] = struct{}{}
+	}
+
+	filtered := descs[:0]
+	for _, d := range descs {
+		if _, ok := allowedSet[d.Name]; ok {
+			filtered = append(filtered, d)
+		}
+	}
+	return filtered
+}
+
+// isAuthorized reports whether the calling user may execute the tool.
+func (r *CodeRunner) isAuthorized(ctx context.Context, d backend.ToolDescriptor) bool {
+	uc := userctx.FromContext(ctx)
+	if r.executor == nil || uc == nil {
+		return true
+	}
+	return len(r.executor.FilterAuthorizedTools(ctx, uc.UserID, []backend.ToolDescriptor{d})) == 1
 }
 
 // errorResult is the buildResult variant used in error paths: it surfaces

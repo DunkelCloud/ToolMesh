@@ -11,8 +11,32 @@ for the full narrative and details.
 
 ## [Unreleased]
 
+### Fixed
+
+- Long-running tool calls no longer abort with "The connector's server isn't
+  responding." A `tools/call` is now delivered over an MCP Streamable HTTP SSE
+  stream when the client accepts one, with a keepalive comment emitted every
+  10s while the backend works, so the client's idle timer cannot fire mid-call
+  (slow reasoning models, committees, batch evals inside `execute_code`). The
+  per-request write deadline is also lifted for tool calls, so the executor and
+  `execute_code` timeouts — not the HTTP server's 60s `WriteTimeout` — are the
+  real bound. Because the result is streamed the moment the call returns,
+  partial `execute_code` results that the buffered path lost when the client
+  gave up early are now delivered. Tool-call timeouts surface a specific
+  message ("Tool call timed out before the backend responded") instead of a
+  generic "Internal error".
+
 ### Added
 
+- `execute_code`'s wall-clock budget is configurable via `TOOLMESH_CODE_TIMEOUT`
+  (seconds, default 120), so an orchestration of several slow backend calls is
+  not capped below the backends' own timeouts.
+- `include_tools` backends.yaml option (transport: rest) restricts a backend's
+  exposed surface to exactly the named tools/composites — everything else in the
+  DADL disappears from `discover_tools`, `execute_code`, and direct calls. Lets a
+  broad shared DADL (e.g. `openai.dadl`) be pointed at a chat-only endpoint
+  (Ollama, vLLM) while advertising only chat/embeddings, keeping the catalog
+  small and preventing the LLM from picking an unimplemented endpoint.
 - Progressive discovery for large tool catalogs. `discover_tools` now
   auto-scales its output with the number of matches (≤25 full TypeScript
   signatures, ≤250 one-line summaries, ≤2000 names only, above that a

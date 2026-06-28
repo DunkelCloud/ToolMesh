@@ -86,6 +86,14 @@ func NewHandler(exec *executor.Executor, back backend.ToolBackend, coercer *tsde
 	return h
 }
 
+// SetCodeTimeout overrides the wall-clock budget for a single execute_code
+// run (default codeTimeout). A non-positive duration keeps the default.
+func (h *Handler) SetCodeTimeout(d time.Duration) {
+	if h.codeRunner != nil {
+		h.codeRunner.SetTimeout(d)
+	}
+}
+
 // isBuiltinTool reports whether a tool name is dispatched directly by the
 // handler instead of through the executor.
 func (h *Handler) isBuiltinTool(name string) bool {

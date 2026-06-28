@@ -378,6 +378,7 @@ func main() {
 
 	// Initialize MCP handler and server
 	mcpHandler := mcp.NewHandler(exec, compositeBackend, coercer, rawTS, metricsReg, logger, cfg.DebugTools)
+	mcpHandler.SetCodeTimeout(time.Duration(cfg.CodeTimeout) * time.Second)
 	if cfg.DebugTools {
 		logger.Warn("debug tools enabled (TOOLMESH_DEBUG_TOOLS=true) — debug_echo and debug_generate exposed; do not use in production")
 	}
@@ -586,6 +587,10 @@ func loadRESTBackendsInto(named map[string]backend.ToolBackend, backendsConfigPa
 
 	for _, entry := range cfg.Backends {
 		if entry.Transport != "rest" {
+			if len(entry.IncludeTools) > 0 {
+				logger.Warn("include_tools is only honored for transport: rest backends; ignoring",
+					"name", entry.Name, "transport", entry.Transport)
+			}
 			continue
 		}
 		if entry.DADL == "" {
@@ -669,6 +674,7 @@ func loadRESTBackendsInto(named map[string]backend.ToolBackend, backendsConfigPa
 			FileURLAllowedHosts: entry.FileURLAllowedHosts,
 			TLSSkipVerify:       entry.TLSSkipVerify,
 			ExposeTools:         entry.ExposeTools,
+			IncludeTools:        entry.IncludeTools,
 		})
 		if err != nil {
 			logger.Error("failed to create REST adapter", "name", entry.Name, "error", err)

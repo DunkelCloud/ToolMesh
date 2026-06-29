@@ -327,6 +327,24 @@ Enterprise extensions (InfisicalStore, VaultStore, Compliance-LLM, etc.) are pla
 
 See [docs/architecture.md](docs/architecture.md#extension-model) for details.
 
+## Who's behind this
+
+ToolMesh is built and maintained by **[Axel Dunkel](https://github.com/axeldunkel)**
+at **[Dunkel Cloud GmbH](https://dunkel.cloud)** — a German company building
+infrastructure that connects AI agents to real systems. ToolMesh and DADL grew
+out of the production cloud and edge infrastructure we've run for businesses for
+years, so this isn't a side project behind an anonymous handle: it runs in our
+own stack, and the same people who answer `security@dunkel.cloud` write the code.
+
+The companion **[DADL registry](https://dadl.ai/browse)** currently ships
+**27 community API descriptions covering ~3,300 generated tools** — from a
+4-tool Hacker News reader to a 608-tool NetBox DCIM/IPAM surface — each with a
+visible API-coverage percentage so you can see exactly how complete it is.
+
+- 🌐 Website: [toolmesh.io](https://toolmesh.io)
+- 📖 DADL spec & registry: [dadl.ai](https://dadl.ai)
+- 🐛 Security contact: security@dunkel.cloud (see [SECURITY.md](SECURITY.md))
+
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md).

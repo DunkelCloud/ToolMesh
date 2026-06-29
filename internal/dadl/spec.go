@@ -61,6 +61,23 @@ type DefaultsConfig struct {
 	Pagination *PaginationConfig `yaml:"pagination"`
 	Errors     *ErrorConfig      `yaml:"errors"`
 	Response   *ResponseConfig   `yaml:"response"`
+	// ContentType is the request-body Content-Type applied to every tool that
+	// does not set its own `content_type`. It both selects the body encoding
+	// (e.g. "application/x-www-form-urlencoded" → form encoding) and is sent as
+	// the Content-Type header on requests that carry a body. This lets a backend
+	// whose API uniformly expects one encoding — e.g. OPNsense, which reads PHP
+	// $_POST and ignores JSON bodies — declare it once instead of on every tool.
+	// Per-tool ToolDef.ContentType overrides this default.
+	ContentType string `yaml:"content_type"`
+	// NestBodyKeys, when true, makes the backend treat a dot in an `in: body`
+	// parameter name as a nesting separator: `gateway.monitor` is marshaled as
+	// {"gateway":{"monitor":…}} (JSON) or gateway[monitor] (form-urlencoded)
+	// instead of the literal flat key "gateway.monitor". This matches PHP/Phalcon
+	// model backends (e.g. OPNsense set_*/add_*) that read nested $_POST nodes.
+	// It is opt-in because other backends — notably RouterOS/MikroTik REST — use
+	// dotted property names as literal flat keys, where nesting would corrupt the
+	// request. Per-tool ToolDef.NestBodyKeys overrides this default.
+	NestBodyKeys bool `yaml:"nest_body_keys"`
 }
 
 // ToolDef describes a single REST API tool (endpoint).
@@ -80,6 +97,9 @@ type ToolDef struct {
 	Pagination  any                 `yaml:"pagination"` // *PaginationConfig, "none", or nil (inherit defaults)
 	Errors      *ErrorConfig        `yaml:"errors"`     // nil = inherit defaults
 	ContentType string              `yaml:"content_type"`
+	// NestBodyKeys overrides DefaultsConfig.NestBodyKeys for this tool. nil
+	// inherits the backend default; a non-nil value forces nesting on or off.
+	NestBodyKeys *bool `yaml:"nest_body_keys"`
 }
 
 // ParamDef describes a single parameter for a tool.

@@ -677,12 +677,24 @@ func (a *RESTAdapter) buildHTTPRequest(ctx context.Context, tool *dadl.ToolDef, 
 		return nil, err
 	}
 
-	// Override content type: multipart boundary / fetched file type takes
-	// precedence, then tool-level override
-	if contentTypeOverride != "" {
+	// Resolve the request Content-Type. A multipart boundary / fetched file type
+	// (contentTypeOverride) always wins. Otherwise the effective content type
+	// (tool.content_type, then backend defaults.content_type) applies, but only
+	// when the request actually carries a body — a Content-Type on a bodyless
+	// GET/DELETE is meaningless and would wrongly tag those requests. When a body
+	// is present but no content type is resolved, fall back to application/json
+	// unless a defaults.headers Content-Type is already set: a POST/PUT/PATCH body
+	// with no Content-Type is invisible to strict JSON parsers and PHP $_POST
+	// backends.
+	switch {
+	case contentTypeOverride != "":
 		req.Header.Set("Content-Type", contentTypeOverride)
-	} else if tool.ContentType != "" {
-		req.Header.Set("Content-Type", tool.ContentType)
+	case req.Body != nil:
+		if ct := a.effectiveContentType(tool); ct != "" {
+			req.Header.Set("Content-Type", ct)
+		} else if req.Header.Get("Content-Type") == "" {
+			req.Header.Set("Content-Type", contentTypeJSON)
+		}
 	}
 
 	// Inject auth
@@ -703,7 +715,8 @@ func (a *RESTAdapter) buildHTTPRequest(ctx context.Context, tool *dadl.ToolDef, 
 //     as the raw body (DADL spec §6.2.1, e.g. Tika PUT /tika)
 //   - file_url params with content_type multipart/form-data, or legacy local
 //     "file" params → multipart/form-data (e.g. DeepL POST /v2/document)
-//   - content_type application/x-www-form-urlencoded → form encoding
+//   - effective content_type application/x-www-form-urlencoded (tool, else
+//     backend defaults.content_type) → form encoding
 //   - otherwise → JSON
 func (a *RESTAdapter) buildRequestBody(ctx context.Context, tool *dadl.ToolDef, params map[string]any) (body io.Reader, contentType string, size int64, err error) {
 	switch {
@@ -715,7 +728,7 @@ func (a *RESTAdapter) buildRequestBody(ctx context.Context, tool *dadl.ToolDef, 
 			return nil, "", -1, fmt.Errorf("build multipart body: %w", err)
 		}
 		return mr, ct, -1, nil
-	case tool.ContentType == "application/x-www-form-urlencoded":
+	case a.effectiveContentType(tool) == "application/x-www-form-urlencoded":
 		bodyData := a.buildBody(tool, params)
 		if bodyData == nil {
 			return nil, "", -1, nil
@@ -887,7 +900,93 @@ func (a *RESTAdapter) buildBody(tool *dadl.ToolDef, params map[string]any) map[s
 	if len(body) == 0 {
 		return nil
 	}
+	if a.effectiveNestBodyKeys(tool) {
+		body = nestDottedKeys(body)
+	}
 	return body
+}
+
+// effectiveNestBodyKeys reports whether dotted `in: body` param names should be
+// nested into objects for this tool. A per-tool `nest_body_keys` (ToolDef) wins
+// when set; otherwise the backend default (DefaultsConfig) applies. Default
+// false preserves literal flat keys, which is what most JSON APIs — and notably
+// RouterOS/MikroTik REST, whose property names legitimately contain dots —
+// expect.
+func (a *RESTAdapter) effectiveNestBodyKeys(tool *dadl.ToolDef) bool {
+	if tool.NestBodyKeys != nil {
+		return *tool.NestBodyKeys
+	}
+	return a.spec.Backend.Defaults.NestBodyKeys
+}
+
+// effectiveContentType returns the request-body Content-Type for a tool: the
+// per-tool `content_type` when set, otherwise the backend `defaults.content_type`.
+// It is consulted both to select the body encoding (buildRequestBody) and to set
+// the Content-Type header (buildHTTPRequest), so a backend with a uniform
+// encoding can declare it once in defaults instead of on every tool.
+func (a *RESTAdapter) effectiveContentType(tool *dadl.ToolDef) string {
+	if tool.ContentType != "" {
+		return tool.ContentType
+	}
+	return a.spec.Backend.Defaults.ContentType
+}
+
+// nestDottedKeys rewrites a flat body map so that any key containing a dot is
+// split into nested objects: {"gateway.monitor": x} becomes
+// {"gateway": {"monitor": x}}. Both the JSON marshaler and the form-urlencoded
+// flattener (which renders nested maps as gateway[monitor]) then emit the shape
+// PHP/Phalcon model backends expect from a node.field convention.
+//
+// It is deliberately collision-safe: if a dotted key cannot be nested without
+// overwriting an existing value (an intermediate segment already holds a
+// non-object, or the leaf is already populated), the original literal key is
+// kept so no data is silently dropped. Non-dotted keys are copied verbatim.
+func nestDottedKeys(flat map[string]any) map[string]any {
+	out := make(map[string]any, len(flat))
+	// Copy plain keys first so dotted insertions can detect collisions against
+	// an explicitly provided sibling (e.g. both "gateway" and "gateway.monitor").
+	for k, v := range flat {
+		if !strings.Contains(k, ".") {
+			out[k] = v
+		}
+	}
+	for k, v := range flat {
+		if !strings.Contains(k, ".") {
+			continue
+		}
+		if !insertNested(out, strings.Split(k, "."), v) {
+			out[k] = v // collision — preserve the literal dotted key
+		}
+	}
+	return out
+}
+
+// insertNested walks/creates the map chain described by parts and sets the leaf
+// value. It returns false without mutating the leaf when an intermediate
+// segment already holds a non-map value or the leaf key is already set, letting
+// the caller fall back to keeping the literal key.
+func insertNested(root map[string]any, parts []string, val any) bool {
+	cur := root
+	for _, p := range parts[:len(parts)-1] {
+		existing, ok := cur[p]
+		if !ok {
+			child := make(map[string]any)
+			cur[p] = child
+			cur = child
+			continue
+		}
+		child, ok := existing.(map[string]any)
+		if !ok {
+			return false // intermediate segment is not an object
+		}
+		cur = child
+	}
+	leaf := parts[len(parts)-1]
+	if _, exists := cur[leaf]; exists {
+		return false // leaf already populated
+	}
+	cur[leaf] = val
+	return true
 }
 
 // reservedHeaderParams are HTTP headers that a DADL `in: header` param MUST

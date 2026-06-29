@@ -872,6 +872,332 @@ func TestBuildBody_DefaultApplied(t *testing.T) {
 	}
 }
 
+// newNestAdapter builds an adapter whose backend default nest_body_keys is set
+// to the given value, for exercising buildBody's dotted-key handling directly.
+func newNestAdapter(t *testing.T, backendDefault bool) *RESTAdapter {
+	t.Helper()
+	spec := &dadl.Spec{
+		Backend: dadl.BackendDef{
+			Name:     testBackendNameTestAPI,
+			Type:     transportTypeREST,
+			BaseURL:  testBaseURLExample,
+			Defaults: dadl.DefaultsConfig{NestBodyKeys: backendDefault},
+			Tools:    map[string]dadl.ToolDef{"t": {Method: testMethodPOST, Path: "/"}},
+		},
+	}
+	adapter, err := NewRESTAdapter(spec, &testCredStore{}, slog.Default(), testRESTOpts)
+	if err != nil {
+		t.Fatalf("create adapter: %v", err)
+	}
+	return adapter
+}
+
+// TestBuildBody_DottedKeysLiteralByDefault is the regression guard for backends
+// like RouterOS/MikroTik whose REST property names legitimately contain dots
+// (remote.address, local.role). With nesting off (the default), a dotted body
+// param MUST be marshaled as a literal flat key, never nested.
+func TestBuildBody_DottedKeysLiteralByDefault(t *testing.T) {
+	adapter := newNestAdapter(t, false)
+	tool := &dadl.ToolDef{
+		Params: map[string]dadl.ParamDef{
+			"remote.address": {Type: schemaTypeString, In: paramInBody},
+			"local.role":     {Type: schemaTypeString, In: paramInBody},
+		},
+	}
+
+	body := adapter.buildBody(tool, map[string]any{"remote.address": testIPHost1, "local.role": "ibgp"})
+	if body["remote.address"] != testIPHost1 {
+		t.Errorf("literal dotted key not preserved: %v", body)
+	}
+	if _, nested := body["remote"]; nested {
+		t.Errorf("dotted key must NOT nest when nest_body_keys is off: %v", body)
+	}
+	gotJSON, _ := json.Marshal(body)
+	if !strings.Contains(string(gotJSON), `"remote.address":"10.0.0.1"`) {
+		t.Errorf("want literal dotted JSON key, got %s", gotJSON)
+	}
+}
+
+// TestBuildBody_NestDottedKeys verifies that with nesting enabled, dotted body
+// param names are folded into nested objects (the OPNsense node.field case).
+func TestBuildBody_NestDottedKeys(t *testing.T) {
+	adapter := newNestAdapter(t, true)
+	tool := &dadl.ToolDef{
+		Params: map[string]dadl.ParamDef{
+			testParamAliasName:    {Type: schemaTypeString, In: paramInBody},
+			testParamAliasEnabled: {Type: schemaTypeString, In: paramInBody},
+		},
+	}
+
+	body := adapter.buildBody(tool, map[string]any{testParamAliasName: testValWeb, testParamAliasEnabled: "1"})
+	alias, ok := body["alias"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected nested 'alias' object, got %T: %v", body["alias"], body)
+	}
+	if alias["name"] != testValWeb || alias["enabled"] != "1" {
+		t.Errorf("nested values wrong: %v", alias)
+	}
+	if _, flat := body[testParamAliasName]; flat {
+		t.Errorf("literal dotted key should be gone after nesting: %v", body)
+	}
+}
+
+// TestBuildBody_NestPerToolOverride verifies the per-tool nest_body_keys flag
+// overrides the backend default in both directions.
+func TestBuildBody_NestPerToolOverride(t *testing.T) {
+	off := false
+	on := true
+
+	// Backend default ON, tool forces OFF → literal key.
+	adapterOn := newNestAdapter(t, true)
+	toolOff := &dadl.ToolDef{
+		NestBodyKeys: &off,
+		Params:       map[string]dadl.ParamDef{testParamDotted: {Type: schemaTypeString, In: paramInBody}},
+	}
+	if body := adapterOn.buildBody(toolOff, map[string]any{testParamDotted: "x"}); body[testParamDotted] != "x" {
+		t.Errorf("tool override off should keep literal key: %v", body)
+	}
+
+	// Backend default OFF, tool forces ON → nested.
+	adapterOff := newNestAdapter(t, false)
+	toolOn := &dadl.ToolDef{
+		NestBodyKeys: &on,
+		Params:       map[string]dadl.ParamDef{testParamDotted: {Type: schemaTypeString, In: paramInBody}},
+	}
+	body := adapterOff.buildBody(toolOn, map[string]any{testParamDotted: "x"})
+	if a, ok := body["a"].(map[string]any); !ok || a["b"] != "x" {
+		t.Errorf("tool override on should nest: %v", body)
+	}
+}
+
+// TestBuildBody_NestCollisionSafe verifies that a dotted key which cannot nest
+// without overwriting an existing value keeps its literal form rather than
+// silently dropping data.
+func TestBuildBody_NestCollisionSafe(t *testing.T) {
+	adapter := newNestAdapter(t, true)
+	// "gateway" is provided as a scalar AND "gateway.monitor" as a dotted key:
+	// the dotted key cannot nest under a scalar, so it must stay literal.
+	tool := &dadl.ToolDef{
+		Params: map[string]dadl.ParamDef{
+			"gateway":         {Type: schemaTypeString, In: paramInBody},
+			"gateway.monitor": {Type: schemaTypeString, In: paramInBody},
+		},
+	}
+	body := adapter.buildBody(tool, map[string]any{"gateway": "GW1", "gateway.monitor": testIPGoogleDNS})
+	if body["gateway"] != "GW1" {
+		t.Errorf("scalar sibling lost: %v", body)
+	}
+	if body["gateway.monitor"] != testIPGoogleDNS {
+		t.Errorf("colliding dotted key must be preserved literally, not dropped: %v", body)
+	}
+}
+
+// TestRESTAdapter_JSONBodyContentType verifies that a JSON request body gets a
+// default Content-Type: application/json when none is otherwise set, that an
+// explicit backend defaults.headers Content-Type is not clobbered, and that a
+// bodyless GET sends no Content-Type.
+func TestRESTAdapter_JSONBodyContentType(t *testing.T) {
+	var gotContentType string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotContentType = r.Header.Get(testHeaderContentType)
+		w.Header().Set(testHeaderContentType, testContentTypeJSON)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer srv.Close()
+
+	newAdapter := func(defaults dadl.DefaultsConfig, tool dadl.ToolDef) *RESTAdapter {
+		spec := &dadl.Spec{
+			Backend: dadl.BackendDef{
+				Name:     testBackendNameTestAPI,
+				Type:     transportTypeREST,
+				BaseURL:  srv.URL,
+				Defaults: defaults,
+				Tools:    map[string]dadl.ToolDef{"t": tool},
+			},
+		}
+		adapter, err := NewRESTAdapter(spec, &testCredStore{}, slog.Default(), testRESTOpts)
+		if err != nil {
+			t.Fatalf("create adapter: %v", err)
+		}
+		return adapter
+	}
+
+	// JSON body, no content type anywhere → defaulted to application/json.
+	a := newAdapter(dadl.DefaultsConfig{}, dadl.ToolDef{
+		Method: testMethodPOST, Path: "/",
+		Params: map[string]dadl.ParamDef{testParamName: {Type: schemaTypeString, In: paramInBody}},
+	})
+	if _, err := a.Execute(context.Background(), "t", map[string]any{testParamName: "x"}); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if gotContentType != testContentTypeJSON {
+		t.Errorf("JSON body Content-Type = %q, want %s", gotContentType, testContentTypeJSON)
+	}
+
+	// Explicit defaults.headers Content-Type must NOT be overridden.
+	gotContentType = ""
+	a = newAdapter(
+		dadl.DefaultsConfig{Headers: map[string]string{testHeaderContentType: "application/vnd.api+json"}},
+		dadl.ToolDef{
+			Method: testMethodPOST, Path: "/",
+			Params: map[string]dadl.ParamDef{testParamName: {Type: schemaTypeString, In: paramInBody}},
+		})
+	if _, err := a.Execute(context.Background(), "t", map[string]any{testParamName: "x"}); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if gotContentType != "application/vnd.api+json" {
+		t.Errorf("explicit defaults Content-Type clobbered: got %q", gotContentType)
+	}
+
+	// Bodyless GET → no Content-Type.
+	gotContentType = "sentinel"
+	a = newAdapter(dadl.DefaultsConfig{}, dadl.ToolDef{Method: testMethodGET, Path: "/"})
+	if _, err := a.Execute(context.Background(), "t", map[string]any{}); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if gotContentType != "" {
+		t.Errorf("bodyless GET should send no Content-Type, got %q", gotContentType)
+	}
+}
+
+// TestRESTAdapter_NestedFormEncoded verifies the OPNsense end-to-end shape:
+// nest_body_keys + content_type form-urlencoded turns alias.enabled into the
+// PHP bracket field alias[enabled] that $_POST parses into a nested node.
+func TestRESTAdapter_NestedFormEncoded(t *testing.T) {
+	var receivedBody, receivedCT string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedCT = r.Header.Get(testHeaderContentType)
+		b, _ := io.ReadAll(r.Body)
+		receivedBody = string(b)
+		w.Header().Set(testHeaderContentType, testContentTypeJSON)
+		_, _ = w.Write([]byte(`{"result":"saved"}`))
+	}))
+	defer srv.Close()
+
+	spec := &dadl.Spec{
+		Backend: dadl.BackendDef{
+			Name:     testBackendNameTestAPI,
+			Type:     transportTypeREST,
+			BaseURL:  srv.URL,
+			Defaults: dadl.DefaultsConfig{NestBodyKeys: true},
+			Tools: map[string]dadl.ToolDef{
+				"add_alias": {
+					Method:      testMethodPOST,
+					Path:        "/firewall/alias/addItem",
+					ContentType: contentTypeFormEncoded,
+					Params: map[string]dadl.ParamDef{
+						testParamAliasName:    {Type: schemaTypeString, In: paramInBody},
+						testParamAliasEnabled: {Type: schemaTypeString, In: paramInBody},
+					},
+				},
+			},
+		},
+	}
+	adapter, err := NewRESTAdapter(spec, &testCredStore{}, slog.Default(), testRESTOpts)
+	if err != nil {
+		t.Fatalf("create adapter: %v", err)
+	}
+
+	if _, err := adapter.Execute(context.Background(), "add_alias", map[string]any{
+		testParamAliasName: testValWeb, testParamAliasEnabled: "1",
+	}); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+
+	if receivedCT != contentTypeFormEncoded {
+		t.Errorf("Content-Type = %q, want %s", receivedCT, contentTypeFormEncoded)
+	}
+	parsed, err := url.ParseQuery(receivedBody)
+	if err != nil {
+		t.Fatalf("parse form body %q: %v", receivedBody, err)
+	}
+	if parsed.Get("alias[name]") != testValWeb {
+		t.Errorf("alias[name] = %q, want web (body: %s)", parsed.Get("alias[name]"), receivedBody)
+	}
+	if parsed.Get("alias[enabled]") != "1" {
+		t.Errorf("alias[enabled] = %q, want 1 (body: %s)", parsed.Get("alias[enabled]"), receivedBody)
+	}
+}
+
+// TestRESTAdapter_DefaultContentType verifies that backend defaults.content_type
+// drives both the body encoding and the Content-Type header for tools that do
+// not set their own content_type, that a per-tool content_type overrides it, and
+// that a bodyless GET is left untagged. This is the OPNsense activation path:
+// one defaults.content_type instead of repeating it on every tool.
+func TestRESTAdapter_DefaultContentType(t *testing.T) {
+	var gotCT, gotBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotCT = r.Header.Get(testHeaderContentType)
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		w.Header().Set(testHeaderContentType, testContentTypeJSON)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer srv.Close()
+
+	adapter, err := NewRESTAdapter(&dadl.Spec{
+		Backend: dadl.BackendDef{
+			Name:     testBackendNameTestAPI,
+			Type:     transportTypeREST,
+			BaseURL:  srv.URL,
+			Defaults: dadl.DefaultsConfig{ContentType: contentTypeFormEncoded, NestBodyKeys: true},
+			Tools: map[string]dadl.ToolDef{
+				// Inherits defaults.content_type (form) + nest_body_keys.
+				"add_alias": {
+					Method: testMethodPOST, Path: "/alias",
+					Params: map[string]dadl.ParamDef{
+						testParamAliasName:    {Type: schemaTypeString, In: paramInBody},
+						testParamAliasEnabled: {Type: schemaTypeString, In: paramInBody},
+					},
+				},
+				// Per-tool content_type overrides the default back to JSON.
+				"raw_json": {
+					Method: testMethodPOST, Path: "/raw", ContentType: testContentTypeJSON,
+					Params: map[string]dadl.ParamDef{testParamName: {Type: schemaTypeString, In: paramInBody}},
+				},
+				// Bodyless GET must not be tagged with the default content type.
+				"ping": {Method: testMethodGET, Path: "/ping"},
+			},
+		},
+	}, &testCredStore{}, slog.Default(), testRESTOpts)
+	if err != nil {
+		t.Fatalf("create adapter: %v", err)
+	}
+
+	// 1. Inherited default → form-urlencoded body with nested bracket keys.
+	if _, err := adapter.Execute(context.Background(), "add_alias", map[string]any{
+		testParamAliasName: testValWeb, testParamAliasEnabled: "1",
+	}); err != nil {
+		t.Fatalf("add_alias: %v", err)
+	}
+	if gotCT != contentTypeFormEncoded {
+		t.Errorf("inherited Content-Type = %q, want %s", gotCT, contentTypeFormEncoded)
+	}
+	if parsed, _ := url.ParseQuery(gotBody); parsed.Get("alias[name]") != testValWeb {
+		t.Errorf("default form encoding wrong: body=%s", gotBody)
+	}
+
+	// 2. Per-tool content_type wins → JSON.
+	if _, err := adapter.Execute(context.Background(), "raw_json", map[string]any{testParamName: testValWeb}); err != nil {
+		t.Fatalf("raw_json: %v", err)
+	}
+	if gotCT != testContentTypeJSON {
+		t.Errorf("override Content-Type = %q, want %s", gotCT, testContentTypeJSON)
+	}
+	if !strings.Contains(gotBody, `"name":"web"`) {
+		t.Errorf("override should send JSON body, got %s", gotBody)
+	}
+
+	// 3. Bodyless GET → no Content-Type from the default.
+	gotCT = "sentinel"
+	if _, err := adapter.Execute(context.Background(), "ping", map[string]any{}); err != nil {
+		t.Fatalf("ping: %v", err)
+	}
+	if gotCT != "" {
+		t.Errorf("bodyless GET should not be tagged, got Content-Type %q", gotCT)
+	}
+}
+
 // TestBuildFormEncoded_NilStillSkipped verifies that on the form-encoded path
 // nil values are still dropped (not serialized as "<nil>" or the literal
 // string "null"), because form encoding has no representation for null.

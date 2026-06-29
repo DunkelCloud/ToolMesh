@@ -245,7 +245,7 @@ func main() {
 
 	// Initialize OpenFGA authorizer based on OPENFGA_MODE
 	var authorizer *authz.Authorizer
-	if cfg.OpenFGAMode == "restrict" {
+	if cfg.OpenFGAMode == config.OpenFGAModeRestrict {
 		if cfg.OpenFGAStoreID == "" {
 			logger.Error("OPENFGA_MODE=restrict requires OPENFGA_STORE_ID to be set")
 			os.Exit(1)
@@ -255,10 +255,10 @@ func main() {
 			logger.Error("failed to create authorizer", "error", err)
 			os.Exit(1)
 		}
-		logger.Info("OpenFGA authorizer initialized", "mode", "restrict", "storeId", cfg.OpenFGAStoreID)
-	} else {
-		logger.Warn("SECURITY: OpenFGA authorization is BYPASSED — all tool calls are allowed without permission checks. Set OPENFGA_MODE=restrict for production use.", "mode", "bypass")
+		logger.Info("OpenFGA authorizer initialized", "mode", config.OpenFGAModeRestrict, "storeId", cfg.OpenFGAStoreID)
 	}
+	// The bypass case (authorizer == nil) is reported by the consolidated
+	// security-posture summary emitted just before the server starts listening.
 
 	// Initialize gate pipeline via registry
 	gateNames := strings.Split(cfg.GateEvaluators, ",")
@@ -379,9 +379,6 @@ func main() {
 	// Initialize MCP handler and server
 	mcpHandler := mcp.NewHandler(exec, compositeBackend, coercer, rawTS, metricsReg, logger, cfg.DebugTools)
 	mcpHandler.SetCodeTimeout(time.Duration(cfg.CodeTimeout) * time.Second)
-	if cfg.DebugTools {
-		logger.Warn("debug tools enabled (TOOLMESH_DEBUG_TOOLS=true) — debug_echo and debug_generate exposed; do not use in production")
-	}
 	mcpServer := mcp.NewServer(mcpHandler, cfg, logger, tokenStore, userStore, apiKeyStore, rateLimiter, callerClasses, metricsReg)
 
 	httpMux := http.NewServeMux()
@@ -444,6 +441,14 @@ func main() {
 			}
 		}
 	}()
+
+	// Consolidated security-posture summary: one place that reports every
+	// relaxed control (auth, authz, CORS, metrics exposure, debug tools) with a
+	// remediation hint. Logged at WARN in the production posture, or at INFO
+	// when TOOLMESH_DEV=true. authConfigured mirrors how the auth middleware
+	// decides whether to enforce credentials.
+	authConfigured := cfg.AuthPassword != "" || cfg.APIKey != "" || userStore != nil || apiKeyStore != nil
+	logSecurityPosture(cfg, authConfigured, logger)
 
 	logger.Info("ToolMesh MCP server listening", "addr", srv.Addr)
 	if err := srv.ListenAndServe(); err != http.ErrServerClosed {

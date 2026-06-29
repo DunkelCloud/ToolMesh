@@ -22,6 +22,14 @@ import (
 	"strings"
 )
 
+// OpenFGA authorization modes for OpenFGAMode / OPENFGA_MODE.
+const (
+	// OpenFGAModeBypass allows every authenticated call without an authz check.
+	OpenFGAModeBypass = "bypass"
+	// OpenFGAModeRestrict enforces OpenFGA user→plan→tool authorization.
+	OpenFGAModeRestrict = "restrict"
+)
+
 // Config holds all ToolMesh configuration values.
 type Config struct {
 	// MCP Server
@@ -111,6 +119,17 @@ type Config struct {
 	// surface gains two diagnostic tools for probing transport-level size
 	// limits and round-trip integrity. Default off; intended for dev/test.
 	DebugTools bool // TOOLMESH_DEBUG_TOOLS, default false
+
+	// DevMode selects the local-development security posture. It deliberately
+	// does NOT relax any individual default — every secure default stands on
+	// its own so the server is secure-by-default whether or not this is set.
+	// It only governs how the startup security-posture summary is reported:
+	// without it (the production default) each still-relaxed control is logged
+	// at WARN with a remediation hint; with TOOLMESH_DEV=true the same facts
+	// are reported once at INFO as an expected local-dev state, so the warnings
+	// do not become background noise on a developer's machine.
+	// TOOLMESH_DEV, default false.
+	DevMode bool
 }
 
 // Load reads configuration from environment variables with sensible defaults.
@@ -127,7 +146,7 @@ func Load() (*Config, error) {
 		CodeTimeout:             envInt("TOOLMESH_CODE_TIMEOUT", 120),
 		OpenFGAAPIURL:           envStr("OPENFGA_API_URL", "http://localhost:8080"),
 		OpenFGAStoreID:          envStr("OPENFGA_STORE_ID", ""),
-		OpenFGAMode:             envStr("OPENFGA_MODE", "bypass"),
+		OpenFGAMode:             envStr("OPENFGA_MODE", OpenFGAModeBypass),
 		RedisURL:                envStr("REDIS_URL", "redis://localhost:6379/0"),
 		LogLevel:                envStr("LOG_LEVEL", "info"), // default "info"; set LOG_LEVEL=debug to trace requests (debug logs include full request URLs, which may contain query-string credentials)
 		LogFormat:               envStr("LOG_FORMAT", "json"),
@@ -151,6 +170,7 @@ func Load() (*Config, error) {
 		MetricsBind:             envStr("TOOLMESH_METRICS_BIND", ":9090"),
 		MetricsLabelTool:        envBool("TOOLMESH_METRICS_LABEL_TOOL", true),
 		DebugTools:              envBool("TOOLMESH_DEBUG_TOOLS", false),
+		DevMode:                 envBool("TOOLMESH_DEV", false),
 	}
 
 	// Parse CORS origins
@@ -166,8 +186,8 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("invalid TOOLMESH_TRANSPORT: %q (must be \"http\" or \"stdio\")", cfg.Transport)
 	}
 
-	if cfg.OpenFGAMode != "bypass" && cfg.OpenFGAMode != "restrict" {
-		return nil, fmt.Errorf("invalid OPENFGA_MODE: %q (must be \"bypass\" or \"restrict\")", cfg.OpenFGAMode)
+	if cfg.OpenFGAMode != OpenFGAModeBypass && cfg.OpenFGAMode != OpenFGAModeRestrict {
+		return nil, fmt.Errorf("invalid OPENFGA_MODE: %q (must be %q or %q)", cfg.OpenFGAMode, OpenFGAModeBypass, OpenFGAModeRestrict)
 	}
 
 	if cfg.AuditStore != "log" && cfg.AuditStore != "sqlite" {

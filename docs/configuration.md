@@ -15,6 +15,7 @@ All configuration is done via environment variables. Copy `.env.example` to `.en
 | `TOOLMESH_AUTH_PLAN` | `pro` | Plan in simple auth mode |
 | `TOOLMESH_AUTH_ROLES` | `admin` | Comma-separated roles in simple auth mode |
 | `TOOLMESH_ISSUER` | `https://toolmesh.io/` | OAuth issuer URL (must end with `/`) |
+| `TOOLMESH_DEV` | `false` | Local-development posture. Reports the startup security-posture summary at `INFO` instead of `WARN`. Relaxes no setting on its own — it only changes the log level of that summary. |
 
 ## Audit
 
@@ -79,12 +80,12 @@ TOOLMESH_CODE_TIMEOUT=600
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `LOG_LEVEL` | `debug` | Log verbosity: `debug`, `info`, `warn`, `error` |
+| `LOG_LEVEL` | `info` | Log verbosity: `debug`, `info`, `warn`, `error` |
 | `LOG_FORMAT` | `json` | Output format: `json` or `text` |
 | `DEBUG_BACKENDS` | *(empty)* | Comma-separated backend names for per-backend debug file logging |
 | `DEBUG_FILE` | *(empty)* | Path to the debug log file (e.g. `debug.log`). Both `DEBUG_BACKENDS` and `DEBUG_FILE` must be set to activate. |
 
-**Development default.** The default level is `debug` so that MCP communication issues are fully traceable out of the box. At this level, ToolMesh logs complete request/response payloads which may include sensitive data. **For production, set `LOG_LEVEL=info` or higher.**
+**Secure default.** The default level is `info`, which does not log request payloads. Raise it to `debug` only while diagnosing an MCP communication issue: at `debug` level ToolMesh logs complete request URLs and request/response payloads, which for query-string API keys means the credential is written to the log. **Do not run `debug` in production.** Prefer the per-backend debug file (below) to scope tracing to a single backend without turning on global debug.
 
 At `debug` level, ToolMesh logs the complete request/response flow between clients and backends:
 - Incoming JSON-RPC method, params, and request ID

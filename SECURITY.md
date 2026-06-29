@@ -47,5 +47,17 @@ ToolMesh follows a security-by-default design:
 - **Credential Isolation:** Secrets are injected at runtime, never exposed in prompts
 - **Audit Trail:** Every tool execution is recorded via Temporal workflow history
 - **Authorization:** Fine-grained access control via OpenFGA (plan -> tool mapping)
+- **Authentication required:** With no `TOOLMESH_AUTH_PASSWORD`/`TOOLMESH_API_KEY` (or `users.yaml`/`apikeys.yaml`), every request is rejected — the server is never open by default.
+- **Safe defaults:** Logging defaults to `info` (no request payloads); the unauthenticated metrics port is bound to loopback by the Compose file; caller-supplied `file_url` fetches fail closed against private/internal addresses.
+
+### Startup security posture
+
+No default silently relaxes a control. At boot ToolMesh logs a single
+**security-posture summary** listing every control still in a relaxed state
+(missing auth credential, authz bypass, open CORS, debug tools) with a
+remediation hint. These are logged at `WARN` in the default production posture;
+set `TOOLMESH_DEV=true` on a development machine to report the same facts once at
+`INFO`. `TOOLMESH_DEV` changes only the log level of this summary — it never
+relaxes a setting.
 
 For details, see [docs/architecture.md](docs/architecture.md).

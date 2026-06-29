@@ -64,7 +64,8 @@ cp .env.example .env
 # cp docker-compose.override.yml.example docker-compose.override.yml
 # # then edit docker-compose.override.yml — picked up automatically by Docker Compose
 
-# Start (runs in bypass mode by default — no authz required)
+# Start (fine-grained authz is in bypass by default; the password/API key
+# above is still required — without it every request is rejected)
 docker compose up -d
 
 # Verify it's running (default port: 8123)
@@ -173,6 +174,10 @@ Dynamic Client Registration is rate-limited to 5 registrations per hour per IP t
 
 Start with `bypass` to get running quickly, then switch to `restrict` after bootstrapping OpenFGA.
 
+### Security posture at startup
+
+ToolMesh is secure-by-default: it ships with no individual default that relaxes a control silently. At boot it logs a single **security-posture summary** that lists every control still in a relaxed state (missing auth credential, authz bypass, open CORS, debug tools) together with how to harden it. In the default production posture these are logged at `WARN`; set `TOOLMESH_DEV=true` on a local-development machine to report the same facts once at `INFO` so the warnings don't become background noise. `TOOLMESH_DEV` changes only the log level of this summary — it never relaxes a setting on its own.
+
 ## Configuration
 
 See [docs/configuration.md](docs/configuration.md) for all environment variables.
@@ -193,11 +198,11 @@ TOOLMESH_EXEC_TIMEOUT=180
 
 ### Logging
 
-ToolMesh uses structured logging via `slog`. The default level is `debug` for full MCP traceability out of the box — **set `LOG_LEVEL=info` or higher for production** since debug logs include complete request/response payloads. Per-backend debug files, log formats, and all logging variables are documented in [docs/configuration.md](docs/configuration.md#logging).
+ToolMesh uses structured logging via `slog`. The default level is **`info`**. Set `LOG_LEVEL=debug` to trace the full MCP request/response flow when diagnosing a problem — but note that debug logs include complete request URLs and payloads, so for query-string API keys the credential ends up in the log. Keep `debug` off in production. Per-backend debug files, log formats, and all logging variables are documented in [docs/configuration.md](docs/configuration.md#logging).
 
 ### Metrics (Prometheus)
 
-ToolMesh exposes Prometheus metrics on a separate listener (default host port 9090) — login counts by method and result, tool-call rates by backend and outcome, and a latency histogram with REST-tuned buckets. The endpoint is unauthenticated, so bind it to a private interface or expose it only to your Prometheus instance.
+ToolMesh exposes Prometheus metrics on a separate listener (default host port 9090) — login counts by method and result, tool-call rates by backend and outcome, and a latency histogram with REST-tuned buckets. The endpoint is unauthenticated, so the Compose file binds the host port to `127.0.0.1` by default (reachable locally and from Prometheus on the same Docker network, never from a public interface). Set `TOOLMESH_METRICS_HOST=0.0.0.0` only if you scrape from another host and have firewalled the port yourself.
 
 Configure via `TOOLMESH_METRICS_PORT`, `TOOLMESH_METRICS_ENABLED`, and `TOOLMESH_METRICS_LABEL_TOOL` in `.env`. See [docs/metrics.md](docs/metrics.md) for the full schema, example PromQL queries, and a sample scrape configuration.
 
@@ -321,6 +326,24 @@ ToolMesh uses a registry-based extension model inspired by Go's `database/sql` d
 Enterprise extensions (InfisicalStore, VaultStore, Compliance-LLM, etc.) are planned and will be included via Go build tags: `go build -tags enterprise ./cmd/toolmesh`.
 
 See [docs/architecture.md](docs/architecture.md#extension-model) for details.
+
+## Who's behind this
+
+ToolMesh is built and maintained by **[Axel Dunkel](https://github.com/axeldunkel)**
+at **[Dunkel Cloud GmbH](https://dunkel.cloud)** — a German company building
+infrastructure that connects AI agents to real systems. ToolMesh and DADL grew
+out of the production cloud and edge infrastructure we've run for businesses for
+years, so this isn't a side project behind an anonymous handle: it runs in our
+own stack, and the same people who answer `security@dunkel.cloud` write the code.
+
+The companion **[DADL registry](https://dadl.ai/browse)** currently ships
+**27 community API descriptions covering ~3,300 generated tools** — from a
+4-tool Hacker News reader to a 608-tool NetBox DCIM/IPAM surface — each with a
+visible API-coverage percentage so you can see exactly how complete it is.
+
+- 🌐 Website: [toolmesh.io](https://toolmesh.io)
+- 📖 DADL spec & registry: [dadl.ai](https://dadl.ai)
+- 🐛 Security contact: security@dunkel.cloud (see [SECURITY.md](SECURITY.md))
 
 ## Contributing
 

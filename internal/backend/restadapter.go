@@ -685,6 +685,17 @@ func (a *RESTAdapter) buildHTTPRequest(ctx context.Context, tool *dadl.ToolDef, 
 		req.Header.Set("Content-Type", tool.ContentType)
 	}
 
+	// Default a JSON request body to application/json when nothing above
+	// (multipart override, tool.content_type, or backend defaults.headers) set a
+	// Content-Type. A POST/PUT/PATCH that carries a body but no Content-Type is
+	// invisible to strict JSON parsers and to PHP $_POST backends, which only
+	// populate the parsed body for known content types. This fallback is purely
+	// additive — it never clobbers an explicit content type — and is skipped for
+	// bodyless requests so GET/DELETE are unaffected.
+	if req.Body != nil && req.Header.Get("Content-Type") == "" {
+		req.Header.Set("Content-Type", contentTypeJSON)
+	}
+
 	// Inject auth
 	if err := a.auth.InjectAuth(ctx, req); err != nil {
 		closeBody()
@@ -887,7 +898,81 @@ func (a *RESTAdapter) buildBody(tool *dadl.ToolDef, params map[string]any) map[s
 	if len(body) == 0 {
 		return nil
 	}
+	if a.effectiveNestBodyKeys(tool) {
+		body = nestDottedKeys(body)
+	}
 	return body
+}
+
+// effectiveNestBodyKeys reports whether dotted `in: body` param names should be
+// nested into objects for this tool. A per-tool `nest_body_keys` (ToolDef) wins
+// when set; otherwise the backend default (DefaultsConfig) applies. Default
+// false preserves literal flat keys, which is what most JSON APIs — and notably
+// RouterOS/MikroTik REST, whose property names legitimately contain dots —
+// expect.
+func (a *RESTAdapter) effectiveNestBodyKeys(tool *dadl.ToolDef) bool {
+	if tool.NestBodyKeys != nil {
+		return *tool.NestBodyKeys
+	}
+	return a.spec.Backend.Defaults.NestBodyKeys
+}
+
+// nestDottedKeys rewrites a flat body map so that any key containing a dot is
+// split into nested objects: {"gateway.monitor": x} becomes
+// {"gateway": {"monitor": x}}. Both the JSON marshaler and the form-urlencoded
+// flattener (which renders nested maps as gateway[monitor]) then emit the shape
+// PHP/Phalcon model backends expect from a node.field convention.
+//
+// It is deliberately collision-safe: if a dotted key cannot be nested without
+// overwriting an existing value (an intermediate segment already holds a
+// non-object, or the leaf is already populated), the original literal key is
+// kept so no data is silently dropped. Non-dotted keys are copied verbatim.
+func nestDottedKeys(flat map[string]any) map[string]any {
+	out := make(map[string]any, len(flat))
+	// Copy plain keys first so dotted insertions can detect collisions against
+	// an explicitly provided sibling (e.g. both "gateway" and "gateway.monitor").
+	for k, v := range flat {
+		if !strings.Contains(k, ".") {
+			out[k] = v
+		}
+	}
+	for k, v := range flat {
+		if !strings.Contains(k, ".") {
+			continue
+		}
+		if !insertNested(out, strings.Split(k, "."), v) {
+			out[k] = v // collision — preserve the literal dotted key
+		}
+	}
+	return out
+}
+
+// insertNested walks/creates the map chain described by parts and sets the leaf
+// value. It returns false without mutating the leaf when an intermediate
+// segment already holds a non-map value or the leaf key is already set, letting
+// the caller fall back to keeping the literal key.
+func insertNested(root map[string]any, parts []string, val any) bool {
+	cur := root
+	for _, p := range parts[:len(parts)-1] {
+		existing, ok := cur[p]
+		if !ok {
+			child := make(map[string]any)
+			cur[p] = child
+			cur = child
+			continue
+		}
+		child, ok := existing.(map[string]any)
+		if !ok {
+			return false // intermediate segment is not an object
+		}
+		cur = child
+	}
+	leaf := parts[len(parts)-1]
+	if _, exists := cur[leaf]; exists {
+		return false // leaf already populated
+	}
+	cur[leaf] = val
+	return true
 }
 
 // reservedHeaderParams are HTTP headers that a DADL `in: header` param MUST

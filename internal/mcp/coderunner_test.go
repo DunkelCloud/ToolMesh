@@ -105,6 +105,52 @@ func TestCodeRunner_SimpleInlineCall(t *testing.T) {
 	}
 }
 
+func TestCodeRunner_SetTimeout_InterruptsLongRun(t *testing.T) {
+	mb := &codeRunnerTestBackend{
+		handler: func(toolName string, _ map[string]any) (*backend.ToolResult, error) {
+			// A backend slower than the configured code timeout. The Go sleep
+			// itself is not interruptible, but the runner's per-call context
+			// check trips before the next toolmesh.* call.
+			time.Sleep(250 * time.Millisecond)
+			return &backend.ToolResult{
+				Content: []any{map[string]any{contentKeyType: contentKeyText, contentKeyText: toolName}},
+			}, nil
+		},
+	}
+	runner := newTestCodeRunner(t, mb)
+	runner.SetTimeout(40 * time.Millisecond)
+
+	// First call returns after the deadline; the second must not run.
+	code := `
+		await toolmesh.test_foo();
+		await toolmesh.test_bar();
+		return "done";
+	`
+	result, err := runner.Execute(testCtx(), code)
+	if err == nil {
+		t.Fatal("expected a timeout error, got nil")
+	}
+	if !strings.Contains(err.Error(), "deadline") {
+		t.Errorf("error = %q, want it to mention the deadline", err)
+	}
+	if len(mb.calls) != 1 {
+		t.Fatalf("expected the run to stop after 1 call, got %d", len(mb.calls))
+	}
+	// The partial result from the first call is preserved, not discarded.
+	if result == nil {
+		t.Fatal("expected a partial result, got nil")
+	}
+}
+
+func TestCodeRunner_SetTimeout_ZeroRestoresDefault(t *testing.T) {
+	runner := newTestCodeRunner(t, &codeRunnerTestBackend{})
+	runner.SetTimeout(5 * time.Second)
+	runner.SetTimeout(0)
+	if runner.timeout != 0 {
+		t.Errorf("timeout = %v, want 0 (default restored)", runner.timeout)
+	}
+}
+
 func TestCodeRunner_VariableReference(t *testing.T) {
 	mb := &codeRunnerTestBackend{}
 	runner := newTestCodeRunner(t, mb)

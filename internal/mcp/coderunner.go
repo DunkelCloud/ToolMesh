@@ -43,7 +43,10 @@ const (
 // maxCodeCalls is the maximum number of toolmesh.* calls allowed per execution.
 const maxCodeCalls = 50
 
-// codeTimeout is the maximum duration for a single execute_code invocation.
+// codeTimeout is the default maximum duration for a single execute_code
+// invocation. It can be overridden per deployment via SetTimeout (wired to
+// TOOLMESH_CODE_TIMEOUT) so an orchestration of several slow backend calls
+// (committees, batch evals) is not capped below the backends' own timeouts.
 const codeTimeout = 120 * time.Second
 
 // CodeRunner executes JavaScript code in a sandboxed goja runtime,
@@ -55,6 +58,17 @@ type CodeRunner struct {
 	executor        *executor.Executor
 	coercer         *tsdef.Coercer
 	logger          *slog.Logger
+	timeout         time.Duration // wall-clock budget for one Execute; 0 → codeTimeout
+}
+
+// SetTimeout overrides the wall-clock budget for a single execute_code run.
+// A non-positive duration restores the built-in default (codeTimeout).
+func (r *CodeRunner) SetTimeout(d time.Duration) {
+	if d <= 0 {
+		r.timeout = 0
+		return
+	}
+	r.timeout = d
 }
 
 // NewCodeRunner creates a CodeRunner with the given name mapping and executor.
@@ -105,7 +119,11 @@ func (r *CodeRunner) Execute(ctx context.Context, code string) (*backend.ToolRes
 		}, nil
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, codeTimeout)
+	timeout := r.timeout
+	if timeout <= 0 {
+		timeout = codeTimeout
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	var (

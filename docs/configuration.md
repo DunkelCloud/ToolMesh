@@ -56,14 +56,18 @@ CREDENTIAL_BRAVE_API_KEY=BSA-xxxxx
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `TOOLMESH_MCP_TIMEOUT` | `120` | HTTP client timeout in seconds for calls to downstream MCP servers |
-| `TOOLMESH_EXEC_TIMEOUT` | `120` | Tool execution timeout in seconds — context deadline for backend calls. Falls back to `TOOLMESH_ACTIVITY_TIMEOUT` if set (backwards compat). |
+| `TOOLMESH_EXEC_TIMEOUT` | `120` | Tool execution timeout in seconds — context deadline for a single backend call. Falls back to `TOOLMESH_ACTIVITY_TIMEOUT` if set (backwards compat). |
+| `TOOLMESH_CODE_TIMEOUT` | `120` | Wall-clock budget in seconds for one `execute_code` run. Bounds a whole orchestration of `toolmesh.*` calls, so set it at least as high as the slowest backend timeout times the number of calls chained in one run (e.g. a committee of slow models). |
 
-Increase these for backends that need more time, e.g. browser-based web fetchers processing heavy pages:
+Increase these for backends that need more time, e.g. browser-based web fetchers processing heavy pages, or `execute_code` runs that fan out across several slow models:
 
 ```bash
 TOOLMESH_MCP_TIMEOUT=180
 TOOLMESH_EXEC_TIMEOUT=180
+TOOLMESH_CODE_TIMEOUT=600
 ```
+
+> Long tool calls no longer trip a "connector isn't responding" error: ToolMesh streams the `tools/call` response over SSE and emits keepalives while the backend works, so the MCP client's idle timer never fires mid-call. The per-request write deadline is also lifted for tool calls, so these timeouts — not the HTTP server's `WriteTimeout` — are the real bound.
 
 ## Backend Configuration
 

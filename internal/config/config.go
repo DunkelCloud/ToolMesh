@@ -46,6 +46,12 @@ type Config struct {
 	// Execution timeout (seconds)
 	ExecTimeout int // TOOLMESH_EXEC_TIMEOUT, default 120
 
+	// CodeTimeout is the wall-clock budget for a single execute_code run
+	// (seconds). It bounds a whole orchestration of toolmesh.* calls, so it
+	// should be >= the slowest backend timeout times the calls chained in one
+	// run. TOOLMESH_CODE_TIMEOUT, default 120.
+	CodeTimeout int
+
 	// OpenFGA
 	OpenFGAAPIURL  string
 	OpenFGAStoreID string
@@ -137,6 +143,7 @@ func Load() (*Config, error) {
 		AuditStore:              envStr("AUDIT_STORE", "log"),
 		AuditRetentionDays:      envInt("AUDIT_RETENTION_DAYS", 90),
 		ExecTimeout:             envInt("TOOLMESH_EXEC_TIMEOUT", envInt("TOOLMESH_ACTIVITY_TIMEOUT", 120)),
+		CodeTimeout:             envInt("TOOLMESH_CODE_TIMEOUT", 120),
 		OpenFGAAPIURL:           envStr("OPENFGA_API_URL", "http://localhost:8080"),
 		OpenFGAStoreID:          envStr("OPENFGA_STORE_ID", ""),
 		OpenFGAMode:             envStr("OPENFGA_MODE", OpenFGAModeBypass),

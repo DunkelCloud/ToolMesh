@@ -13,10 +13,13 @@ services:
     ports:
       - "${TOOLMESH_PORT:-8123}:8080"
       # Prometheus metrics — runs on a separate listener so the scraper does
-      # not need to traverse the public auth-protected MCP port. Bind to
-      # 127.0.0.1 (or remove the line in a docker-compose.override.yml) if
-      # the host is publicly reachable; the endpoint is unauthenticated.
-      - "${TOOLMESH_METRICS_PORT:-9090}:9090"
+      # not need to traverse the public auth-protected MCP port. The endpoint
+      # is unauthenticated, so the host port is bound to 127.0.0.1 by default:
+      # reachable from the local host (and Prometheus on this Docker network via
+      # the service name), but never exposed on a public interface. Override
+      # TOOLMESH_METRICS_HOST=0.0.0.0 only if you deliberately scrape from
+      # another host and have firewalled the port yourself.
+      - "${TOOLMESH_METRICS_HOST:-127.0.0.1}:${TOOLMESH_METRICS_PORT:-9090}:9090"
     env_file: .env
     environment:
       # Soft heap limit (~75% of mem_limit) so the Go GC throttles allocation

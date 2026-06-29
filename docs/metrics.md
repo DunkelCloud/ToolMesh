@@ -11,8 +11,12 @@ the public, auth-protected MCP port.
 | `:9090`                  | `/metrics` | Override with `TOOLMESH_METRICS_BIND`. |
 
 The endpoint is unauthenticated by design (Prometheus scrapers typically can
-not present bearer tokens). Bind it to a private interface or an internal
-network when running in production.
+not present bearer tokens). The shipped `docker-compose.yml` therefore binds the
+**host** port to `127.0.0.1` by default, so it is never exposed on a public
+interface. A Prometheus instance on the same Docker network still scrapes the
+container directly by service name (it does not go through the host mapping). If
+you scrape from another host, set `TOOLMESH_METRICS_HOST=0.0.0.0` to publish the
+host port and firewall it yourself.
 
 ## Configuration
 

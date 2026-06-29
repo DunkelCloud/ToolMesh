@@ -47,6 +47,7 @@ func TestLoad_Defaults(t *testing.T) {
 		{"LogFormat", cfg.LogFormat, "json"},
 		{"DebugBackends", cfg.DebugBackends, ""},
 		{"DebugFile", cfg.DebugFile, ""},
+		{"DevMode", cfg.DevMode, false},
 	}
 
 	for _, tt := range tests {

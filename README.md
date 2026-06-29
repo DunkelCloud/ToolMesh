@@ -64,7 +64,8 @@ cp .env.example .env
 # cp docker-compose.override.yml.example docker-compose.override.yml
 # # then edit docker-compose.override.yml — picked up automatically by Docker Compose
 
-# Start (runs in bypass mode by default — no authz required)
+# Start (fine-grained authz is in bypass by default; the password/API key
+# above is still required — without it every request is rejected)
 docker compose up -d
 
 # Verify it's running (default port: 8123)
@@ -173,6 +174,10 @@ Dynamic Client Registration is rate-limited to 5 registrations per hour per IP t
 
 Start with `bypass` to get running quickly, then switch to `restrict` after bootstrapping OpenFGA.
 
+### Security posture at startup
+
+ToolMesh is secure-by-default: it ships with no individual default that relaxes a control silently. At boot it logs a single **security-posture summary** that lists every control still in a relaxed state (missing auth credential, authz bypass, open CORS, debug tools) together with how to harden it. In the default production posture these are logged at `WARN`; set `TOOLMESH_DEV=true` on a local-development machine to report the same facts once at `INFO` so the warnings don't become background noise. `TOOLMESH_DEV` changes only the log level of this summary — it never relaxes a setting on its own.
+
 ## Configuration
 
 See [docs/configuration.md](docs/configuration.md) for all environment variables.
@@ -193,11 +198,11 @@ TOOLMESH_EXEC_TIMEOUT=180
 
 ### Logging
 
-ToolMesh uses structured logging via `slog`. The default level is `debug` for full MCP traceability out of the box — **set `LOG_LEVEL=info` or higher for production** since debug logs include complete request/response payloads. Per-backend debug files, log formats, and all logging variables are documented in [docs/configuration.md](docs/configuration.md#logging).
+ToolMesh uses structured logging via `slog`. The default level is **`info`**. Set `LOG_LEVEL=debug` to trace the full MCP request/response flow when diagnosing a problem — but note that debug logs include complete request URLs and payloads, so for query-string API keys the credential ends up in the log. Keep `debug` off in production. Per-backend debug files, log formats, and all logging variables are documented in [docs/configuration.md](docs/configuration.md#logging).
 
 ### Metrics (Prometheus)
 
-ToolMesh exposes Prometheus metrics on a separate listener (default host port 9090) — login counts by method and result, tool-call rates by backend and outcome, and a latency histogram with REST-tuned buckets. The endpoint is unauthenticated, so bind it to a private interface or expose it only to your Prometheus instance.
+ToolMesh exposes Prometheus metrics on a separate listener (default host port 9090) — login counts by method and result, tool-call rates by backend and outcome, and a latency histogram with REST-tuned buckets. The endpoint is unauthenticated, so the Compose file binds the host port to `127.0.0.1` by default (reachable locally and from Prometheus on the same Docker network, never from a public interface). Set `TOOLMESH_METRICS_HOST=0.0.0.0` only if you scrape from another host and have firewalled the port yourself.
 
 Configure via `TOOLMESH_METRICS_PORT`, `TOOLMESH_METRICS_ENABLED`, and `TOOLMESH_METRICS_LABEL_TOOL` in `.env`. See [docs/metrics.md](docs/metrics.md) for the full schema, example PromQL queries, and a sample scrape configuration.
 

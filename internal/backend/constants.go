@@ -45,6 +45,10 @@ const (
 	// Fallback content type for binary payloads of unknown type.
 	contentTypeOctetStream = "application/octet-stream"
 
+	// Default content type applied to a JSON request body when the tool,
+	// backend defaults, and multipart/raw-file branches leave it unset.
+	contentTypeJSON = "application/json"
+
 	// ToolResult metadata keys.
 	metadataKeyBackend    = "backend"
 	metadataKeyTransport  = "transport"

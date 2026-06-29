@@ -91,4 +91,12 @@ const (
 	testParamName      = "name"
 	testParamVoiceID   = "voice_id"
 	testParamTextQuery = "textQuery"
+
+	// Dotted-body-key fixtures for nest_body_keys tests.
+	testParamAliasName    = "alias.name"
+	testParamAliasEnabled = "alias.enabled"
+	testParamDotted       = "a.b"
+	testValWeb            = "web"
+	testIPGoogleDNS       = "8.8.8.8"
+	testIPHost1           = "10.0.0.1"
 )

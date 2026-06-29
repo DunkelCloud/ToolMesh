@@ -677,23 +677,24 @@ func (a *RESTAdapter) buildHTTPRequest(ctx context.Context, tool *dadl.ToolDef, 
 		return nil, err
 	}
 
-	// Override content type: multipart boundary / fetched file type takes
-	// precedence, then tool-level override
-	if contentTypeOverride != "" {
+	// Resolve the request Content-Type. A multipart boundary / fetched file type
+	// (contentTypeOverride) always wins. Otherwise the effective content type
+	// (tool.content_type, then backend defaults.content_type) applies, but only
+	// when the request actually carries a body — a Content-Type on a bodyless
+	// GET/DELETE is meaningless and would wrongly tag those requests. When a body
+	// is present but no content type is resolved, fall back to application/json
+	// unless a defaults.headers Content-Type is already set: a POST/PUT/PATCH body
+	// with no Content-Type is invisible to strict JSON parsers and PHP $_POST
+	// backends.
+	switch {
+	case contentTypeOverride != "":
 		req.Header.Set("Content-Type", contentTypeOverride)
-	} else if tool.ContentType != "" {
-		req.Header.Set("Content-Type", tool.ContentType)
-	}
-
-	// Default a JSON request body to application/json when nothing above
-	// (multipart override, tool.content_type, or backend defaults.headers) set a
-	// Content-Type. A POST/PUT/PATCH that carries a body but no Content-Type is
-	// invisible to strict JSON parsers and to PHP $_POST backends, which only
-	// populate the parsed body for known content types. This fallback is purely
-	// additive — it never clobbers an explicit content type — and is skipped for
-	// bodyless requests so GET/DELETE are unaffected.
-	if req.Body != nil && req.Header.Get("Content-Type") == "" {
-		req.Header.Set("Content-Type", contentTypeJSON)
+	case req.Body != nil:
+		if ct := a.effectiveContentType(tool); ct != "" {
+			req.Header.Set("Content-Type", ct)
+		} else if req.Header.Get("Content-Type") == "" {
+			req.Header.Set("Content-Type", contentTypeJSON)
+		}
 	}
 
 	// Inject auth
@@ -714,7 +715,8 @@ func (a *RESTAdapter) buildHTTPRequest(ctx context.Context, tool *dadl.ToolDef, 
 //     as the raw body (DADL spec §6.2.1, e.g. Tika PUT /tika)
 //   - file_url params with content_type multipart/form-data, or legacy local
 //     "file" params → multipart/form-data (e.g. DeepL POST /v2/document)
-//   - content_type application/x-www-form-urlencoded → form encoding
+//   - effective content_type application/x-www-form-urlencoded (tool, else
+//     backend defaults.content_type) → form encoding
 //   - otherwise → JSON
 func (a *RESTAdapter) buildRequestBody(ctx context.Context, tool *dadl.ToolDef, params map[string]any) (body io.Reader, contentType string, size int64, err error) {
 	switch {
@@ -726,7 +728,7 @@ func (a *RESTAdapter) buildRequestBody(ctx context.Context, tool *dadl.ToolDef, 
 			return nil, "", -1, fmt.Errorf("build multipart body: %w", err)
 		}
 		return mr, ct, -1, nil
-	case tool.ContentType == "application/x-www-form-urlencoded":
+	case a.effectiveContentType(tool) == "application/x-www-form-urlencoded":
 		bodyData := a.buildBody(tool, params)
 		if bodyData == nil {
 			return nil, "", -1, nil
@@ -915,6 +917,18 @@ func (a *RESTAdapter) effectiveNestBodyKeys(tool *dadl.ToolDef) bool {
 		return *tool.NestBodyKeys
 	}
 	return a.spec.Backend.Defaults.NestBodyKeys
+}
+
+// effectiveContentType returns the request-body Content-Type for a tool: the
+// per-tool `content_type` when set, otherwise the backend `defaults.content_type`.
+// It is consulted both to select the body encoding (buildRequestBody) and to set
+// the Content-Type header (buildHTTPRequest), so a backend with a uniform
+// encoding can declare it once in defaults instead of on every tool.
+func (a *RESTAdapter) effectiveContentType(tool *dadl.ToolDef) string {
+	if tool.ContentType != "" {
+		return tool.ContentType
+	}
+	return a.spec.Backend.Defaults.ContentType
 }
 
 // nestDottedKeys rewrites a flat body map so that any key containing a dot is

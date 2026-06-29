@@ -52,6 +52,7 @@ type BackendEntry struct {
 	Options         map[string]string `yaml:"options"`           // backend-specific options (e.g. blob_ttl: "1h")
 	Env             map[string]string `yaml:"env"`               // credential env remapping (DADL name → actual env var)
 	ExposeTools     []string          `yaml:"expose_tools"`      // tool names to also expose as direct top-level MCP tools (in addition to discover_tools)
+	IncludeTools    []string          `yaml:"include_tools"`     // when set, the ONLY tools this backend exposes (restricts the surface); REST/DADL backends only
 	// AllowPrivateFileURL permits caller-supplied file_url parameters to resolve
 	// to private/loopback/link-local addresses. Default false (independent of
 	// allow_private_url, which only governs the admin-configured base_url).

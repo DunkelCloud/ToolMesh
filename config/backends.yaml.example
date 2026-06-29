@@ -56,3 +56,30 @@ backends:
   #   # file_url values come from the tool caller) and defaults to fail-closed:
   #   allow_private_file_url: true            # allow file_url to resolve to private/loopback (default: false)
   #   file_url_allowed_hosts: ["blobstore.internal"]  # restrict file_url fetches to these hosts (recommended over the blanket flag)
+
+  # OpenAI-compatible chat endpoint (Ollama, vLLM, LM Studio) sharing the broad
+  # openai.dadl but exposing ONLY the chat/embeddings surface.
+  # - name: ollama
+  #   transport: rest
+  #   dadl: openai.dadl
+  #   url: "http://localhost:11434/v1"
+  #   # include_tools restricts the exposed surface to exactly these names —
+  #   # everything else in the DADL (images, audio, fine-tuning, vector stores)
+  #   # disappears from discover_tools, execute_code, and direct calls. This
+  #   # keeps the tool catalog small and stops the LLM picking an endpoint the
+  #   # server does not implement. Omit it to expose every tool (the default).
+  #   # NOTE: honored for transport: rest backends only.
+  #   include_tools:
+  #     - create_chat_completion
+  #     - create_chat_completion_streaming
+  #     - create_embedding
+  #     - list_models
+  #     - ask
+  #   options:
+  #     # Per-backend HTTP timeouts. timeout governs non-streaming calls;
+  #     # streaming_timeout governs SSE (create_chat_completion_streaming).
+  #     # A slow reasoning model needs a high streaming_timeout. ToolMesh keeps
+  #     # the MCP client connection alive with SSE keepalives for the duration,
+  #     # so long calls no longer trip "connector not responding".
+  #     timeout: "180s"
+  #     streaming_timeout: "15m"

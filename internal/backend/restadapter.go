@@ -69,6 +69,7 @@ type RESTAdapter struct {
 	blobStore           *blob.Store       // embedded blob store for binary responses
 	blobTTL             time.Duration     // TTL for blob URLs (from backends.yaml options.blob_ttl)
 	exposeTools         []string          // bare tool names to promote as direct MCP tools (from backends.yaml expose_tools)
+	includeTools        map[string]bool   // when non-nil, the only tools/composites this backend exposes (from backends.yaml include_tools)
 	fileURLAllowedHosts map[string]bool   // optional allowlist of lowercase hostnames for caller file_url fetches; nil/empty = no restriction
 	childGuard          ChildGuard        // authorizes composite child api.* calls; nil = no per-child checks (e.g. standalone/tests)
 }
@@ -107,6 +108,13 @@ type RESTAdapterOptions struct {
 	// "<backend>_<tool>" by the adapter. Names that do not match a known
 	// tool or composite are dropped with a warning at construction time.
 	ExposeTools []string
+	// IncludeTools, when non-empty, restricts the backend's exposed surface to
+	// exactly these tool/composite names — everything else in the DADL becomes
+	// invisible to discover_tools, execute_code, and direct calls. This lets a
+	// broad shared DADL (e.g. openai.dadl) be pointed at a chat-only endpoint
+	// (Ollama, vLLM) while advertising only chat/embeddings. Empty means expose
+	// every tool (the default). Unknown names are dropped with a warning.
+	IncludeTools []string
 }
 
 // NewRESTAdapter creates a RESTAdapter from a parsed DADL spec.
@@ -165,7 +173,26 @@ func NewRESTAdapter(spec *dadl.Spec, creds credentials.CredentialStore, logger *
 		streamingClient.Jar = jar
 	}
 
+	includeTools := buildIncludeSet(spec, opts.IncludeTools, logger)
 	exposeTools := filterExposeTools(spec, opts.ExposeTools, logger)
+	// An expose_tools entry outside the include_tools allow-list would promote a
+	// tool that discover_tools/execute_code cannot see — contradictory config.
+	// Drop such entries (with a warning) so the promoted surface never exceeds
+	// the included surface.
+	if includeTools != nil {
+		kept := exposeTools[:0]
+		for _, name := range exposeTools {
+			if includeTools[name] {
+				kept = append(kept, name)
+				continue
+			}
+			logger.Warn("expose_tools entry is not in include_tools, dropping promotion",
+				"backend", spec.Backend.Name,
+				"tool", name,
+			)
+		}
+		exposeTools = kept
+	}
 
 	var fileURLAllowedHosts map[string]bool
 	if len(opts.FileURLAllowedHosts) > 0 {
@@ -188,8 +215,35 @@ func NewRESTAdapter(spec *dadl.Spec, creds credentials.CredentialStore, logger *
 		allowedUploadDir:    defaultAllowedUploadDir,
 		blobTTL:             time.Hour,
 		exposeTools:         exposeTools,
+		includeTools:        includeTools,
 		fileURLAllowedHosts: fileURLAllowedHosts,
 	}, nil
+}
+
+// buildIncludeSet validates an include_tools list against the spec and returns
+// the allow-set, or nil when no restriction is configured (expose everything).
+// Names that match no tool or composite are dropped with a warning. If every
+// name is invalid the result is an empty (non-nil) set, which hides all tools —
+// surfacing the misconfiguration loudly rather than silently exposing the full
+// API.
+func buildIncludeSet(spec *dadl.Spec, names []string, logger *slog.Logger) map[string]bool {
+	if len(names) == 0 {
+		return nil
+	}
+	set := make(map[string]bool, len(names))
+	for _, name := range names {
+		_, hasTool := spec.Backend.Tools[name]
+		_, hasComposite := spec.Backend.Composites[name]
+		if !hasTool && !hasComposite {
+			logger.Warn("include_tools entry does not match any tool or composite, skipping",
+				"backend", spec.Backend.Name,
+				"tool", name,
+			)
+			continue
+		}
+		set[name] = true
+	}
+	return set
 }
 
 // filterExposeTools drops names that do not match any tool or composite in
@@ -249,6 +303,9 @@ func (a *RESTAdapter) ListTools(_ context.Context) ([]ToolDescriptor, error) {
 	tools := make([]ToolDescriptor, 0, len(a.spec.Backend.Tools)+len(a.spec.Backend.Composites))
 
 	for name, tool := range a.spec.Backend.Tools {
+		if !a.included(name) {
+			continue
+		}
 		schema := buildInputSchema(tool)
 		tools = append(tools, ToolDescriptor{
 			Name:        name,
@@ -261,6 +318,9 @@ func (a *RESTAdapter) ListTools(_ context.Context) ([]ToolDescriptor, error) {
 
 	// Composites appear identically to primitive tools
 	for name, comp := range a.spec.Backend.Composites {
+		if !a.included(name) {
+			continue
+		}
 		schema := buildCompositeInputSchema(comp)
 		tools = append(tools, ToolDescriptor{
 			Name:        name,
@@ -276,9 +336,26 @@ func (a *RESTAdapter) ListTools(_ context.Context) ([]ToolDescriptor, error) {
 	return tools, nil
 }
 
+// included reports whether a tool/composite name is exposed by this backend.
+// With no include_tools restriction configured (includeTools == nil) every
+// name is included; otherwise only names in the allow-set are.
+func (a *RESTAdapter) included(name string) bool {
+	if a.includeTools == nil {
+		return true
+	}
+	return a.includeTools[name]
+}
+
 // Execute runs a tool by name with the given parameters.
 // If the tool is a composite, it is executed in a sandboxed goja runtime.
 func (a *RESTAdapter) Execute(ctx context.Context, toolName string, params map[string]any) (*ToolResult, error) {
+	// Enforce the include_tools allow-list at the execution boundary too, so a
+	// hidden tool cannot be invoked by guessing its name even though it never
+	// appears in discover_tools/execute_code.
+	if !a.included(toolName) {
+		return nil, fmt.Errorf("tool %q not found in REST backend %q", toolName, a.spec.Backend.Name)
+	}
+
 	// Check if it's a composite tool
 	if comp, ok := a.spec.Backend.Composites[toolName]; ok {
 		return a.executeComposite(ctx, toolName, &comp, params)

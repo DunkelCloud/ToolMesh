@@ -22,8 +22,10 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html/template"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -212,7 +214,24 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 	case "tools/list":
 		s.handleToolsList(w, ctx, &req)
 	case "tools/call":
-		s.handleToolsCall(w, ctx, &req)
+		// A tool call can run far longer than the default WriteTimeout — a
+		// reasoning model, a slow upstream, or a committee of backend calls
+		// inside execute_code. Clear the per-request write deadline so the
+		// transport does not silently truncate a legitimately long call at
+		// 60s; the executor and code-runner timeouts remain the real bound.
+		// Best-effort: ResponseController returns ErrNotSupported behind a
+		// writer that cannot expose the deadline (e.g. a test recorder).
+		if derr := http.NewResponseController(w).SetWriteDeadline(time.Time{}); derr != nil && !errors.Is(derr, http.ErrNotSupported) {
+			s.logger.DebugContext(ctx, "could not clear write deadline for tool call", outcomeError, derr)
+		}
+		// When the client advertises SSE (every MCP Streamable HTTP client
+		// does), stream the response and emit keepalives so the client's idle
+		// timer cannot fire mid-call. Otherwise fall back to buffered JSON.
+		if flusher, ok := unwrapFlusher(w); ok && acceptsSSE(r) {
+			s.handleToolsCallStreaming(w, ctx, &req, flusher)
+		} else {
+			s.handleToolsCall(w, ctx, &req)
+		}
 	case "ping":
 		s.writeJSONRPCResult(w, req.ID, map[string]any{})
 	default:
@@ -279,13 +298,151 @@ func (s *Server) handleToolsCall(w http.ResponseWriter, ctx context.Context, req
 
 	result, err := s.handler.HandleToolCall(ctx, params.Name, params.Arguments)
 	if err != nil {
-		// M-17: Log full error server-side, return generic message to client.
+		// M-17: Log full error server-side, return a safe message to client.
 		s.logger.ErrorContext(ctx, "tool call failed", logKeyTool, params.Name, outcomeError, err)
-		s.writeJSONRPCError(w, req.ID, -32603, "Internal error")
+		s.writeJSONRPCError(w, req.ID, -32603, toolCallErrorMessage(err))
 		return
 	}
 
 	s.writeJSONRPCResult(w, req.ID, toolResultToMCP(result))
+}
+
+// sseKeepaliveInterval is how often a comment ping is written to a streaming
+// tool-call response to keep the connection alive. It must stay well below
+// typical MCP client idle timeouts (observed ~30s) so that slow backends
+// (reasoning models, committees) do not trip a "connector not responding"
+// error before the real result arrives.
+const sseKeepaliveInterval = 10 * time.Second
+
+// handleToolsCallStreaming executes a tool call while holding the HTTP response
+// open as an MCP Streamable HTTP SSE stream. It flushes the response headers
+// immediately, emits a keepalive comment every sseKeepaliveInterval while the
+// call runs, and finally writes the JSON-RPC response as an SSE "message"
+// event. This keeps the client's idle timer from firing during long calls and
+// — because the result is delivered the moment the call returns — preserves
+// partial results from execute_code that the buffered path would lose if the
+// client gave up early.
+func (s *Server) handleToolsCallStreaming(w http.ResponseWriter, ctx context.Context, req *jsonRPCRequest, flusher http.Flusher) {
+	var params struct {
+		Name      string         `json:"name"`
+		Arguments map[string]any `json:"arguments"`
+	}
+	paramsJSON, err := json.Marshal(req.Params)
+	if err == nil {
+		err = json.Unmarshal(paramsJSON, &params)
+	}
+	if err != nil {
+		s.writeJSONRPCError(w, req.ID, -32602, "Invalid params")
+		return
+	}
+
+	// SSE handshake: announce the stream and flush headers immediately so the
+	// client starts reading before the (possibly slow) tool call completes.
+	h := w.Header()
+	h.Set("Content-Type", "text/event-stream")
+	h.Set("Cache-Control", "no-cache")
+	h.Set("Connection", "keep-alive")
+	h.Set("X-Accel-Buffering", "no") // disable response buffering in nginx-style proxies
+	w.WriteHeader(http.StatusOK)
+	flusher.Flush()
+
+	// Run the call in the background; stream keepalives until it returns.
+	type callResult struct {
+		result *backend.ToolResult
+		err    error
+	}
+	resCh := make(chan callResult, 1)
+	go func() {
+		result, callErr := s.handler.HandleToolCall(ctx, params.Name, params.Arguments)
+		resCh <- callResult{result, callErr}
+	}()
+
+	ticker := time.NewTicker(sseKeepaliveInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			// Client disconnected or server is shutting down; the background
+			// call observes the same canceled context and unwinds.
+			s.logger.DebugContext(ctx, "sse tool call canceled before completion", logKeyTool, params.Name)
+			return
+		case <-ticker.C:
+			// SSE comment line: invisible to the JSON-RPC layer but the bytes
+			// reset the client's read-idle timer (the standard SSE keepalive).
+			if _, werr := io.WriteString(w, ": keepalive\n\n"); werr != nil {
+				s.logger.DebugContext(ctx, "sse keepalive write failed; client gone", logKeyTool, params.Name, outcomeError, werr)
+				return
+			}
+			flusher.Flush()
+		case cr := <-resCh:
+			var envelope map[string]any
+			if cr.err != nil {
+				// M-17: log full error server-side, return a safe message.
+				s.logger.ErrorContext(ctx, "tool call failed", logKeyTool, params.Name, outcomeError, cr.err)
+				envelope = jsonRPCErrorEnvelope(req.ID, -32603, toolCallErrorMessage(cr.err))
+			} else {
+				envelope = jsonRPCResultEnvelope(req.ID, toolResultToMCP(cr.result))
+			}
+			if werr := writeSSEMessage(w, flusher, envelope); werr != nil {
+				s.logger.DebugContext(ctx, "sse final message write failed; client gone", logKeyTool, params.Name, outcomeError, werr)
+			}
+			return
+		}
+	}
+}
+
+// acceptsSSE reports whether the client explicitly accepts an event-stream
+// response. Per MCP Streamable HTTP, clients advertise
+// "Accept: application/json, text/event-stream". A client that does not list
+// text/event-stream gets the buffered JSON response instead.
+func acceptsSSE(r *http.Request) bool {
+	return strings.Contains(r.Header.Get("Accept"), "text/event-stream")
+}
+
+// unwrapFlusher walks the ResponseWriter's Unwrap chain to find an
+// http.Flusher. A direct type assertion does not work here because the
+// logging middleware embeds the http.ResponseWriter interface (which does not
+// promote Flush) but exposes the underlying writer via Unwrap.
+func unwrapFlusher(w http.ResponseWriter) (http.Flusher, bool) {
+	for {
+		if f, ok := w.(http.Flusher); ok {
+			return f, true
+		}
+		u, ok := w.(interface{ Unwrap() http.ResponseWriter })
+		if !ok {
+			return nil, false
+		}
+		w = u.Unwrap()
+	}
+}
+
+// writeSSEMessage writes a JSON-RPC payload as a single SSE "message" event and
+// flushes it. The payload is marshaled compactly so it occupies one data line.
+func writeSSEMessage(w http.ResponseWriter, flusher http.Flusher, payload map[string]any) error {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(w, "event: message\ndata: %s\n\n", data); err != nil {
+		return err
+	}
+	flusher.Flush()
+	return nil
+}
+
+// toolCallErrorMessage maps a handler error to a client-safe JSON-RPC message.
+// Timeouts and cancellations get a specific, actionable message; every other
+// error stays generic so internal details are not leaked (M-17).
+func toolCallErrorMessage(err error) string {
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return "Tool call timed out before the backend responded"
+	case errors.Is(err, context.Canceled):
+		return "Tool call was canceled"
+	default:
+		return "Internal error"
+	}
 }
 
 func toolResultToMCP(result *backend.ToolResult) map[string]any {
@@ -900,25 +1057,37 @@ func (s *Server) renderLoginForm(w http.ResponseWriter, clientID, redirectURI, s
 	}
 }
 
-func (s *Server) writeJSONRPCResult(w http.ResponseWriter, id, result any) {
-	s.logger.Debug("mcp response", "id", id, "result", result)
-	writeJSON(w, http.StatusOK, map[string]any{
+// jsonRPCResultEnvelope builds a JSON-RPC 2.0 success response object. It is
+// shared by the buffered (writeJSONRPCResult) and streaming (SSE) paths so both
+// emit byte-identical envelopes.
+func jsonRPCResultEnvelope(id, result any) map[string]any {
+	return map[string]any{
 		"jsonrpc": "2.0",
 		"id":      id,
 		"result":  result,
-	})
+	}
 }
 
-func (s *Server) writeJSONRPCError(w http.ResponseWriter, id any, code int, message string) {
-	s.logger.Debug("mcp error response", "id", id, "code", code, "message", message)
-	writeJSON(w, http.StatusOK, map[string]any{
+// jsonRPCErrorEnvelope builds a JSON-RPC 2.0 error response object.
+func jsonRPCErrorEnvelope(id any, code int, message string) map[string]any {
+	return map[string]any{
 		"jsonrpc": "2.0",
 		"id":      id,
 		outcomeError: map[string]any{
 			oauthCode: code,
 			"message": message,
 		},
-	})
+	}
+}
+
+func (s *Server) writeJSONRPCResult(w http.ResponseWriter, id, result any) {
+	s.logger.Debug("mcp response", "id", id, "result", result)
+	writeJSON(w, http.StatusOK, jsonRPCResultEnvelope(id, result))
+}
+
+func (s *Server) writeJSONRPCError(w http.ResponseWriter, id any, code int, message string) {
+	s.logger.Debug("mcp error response", "id", id, "code", code, "message", message)
+	writeJSON(w, http.StatusOK, jsonRPCErrorEnvelope(id, code, message))
 }
 
 type jsonRPCRequest struct {

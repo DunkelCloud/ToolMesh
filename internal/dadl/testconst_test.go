@@ -26,8 +26,14 @@ const (
 	testCredMissing            = "MISSING"
 	testCredOAuth2ClientID     = "CID"
 	testCredOAuth2ClientSecret = "SEC" //nolint:gosec // test credential reference
-	testCredAPIKey             = "api-key"
-	testKeyValue               = "key-value"
+	testCredOAuth2RefreshToken = "RT"  //nolint:gosec // test credential reference
+
+	// Common OAuth2 fixture values asserted across auth tests.
+	testOAuth2CID          = "cid"
+	testOAuth2Secret       = "sec"  //nolint:gosec // test credential literal
+	testOAuth2RefreshValue = "rt-1" //nolint:gosec // test token literal
+	testCredAPIKey         = "api-key"
+	testKeyValue           = "key-value"
 
 	// JSONPath / format literals reused across error/transform tests.
 	testJSONPathMessage = "$.message"

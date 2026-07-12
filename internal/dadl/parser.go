@@ -148,6 +148,17 @@ func Validate(spec *Spec) error {
 		if !validAuthTypes[b.Auth.Type] {
 			return fmt.Errorf("auth.type must be one of bearer, oauth2, session, apikey, basic; got %q", b.Auth.Type)
 		}
+		if b.Auth.Type == authTypeOAuth2 {
+			switch b.Auth.Flow {
+			case "", oauth2FlowClientCredentials:
+			case oauth2FlowRefreshToken:
+				if b.Auth.RefreshTokenCredential == "" {
+					return fmt.Errorf("auth.flow %q requires auth.refresh_token_credential", oauth2FlowRefreshToken)
+				}
+			default:
+				return fmt.Errorf("auth.flow must be client_credentials or refresh_token; got %q", b.Auth.Flow)
+			}
+		}
 	}
 
 	// Validate default pagination

@@ -266,10 +266,14 @@ auth:
 
 ToolMesh builds the `Authorization: Basic base64(username:password)` header automatically. If `password_credential` is omitted, an empty password is used — this is common for APIs that use an API key as the username (e.g. Bitdefender GravityZone, many JSON-RPC APIs).
 
-### 5.3 OAuth 2.0 Client Credentials
+### 5.3 OAuth 2.0
+
+Two flows are supported via the `flow` field (default: `client_credentials`). For both, ToolMesh caches the access token in memory and renews it lazily: a request that finds the cached token within `refresh_before_expiry` of its expiry fetches a fresh one first. On a 401 the cache is invalidated and the request retried once with a new token.
+
+`client_credentials` — machine-to-machine APIs:
 
 ```yaml
-# auth — oauth2
+# auth — oauth2 (machine-to-machine)
 auth:
   type: oauth2
   flow: client_credentials
@@ -280,6 +284,22 @@ auth:
   token_cache_key: example-api-token
   refresh_before_expiry: 60s
 ```
+
+`refresh_token` — user-delegated APIs (Google, Microsoft Graph, …) where a long-lived refresh token is exchanged for short-lived access tokens at runtime:
+
+```yaml
+# auth — oauth2 (user-delegated)
+auth:
+  type: oauth2
+  flow: refresh_token
+  token_url: https://oauth2.googleapis.com/token
+  client_id_credential: vault/google-client-id
+  client_secret_credential: vault/google-client-secret  # optional — omit for public (PKCE) clients
+  refresh_token_credential: vault/google-refresh-token
+  refresh_before_expiry: 60s
+```
+
+The interactive consent that produces the refresh token happens once, out-of-band — describe it in the `setup` section (for Google: OAuth client in production status, consent URL with `access_type=offline&prompt=consent`). `scopes` is not sent on this flow; scopes are fixed at consent time. Providers that rotate refresh tokens on every exchange are not supported: the stored refresh token must remain valid (Google does not rotate by default).
 
 ### 5.4 Session-based (Login → Token → Use)
 

@@ -5,3 +5,9 @@ go.mod text eol=lf
 go.sum text eol=lf
 Makefile text eol=lf
 .gitattributes text eol=lf
+
+# DADL files are content-hashed (SHA-256) for telemetry and de-duplication.
+# ToolMesh normalizes CRLF->LF before hashing (internal/dadl/parser.go), so the
+# on-disk copy must be LF everywhere or a Windows checkout would carry CRLF and
+# confuse any tool that hashes the raw bytes.
+*.dadl text eol=lf

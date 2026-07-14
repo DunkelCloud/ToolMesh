@@ -718,6 +718,7 @@ func loadRESTBackendsInto(named map[string]backend.ToolBackend, backendsConfigPa
 			"name", spec.Backend.Name,
 			"tools", len(spec.Backend.Tools),
 			"baseURL", spec.Backend.BaseURL,
+			"content_hash", spec.ContentHash,
 		)
 	}
 }

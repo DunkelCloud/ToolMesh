@@ -33,6 +33,11 @@ var pathParamRe = regexp.MustCompile(`\{(\w+)\}`)
 // dadlSpecV01URL is the canonical URL of the DADL v0.1 specification.
 const dadlSpecV01URL = "https://dadl.ai/spec/dadl-spec-v0.1.md"
 
+// dadlSpecV02URL is the canonical URL of the DADL v0.2 specification.
+// v0.2 is an additive superset of v0.1; features introduced with it
+// (oauth2 flow refresh_token) require the file to declare this spec.
+const dadlSpecV02URL = "https://dadl.ai/spec/dadl-spec-v0.2.md"
+
 // Pagination strategy values used in DADL specs.
 const (
 	paginationStrategyCursor     = "cursor"
@@ -58,6 +63,7 @@ const (
 // Add new entries when a new DADL spec version is released.
 var supportedSpecs = map[string]bool{
 	dadlSpecV01URL: true,
+	dadlSpecV02URL: true,
 }
 
 // specVersionRe extracts the version from a DADL spec URL.
@@ -152,6 +158,13 @@ func Validate(spec *Spec) error {
 			switch b.Auth.Flow {
 			case "", oauth2FlowClientCredentials:
 			case oauth2FlowRefreshToken:
+				// Introduced with spec v0.2. Rejecting it under a v0.1
+				// declaration keeps the spec URL an honest capability
+				// contract: pre-v0.2 runtimes fail such files at load
+				// time instead of sending the wrong grant at call time.
+				if spec.Spec == dadlSpecV01URL {
+					return fmt.Errorf("auth.flow %q requires spec v0.2 (%s)", oauth2FlowRefreshToken, dadlSpecV02URL)
+				}
 				if b.Auth.RefreshTokenCredential == "" {
 					return fmt.Errorf("auth.flow %q requires auth.refresh_token_credential", oauth2FlowRefreshToken)
 				}

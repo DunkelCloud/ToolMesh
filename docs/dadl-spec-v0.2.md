@@ -1,16 +1,21 @@
 # DADL — Dunkel API Description Language
 
-**Specification Draft v0.1**
+**Specification Draft v0.2**
 
 A **declarative YAML format** for describing REST APIs as [ToolMesh](https://toolmesh.io) backends.
 Write a `.dadl` file — ToolMesh handles the rest.
 
 | | |
 |---|---|
-| Version | 0.1.0-draft |
-| Date | 2026-03-26 |
+| Version | 0.2.0-draft |
+| Date | 2026-07-14 |
 | Author | Dunkel Cloud GmbH |
 | License | [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/) |
+
+**Changes from v0.1** (additive — every valid v0.1 file is a valid v0.2 file):
+
+- Section 5.3: new `flow: refresh_token` for `auth.type: oauth2` (user-delegated APIs such as Google or Microsoft Graph), with the new field `refresh_token_credential`. Files using this flow MUST declare spec v0.2.
+- Section 4: documented `defaults.content_type` (backend-wide default request content type; implemented since v0.1 but previously undocumented).
 
 ---
 
@@ -50,7 +55,7 @@ A DADL file has the extension `.dadl` and is a YAML document with the following 
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `spec` | string | yes | URL of the DADL specification this file conforms to. Currently `"https://dadl.ai/spec/dadl-spec-v0.1.md"` |
+| `spec` | string | yes | URL of the DADL specification this file conforms to. Currently `"https://dadl.ai/spec/dadl-spec-v0.2.md"` (files not using v0.2 features may keep declaring v0.1) |
 | `credits` | array of strings | no | Free-form list of contributors, maintainers, and sponsors. Each entry is a plain string — conventions emerge from usage (e.g. `"Jane Doe (@janedoe)"`, `"Acme Corp — sponsor"`). |
 | `source_name` | string | no | Name of the source API being described (e.g. `"GitHub REST API"`) |
 | `source_url` | string | no | URL to the original API specification or documentation |
@@ -61,7 +66,7 @@ A DADL file has the extension `.dadl` and is a YAML document with the following 
 
 ```yaml
 # minimal.dadl
-spec: "https://dadl.ai/spec/dadl-spec-v0.1.md"
+spec: "https://dadl.ai/spec/dadl-spec-v0.2.md"
 credits:                                      # optional
   - "Jane Doe (@janedoe)"
   - "Acme Corp — verifies against production"
@@ -102,7 +107,7 @@ backend:
 | `openapi_source` | string | no | Path or URL to OpenAPI 3.x spec. When provided, schemas and parameters are derived from it. |
 | `arazzo_source` | string | no | Path or URL to Arazzo workflow file. Used as documentation context for Code Mode, not executed. |
 | `auth` | object | yes | Authentication configuration |
-| `defaults` | object | no | Default headers, pagination, error, and response config for all tools. Supports `headers` (map of default HTTP headers), `pagination`, `errors`, and `response`. |
+| `defaults` | object | no | Default headers, pagination, error, and response config for all tools. Supports `headers` (map of default HTTP headers), `content_type` (default request-body content type; per-tool `content_type` overrides it), `pagination`, `errors`, and `response`. |
 | `types` | object | no | Type definitions (JSON Schema subset). Only needed without `openapi_source`. |
 | `tools` | object | yes | Map of tool definitions |
 | `examples` | array | no | Code examples for multi-step workflows (few-shot prompts for the LLM). See Section 4.4. |
@@ -266,10 +271,14 @@ auth:
 
 ToolMesh builds the `Authorization: Basic base64(username:password)` header automatically. If `password_credential` is omitted, an empty password is used — this is common for APIs that use an API key as the username (e.g. Bitdefender GravityZone, many JSON-RPC APIs).
 
-### 5.3 OAuth 2.0 Client Credentials
+### 5.3 OAuth 2.0
+
+Two flows are supported via the `flow` field (default: `client_credentials`). For both, ToolMesh caches the access token in memory and renews it lazily: a request that finds the cached token within `refresh_before_expiry` of its expiry fetches a fresh one first. On a 401 the cache is invalidated and the request retried once with a new token.
+
+`client_credentials` — machine-to-machine APIs:
 
 ```yaml
-# auth — oauth2
+# auth — oauth2 (machine-to-machine)
 auth:
   type: oauth2
   flow: client_credentials
@@ -280,6 +289,22 @@ auth:
   token_cache_key: example-api-token
   refresh_before_expiry: 60s
 ```
+
+`refresh_token` *(since v0.2)* — user-delegated APIs (Google, Microsoft Graph, …) where a long-lived refresh token is exchanged for short-lived access tokens at runtime. Files using this flow MUST declare spec v0.2:
+
+```yaml
+# auth — oauth2 (user-delegated)
+auth:
+  type: oauth2
+  flow: refresh_token
+  token_url: https://oauth2.googleapis.com/token
+  client_id_credential: vault/google-client-id
+  client_secret_credential: vault/google-client-secret  # optional — omit for public (PKCE) clients
+  refresh_token_credential: vault/google-refresh-token
+  refresh_before_expiry: 60s
+```
+
+The interactive consent that produces the refresh token happens once, out-of-band — describe it in the `setup` section (for Google: OAuth client in production status, consent URL with `access_type=offline&prompt=consent`). `scopes` is not sent on this flow; scopes are fixed at consent time. Providers that rotate refresh tokens on every exchange are not supported: the stored refresh token must remain valid (Google does not rotate by default).
 
 ### 5.4 Session-based (Login → Token → Use)
 
@@ -811,7 +836,7 @@ Composite code runs in a **restricted sandbox** with the following constraints:
 
 ```yaml
 # stripe.dadl
-spec: "https://dadl.ai/spec/dadl-spec-v0.1.md"
+spec: "https://dadl.ai/spec/dadl-spec-v0.2.md"
 
 backend:
   name: stripe

@@ -49,6 +49,18 @@ const maxCodeCalls = 50
 // (committees, batch evals) is not capped below the backends' own timeouts.
 const codeTimeout = 120 * time.Second
 
+// Keys of per-call entries in the wire-format result array. A successful
+// call is echoed in full as {tool, result} only when the script does not
+// return a value (or include_results is set); otherwise it is compacted to
+// {tool, status, resultBytes} — see compactCallResults.
+const (
+	resultKeyResult = "result"
+	resultKeyReturn = "return"
+	resultKeyStatus = "status"
+	resultKeyBytes  = "resultBytes"
+	resultStatusOK  = "ok"
+)
+
 // CodeRunner executes JavaScript code in a sandboxed goja runtime,
 // resolving toolmesh.* calls to real tool executions via the executor.
 type CodeRunner struct {
@@ -98,11 +110,28 @@ func NewCodeRunner(nameMap map[string]string, tools []backend.ToolDescriptor, ex
 	}
 }
 
-// Execute runs JavaScript code in a sandboxed goja runtime.
-// toolmesh.* calls are intercepted and dispatched to the executor.
-// Returns a ToolResult with the collected results in the same JSON format
-// as the previous static parser approach.
+// ExecuteOptions controls how Execute shapes the wire-format response.
+type ExecuteOptions struct {
+	// IncludeResults keeps the full result of every tool call in the
+	// response even when the script returns a value. Without it, an
+	// explicit return value compacts successful call entries to
+	// {tool, status, resultBytes}.
+	IncludeResults bool
+}
+
+// Execute runs code with default options — see ExecuteWithOptions.
 func (r *CodeRunner) Execute(ctx context.Context, code string) (*backend.ToolResult, error) {
+	return r.ExecuteWithOptions(ctx, code, ExecuteOptions{})
+}
+
+// ExecuteWithOptions runs JavaScript code in a sandboxed goja runtime.
+// toolmesh.* calls are intercepted and dispatched to the executor.
+// Returns a ToolResult listing each tool call in order, followed by the
+// script's return value when it produced one. With a return value present,
+// successful call entries are compacted unless opts.IncludeResults is set —
+// the return value is the caller's projection of the data, so the full echo
+// would transport the same payload twice.
+func (r *CodeRunner) ExecuteWithOptions(ctx context.Context, code string, opts ExecuteOptions) (*backend.ToolResult, error) {
 	// Static analysis: scan code-mode submissions for forbidden patterns
 	violations, err := composite.ScanCode(code, "execute_code")
 	if err == nil && len(violations) > 0 {
@@ -250,8 +279,8 @@ func (r *CodeRunner) Execute(ctx context.Context, code string) (*backend.ToolRes
 			// Collect result for the wire-format output
 			mu.Lock()
 			results = append(results, map[string]any{
-				logKeyTool: cn,
-				"result":   result,
+				logKeyTool:      cn,
+				resultKeyResult: result,
 			})
 			mu.Unlock()
 
@@ -328,11 +357,19 @@ func (r *CodeRunner) Execute(ctx context.Context, code string) (*backend.ToolRes
 	}
 
 	// If we have tool call results, return them in the standard format.
-	// Include the JS return value if present.
+	// Include the JS return value if present. An explicit return value is
+	// the script's own projection of the data it fetched — echoing every
+	// full tool result next to it would transport the same payload twice
+	// and defeat Code Mode's token economy, so successful call entries are
+	// compacted to {tool, status, resultBytes} unless the caller asked for
+	// the full echo via include_results.
 	if len(results) > 0 {
 		if retVal != nil {
+			if !opts.IncludeResults {
+				results = compactCallResults(results)
+			}
 			results = append(results, map[string]any{
-				"return": retVal,
+				resultKeyReturn: retVal,
 			})
 		}
 		return r.buildResult(results, console), nil
@@ -518,6 +555,52 @@ func (r *CodeRunner) buildResult(results []any, console []string) *backend.ToolR
 			contentKeyText: string(resultJSON),
 		}},
 	}
+}
+
+// compactCallResults replaces each successful full-result entry with a
+// compact {tool, status, resultBytes} summary, where resultBytes measures
+// the content payload the entry carried before compaction. Entries holding
+// an error — dispatch failures ({tool, error}) and tool-level failures
+// (result with IsError) — are kept in full so the caller retains the
+// diagnostic message without having to re-run side-effectful calls.
+func compactCallResults(results []any) []any {
+	compacted := make([]any, len(results))
+	for i, entry := range results {
+		m, ok := entry.(map[string]any)
+		if !ok {
+			compacted[i] = entry
+			continue
+		}
+		tr, ok := m[resultKeyResult].(*backend.ToolResult)
+		if !ok || tr == nil || tr.IsError {
+			compacted[i] = entry
+			continue
+		}
+		compacted[i] = map[string]any{
+			logKeyTool:      m[logKeyTool],
+			resultKeyStatus: resultStatusOK,
+			resultKeyBytes:  contentBytes(tr),
+		}
+	}
+	return compacted
+}
+
+// contentBytes measures the serialized size of a result's content blocks:
+// text blocks count their text length, other blocks their JSON encoding.
+func contentBytes(tr *backend.ToolResult) int {
+	total := 0
+	for _, item := range tr.Content {
+		if m, ok := item.(map[string]any); ok {
+			if text, ok := m[contentKeyText].(string); ok && m[contentKeyType] == contentKeyText {
+				total += len(text)
+				continue
+			}
+		}
+		if b, err := json.Marshal(item); err == nil {
+			total += len(b)
+		}
+	}
+	return total
 }
 
 // extractJSValue extracts the actual API response content from a ToolResult

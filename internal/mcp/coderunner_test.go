@@ -800,3 +800,180 @@ func TestCodeRunner_NoToolCalls_NoDuplicatePlaceholderOnError(t *testing.T) {
 		t.Errorf("expected nil result on pure runtime error (no preceding tool calls), got: %v", result)
 	}
 }
+
+const compactTestPayload = `{"id": 123, "bulk_padding": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`
+
+func compactTestRunner(t *testing.T) *CodeRunner {
+	t.Helper()
+	mb := &codeRunnerTestBackend{
+		handler: func(_ string, _ map[string]any) (*backend.ToolResult, error) {
+			return &backend.ToolResult{
+				Content: []any{map[string]any{
+					contentKeyType: contentKeyText,
+					contentKeyText: compactTestPayload,
+				}},
+			}, nil
+		},
+	}
+	return newTestCodeRunner(t, mb)
+}
+
+// TestCodeRunner_ReturnValue_CompactsCallEntries verifies that a script with
+// an explicit return value gets compact {tool, status, resultBytes} call
+// entries instead of the full result echo — the return value is the script's
+// projection of the data, so the full echo would ship the payload twice.
+func TestCodeRunner_ReturnValue_CompactsCallEntries(t *testing.T) {
+	runner := compactTestRunner(t)
+
+	code := `
+		const r = await toolmesh.test_foo({});
+		return r.id;
+	`
+	result, err := runner.Execute(testCtx(), code)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	text := extractText(t, result)
+	if strings.Contains(text, "bulk_padding") {
+		t.Errorf("full tool result leaked into compacted response: %s", text)
+	}
+
+	var results []map[string]any
+	if err := json.Unmarshal([]byte(text), &results); err != nil {
+		t.Fatalf("failed to unmarshal results: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("expected 2 entries (compact call + return), got %d: %s", len(results), text)
+	}
+	entry := results[0]
+	if entry[logKeyTool] != testToolFoo {
+		t.Errorf("tool = %v, want %q", entry[logKeyTool], testToolFoo)
+	}
+	if _, hasFull := entry[resultKeyResult]; hasFull {
+		t.Errorf("expected compact entry without %q key, got: %v", resultKeyResult, entry)
+	}
+	if entry[resultKeyStatus] != resultStatusOK {
+		t.Errorf("status = %v, want %q", entry[resultKeyStatus], resultStatusOK)
+	}
+	if entry[resultKeyBytes] != float64(len(compactTestPayload)) {
+		t.Errorf("resultBytes = %v, want %d", entry[resultKeyBytes], len(compactTestPayload))
+	}
+	if results[1][resultKeyReturn] != 123.0 {
+		t.Errorf("return = %v, want 123", results[1][resultKeyReturn])
+	}
+}
+
+// TestCodeRunner_IncludeResults_KeepsFullEcho verifies that the include_results
+// escape hatch restores the pre-compaction behavior: full per-call results
+// alongside the return value.
+func TestCodeRunner_IncludeResults_KeepsFullEcho(t *testing.T) {
+	runner := compactTestRunner(t)
+
+	code := `
+		const r = await toolmesh.test_foo({});
+		return r.id;
+	`
+	result, err := runner.ExecuteWithOptions(testCtx(), code, ExecuteOptions{IncludeResults: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	text := extractText(t, result)
+	if !strings.Contains(text, "bulk_padding") {
+		t.Errorf("expected full tool result with include_results, got: %s", text)
+	}
+
+	var results []map[string]any
+	if err := json.Unmarshal([]byte(text), &results); err != nil {
+		t.Fatalf("failed to unmarshal results: %v", err)
+	}
+	if _, hasFull := results[0][resultKeyResult]; !hasFull {
+		t.Errorf("expected full %q entry, got: %v", resultKeyResult, results[0])
+	}
+	if results[1][resultKeyReturn] != 123.0 {
+		t.Errorf("return = %v, want 123", results[1][resultKeyReturn])
+	}
+}
+
+// TestCodeRunner_NoReturn_KeepsFullResults pins the preserved behavior: when
+// the script does not return a value, the full per-call results ARE the
+// response and must not be compacted.
+func TestCodeRunner_NoReturn_KeepsFullResults(t *testing.T) {
+	runner := compactTestRunner(t)
+
+	result, err := runner.Execute(testCtx(), `await toolmesh.test_foo({});`)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	text := extractText(t, result)
+	if !strings.Contains(text, "bulk_padding") {
+		t.Errorf("expected full tool result without return value, got: %s", text)
+	}
+}
+
+// TestCodeRunner_Compact_KeepsToolLevelErrors verifies that compaction keeps
+// entries whose result carries IsError in full: the error content is the
+// diagnostic the caller needs, and re-running the call to recover it could
+// repeat side effects.
+func TestCodeRunner_Compact_KeepsToolLevelErrors(t *testing.T) {
+	mb := &codeRunnerTestBackend{
+		handler: func(_ string, _ map[string]any) (*backend.ToolResult, error) {
+			return &backend.ToolResult{
+				IsError: true,
+				Content: []any{map[string]any{
+					contentKeyType: contentKeyText,
+					contentKeyText: `{"error": "quota exceeded for project 42"}`,
+				}},
+			}, nil
+		},
+	}
+	runner := newTestCodeRunner(t, mb)
+
+	code := `
+		const r = await toolmesh.test_foo({});
+		return { sawError: true };
+	`
+	result, err := runner.Execute(testCtx(), code)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	text := extractText(t, result)
+	if !strings.Contains(text, "quota exceeded for project 42") {
+		t.Errorf("tool-level error content must survive compaction, got: %s", text)
+	}
+}
+
+// TestCodeRunner_Compact_KeepsDispatchErrors verifies that compaction leaves
+// {tool, error} entries from failed dispatches untouched.
+func TestCodeRunner_Compact_KeepsDispatchErrors(t *testing.T) {
+	mb := &codeRunnerTestBackend{
+		handler: func(_ string, _ map[string]any) (*backend.ToolResult, error) {
+			return nil, &testError{msg: "backend unreachable"}
+		},
+	}
+	runner := newTestCodeRunner(t, mb)
+
+	code := `
+		const r = await toolmesh.test_foo({});
+		return { failed: !!r.error };
+	`
+	result, err := runner.Execute(testCtx(), code)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	text := extractText(t, result)
+	if !strings.Contains(text, "backend unreachable") {
+		t.Errorf("dispatch error must survive compaction, got: %s", text)
+	}
+	var results []map[string]any
+	if err := json.Unmarshal([]byte(text), &results); err != nil {
+		t.Fatalf("failed to unmarshal results: %v", err)
+	}
+	if _, hasErr := results[0][outcomeError]; !hasErr {
+		t.Errorf("expected %q key on dispatch-error entry, got: %v", outcomeError, results[0])
+	}
+}

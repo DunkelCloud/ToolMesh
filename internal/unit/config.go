@@ -66,4 +66,18 @@ type ExposeConfig struct {
 	// Audit selects the audit detail level. One of "full", "compact",
 	// "none". Empty defaults to "full".
 	Audit string `yaml:"audit"`
+
+	// Tools lists the describe()-declared tool names to promote to direct
+	// top-level MCP tools, in addition to their always-available reachability
+	// through discover_tools / execute_code. This mirrors the backends.yaml
+	// expose_tools field but lives under expose: so a unit keeps a single
+	// expose block.
+	//
+	// Unlike REST/MCP backends, unit tools are promoted under their full
+	// "<unit>_<tool>" name, never a bare alias: unit tool names are frequently
+	// generic ("search", "roll"), so a bare root-level name would be ambiguous
+	// or collide. The promoted name therefore matches what discover_tools and
+	// execute_code already show. An entry that names no describe() tool is
+	// logged once at load time and skipped.
+	Tools []string `yaml:"tools"`
 }

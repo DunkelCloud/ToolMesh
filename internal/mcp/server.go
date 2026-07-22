@@ -35,6 +35,7 @@ import (
 
 	"github.com/DunkelCloud/ToolMesh/internal/auth"
 	"github.com/DunkelCloud/ToolMesh/internal/backend"
+	"github.com/DunkelCloud/ToolMesh/internal/blob"
 	"github.com/DunkelCloud/ToolMesh/internal/config"
 	"github.com/DunkelCloud/ToolMesh/internal/metrics"
 	"github.com/DunkelCloud/ToolMesh/internal/userctx"
@@ -53,6 +54,16 @@ type Server struct {
 	rateLimiter   *auth.DCRRateLimiter
 	callerClasses *config.CallerClasses
 	metrics       *metrics.Registry
+	blobStore     *blob.Store
+	uploadLimits  blob.UploadLimits
+}
+
+// SetBlobStore enables the file broker upload endpoint (POST /files/upload).
+// Uploads are authenticated with the same credentials as the MCP endpoint;
+// the storage mechanics live in the blob store itself.
+func (s *Server) SetBlobStore(store *blob.Store, limits blob.UploadLimits) {
+	s.blobStore = store
+	s.uploadLimits = limits
 }
 
 // NewServer creates a new MCP server. The metrics registry is optional; pass
@@ -83,6 +94,48 @@ func (s *Server) SetupRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/authorize", s.cors(s.handleAuthorize))
 	mux.HandleFunc("/token", s.cors(s.handleToken))
 	mux.HandleFunc("/health", s.cors(s.handleHealth))
+	if s.blobStore != nil {
+		mux.HandleFunc("/files/upload", s.cors(s.handleFileUpload))
+		mux.HandleFunc("/blobs/", s.handleBlobs)
+	}
+}
+
+// handleFileUpload guards the broker upload endpoint with MCP authentication
+// and delegates the multipart mechanics to the blob store (DADL spec §6.2.3).
+func (s *Server) handleFileUpload(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAuth(w, r) {
+		return
+	}
+	s.blobStore.HandleUpload(w, r, s.uploadLimits)
+}
+
+// handleBlobs serves blob download and deletion (DADL spec §6.2.3). GET and
+// HEAD are capability-based: the unguessable blob ID is the only credential,
+// bounded by the TTL — this is deliberate so download URLs can be handed to
+// backends (e.g. via a #url handle) without sharing MCP credentials. DELETE is
+// destructive and has no capability use case, so it additionally requires MCP
+// authentication; a party that merely holds a blob ID cannot destroy it.
+func (s *Server) handleBlobs(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodDelete && !s.requireAuth(w, r) {
+		return
+	}
+	s.blobStore.ServeHTTP(w, r)
+}
+
+// requireAuth enforces MCP authentication when the server has any auth
+// configured. It returns true when the request may proceed and, on failure,
+// writes the 401 response itself. When no auth is configured the whole server
+// is open, so the call passes through unchanged.
+func (s *Server) requireAuth(w http.ResponseWriter, r *http.Request) bool {
+	if !s.authRequired() {
+		return true
+	}
+	if user := s.authenticate(r); user != nil && user.Authenticated {
+		return true
+	}
+	w.Header().Set("WWW-Authenticate", `Bearer realm="toolmesh"`)
+	http.Error(w, "unauthorized", http.StatusUnauthorized)
+	return false
 }
 
 // cors wraps a handler with CORS headers.

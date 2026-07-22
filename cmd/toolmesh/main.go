@@ -379,11 +379,14 @@ func main() {
 	// Initialize MCP handler and server
 	mcpHandler := mcp.NewHandler(exec, compositeBackend, coercer, rawTS, metricsReg, logger, cfg.DebugTools)
 	mcpHandler.SetCodeTimeout(time.Duration(cfg.CodeTimeout) * time.Second)
+	mcpHandler.SetBlobStore(blobStore, blob.DefaultUploadLimits())
 	mcpServer := mcp.NewServer(mcpHandler, cfg, logger, tokenStore, userStore, apiKeyStore, rateLimiter, callerClasses, metricsReg)
+	mcpServer.SetBlobStore(blobStore, blob.DefaultUploadLimits())
 
 	httpMux := http.NewServeMux()
+	// SetupRoutes registers /blobs/ (GET/HEAD capability-based, DELETE
+	// authenticated) and /files/upload when a blob store is configured.
 	mcpServer.SetupRoutes(httpMux)
-	httpMux.Handle("/blobs/", blobStore)
 
 	// Wrap with middleware: panic recovery (outermost) → security headers → request logging.
 	httpHandler := mcp.PanicRecovery(logger)(mcp.SecurityHeaders(mcp.RequestLogging(logger)(httpMux)))

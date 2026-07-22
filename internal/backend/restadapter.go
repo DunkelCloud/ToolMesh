@@ -366,6 +366,17 @@ func (a *RESTAdapter) Execute(ctx context.Context, toolName string, params map[s
 		return nil, fmt.Errorf("tool %q not found in REST backend %q", toolName, a.spec.Backend.Name)
 	}
 
+	// Materialize tm-blob:// handles in string parameters before any request
+	// building (DADL spec §6.2.4). file_url parameters keep their bare
+	// handles — the file_url pipeline streams those directly from the store.
+	params, err := a.substituteBlobHandles(&tool, params)
+	if err != nil {
+		return &ToolResult{
+			Content: []any{textContent(fmt.Sprintf("Error: %s", err))},
+			IsError: true,
+		}, nil
+	}
+
 	a.logger.InfoContext(ctx, "executing REST tool",
 		"backend", a.spec.Backend.Name,
 		"tool", toolName,

@@ -508,8 +508,9 @@ A **blob handle** is `tm-blob://<blob-id>`, optionally followed by a format frag
 Substitution rules:
 
 - **Whole-value match only.** A handle embedded inside a longer string is left untouched. This keeps substitution predictable and prevents accidental expansion inside free-text fields.
+- **A bare handle (no fragment) outside a `file_url` parameter is an error** — the runtime cannot guess the intended encoding. Conversely, `file_url` parameters take only the bare handle; fragments are rejected there.
 - **Unknown, expired, or malformed handles fail the tool call** with an error — they are never passed through to the backend as literal strings.
-- **Size limits apply.** Substitution shares the file-fetch ceiling of the deployment. Base64 inflates payloads by ~33%; prefer `#url` for large files when the backend can fetch URLs.
+- **Size limits apply.** Inline substitution (`#base64`, `#dataurl`) is capped well below the general file-fetch ceiling (10&nbsp;MB by default): Base64 inflates payloads by ~33% and the request body is buffered in memory. `#url` and `file_url` parameters stream and carry no such cap — prefer them for large files.
 - Handles are capability references: possession of the ID grants access to the content for the duration of the TTL, matching the semantics of broker download URLs.
 
 Substitution is runtime behavior of the caller-facing tool interface. DADL files declare nothing to enable it, and it works identically for tools invoked directly via MCP and from `execute_code`.

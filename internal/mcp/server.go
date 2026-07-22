@@ -35,6 +35,7 @@ import (
 
 	"github.com/DunkelCloud/ToolMesh/internal/auth"
 	"github.com/DunkelCloud/ToolMesh/internal/backend"
+	"github.com/DunkelCloud/ToolMesh/internal/blob"
 	"github.com/DunkelCloud/ToolMesh/internal/config"
 	"github.com/DunkelCloud/ToolMesh/internal/metrics"
 	"github.com/DunkelCloud/ToolMesh/internal/userctx"
@@ -53,6 +54,16 @@ type Server struct {
 	rateLimiter   *auth.DCRRateLimiter
 	callerClasses *config.CallerClasses
 	metrics       *metrics.Registry
+	blobStore     *blob.Store
+	uploadLimits  blob.UploadLimits
+}
+
+// SetBlobStore enables the file broker upload endpoint (POST /files/upload).
+// Uploads are authenticated with the same credentials as the MCP endpoint;
+// the storage mechanics live in the blob store itself.
+func (s *Server) SetBlobStore(store *blob.Store, limits blob.UploadLimits) {
+	s.blobStore = store
+	s.uploadLimits = limits
 }
 
 // NewServer creates a new MCP server. The metrics registry is optional; pass
@@ -83,6 +94,23 @@ func (s *Server) SetupRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/authorize", s.cors(s.handleAuthorize))
 	mux.HandleFunc("/token", s.cors(s.handleToken))
 	mux.HandleFunc("/health", s.cors(s.handleHealth))
+	if s.blobStore != nil {
+		mux.HandleFunc("/files/upload", s.cors(s.handleFileUpload))
+	}
+}
+
+// handleFileUpload guards the broker upload endpoint with MCP authentication
+// and delegates the multipart mechanics to the blob store (DADL spec §6.2.3).
+func (s *Server) handleFileUpload(w http.ResponseWriter, r *http.Request) {
+	if s.authRequired() {
+		user := s.authenticate(r)
+		if user == nil || !user.Authenticated {
+			w.Header().Set("WWW-Authenticate", `Bearer realm="toolmesh"`)
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+	}
+	s.blobStore.HandleUpload(w, r, s.uploadLimits)
 }
 
 // cors wraps a handler with CORS headers.

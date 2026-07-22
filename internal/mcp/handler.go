@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"regexp"
 	"sort"
 	"strconv"
@@ -25,6 +26,7 @@ import (
 	"time"
 
 	"github.com/DunkelCloud/ToolMesh/internal/backend"
+	"github.com/DunkelCloud/ToolMesh/internal/blob"
 	"github.com/DunkelCloud/ToolMesh/internal/executor"
 	"github.com/DunkelCloud/ToolMesh/internal/metrics"
 	"github.com/DunkelCloud/ToolMesh/internal/toolindex"
@@ -53,6 +55,11 @@ type Handler struct {
 	metrics       *metrics.Registry
 	logger        *slog.Logger
 	debugTools    bool // when true, expose debug_echo and debug_generate
+
+	// File broker plumbing for the upload_file built-in (nil = tool hidden).
+	blobStore         *blob.Store
+	uploadLimits      blob.UploadLimits
+	uploadFetchClient *http.Client
 }
 
 // NewHandler creates a new MCP tool call handler. The metrics registry is
@@ -100,6 +107,8 @@ func (h *Handler) isBuiltinTool(name string) bool {
 	switch name {
 	case toolDiscoverTools, toolExecuteCode:
 		return true
+	case toolUploadFile:
+		return h.blobStore != nil
 	case toolDebugEcho, toolDebugGenerate:
 		return h.debugTools
 	}
@@ -147,6 +156,10 @@ func (h *Handler) HandleToolCall(ctx context.Context, toolName string, params ma
 		return h.handleDiscoverTools(ctx, params)
 	case toolExecuteCode:
 		return h.handleExecuteCode(ctx, params), nil
+	case toolUploadFile:
+		// handleUploadFile reports a clear "not configured" error itself when
+		// no blob store is set; the tool is only advertised when one is.
+		return h.handleUploadFile(ctx, params)
 	case toolDebugEcho:
 		if !h.debugTools {
 			return debugDisabledResult(toolName), nil
@@ -532,6 +545,10 @@ func (h *Handler) BuildToolList(ctx context.Context) ([]ToolDefinition, error) {
 	// discover_tools too — listing them at the MCP root is purely a
 	// convenience for high-frequency tools where the discovery round-trip
 	// would waste context.
+	if h.blobStore != nil {
+		tools = append(tools, uploadFileToolDefinition())
+	}
+
 	tools = append(tools, h.promotedToolDefinitions(ctx)...)
 
 	if h.debugTools {

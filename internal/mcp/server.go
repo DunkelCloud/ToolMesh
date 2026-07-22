@@ -96,21 +96,46 @@ func (s *Server) SetupRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/health", s.cors(s.handleHealth))
 	if s.blobStore != nil {
 		mux.HandleFunc("/files/upload", s.cors(s.handleFileUpload))
+		mux.HandleFunc("/blobs/", s.handleBlobs)
 	}
 }
 
 // handleFileUpload guards the broker upload endpoint with MCP authentication
 // and delegates the multipart mechanics to the blob store (DADL spec §6.2.3).
 func (s *Server) handleFileUpload(w http.ResponseWriter, r *http.Request) {
-	if s.authRequired() {
-		user := s.authenticate(r)
-		if user == nil || !user.Authenticated {
-			w.Header().Set("WWW-Authenticate", `Bearer realm="toolmesh"`)
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
-		}
+	if !s.requireAuth(w, r) {
+		return
 	}
 	s.blobStore.HandleUpload(w, r, s.uploadLimits)
+}
+
+// handleBlobs serves blob download and deletion (DADL spec §6.2.3). GET and
+// HEAD are capability-based: the unguessable blob ID is the only credential,
+// bounded by the TTL — this is deliberate so download URLs can be handed to
+// backends (e.g. via a #url handle) without sharing MCP credentials. DELETE is
+// destructive and has no capability use case, so it additionally requires MCP
+// authentication; a party that merely holds a blob ID cannot destroy it.
+func (s *Server) handleBlobs(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodDelete && !s.requireAuth(w, r) {
+		return
+	}
+	s.blobStore.ServeHTTP(w, r)
+}
+
+// requireAuth enforces MCP authentication when the server has any auth
+// configured. It returns true when the request may proceed and, on failure,
+// writes the 401 response itself. When no auth is configured the whole server
+// is open, so the call passes through unchanged.
+func (s *Server) requireAuth(w http.ResponseWriter, r *http.Request) bool {
+	if !s.authRequired() {
+		return true
+	}
+	if user := s.authenticate(r); user != nil && user.Authenticated {
+		return true
+	}
+	w.Header().Set("WWW-Authenticate", `Bearer realm="toolmesh"`)
+	http.Error(w, "unauthorized", http.StatusUnauthorized)
+	return false
 }
 
 // cors wraps a handler with CORS headers.

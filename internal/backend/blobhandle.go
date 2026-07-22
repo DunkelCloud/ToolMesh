@@ -30,6 +30,14 @@ import (
 // both of which stream.
 const maxInlineBlobBytes = maxResponseBytes // 10 MB
 
+// substituteBlobHandles is called while building the backend request, i.e.
+// downstream of authorization and the request-side (pre-execution) policy gate
+// in the executor. Those layers and the audit trail see the tm-blob:// handle,
+// not the bytes it expands to — a deliberate property matching the outbound
+// broker (a binary response is gated as a URL, not as its content). See DADL
+// spec §6.2.5. A policy that must inspect content leaving to a backend cannot
+// rely on seeing blob-carried payloads.
+//
 // substituteBlobHandles walks the tool parameters and replaces every string
 // value that is, in its entirety, a tm-blob:// handle with an explicit format
 // fragment (DADL spec §6.2.4):

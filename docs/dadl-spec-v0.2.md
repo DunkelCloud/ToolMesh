@@ -515,6 +515,15 @@ Substitution rules:
 
 Substitution is runtime behavior of the caller-facing tool interface. DADL files declare nothing to enable it, and it works identically for tools invoked directly via MCP and from `execute_code`.
 
+#### 6.2.5 Security Model
+
+The file broker deliberately trades some inspectability and isolation for the ability to move binary content without routing it through the model context. Deployments should treat these as conscious properties, not oversights:
+
+- **Blob IDs are capabilities.** IDs are unguessable (128-bit random) and time-bounded by the TTL. Possession of an ID grants read access to the content — that is the mechanism that lets a download URL (or a `#url` handle) be handed to a backend without sharing MCP credentials. `GET`/`HEAD /blobs/{id}` are therefore unauthenticated. `POST /files/upload` and `DELETE /blobs/{id}` are **not** capability operations — they require the same authentication as the MCP endpoint (there is no legitimate reason for an unauthenticated party to create or destroy a blob).
+- **No per-tenant ownership.** Blobs live in one flat namespace with no owner tag. For a single-tenant or single-trust-domain deployment this is fine. A deployment serving mutually distrusting tenants over one broker MUST add and enforce an owner/tenant tag on access, because a leaked ID (via logs, errors, or shared audit) would otherwise cross the tenant boundary.
+- **Handles materialize downstream of the pre-execution gate.** Substitution and `file_url` resolution happen while the backend request is being built — after authorization and the request-side (pre-execution) policy gate have inspected the call. Those layers, and the audit trail, therefore see the `tm-blob://` handle, not the materialized bytes. This matches how the broker already behaves outbound (a binary response is gated as a URL, not as its bytes). A policy that must inspect *content* leaving to a backend cannot rely on seeing blob-carried payloads; gate on the handle, the tool, and the access class instead.
+- **`upload_file` is an authenticated, public-only fetcher.** It resolves URLs server-side with SSRF protection at the dial layer (private, loopback, link-local, and cloud-metadata addresses are refused, redirects included). It is not an open proxy — every fetch is tied to an authenticated caller in the audit log — but it does let any authenticated caller have ToolMesh briefly re-host public content under ToolMesh's own origin (download-only: `Content-Disposition: attachment` + `nosniff`). Deployments that issue low-trust caller credentials may want to gate it by access class or shorten its default TTL.
+
 ### 6.3 Binary Download & Streaming
 
 ```yaml

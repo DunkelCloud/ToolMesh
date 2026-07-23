@@ -8,7 +8,8 @@
   "properties": {
     "spec": {
       "type": "string",
-      "description": "URL of the DADL specification this file conforms to"
+      "pattern": "^https://dadl\\.ai/spec/dadl-spec-v0\\.[12](\\.md)?$",
+      "description": "URL of the DADL specification this file conforms to (v0.1 or v0.2, with or without .md)"
     },
     "requires": {
       "type": "object",
@@ -67,7 +68,7 @@
   "$defs": {
     "Backend": {
       "type": "object",
-      "required": ["name", "type", "base_url", "description", "auth", "tools"],
+      "required": ["name", "type", "description", "auth", "tools"],
       "properties": {
         "name": {
           "type": "string",
@@ -85,7 +86,7 @@
         },
         "base_url": {
           "type": "string",
-          "description": "Base URL for all API requests"
+          "description": "Base URL for all API requests. Optional: self-hosted APIs omit it and the deployment's backends.yaml url supplies (or overrides) it."
         },
         "description": {
           "type": "string",
@@ -140,11 +141,11 @@
         },
         "hints": {
           "type": "object",
-          "description": "Per-tool domain knowledge for LLM consumers",
+          "description": "Per-tool domain knowledge for LLM consumers; values are scalars",
           "additionalProperties": {
             "type": "object",
             "additionalProperties": {
-              "type": "string"
+              "type": ["string", "number", "boolean"]
             }
           }
         },
@@ -240,18 +241,93 @@
         },
         "login": {
           "type": "object",
-          "description": "Session-based login config"
+          "description": "Session-based login config",
+          "required": ["method", "path"],
+          "properties": {
+            "method": { "type": "string" },
+            "path": { "type": "string" },
+            "body": {
+              "type": "object",
+              "description": "Login request body; values (any depth) can be credential refs"
+            },
+            "extract": {
+              "type": "object",
+              "additionalProperties": { "type": "string" },
+              "description": "Token name → JSONPath"
+            }
+          },
+          "additionalProperties": false
         },
         "inject": {
           "type": "array",
-          "description": "Session-based header injection"
+          "description": "Session-based header injection",
+          "items": {
+            "type": "object",
+            "required": ["header", "value"],
+            "properties": {
+              "header": { "type": "string" },
+              "value": { "type": "string", "description": "Template with {{token}} placeholders" }
+            },
+            "additionalProperties": false
+          }
         },
         "refresh": {
           "type": "object",
-          "description": "Session-based refresh config"
+          "description": "Session-based refresh config",
+          "properties": {
+            "trigger": { "type": "string" },
+            "action": { "type": "string" }
+          },
+          "additionalProperties": false
         }
       },
-      "additionalProperties": false
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": { "properties": { "type": { "const": "bearer" } }, "required": ["type"] },
+          "then": { "required": ["credential"] }
+        },
+        {
+          "if": { "properties": { "type": { "enum": ["api_key", "apikey"] } }, "required": ["type"] },
+          "then": { "required": ["credential"] }
+        },
+        {
+          "if": { "properties": { "type": { "const": "basic" } }, "required": ["type"] },
+          "then": { "required": ["username_credential"] }
+        },
+        {
+          "if": { "properties": { "type": { "const": "session" } }, "required": ["type"] },
+          "then": { "required": ["login", "inject"] }
+        },
+        {
+          "if": { "properties": { "type": { "const": "oauth2" } }, "required": ["type"] },
+          "then": { "required": ["token_url"] }
+        },
+        {
+          "if": {
+            "allOf": [
+              { "properties": { "type": { "const": "oauth2" } }, "required": ["type"] },
+              { "anyOf": [
+                { "not": { "required": ["flow"] } },
+                { "properties": { "flow": { "const": "client_credentials" } }, "required": ["flow"] }
+              ] }
+            ]
+          },
+          "then": { "required": ["client_id_credential", "client_secret_credential"] }
+        },
+        {
+          "if": { "properties": { "flow": { "const": "refresh_token" } }, "required": ["flow"] },
+          "then": { "required": ["client_id_credential", "refresh_token_credential"] }
+        },
+        {
+          "if": { "properties": { "flow": { "const": "jwt_bearer" } }, "required": ["flow"] },
+          "then": { "required": ["service_account_credential"] }
+        },
+        {
+          "if": { "properties": { "flow": { "const": "authorization_code" } }, "required": ["flow"] },
+          "then": { "required": ["authorize_url", "client_id_credential", "refresh_token_credential"] }
+        }
+      ]
     },
     "Health": {
       "type": "object",
@@ -263,6 +339,7 @@
         },
         "path": {
           "type": "string",
+          "pattern": "^[^{}]+$",
           "description": "URL path relative to base_url; no {param} placeholders"
         },
         "expect_status": {
@@ -319,8 +396,7 @@
             "page_param": { "type": "string" },
             "offset_param": { "type": "string" },
             "limit_param": { "type": "string" },
-            "limit_default": { "type": "integer" },
-            "limit_max": { "type": "integer" }
+            "limit_default": { "type": "integer" }
           },
           "additionalProperties": false
         },
@@ -329,18 +405,13 @@
           "properties": {
             "next_cursor": { "type": "string" },
             "has_more": { "type": "string" },
-            "total_pages_header": { "type": "string" },
-            "next_link_header": { "type": "string" },
-            "total_header": { "type": "string" },
-            "current_page_header": { "type": "string" },
-            "next_page_header": { "type": "string" },
-            "per_page_header": { "type": "string" }
+            "total_pages_header": { "type": "string" }
           },
           "additionalProperties": false
         },
         "behavior": {
           "type": "string",
-          "enum": ["auto", "expose", "manual"],
+          "enum": ["auto", "expose"],
           "description": "Pagination behavior"
         },
         "max_pages": {
@@ -380,21 +451,15 @@
           "type": "object",
           "properties": {
             "header": { "type": "string" },
-            "retry_after_header": { "type": "string" },
-            "requests_per_second": { "type": "number" }
+            "retry_after_header": { "type": "string" }
           },
           "additionalProperties": false
         },
-        "rate_limit_headers": {
-          "type": "object",
-          "additionalProperties": { "type": "string" },
-          "description": "Rate limit response header names"
-        },
         "map": {
           "type": "object",
-          "propertyNames": { "pattern": "^[1-5][0-9][0-9]$" },
+          "propertyNames": { "pattern": "^[45][0-9][0-9]$" },
           "additionalProperties": { "type": "string" },
-          "description": "HTTP status code → semantic error code (well-known: invalid_input, unauthorized, forbidden, not_found, conflict, timeout, rate_limited, internal, unavailable; custom codes allowed)"
+          "description": "HTTP status code (4xx/5xx only; YAML integer keys are stringified) → semantic error code (well-known: invalid_input, unauthorized, forbidden, not_found, conflict, timeout, rate_limited, internal, unavailable; custom codes allowed)"
         }
       },
       "additionalProperties": false
@@ -417,9 +482,8 @@
         "binary": { "type": "boolean" },
         "content_type": { "type": "string" },
         "streaming": { "type": "boolean" },
-        "stream_handling": { "type": "string" },
-        "max_duration": { "type": "string" },
-        "max_items_stream": { "type": "integer" }
+        "stream_handling": { "type": "string", "enum": ["collect", "skip"] },
+        "max_duration": { "type": "string" }
       },
       "additionalProperties": false
     },
@@ -429,7 +493,7 @@
       "properties": {
         "method": {
           "type": "string",
-          "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"],
+          "enum": ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"],
           "description": "HTTP method"
         },
         "path": {
@@ -518,7 +582,7 @@
     },
     "Param": {
       "type": "object",
-      "required": ["type"],
+      "required": ["type", "in"],
       "properties": {
         "type": {
           "type": "string",
@@ -560,12 +624,17 @@
           "type": "object",
           "additionalProperties": {
             "type": "object",
+            "required": ["type"],
             "properties": {
-              "type": { "type": "string" },
+              "type": {
+                "type": "string",
+                "enum": ["string", "integer", "number", "boolean", "array", "object", "file_url"]
+              },
               "default": {},
               "description": { "type": "string" },
               "required": { "type": "boolean" }
-            }
+            },
+            "additionalProperties": false
           }
         },
         "code": {

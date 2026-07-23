@@ -18,6 +18,7 @@ Write a `.dadl` file — ToolMesh handles the rest.
 - Section 5.3: two more `oauth2` flows — `jwt_bearer` (service accounts, RFC 7523; e.g. Google Search Console and Workspace APIs) and `authorization_code` (three-legged consent driven by `toolmesh setup`, refresh token persisted in the credential store; e.g. YouTube).
 - Section 4: documented `defaults.content_type` (backend-wide default request content type; implemented since v0.1 but previously undocumented).
 - Section 5.5: corrected the API-key auth type to its implemented spelling `apikey` (the v0.1 document said `api_key`, which ToolMesh has never accepted; the canonical schema accepts both) and documented `query_param` for `inject_into: query` (implemented since v0.1 but previously undocumented).
+- Section 4: corrected `base_url` to optional (the v0.1 document said required; the runtime has always treated it as optional — self-hosted APIs get their URL from the deployment's `backends.yaml`).
 - Section 6: normative override semantics — a tool-level `response`, `errors`, or `pagination` object replaces the corresponding `defaults` object; `response.redact` is the deliberate exception and merges additively.
 - Section 11.1: YAML merge keys (`<<`) are now discouraged (shallow-merge data loss, dropped from YAML 1.2, rejected by the public registry); examples use whole-node anchors.
 - Section 12.3: composites can carry an `access` classification, mirroring tools (Section 6.4); the composite is the authorization boundary for its inner calls.
@@ -26,8 +27,12 @@ Write a `.dadl` file — ToolMesh handles the rest.
 - Section 8.2: new `errors.map` — HTTP status codes are mapped to semantic error codes (`not_found`, `conflict`, `rate_limited`, …) so Code Mode error handling can branch on stable values.
 - Section 9.3: new `response.redact` — declarative masking of sensitive response fields via JSONPath list, complementing the Output Gate.
 - Section 3: new optional top-level `requires` block — minimum runtime version and feature requirements (fail-closed).
-- Section 15: new Conformance chapter — canonical JSON Schema, document/consumer conformance, unknown-key policy.
+- Section 15: new Conformance chapter — canonical JSON Schema, document/consumer conformance, unknown-key policy, unknown-value policy for behavior-determining enums, `requires` bootstrap limitation.
 - Section 16: non-normative outlook on v0.3 (session semantics for LLM backends).
+- Section 6: documented `HEAD` as a supported HTTP method (implemented since v0.1 but previously undocumented).
+- Section 5.3: PKCE (RFC 7636, S256) specified for public `authorization_code` clients; RFC 7523 `sub`-claim note for `jwt_bearer`.
+- Section 8: the error-mapping trigger (non-2xx) and the default for unlisted statuses are now explicit.
+- Section 9.4: the DADL JSONPath dialect is pinned — RFC 9535 syntax and semantics for name, index, and wildcard selectors.
 
 ---
 
@@ -46,6 +51,8 @@ Claude → ToolMesh → REST API  (via declarative .dadl file)
 ```
 
 > **Code Mode only.** DADL backends are always exposed via Code Mode. The LLM writes JavaScript against auto-generated TypeScript interfaces. No tool-per-endpoint explosion — regardless of API size.
+
+Normative keywords (MUST, SHOULD, MAY, …) are used throughout this document as defined in Section 15.1.
 
 ---
 
@@ -115,7 +122,7 @@ backend:
 | `name` | string | yes | Unique backend identifier (slug format: lowercase, hyphens) |
 | `type` | string | yes | Always `rest` for DADL backends |
 | `version` | string | no | Semantic version of this DADL file (e.g. `"1.0"`, `"1.2.1"`). Used by ToolMesh to detect available upgrades from the registry. See Section 4.5. |
-| `base_url` | string | yes | Base URL for all API requests |
+| `base_url` | string | no | Base URL for all API requests. Omit for self-hosted APIs (BookStack, NetBox, GitLab, …) where every installation has its own URL — the deployment's `backends.yaml` `url:` entry supplies it, and always overrides a declared `base_url`. *(corrected in v0.2: the v0.1 document said required; the runtime has always treated it as optional)* |
 | `description` | string | yes | Human-readable description (used in Code Mode prompt) |
 | `openapi_source` | string | no | Path or URL to OpenAPI 3.x spec. When provided, schemas and parameters are derived from it. |
 | `arazzo_source` | string | no | Path or URL to Arazzo workflow file. Used as documentation context for Code Mode, not executed. |
@@ -144,7 +151,7 @@ Optional metadata describing how much of the target API this DADL file covers. U
 
 ### 4.2 Hints Object
 
-Structured domain knowledge that is injected into tool descriptions at load time. Helps LLMs use tools correctly without trial and error. Hints are per-tool and use key-value pairs rather than free text to reduce prompt injection surface.
+Structured domain knowledge that is injected into tool descriptions at load time. Helps LLMs use tools correctly without trial and error. Hints are per-tool and use key-value pairs rather than free text to reduce prompt injection surface. Hint values are scalars (strings, numbers, booleans) — nested objects or arrays are not allowed.
 
 **Security:** Hint values are subject to automated security scanning. DADL files from untrusted sources (community registries) are scanned for imperative instructions, URLs, shell commands, and authority claims. Suspicious content is rejected or flagged.
 
@@ -354,7 +361,7 @@ auth:
   refresh_before_expiry: 60s
 ```
 
-The interactive consent that produces the refresh token happens once, out-of-band — describe it in the `setup` section (for Google: OAuth client in production status, consent URL with `access_type=offline&prompt=consent`). `scopes` is not sent on this flow; scopes are fixed at consent time. Providers that rotate refresh tokens on every exchange are not supported: the stored refresh token must remain valid (Google does not rotate by default).
+The interactive consent that produces the refresh token happens once, out-of-band — describe it in the `setup` section (for Google: OAuth client in production status, consent URL with `access_type=offline&prompt=consent`). `scopes` is not sent on this flow; scopes are fixed at consent time (declaring `scopes` anyway is not an error — the field is simply ignored). Providers that rotate refresh tokens on every exchange are not supported: the stored refresh token must remain valid (Google does not rotate by default).
 
 `jwt_bearer` *(since v0.2)* — service-account APIs per [RFC 7523](https://www.rfc-editor.org/rfc/rfc7523): ToolMesh builds an RS256-signed JWT from a service-account key and exchanges it at the token endpoint for a short-lived access token. Fully headless — no consent screen, no refresh token. This is the preferred flow for Google APIs that support service accounts (Search Console: add the service-account email as a property user; Workspace APIs: domain-wide delegation). Files using this flow MUST declare spec v0.2:
 
@@ -370,7 +377,7 @@ auth:
   refresh_before_expiry: 60s
 ```
 
-`service_account_credential` resolves to the **complete service-account key** (for Google: the JSON key file content with `client_email`, `private_key`, `token_uri`). ToolMesh signs the assertion (`iss` = client email, `aud` = token URL, `scope` from `scopes`, `exp` ≤ 1 hour) and caches the resulting access token like any other flow. The optional `subject` sets the `sub` claim to impersonate a user — required for Google Workspace domain-wide delegation, omitted for APIs where the service account acts as itself.
+`service_account_credential` resolves to the **complete service-account key** (for Google: the JSON key file content with `client_email`, `private_key`, `token_uri`). ToolMesh signs the assertion (`iss` = client email, `aud` = token URL, `scope` from `scopes`, `exp` ≤ 1 hour) and caches the resulting access token like any other flow. The optional `subject` sets the `sub` claim to impersonate a user — required for Google Workspace domain-wide delegation, omitted for APIs where the service account acts as itself. (RFC 7523 note: the RFC itself requires a `sub` claim; omitting it for self-acting service accounts follows Google's token-endpoint profile. Strictly RFC-conforming endpoints expect `sub` = `iss` — runtimes SHOULD send that when `subject` is absent and the endpoint rejects assertions without `sub`.)
 
 `authorization_code` *(since v0.2)* — three-legged OAuth for user-delegated APIs that do **not** support service accounts (e.g. YouTube). Unlike `flow: refresh_token`, where the refresh token is obtained out-of-band, this flow declares the full consent configuration so ToolMesh can drive it: `toolmesh setup <name>` (or the identity plugin) opens `authorize_url` in a browser, receives the authorization code on a local callback, exchanges it at `token_url`, and **persists the refresh token** in the credential store under `refresh_token_credential`. At runtime the flow then behaves exactly like `refresh_token` — silent renewal, no user interaction. Files using this flow MUST declare spec v0.2:
 
@@ -388,7 +395,9 @@ auth:
   refresh_before_expiry: 60s
 ```
 
-`scopes` is sent during consent and fixed afterwards. For Google, ToolMesh appends `access_type=offline&prompt=consent` to obtain a refresh token. Provider note (belongs in `setup`): Google OAuth apps in *Testing* status expire refresh tokens after 7 days — publish the app to *In production* (or *Internal* for Workspace) before relying on this flow.
+`scopes` is sent during consent and fixed afterwards. **PKCE:** public clients (no `client_secret_credential`) MUST use PKCE ([RFC 7636](https://www.rfc-editor.org/rfc/rfc7636)) with the `S256` challenge method — the setup tool generates the verifier, sends the challenge on the authorize request, and the verifier on the token exchange; confidential clients MAY add PKCE on top of the secret. The redirect target is a loopback address per [RFC 8252](https://www.rfc-editor.org/rfc/rfc8252); the setup tool chooses the exact `redirect_uri`, which must be registered with the OAuth app. The refresh-token rotation caveat from `flow: refresh_token` applies equally: the persisted refresh token must remain valid across exchanges.
+
+Provider notes (belong in `setup`): when the `authorize_url` host is `accounts.google.com`, the setup tool appends `access_type=offline&prompt=consent` to obtain a refresh token. Google OAuth apps in *Testing* status expire refresh tokens after 7 days — publish the app to *In production* (or *Internal* for Workspace) before relying on this flow.
 
 ### 5.4 Session-based (Login → Token → Use)
 
@@ -439,7 +448,7 @@ Each tool maps to one REST API endpoint. In Code Mode, tools become methods on t
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `method` | string | yes | HTTP method: GET, POST, PUT, PATCH, DELETE |
+| `method` | string | yes | HTTP method: GET, POST, PUT, PATCH, DELETE, HEAD *(HEAD implemented since v0.1, documented in v0.2)* |
 | `path` | string | yes | URL path (may contain `{param}` placeholders) |
 | `description` | string | yes | Used as JSDoc comment in TypeScript interface |
 | `access` | string | no | Access classification for authorization and policy mapping. See Section 6.4. |
@@ -459,7 +468,7 @@ Each tool maps to one REST API endpoint. In Code Mode, tools become methods on t
 
 ### 6.1 Parameter Definition
 
-All parameters — path, query, and **body** — are defined under the `params` key using `in:` to specify their location. There is no separate `body:` keyword in DADL.
+All parameters — path, query, and **body** — are defined under the `params` key using `in:` to specify their location. There is no separate `body:` keyword in DADL. `in` is REQUIRED for tool parameters *(made explicit in v0.2)*: a parameter without a location cannot be placed in the request and is silently dropped by the runtime — validators reject it.
 
 ```yaml
 # params — path, query, and body parameters in one place
@@ -561,6 +570,8 @@ download_report:
   method: GET
   path: /reports/{id}/pdf
   description: "Download report as PDF"
+  params:
+    id: { type: string, in: path, required: true }
   response:
     binary: true
     content_type: application/pdf
@@ -765,6 +776,8 @@ When `behavior` is `auto`, ToolMesh fetches all pages transparently. When `expos
 
 ## 8 Error Mapping
 
+Error mapping triggers on **non-2xx responses**. `2xx` bodies always flow through the response pipeline (Section 9) — APIs that embed error indicators in `200` responses cannot be mapped here. A status listed in neither `retry_on` nor `terminal` is treated as terminal (no retry). The single automatic re-authentication retry on `401` (Sections 5.3/5.4) happens below error mapping and is not affected by `terminal: [401]`.
+
 ```yaml
 # defaults.errors
 errors:
@@ -855,7 +868,7 @@ try {
 | `internal` | 500 |
 | `unavailable` | 502, 503, 504 |
 
-`map` overrides the defaults selectively — declare it only for statuses the API uses in a non-standard way (e.g. `400` for missing resources, `200` bodies with embedded errors are NOT covered; use `message_path` for those). Like `access`, the code values are not restricted: custom codes (e.g. `insufficient_funds`) are passed through as opaque strings, but the well-known codes above SHOULD be preferred so error-handling code stays portable across backends.
+`map` overrides the defaults selectively — declare it only for statuses the API uses in a non-standard way (e.g. `400` for missing resources). Only `4xx`/`5xx` statuses can be mapped; `2xx` responses never enter error mapping (see the trigger rule above). Note for validation: YAML integer keys (`404:`) are stringified (`"404"`) when a document is checked against the canonical JSON Schema. Like `access`, the code values are not restricted: custom codes (e.g. `insufficient_funds`) are passed through as opaque strings, but the well-known codes above SHOULD be preferred so error-handling code stays portable across backends.
 
 ---
 
@@ -937,6 +950,21 @@ list_webhooks:
 
 **Relation to the Output Gate:** the Output Gate applies deployment-specific policies (PII rules, caller-dependent filtering) configured by the operator. `response.redact` complements it from the other side: the DADL author knows *where this particular API leaks secrets* and encodes that knowledge portably in the file itself. Defense in depth — both layers run.
 
+**Scope:** redaction operates on the response pipeline only. Error responses (Section 8) never enter it — their caller-visible surface is limited to the extracted `message` and `provider_code` fields, not the raw error body.
+
+### 9.4 JSONPath Dialect *(pinned in v0.2)*
+
+Every field that takes a JSONPath expression — `result_path`, `metadata_path`, `redact`, `errors.message_path` / `code_path`, `pagination.response.next_cursor` / `has_more`, `health.expect_path`, and session `extract` — uses [RFC 9535](https://www.rfc-editor.org/rfc/rfc9535) syntax and semantics, restricted to this subset:
+
+| Construct | Example | Support |
+|-----------|---------|---------|
+| Root + name selectors (dot notation) | `$.data.items` | REQUIRED everywhere |
+| Index selector, including negative | `$.data[-1].id` | REQUIRED everywhere |
+| Wildcard selector | `$[*].secret` | REQUIRED for `redact`; OPTIONAL elsewhere |
+| Descendant segments, slices, filters | `$..id`, `$[1:3]`, `$[?(...)]` | Not part of the dialect — authors MUST NOT use them |
+
+A consumer that encounters a construct it does not implement MUST fail the call (or reject the file at load time) rather than silently returning nothing — for `redact`, a non-matching path is a no-op only when the path is *valid* and simply absent from the data, never because the engine could not parse it.
+
 ---
 
 ## 10 Types *(optional)*
@@ -1011,6 +1039,8 @@ includes:
 
 Include fragments are files with `_fragment: true` at the top level. Merge semantics: deep merge, overrides win. Arrays are replaced, not appended. Includes are flat — no nested includes (max 1 level).
 
+Fragments are **not standalone DADL documents**: they carry `_fragment: true` instead of `spec`/`backend` and do not validate against the canonical schema on their own. Document conformance (Section 15.2) is evaluated on the **composed result** after includes are merged. The `.dadl.yaml` extension distinguishes fragments from loadable `.dadl` files.
+
 ---
 
 ## 12 Composite Tools
@@ -1044,7 +1074,7 @@ composites:
     code: |
       const devices = await api.list_devices();
       const nameMap = Object.fromEntries(devices.map(d => [d.id, d.name]));
-      const status = await api.get_all_device_status({ show_info: true });
+      const status = await api.get_all_device_status();
       const result = status.map(d => ({
         ...d,
         name: nameMap[d.id] || d.id
@@ -1232,14 +1262,19 @@ The canonical, machine-readable schema for this version is published at:
 A file is a **conforming DADL document** when:
 
 1. it is valid YAML,
-2. it validates against the canonical JSON Schema of the spec version it declares in `spec`, and
-3. it satisfies the constraints that JSON Schema cannot express:
+2. it validates against the canonical JSON Schema of the spec version it declares in `spec` (v0.1 predates this chapter and has no canonical schema of its own — documents declaring v0.1 are validated against the v0.2 schema, which is additive, so every valid v0.1 document passes), and
+3. it satisfies the constraints that JSON Schema cannot express. Machine-checkable — validators MUST enforce:
    - every `{param}` placeholder in a `path` has a matching `params` entry with `in: path`, and vice versa;
    - `replaced_by` references an existing tool or composite in the same file;
    - every load-bearing feature the file uses (`redact`, `idempotency` — Section 15.3) is declared in `requires.features`;
-   - includes are at most one level deep, and include fragments carry `_fragment: true`;
-   - composite `code` calls only primitive tools of the same backend;
+   - a file using any feature marked *(since v0.2)* declares a v0.2 `spec` URL;
+   - includes are at most one level deep, and include fragments carry `_fragment: true`.
+
+   Author obligations — not machine-checkable; registries enforce by review:
+   - composite `code` calls only primitive tools of the same backend (statically checkable only in the absence of dynamic access such as `api[name]`);
    - the `health` endpoint is side-effect-free.
+
+Document conformance is evaluated **after includes are resolved**; fragment files themselves (Section 11.2) are exempt.
 
 **Validation strictness is context-dependent** (see Section 15.3): publish-time validators (registry CI, `dadl validate`) MUST treat unknown keys as errors; runtime consumers MUST NOT.
 
@@ -1247,7 +1282,7 @@ Registries MAY impose additional publication requirements beyond document confor
 
 ### 15.3 Forward Compatibility: Unknown Keys & `requires`
 
-DADL files and DADL consumers evolve independently — a file written against a newer spec revision will meet older runtimes. Two rules keep that safe:
+DADL files and DADL consumers evolve independently — a file written against a newer spec revision will meet older runtimes. Three rules keep that safe:
 
 **Unknown-key policy:**
 
@@ -1255,7 +1290,9 @@ DADL files and DADL consumers evolve independently — a file written against a 
 |---------|---------------------|
 | Publish-time validation (registry CI, `dadl validate`, linters) | MUST **reject** — catches typos and unspecified fields before they spread |
 | Runtime consumers (ToolMesh) | MUST **warn and ignore** — a file using only additive newer features keeps working, degraded but visibly |
-| Underscore-prefixed keys (`_*`) | Always ignored silently, at every layer (YAML anchor workspace) |
+| Underscore-prefixed keys (`_*`) | Ignored silently by every consumer, validators and runtimes alike (YAML anchor workspace). The canonical schema permits them at the document top level. |
+
+**Unknown-value policy.** Keys can be ignored; values of a key the consumer *does* implement cannot. For **behavior-determining enum fields** — `backend.type`, `auth.type`, `auth.flow`, `pagination.strategy`, `pagination.behavior`, `idempotency.generate`, `response.stream_handling` — a consumer that does not implement the declared value MUST reject the file (fail-closed) rather than guess, substitute a default, or call the API with wrong semantics. Fields defined as opaque pass-through strings (`access`, `errors.map` codes) are exempt.
 
 **`requires` — declared hard requirements.** Warn-and-ignore is wrong when a feature is load-bearing: a runtime that ignored an unknown `response.redact` would silently expose the very secrets the author masked. When a file *depends* on a feature for correctness or security, it MUST declare it:
 
@@ -1266,7 +1303,7 @@ requires:
   features: [redact, jwt_bearer]
 ```
 
-A runtime that cannot satisfy every entry in `requires` MUST refuse to load the file (fail-closed) with a message naming the missing capability. `toolmesh` takes a semver range; `features` takes feature identifiers defined by spec releases. v0.2 defines:
+A runtime that cannot satisfy every entry in `requires` MUST refuse to load the file (fail-closed) with a message naming the missing capability. `toolmesh` takes a semver range using comparison operators `>=`, `>`, `<=`, `<`, `=` with comma-separated AND (e.g. `">=0.9.0, <2.0.0"`); `features` takes feature identifiers defined by spec releases. Prefer `features` over `toolmesh`: it names the capability portably instead of one implementation's version number — use the version range only for implementation-specific needs (e.g. a runtime bug fixed in a given release). v0.2 defines:
 
 | Feature identifier | Section |
 |--------------------|---------|
@@ -1280,7 +1317,9 @@ A runtime that cannot satisfy every entry in `requires` MUST refuse to load the 
 | `semantic_errors` | 8.2 |
 | `redact` | 9.3 |
 
-> **Authoring rule:** files MUST declare `requires.features` for every feature whose silent absence would change semantics dangerously — `redact` and `idempotency` always; `returns` or `deprecation` (documentation-only) need not be declared. Validators enforce this mechanically (feature used ⟹ feature declared).
+> **Authoring rule:** files MUST declare `requires.features` for every feature whose silent absence would change semantics dangerously — `redact` and `idempotency` always; `returns` or `deprecation` (documentation-only) need not be declared. Validators enforce this mechanically (feature used ⟹ feature declared). The OAuth flows need no `requires` entry: they are covered by the unknown-value policy (`auth.flow` is behavior-determining) plus the mandatory v0.2 `spec` URL.
+
+**Bootstrap limitation.** The fail-closed guarantee of `requires` binds only consumers that implement `requires` itself (spec v0.2 and later). A consumer predating it sees an unknown top-level key and — under its own policy — ignores it; the `spec:` URL is the only signal such a consumer can act on. This is inherent to introducing the mechanism and is why a consumer SHOULD warn whenever it loads a file declaring a spec version newer than the one it implements (Section 15.4).
 
 The design rationale is recorded in ADR-0003 (*DADL Spec Versioning & Forward Compatibility*) in the ToolMesh repository.
 
@@ -1292,8 +1331,8 @@ A **conforming DADL consumer** (runtime):
 - MUST resolve credentials outside the LLM context — credential values, tokens, and signed assertions MUST NOT appear in tool results, generated interfaces, or logs;
 - MUST apply `response.redact` before any caller-visible output, including ad-hoc jq overrides and audit payloads;
 - MUST keep idempotency keys stable across retries of the same logical call;
-- SHOULD implement every auth type (Section 5) and pagination strategy (Section 7) of the spec version it advertises, and MUST reject files declaring an unsupported `auth.type` rather than calling the API unauthenticated;
-- MAY load files declaring a *newer* spec version than it implements (best effort, warnings on unknown keys) — unless `requires` says otherwise.
+- SHOULD implement every auth type (Section 5) and pagination strategy (Section 7) of the spec version it advertises, and MUST reject files declaring an unsupported value of a behavior-determining enum (`backend.type`, `auth.type`, `auth.flow`, `pagination.strategy`, `pagination.behavior`, `idempotency.generate`, `response.stream_handling`) rather than guessing — never call the API unauthenticated or with wrong semantics;
+- MAY load files declaring a *newer* spec version than it implements (best effort, with a warning and per-key warnings on unknown keys) — unless `requires` says otherwise.
 
 ---
 
@@ -1303,7 +1342,7 @@ The following area is under active design and explicitly **not** part of v0.2:
 
 - **Session semantics for LLM backends** — a `session:` block (system prompt, TTL, context-window strategy) and a backend `type: llm` with `provider:`/`model:`, turning stateful conversations with an expert model into a DADL backend. Each session keeps an isolated context; the caller passes in only what it explicitly sends.
 
-Files MUST NOT use these keys in v0.2; validators reject them, runtimes warn and ignore them per Section 15.3.
+These constructs are not part of v0.2, and Section 15.3 already governs what happens when they appear: the `session:` key is an unknown *key* (validators reject it, runtimes warn and ignore it), while `type: llm` is an unknown *value* of a behavior-determining field — every v0.2 consumer rejects such a file outright.
 
 ---
 

@@ -97,6 +97,12 @@ against. Capability changes always produce a new spec version — v0.1 stays fro
 - Cost: authors carry a duty (declare `requires` for load-bearing features) that
   validators can only partially enforce — a linter can warn when `redact` is used
   without being declared, but not for semantics it cannot see.
+- Cost (bootstrap limitation): the fail-closed guarantee of `requires` binds only
+  consumers that implement `requires` itself. A consumer predating spec v0.2 sees
+  an unknown top-level key and ignores it under its own policy; the `spec:` URL is
+  the only signal it can act on. Inherent to introducing the mechanism; spec
+  Section 15.3 documents it, and consumers warn on newer-than-implemented spec
+  URLs as the mitigation.
 
 ## More Information
 

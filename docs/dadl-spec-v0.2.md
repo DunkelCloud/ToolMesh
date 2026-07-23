@@ -17,6 +17,10 @@ Write a `.dadl` file — ToolMesh handles the rest.
 - Section 5.3: new `flow: refresh_token` for `auth.type: oauth2` (user-delegated APIs such as Google or Microsoft Graph), with the new field `refresh_token_credential`. Files using this flow MUST declare spec v0.2.
 - Section 5.3: two more `oauth2` flows — `jwt_bearer` (service accounts, RFC 7523; e.g. Google Search Console and Workspace APIs) and `authorization_code` (three-legged consent driven by `toolmesh setup`, refresh token persisted in the credential store; e.g. YouTube).
 - Section 4: documented `defaults.content_type` (backend-wide default request content type; implemented since v0.1 but previously undocumented).
+- Section 5.5: corrected the API-key auth type to its implemented spelling `apikey` (the v0.1 document said `api_key`, which ToolMesh has never accepted; the canonical schema accepts both) and documented `query_param` for `inject_into: query` (implemented since v0.1 but previously undocumented).
+- Section 6: normative override semantics — a tool-level `response`, `errors`, or `pagination` object replaces the corresponding `defaults` object; `response.redact` is the deliberate exception and merges additively.
+- Section 11.1: YAML merge keys (`<<`) are now discouraged (shallow-merge data loss, dropped from YAML 1.2, rejected by the public registry); examples use whole-node anchors.
+- Section 12.3: composites can carry an `access` classification, mirroring tools (Section 6.4); the composite is the authorization boundary for its inner calls.
 - Section 4.6: new backend-level `health` block — a cheap, side-effect-free verification call used by `toolmesh setup` and monitoring.
 - Section 6: new per-tool fields `returns` (typed results, Section 6.5), `idempotency` (safe write retries, Section 6.6), and `deprecated` / `replaced_by` (migration paths, Section 6.7).
 - Section 8.2: new `errors.map` — HTTP status codes are mapped to semantic error codes (`not_found`, `conflict`, `rate_limited`, …) so Code Mode error handling can branch on stable values.
@@ -414,13 +418,18 @@ auth:
 ### 5.5 API Key
 
 ```yaml
-# auth — api_key
+# auth — apikey
 auth:
-  type: api_key
+  type: apikey
   credential: vault/my-api-key
   inject_into: header          # header | query
-  header_name: X-API-Key
+  header_name: X-API-Key       # when inject_into: header
+  query_param: api_key         # when inject_into: query
 ```
+
+The canonical type name is `apikey` *(corrected in v0.2: the v0.1 document spelled it `api_key`, which the ToolMesh parser has never accepted — published DADL files use `apikey`)*. The canonical JSON Schema accepts `api_key` as a compatibility alias for documents written against the v0.1 text; runtimes MAY normalize it to `apikey`.
+
+With `inject_into: query`, `query_param` names the query parameter that carries the key (e.g. `?api_key=...`); `header_name` is ignored. With `inject_into: header` (the default), `header_name` names the header and `query_param` is ignored.
 
 ---
 
@@ -445,6 +454,8 @@ Each tool maps to one REST API endpoint. In Code Mode, tools become methods on t
 | `idempotency` | object | no | Idempotency-key configuration for safe retries of write calls. See Section 6.6. |
 | `deprecated` | boolean\|string | no | Marks the tool as deprecated; a string carries the reason. See Section 6.7. |
 | `replaced_by` | string | no | Name of the successor tool in this file. See Section 6.7. |
+
+**Override semantics** *(normative since v0.2)*: a tool-level `response`, `errors`, or `pagination` object **replaces** the corresponding `defaults` object as a whole — fields are not merged. A tool that sets only `response.result_path` therefore drops a default `transform`; repeat any default fields the tool still needs. One deliberate exception: `response.redact` is **additive** — the effective redaction list is the union of `defaults.response.redact` and the tool's own `redact`. A tool-level `response` block can extend the default redactions but never remove them (Section 9.3); anything else would let an unrelated override silently disable a security control.
 
 ### 6.1 Parameter Definition
 
@@ -567,7 +578,7 @@ event_stream:
 
 ### 6.4 Access Classification
 
-The optional `access` field classifies each tool by its risk level. This metadata enables policy files and authorization layers (OpenFGA) to group tools into roles without hard-coding tool names.
+The optional `access` field classifies each tool by its risk level. This metadata enables policy files and authorization layers (OpenFGA) to group tools into roles without hard-coding tool names. Composites carry the same field with the same semantics (Section 12.3).
 
 **DADL defines access per tool. Policy files define roles from access levels. OpenFGA assigns roles to users.** This three-layer separation keeps DADL portable while enabling fine-grained authorization at deployment time.
 
@@ -748,7 +759,7 @@ pagination:
   max_pages: 10              # safety limit
 ```
 
-When `behavior` is `auto`, ToolMesh fetches all pages transparently. When `expose`, the LLM controls pagination via the cursor parameter in Code Mode.
+When `behavior` is `auto`, ToolMesh fetches all pages transparently. When `expose`, the LLM controls pagination via the cursor parameter in Code Mode: ToolMesh injects the cursor/page parameter (named by `request.cursor_param` / `page_param`) into the generated TypeScript interface from the pagination config — declaring it in `params` is OPTIONAL and only useful to customize its description.
 
 ---
 
@@ -859,8 +870,8 @@ Most APIs wrap results in container objects. Response transformation extracts th
 response:
   result_path: "$.data"             # JSONPath to the actual result
   metadata_path: "$.meta"           # extracted separately (for pagination, not sent to LLM)
-  transform: |                      # optional jq filter
-    .data | map({id, name, status})
+  transform: |                      # optional jq filter — runs on the result_path extraction
+    map({id, name, status})
   max_items: 100
   allow_jq_override: true           # LLM can pass ad-hoc jq filters
 ```
@@ -922,6 +933,7 @@ list_webhooks:
 - Each entry is a JSONPath evaluated against the response; every matched value is replaced with the string `"[REDACTED]"`. Paths that match nothing are a no-op, not an error.
 - **Pipeline order:** `result_path` → `transform` → `redact` → ad-hoc jq override (if allowed) → `max_items`. Paths are therefore relative to the *transformed* result, and an `allow_jq_override` filter supplied at call time operates on already-redacted data — the override cannot be used to exfiltrate masked values.
 - Redaction cannot be disabled by the caller. It applies to Code Mode results, composite-internal `api.*` calls, and audit-log payloads alike.
+- Unlike the rest of the `response` object, `redact` merges **additively** across levels: a tool-level `response` block extends `defaults.response.redact` but can never remove a default redaction (Section 6, override semantics).
 
 **Relation to the Output Gate:** the Output Gate applies deployment-specific policies (PII rules, caller-dependent filtering) configured by the operator. `response.redact` complements it from the other side: the DADL author knows *where this particular API leaks secrets* and encodes that knowledge portably in the file itself. Defense in depth — both layers run.
 
@@ -967,6 +979,7 @@ _defaults:
   pagination: &default-pagination
     strategy: cursor
     request:
+      cursor_param: starting_after
       limit_param: limit
       limit_default: 50
     behavior: auto
@@ -974,11 +987,12 @@ _defaults:
 
 backend:
   defaults:
-    pagination:
-      <<: *default-pagination
-      request:
-        cursor_param: starting_after
+    pagination: *default-pagination    # alias replaces the whole node
 ```
+
+An alias (`*name`) substitutes the **entire** anchored node. Variants need their own anchors — there is no partial override via anchors.
+
+> **Do not use YAML merge keys (`<<`).** *(clarified in v0.2)* Merge keys look like partial override but merge **shallowly**: a nested map in the overriding block replaces the anchored map entirely, silently dropping its other fields (`request: { cursor_param: x }` would lose `limit_param` and `limit_default`). The feature was also dropped from YAML 1.2, and the public DADL registry rejects files containing `<<`. Authors SHOULD NOT use merge keys; use whole-node anchors or spell the variant out.
 
 ### 11.2 Cross-file Includes
 
@@ -1020,6 +1034,7 @@ Composites are defined under the `composites` key at the same level as `tools`. 
 composites:
   get_named_status:
     description: "Get all device status with human-readable names and on/off state"
+    access: read
     params:
       only_on:
         type: boolean
@@ -1045,10 +1060,13 @@ composites:
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `description` | string | yes | Used as JSDoc comment in TypeScript interface |
+| `access` | string | no | Access classification, same values and policy mapping as for tools (Section 6.4). *(since v0.2)* |
 | `params` | object | no | Input parameters (same syntax as tool params, but `in:` is not used) |
 | `code` | string | yes | TypeScript/JavaScript function body. Has access to `api.*` (all tools in this backend) and `params` (input parameters). |
 | `timeout` | string | no | Max execution time (default: `30s`). Killed after timeout. |
 | `depends_on` | array | no | Informational: primitive tools called internally. |
+
+**Authorization** *(since v0.2)*: the policy layer treats a composite exactly like a tool — its `access` value feeds the same role mapping. The composite is the **authorization boundary**: a caller authorized for the composite may trigger all of its inner `api.*` calls, which run server-side under the composite's execution context and are NOT re-checked against the caller's per-tool permissions (each inner call is still audited individually, Section 12.4). Choose `access` to reflect what the composite actually does: it SHOULD carry at least the highest classification among the tools it calls — unless the composite deliberately narrows scope (e.g. hard-wired parameters that turn a broad `write` primitive into one specific, safe operation), in which case the narrower value is the point.
 
 ### 12.4 Sandbox & Security
 
@@ -1086,6 +1104,8 @@ Composite code runs in a **restricted sandbox** with the following constraints:
 ```yaml
 # stripe.dadl
 spec: "https://dadl.ai/spec/dadl-spec-v0.2.md"
+requires:
+  features: [idempotency]      # load-bearing — must not degrade silently (Section 15.3)
 
 backend:
   name: stripe
@@ -1216,7 +1236,7 @@ A file is a **conforming DADL document** when:
 3. it satisfies the constraints that JSON Schema cannot express:
    - every `{param}` placeholder in a `path` has a matching `params` entry with `in: path`, and vice versa;
    - `replaced_by` references an existing tool or composite in the same file;
-   - `pagination.behavior: expose` implies the cursor/page parameter is declared in `params`;
+   - every load-bearing feature the file uses (`redact`, `idempotency` — Section 15.3) is declared in `requires.features`;
    - includes are at most one level deep, and include fragments carry `_fragment: true`;
    - composite `code` calls only primitive tools of the same backend;
    - the `health` endpoint is side-effect-free.
@@ -1260,7 +1280,7 @@ A runtime that cannot satisfy every entry in `requires` MUST refuse to load the 
 | `semantic_errors` | 8.2 |
 | `redact` | 9.3 |
 
-> **Authoring rule:** declare `requires.features` for every feature whose silent absence would change semantics dangerously — `redact` and `idempotency` always; `returns` or `deprecation` (documentation-only) need not be declared.
+> **Authoring rule:** files MUST declare `requires.features` for every feature whose silent absence would change semantics dangerously — `redact` and `idempotency` always; `returns` or `deprecation` (documentation-only) need not be declared. Validators enforce this mechanically (feature used ⟹ feature declared).
 
 The design rationale is recorded in ADR-0003 (*DADL Spec Versioning & Forward Compatibility*) in the ToolMesh repository.
 

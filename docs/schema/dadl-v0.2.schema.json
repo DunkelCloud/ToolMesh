@@ -67,7 +67,7 @@
   "$defs": {
     "Backend": {
       "type": "object",
-      "required": ["name", "type", "description", "auth", "tools"],
+      "required": ["name", "type", "base_url", "description", "auth", "tools"],
       "properties": {
         "name": {
           "type": "string",
@@ -552,6 +552,10 @@
           "type": "string",
           "description": "Composite tool description"
         },
+        "access": {
+          "type": "string",
+          "description": "Access classification, same values and policy mapping as for tools (spec Section 6.4)"
+        },
         "params": {
           "type": "object",
           "additionalProperties": {
@@ -581,7 +585,7 @@
     },
     "Example": {
       "type": "object",
-      "required": ["name", "code"],
+      "required": ["name", "description", "code"],
       "properties": {
         "name": {
           "type": "string"

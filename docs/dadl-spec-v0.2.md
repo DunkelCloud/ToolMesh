@@ -8,14 +8,22 @@ Write a `.dadl` file — ToolMesh handles the rest.
 | | |
 |---|---|
 | Version | 0.2.0-draft |
-| Date | 2026-07-14 |
+| Date | 2026-07-23 |
 | Author | Dunkel Cloud GmbH |
 | License | [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/) |
 
 **Changes from v0.1** (additive — every valid v0.1 file is a valid v0.2 file):
 
 - Section 5.3: new `flow: refresh_token` for `auth.type: oauth2` (user-delegated APIs such as Google or Microsoft Graph), with the new field `refresh_token_credential`. Files using this flow MUST declare spec v0.2.
+- Section 5.3: two more `oauth2` flows — `jwt_bearer` (service accounts, RFC 7523; e.g. Google Search Console and Workspace APIs) and `authorization_code` (three-legged consent driven by `toolmesh setup`, refresh token persisted in the credential store; e.g. YouTube).
 - Section 4: documented `defaults.content_type` (backend-wide default request content type; implemented since v0.1 but previously undocumented).
+- Section 4.6: new backend-level `health` block — a cheap, side-effect-free verification call used by `toolmesh setup` and monitoring.
+- Section 6: new per-tool fields `returns` (typed results, Section 6.5), `idempotency` (safe write retries, Section 6.6), and `deprecated` / `replaced_by` (migration paths, Section 6.7).
+- Section 8.2: new `errors.map` — HTTP status codes are mapped to semantic error codes (`not_found`, `conflict`, `rate_limited`, …) so Code Mode error handling can branch on stable values.
+- Section 9.3: new `response.redact` — declarative masking of sensitive response fields via JSONPath list, complementing the Output Gate.
+- Section 3: new optional top-level `requires` block — minimum runtime version and feature requirements (fail-closed).
+- Section 15: new Conformance chapter — canonical JSON Schema, document/consumer conformance, unknown-key policy.
+- Section 16: non-normative outlook on v0.3 (session semantics for LLM backends).
 
 ---
 
@@ -56,6 +64,7 @@ A DADL file has the extension `.dadl` and is a YAML document with the following 
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `spec` | string | yes | URL of the DADL specification this file conforms to. Currently `"https://dadl.ai/spec/dadl-spec-v0.2.md"` (files not using v0.2 features may keep declaring v0.1) |
+| `requires` | object | no | Minimum runtime requirements (`toolmesh` semver range, `features` list). A runtime that cannot satisfy them MUST refuse to load the file. See Section 15.3. |
 | `credits` | array of strings | no | Free-form list of contributors, maintainers, and sponsors. Each entry is a plain string — conventions emerge from usage (e.g. `"Jane Doe (@janedoe)"`, `"Acme Corp — sponsor"`). |
 | `source_name` | string | no | Name of the source API being described (e.g. `"GitHub REST API"`) |
 | `source_url` | string | no | URL to the original API specification or documentation |
@@ -114,6 +123,7 @@ backend:
 | `coverage` | object | no | API coverage metadata. Helps LLMs understand scope and users assess fitness. |
 | `hints` | object | no | Per-tool domain knowledge for LLM consumers (structured key-value). Injected into tool descriptions at load time. Subject to security scanning. |
 | `setup` | object | no | Human-readable setup instructions. Describes how to obtain credentials, configure backends.yaml, and required permissions. Powers `toolmesh setup <name>` CLI. |
+| `health` | object | no | Cheap, side-effect-free verification call. Used by `toolmesh setup` to confirm credentials and by monitoring. See Section 4.6. |
 
 ### 4.1 Coverage Object
 
@@ -241,6 +251,35 @@ backend:
 
 **When `version` is omitted:** ToolMesh skips the upgrade check for this backend. This is expected for private/local DADL files that are not published to the registry.
 
+### 4.6 Health Check *(since v0.2)*
+
+Optional backend-level block describing the cheapest call that verifies the backend is reachable and the configured credential works. Authentication is injected exactly as for regular tools — a passing health check therefore validates connectivity **and** the credential in one request.
+
+```yaml
+# health — cheap verification call
+backend:
+  health:
+    method: GET            # default: GET
+    path: /status
+    expect_status: 200     # optional — default: any 2xx
+    timeout: 5s            # default: 5s
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `method` | string | no | HTTP method. Default: `GET`. |
+| `path` | string | yes | URL path relative to `base_url`. Must not contain `{param}` placeholders. |
+| `expect_status` | integer | no | Exact expected status code. Default: any `2xx` passes. |
+| `expect_path` | string | no | JSONPath that must exist in the response body (e.g. `"$.status"`). |
+| `timeout` | string | no | Request timeout. Default: `5s`. |
+
+**Consumers:**
+
+- `toolmesh setup <name>` runs the health check after credential entry and reports success or the mapped error (Section 8.2) — the operator learns immediately whether the token works.
+- ToolMesh MAY run the health check at startup and expose the result via its own monitoring endpoints. It MUST NOT run it per tool call.
+
+**Authoring rules:** the health endpoint MUST be side-effect-free (`read` semantics) and SHOULD be the cheapest such endpoint the API offers (e.g. Stripe `GET /balance`, GitHub `GET /rate_limit`) — not a list endpoint returning large payloads. When the API has a dedicated status/ping endpoint that is not worth exposing as a tool, `health` is the right place for it: the block does not create a tool and is invisible to the LLM.
+
 ---
 
 ## 5 Authentication
@@ -273,7 +312,14 @@ ToolMesh builds the `Authorization: Basic base64(username:password)` header auto
 
 ### 5.3 OAuth 2.0
 
-Two flows are supported via the `flow` field (default: `client_credentials`). For both, ToolMesh caches the access token in memory and renews it lazily: a request that finds the cached token within `refresh_before_expiry` of its expiry fetches a fresh one first. On a 401 the cache is invalidated and the request retried once with a new token.
+Four flows are supported via the `flow` field (default: `client_credentials`). For all of them, ToolMesh caches the access token in memory and renews it lazily: a request that finds the cached token within `refresh_before_expiry` of its expiry fetches a fresh one first. On a 401 the cache is invalidated and the request retried once with a new token. **The LLM never sees tokens** — acquisition, refresh, and injection happen entirely inside ToolMesh.
+
+| Flow | Use case | Interactive consent |
+|------|----------|---------------------|
+| `client_credentials` | Machine-to-machine APIs | none |
+| `refresh_token` *(v0.2)* | User-delegated APIs, refresh token obtained out-of-band | out-of-band, before deployment |
+| `jwt_bearer` *(v0.2)* | Service accounts (RFC 7523) — Google Search Console, Workspace | none |
+| `authorization_code` *(v0.2)* | User-delegated APIs without service-account support — YouTube | once, via `toolmesh setup` |
 
 `client_credentials` — machine-to-machine APIs:
 
@@ -305,6 +351,40 @@ auth:
 ```
 
 The interactive consent that produces the refresh token happens once, out-of-band — describe it in the `setup` section (for Google: OAuth client in production status, consent URL with `access_type=offline&prompt=consent`). `scopes` is not sent on this flow; scopes are fixed at consent time. Providers that rotate refresh tokens on every exchange are not supported: the stored refresh token must remain valid (Google does not rotate by default).
+
+`jwt_bearer` *(since v0.2)* — service-account APIs per [RFC 7523](https://www.rfc-editor.org/rfc/rfc7523): ToolMesh builds an RS256-signed JWT from a service-account key and exchanges it at the token endpoint for a short-lived access token. Fully headless — no consent screen, no refresh token. This is the preferred flow for Google APIs that support service accounts (Search Console: add the service-account email as a property user; Workspace APIs: domain-wide delegation). Files using this flow MUST declare spec v0.2:
+
+```yaml
+# auth — oauth2 (service account, JWT bearer)
+auth:
+  type: oauth2
+  flow: jwt_bearer
+  token_url: https://oauth2.googleapis.com/token
+  service_account_credential: vault/gsc-service-account
+  scopes: ["https://www.googleapis.com/auth/webmasters.readonly"]
+  subject: admin@example.com     # optional — domain-wide delegation
+  refresh_before_expiry: 60s
+```
+
+`service_account_credential` resolves to the **complete service-account key** (for Google: the JSON key file content with `client_email`, `private_key`, `token_uri`). ToolMesh signs the assertion (`iss` = client email, `aud` = token URL, `scope` from `scopes`, `exp` ≤ 1 hour) and caches the resulting access token like any other flow. The optional `subject` sets the `sub` claim to impersonate a user — required for Google Workspace domain-wide delegation, omitted for APIs where the service account acts as itself.
+
+`authorization_code` *(since v0.2)* — three-legged OAuth for user-delegated APIs that do **not** support service accounts (e.g. YouTube). Unlike `flow: refresh_token`, where the refresh token is obtained out-of-band, this flow declares the full consent configuration so ToolMesh can drive it: `toolmesh setup <name>` (or the identity plugin) opens `authorize_url` in a browser, receives the authorization code on a local callback, exchanges it at `token_url`, and **persists the refresh token** in the credential store under `refresh_token_credential`. At runtime the flow then behaves exactly like `refresh_token` — silent renewal, no user interaction. Files using this flow MUST declare spec v0.2:
+
+```yaml
+# auth — oauth2 (three-legged, consent driven by toolmesh setup)
+auth:
+  type: oauth2
+  flow: authorization_code
+  authorize_url: https://accounts.google.com/o/oauth2/v2/auth
+  token_url: https://oauth2.googleapis.com/token
+  client_id_credential: vault/youtube-client-id
+  client_secret_credential: vault/youtube-client-secret  # optional — omit for public (PKCE) clients
+  refresh_token_credential: vault/youtube-refresh-token
+  scopes: ["https://www.googleapis.com/auth/youtube"]
+  refresh_before_expiry: 60s
+```
+
+`scopes` is sent during consent and fixed afterwards. For Google, ToolMesh appends `access_type=offline&prompt=consent` to obtain a refresh token. Provider note (belongs in `setup`): Google OAuth apps in *Testing* status expire refresh tokens after 7 days — publish the app to *In production* (or *Internal* for Workspace) before relying on this flow.
 
 ### 5.4 Session-based (Login → Token → Use)
 
@@ -353,14 +433,18 @@ Each tool maps to one REST API endpoint. In Code Mode, tools become methods on t
 | `method` | string | yes | HTTP method: GET, POST, PUT, PATCH, DELETE |
 | `path` | string | yes | URL path (may contain `{param}` placeholders) |
 | `description` | string | yes | Used as JSDoc comment in TypeScript interface |
-| `access` | string | no | Access classification for authorization and policy mapping. See Section 6.5. |
+| `access` | string | no | Access classification for authorization and policy mapping. See Section 6.4. |
 | `params` | object | no | Parameter definitions (path, query, header, body). See Section 6.1. |
-| `content_type` | string | no | Request content type. Default: `application/json`. Use `multipart/form-data` for file uploads. |
+| `content_type` | string | no | Request content type. Default: `application/json` (or `defaults.content_type` when set). Use `multipart/form-data` for file uploads. |
 | `max_body_size` | string | no | Max upload size, e.g. `50MB` |
 | `depends_on` | array | no | Informational: other tools that should be called first. Becomes JSDoc hint. |
 | `response` | object | no | Response transformation config (overrides `defaults.response`) |
 | `pagination` | string\|object | no | `none` to disable, or object to override default pagination |
 | `errors` | object | no | Error mapping (overrides `defaults.errors`) |
+| `returns` | string\|object | no | Result type for TypeScript generation — a `types` name or an inline schema. See Section 6.5. |
+| `idempotency` | object | no | Idempotency-key configuration for safe retries of write calls. See Section 6.6. |
+| `deprecated` | boolean\|string | no | Marks the tool as deprecated; a string carries the reason. See Section 6.7. |
+| `replaced_by` | string | no | Name of the successor tool in this file. See Section 6.7. |
 
 ### 6.1 Parameter Definition
 
@@ -551,6 +635,91 @@ When `access` is omitted, ToolMesh does **not** infer a default. Tools without a
 
 > **Best practice:** Always set `access` explicitly. It costs one line per tool and makes the DADL file self-documenting for authorization purposes.
 
+### 6.5 Typed Returns (`returns`) *(since v0.2)*
+
+Without `openapi_source`, generated TypeScript methods return `Promise<any>` — the LLM has to guess the result shape. The optional `returns` field types the result:
+
+```yaml
+# returns — typed results without openapi_source
+types:
+  Customer:
+    type: object
+    properties:
+      id: { type: string }
+      email: { type: string }
+      name: { type: string }
+    required: [id]
+
+tools:
+  get_customer:
+    method: GET
+    path: /customers/{id}
+    access: read
+    description: "Retrieve a single customer"
+    returns: Customer
+    params:
+      id: { type: string, in: path, required: true }
+
+  list_customers:
+    method: GET
+    path: /customers
+    access: read
+    description: "List customers"
+    returns:
+      type: array
+      items: Customer
+```
+
+Two forms are accepted:
+
+- **String** — the name of a type defined in `types` (Section 10). The generated signature becomes `Promise<Customer>`.
+- **Object** — an inline schema using the same JSON Schema subset as Section 10. Inside it, a bare string in `items` or `$ref` position refers to a `types` entry.
+
+**Semantics:** `returns` describes the value **after** the response pipeline (`result_path`, `transform`, Section 9) has run — the shape the Code Mode caller actually receives, not the raw API body. It is used for TypeScript generation and documentation only; ToolMesh does NOT validate responses against it at runtime. When `openapi_source` is present, `returns` overrides the derived type — useful when a `transform` changes the shape the OpenAPI spec describes.
+
+### 6.6 Idempotency (`idempotency`) *(since v0.2)*
+
+Retries of write calls are dangerous: a `POST /charges` that times out after the server processed it creates a duplicate charge when retried. ToolMesh executes tool calls as Temporal Activities with automatic retries, so writes need protection. Many APIs support an idempotency-key header (the Stripe pattern): requests carrying the same key are executed once, subsequent deliveries return the recorded response.
+
+```yaml
+create_charge:
+  method: POST
+  path: /charges
+  access: write
+  description: "Create a charge"
+  idempotency:
+    header: Idempotency-Key    # required — header name the API expects
+    generate: uuid_v4          # default — the only defined generator in v0.2
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `header` | string | yes | Header name the API expects (e.g. `Idempotency-Key`, `X-Request-Id`). |
+| `generate` | string | no | Key generator. `uuid_v4` (default) is the only value defined in v0.2; further generators are reserved. |
+
+**Semantics:** ToolMesh generates the key **once per logical tool call** and reuses the same key for every retry of that call — including retries after a process restart, because the key is part of the durable Activity state. Two distinct tool calls always get distinct keys. The header is managed by ToolMesh; callers cannot override it.
+
+> **Best practice:** declare `idempotency` on every `POST` tool whose API supports it. `GET`/`PUT`/`DELETE` are typically idempotent by design and do not need it.
+
+### 6.7 Deprecation & Replacement (`deprecated`, `replaced_by`) *(since v0.2)*
+
+Tools evolve. Removing or renaming a tool is a breaking change requiring a major version bump (Section 4.5) — and it silently breaks recorded Code Mode workflows and composites that call the old name. `deprecated` and `replaced_by` provide the migration path:
+
+```yaml
+list_repos_v1:
+  method: GET
+  path: /repos
+  access: read
+  description: "List repositories (unpaginated)"
+  deprecated: "unpaginated — fails on accounts with >1000 repos"
+  replaced_by: list_repos
+```
+
+- `deprecated: true` (or a string carrying the reason) keeps the tool fully functional but marks it `@deprecated` in the generated TypeScript interface. The LLM sees the JSDoc tag — including the reason string — and prefers the successor.
+- `replaced_by` names the successor tool **in the same file**; validators MUST reject a `replaced_by` value that does not match an existing tool or composite. It renders as "use `list_repos` instead" in the JSDoc.
+
+**Migration path for breaking changes:** instead of removing a tool in one step, deprecate it in a minor release (`1.2`: old tool `deprecated` + `replaced_by`, new tool added) and remove it in the next major release (`2.0`). Registries SHOULD reject a new version that removes a tool which was not deprecated in a previously published version.
+
 ---
 
 ## 7 Pagination
@@ -600,6 +769,10 @@ errors:
   rate_limit:
     header: X-RateLimit-Remaining
     retry_after_header: Retry-After
+  map:                        # since v0.2 — see Section 8.2
+    404: not_found
+    409: conflict
+    429: rate_limited
 ```
 
 ### 8.1 Rate Limit Behavior
@@ -623,6 +796,55 @@ When `rate_limit` is configured, ToolMesh performs **proactive throttling** — 
 |-------|------|-------------|
 | `header` | string | Response header containing remaining request quota (e.g. `X-RateLimit-Remaining`) |
 | `retry_after_header` | string | Response header indicating when to retry (e.g. `Retry-After`). Supports seconds and HTTP date formats. |
+
+### 8.2 Semantic Error Codes (`errors.map`) *(since v0.2)*
+
+HTTP status codes are transport details; Code Mode error handling should branch on stable, API-independent values instead of parsing status numbers and message strings. `errors.map` maps HTTP status codes to **semantic error codes**:
+
+```yaml
+errors:
+  map:
+    400: not_found        # this API returns 400 for missing resources
+    409: conflict
+    422: invalid_input
+    429: rate_limited
+```
+
+**Error object in Code Mode:** a failed call rejects with an error carrying:
+
+| Field | Source |
+|-------|--------|
+| `code` | Semantic code from `errors.map` (falling back to the default mapping below) |
+| `http_status` | Raw HTTP status code |
+| `message` | Extracted via `errors.message_path` |
+| `provider_code` | Extracted via `errors.code_path` (the API's own error code, e.g. Stripe's `resource_missing`) |
+
+This lets composites and LLM-written code branch reliably:
+
+```javascript
+try {
+  return await api.get_customer({ id });
+} catch (e) {
+  if (e.code === "not_found") return null;   // expected — customer may not exist
+  throw e;                                    // everything else propagates
+}
+```
+
+**Well-known codes and default mapping.** When `map` is absent or does not cover a status, ToolMesh applies these defaults:
+
+| Code | Default HTTP status |
+|------|---------------------|
+| `invalid_input` | 400, 422 |
+| `unauthorized` | 401 |
+| `forbidden` | 403 |
+| `not_found` | 404, 410 |
+| `conflict` | 409 |
+| `timeout` | 408 |
+| `rate_limited` | 429 |
+| `internal` | 500 |
+| `unavailable` | 502, 503, 504 |
+
+`map` overrides the defaults selectively — declare it only for statuses the API uses in a non-standard way (e.g. `400` for missing resources, `200` bodies with embedded errors are NOT covered; use `message_path` for those). Like `access`, the code values are not restricted: custom codes (e.g. `insufficient_funds`) are passed through as opaque strings, but the well-known codes above SHOULD be preferred so error-handling code stays portable across backends.
 
 ---
 
@@ -673,14 +895,41 @@ get_all_device_status:
 | `transform` | string | jq filter applied after `result_path` extraction. Use to flatten, rename, or filter fields. |
 | `max_items` | integer | Truncate arrays to this length (prevents context overflow). |
 | `allow_jq_override` | boolean | When `true`, the LLM can pass ad-hoc jq filters at call time. |
+| `redact` | array of string | JSONPaths whose values are masked before the response leaves ToolMesh. *(since v0.2 — see Section 9.3)* |
 
 > **Best practice:** Always add `response.transform` to status/list endpoints that return more than ~5KB per item. LLM context is expensive — strip firmware versions, MAC addresses, WiFi RSSI, uptime counters, and other system internals unless they are the primary purpose of the tool.
+
+### 9.3 Redaction (`response.redact`) *(since v0.2)*
+
+Some API responses embed secrets that the caller has no business seeing: webhook configurations with signing secrets, user objects with API keys, SMTP settings with passwords. `response.redact` masks them declaratively:
+
+```yaml
+# redact — mask embedded secrets before the LLM sees them
+list_webhooks:
+  method: GET
+  path: /webhooks
+  access: read
+  description: "List configured webhooks"
+  response:
+    result_path: "$.data"
+    redact:
+      - "$[*].secret"
+      - "$[*].auth.password"
+```
+
+**Semantics:**
+
+- Each entry is a JSONPath evaluated against the response; every matched value is replaced with the string `"[REDACTED]"`. Paths that match nothing are a no-op, not an error.
+- **Pipeline order:** `result_path` → `transform` → `redact` → ad-hoc jq override (if allowed) → `max_items`. Paths are therefore relative to the *transformed* result, and an `allow_jq_override` filter supplied at call time operates on already-redacted data — the override cannot be used to exfiltrate masked values.
+- Redaction cannot be disabled by the caller. It applies to Code Mode results, composite-internal `api.*` calls, and audit-log payloads alike.
+
+**Relation to the Output Gate:** the Output Gate applies deployment-specific policies (PII rules, caller-dependent filtering) configured by the operator. `response.redact` complements it from the other side: the DADL author knows *where this particular API leaks secrets* and encodes that knowledge portably in the file itself. Defense in depth — both layers run.
 
 ---
 
 ## 10 Types *(optional)*
 
-When `openapi_source` is provided, types are derived from the OpenAPI spec. Without it, you can define types inline using a JSON Schema subset. These are used to generate TypeScript interfaces for Code Mode.
+When `openapi_source` is provided, types are derived from the OpenAPI spec. Without it, you can define types inline using a JSON Schema subset. These are used to generate TypeScript interfaces for Code Mode. Tools reference them by name via `returns` (Section 6.5).
 
 ```yaml
 # types — inline definitions
@@ -850,6 +1099,11 @@ backend:
     type: bearer
     credential: vault/stripe-secret-key
 
+  health:
+    method: GET
+    path: /balance
+    timeout: 5s
+
   defaults:
     headers:
       Content-Type: application/x-www-form-urlencoded
@@ -869,6 +1123,9 @@ backend:
       message_path: "$.error.message"
       code_path: "$.error.type"
       retry_on: [429, 502, 503]
+      map:
+        402: card_declined
+        404: not_found
     response:
       result_path: "$.data"
       allow_jq_override: true
@@ -899,6 +1156,8 @@ backend:
       path: /customers
       access: write
       description: "Create a new customer"
+      idempotency:
+        header: Idempotency-Key
       params:
         email: { type: string, in: body, required: true }
         name: { type: string, in: body }
@@ -933,6 +1192,98 @@ DADL files are consumed by **ToolMesh** and integrated into its six-pillar archi
 | **MCP Aggregation** | DADL backends mix seamlessly with native MCP backends in the same ToolMesh instance. |
 | **Credential Store** | `credential: vault/xxx` references are resolved through the three-tier store (Embedded → Infisical → Vault/OpenBao). |
 | **Output Gate** | Responses pass through goja-based policies (PII redaction, rate limiting, caller-dependent filtering). |
+
+---
+
+## 15 Conformance *(since v0.2)*
+
+### 15.1 Normative Language
+
+The key words MUST, MUST NOT, REQUIRED, SHOULD, SHOULD NOT, and MAY in this document are to be interpreted as described in [RFC 2119](https://www.rfc-editor.org/rfc/rfc2119) and [RFC 8174](https://www.rfc-editor.org/rfc/rfc8174) when, and only when, they appear in all capitals.
+
+### 15.2 Canonical JSON Schema & Document Conformance
+
+The canonical, machine-readable schema for this version is published at:
+
+> **https://dadl.ai/schema/v0.2.json**
+
+(source of truth: `docs/schema/dadl-v0.2.schema.json` in the ToolMesh repository). It is the shared foundation for linters, the `dadl validate` CLI, and registry CI pipelines — one schema, every validator.
+
+A file is a **conforming DADL document** when:
+
+1. it is valid YAML,
+2. it validates against the canonical JSON Schema of the spec version it declares in `spec`, and
+3. it satisfies the constraints that JSON Schema cannot express:
+   - every `{param}` placeholder in a `path` has a matching `params` entry with `in: path`, and vice versa;
+   - `replaced_by` references an existing tool or composite in the same file;
+   - `pagination.behavior: expose` implies the cursor/page parameter is declared in `params`;
+   - includes are at most one level deep, and include fragments carry `_fragment: true`;
+   - composite `code` calls only primitive tools of the same backend;
+   - the `health` endpoint is side-effect-free.
+
+**Validation strictness is context-dependent** (see Section 15.3): publish-time validators (registry CI, `dadl validate`) MUST treat unknown keys as errors; runtime consumers MUST NOT.
+
+Registries MAY impose additional publication requirements beyond document conformance — the public DADL registry, for example, requires `credits`, `source_name`, `source_url`, and `date`.
+
+### 15.3 Forward Compatibility: Unknown Keys & `requires`
+
+DADL files and DADL consumers evolve independently — a file written against a newer spec revision will meet older runtimes. Two rules keep that safe:
+
+**Unknown-key policy:**
+
+| Context | Unknown key handling |
+|---------|---------------------|
+| Publish-time validation (registry CI, `dadl validate`, linters) | MUST **reject** — catches typos and unspecified fields before they spread |
+| Runtime consumers (ToolMesh) | MUST **warn and ignore** — a file using only additive newer features keeps working, degraded but visibly |
+| Underscore-prefixed keys (`_*`) | Always ignored silently, at every layer (YAML anchor workspace) |
+
+**`requires` — declared hard requirements.** Warn-and-ignore is wrong when a feature is load-bearing: a runtime that ignored an unknown `response.redact` would silently expose the very secrets the author masked. When a file *depends* on a feature for correctness or security, it MUST declare it:
+
+```yaml
+# top level, next to spec:
+requires:
+  toolmesh: ">=0.9.0"        # semver range — minimum runtime version
+  features: [redact, jwt_bearer]
+```
+
+A runtime that cannot satisfy every entry in `requires` MUST refuse to load the file (fail-closed) with a message naming the missing capability. `toolmesh` takes a semver range; `features` takes feature identifiers defined by spec releases. v0.2 defines:
+
+| Feature identifier | Section |
+|--------------------|---------|
+| `refresh_token` | 5.3 |
+| `jwt_bearer` | 5.3 |
+| `authorization_code` | 5.3 |
+| `health` | 4.6 |
+| `returns` | 6.5 |
+| `idempotency` | 6.6 |
+| `deprecation` | 6.7 |
+| `semantic_errors` | 8.2 |
+| `redact` | 9.3 |
+
+> **Authoring rule:** declare `requires.features` for every feature whose silent absence would change semantics dangerously — `redact` and `idempotency` always; `returns` or `deprecation` (documentation-only) need not be declared.
+
+The design rationale is recorded in ADR-0003 (*DADL Spec Versioning & Forward Compatibility*) in the ToolMesh repository.
+
+### 15.4 Consumer Conformance
+
+A **conforming DADL consumer** (runtime):
+
+- MUST implement the unknown-key policy above and MUST honor `requires` fail-closed;
+- MUST resolve credentials outside the LLM context — credential values, tokens, and signed assertions MUST NOT appear in tool results, generated interfaces, or logs;
+- MUST apply `response.redact` before any caller-visible output, including ad-hoc jq overrides and audit payloads;
+- MUST keep idempotency keys stable across retries of the same logical call;
+- SHOULD implement every auth type (Section 5) and pagination strategy (Section 7) of the spec version it advertises, and MUST reject files declaring an unsupported `auth.type` rather than calling the API unauthenticated;
+- MAY load files declaring a *newer* spec version than it implements (best effort, warnings on unknown keys) — unless `requires` says otherwise.
+
+---
+
+## 16 Outlook: v0.3 *(non-normative)*
+
+The following area is under active design and explicitly **not** part of v0.2:
+
+- **Session semantics for LLM backends** — a `session:` block (system prompt, TTL, context-window strategy) and a backend `type: llm` with `provider:`/`model:`, turning stateful conversations with an expert model into a DADL backend. Each session keeps an isolated context; the caller passes in only what it explicitly sends.
+
+Files MUST NOT use these keys in v0.2; validators reject them, runtimes warn and ignore them per Section 15.3.
 
 ---
 

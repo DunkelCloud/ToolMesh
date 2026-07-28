@@ -22,7 +22,7 @@ Write a `.dadl` file — ToolMesh handles the rest.
 - Section 6: normative override semantics — a tool-level `response`, `errors`, or `pagination` object replaces the corresponding `defaults` object; `response.redact` is the deliberate exception and merges additively.
 - Section 11.1: YAML merge keys (`<<`) are now discouraged (shallow-merge data loss, dropped from YAML 1.2, rejected by the public registry); examples use whole-node anchors.
 - Section 12.3: composites can carry an `access` classification, mirroring tools (Section 6.4); the composite is the authorization boundary for its inner calls.
-- Section 4.6: new backend-level `health` block — a cheap, side-effect-free verification call used by `toolmesh setup` and monitoring.
+- Section 4.6: optional `health` declaration (absent = no check, nothing runs). Two forms: reference a declared tool or an inline endpoint. A declared check is exposed as a synthetic `health` tool returning a standardized result — for `toolmesh setup`, monitoring, and LLM self-diagnosis.
 - Section 6: new per-tool fields `returns` (typed results, Section 6.5), `idempotency` (safe write retries, Section 6.6), and `deprecated` / `replaced_by` (migration paths, Section 6.7).
 - Section 8.2: new `errors.map` — HTTP status codes are mapped to semantic error codes (`not_found`, `conflict`, `rate_limited`, …) so Code Mode error handling can branch on stable values.
 - Section 9.3: new `response.redact` — declarative masking of sensitive response fields via JSONPath list, complementing the Output Gate.
@@ -134,7 +134,7 @@ backend:
 | `coverage` | object | no | API coverage metadata. Helps LLMs understand scope and users assess fitness. |
 | `hints` | object | no | Per-tool domain knowledge for LLM consumers (structured key-value). Injected into tool descriptions at load time. Subject to security scanning. |
 | `setup` | object | no | Human-readable setup instructions. Describes how to obtain credentials, configure backends.yaml, and required permissions. Powers `toolmesh setup <name>` CLI. |
-| `health` | object | no | Cheap, side-effect-free verification call. Used by `toolmesh setup` to confirm credentials and by monitoring. See Section 4.6. |
+| `health` | object | no | Health-check declaration: which cheap, side-effect-free call verifies this backend (a declared tool or an inline endpoint). Absent = no check. See Section 4.6. |
 
 ### 4.1 Coverage Object
 
@@ -264,10 +264,17 @@ backend:
 
 ### 4.6 Health Check *(since v0.2)*
 
-Optional backend-level block describing the cheapest call that verifies the backend is reachable and the configured credential works. Authentication is injected exactly as for regular tools — a passing health check therefore validates connectivity **and** the credential in one request.
+Optional backend-level declaration of the cheapest call that verifies the backend is reachable and the configured credential works. Authentication is injected exactly as for regular tools — a passing health check therefore validates connectivity **and** the credential in one request (an expired token turns into a visible failure here instead of a surprise `401` on the next real call). When `health` is absent, no check exists and nothing runs — fully backward compatible.
+
+Two forms:
 
 ```yaml
-# health — cheap verification call
+# health — form 1: reference a declared tool
+backend:
+  health:
+    tool: get_health       # existing tool in this file; MUST have no required params
+
+# health — form 2: inline endpoint (when no tool is worth declaring for it)
 backend:
   health:
     method: GET            # default: GET
@@ -278,18 +285,37 @@ backend:
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `method` | string | no | HTTP method. Default: `GET`. |
-| `path` | string | yes | URL path relative to `base_url`. Must not contain `{param}` placeholders. |
+| `tool` | string | form 1: yes | Name of a declared tool to use as the check. The tool MUST NOT have required parameters. Mutually exclusive with `method`/`path`. |
+| `method` | string | no | HTTP method (form 2). Default: `GET`. |
+| `path` | string | form 2: yes | URL path relative to `base_url`. Must not contain `{param}` placeholders. |
 | `expect_status` | integer | no | Exact expected status code. Default: any `2xx` passes. |
 | `expect_path` | string | no | JSONPath that must exist in the response body (e.g. `"$.status"`). |
 | `timeout` | string | no | Request timeout. Default: `5s`. |
+| `expose` | boolean | no | Expose the check as a synthetic `health` tool in the generated interface. Default: `true`. |
+
+**The synthetic `health` tool.** When a check is declared (either form) and `expose` is not `false`, ToolMesh adds a tool named `health` to the generated TypeScript interface. It returns the **standardized result** — never the raw API response:
+
+```typescript
+health(): Promise<{
+  ok: boolean;           // check passed (status/expect rules)
+  http_status: number;   // raw HTTP status of the check call
+  latency_ms: number;
+  checked_at: string;    // ISO 8601
+  error?: string;        // present when ok is false (mapped per Section 8.2)
+}>
+```
+
+The standardized shape is produced by the check layer, not by the API: with form 1, calling the referenced tool directly still returns its raw API response — only the synthetic `health` tool normalizes. This lets LLM-written code self-diagnose identically across backends (`if (!(await api.health()).ok) …` — distinguishing "backend or credential broken" from "my parameters are wrong") without leaking payload internals.
+
+- **Name collision:** if the file declares its own tool or composite named `health`, the declared one wins and no synthetic tool is generated; validators warn. (Referencing that tool via `health.tool: health` still enables the check for setup and monitoring.)
+- **Discovery:** the synthetic tool exists on every backend that declares a check, so it MUST NOT be ranked in tool-discovery indexes — it is always reachable as `api.health()` and would only add noise.
 
 **Consumers:**
 
 - `toolmesh setup <name>` runs the health check after credential entry and reports success or the mapped error (Section 8.2) — the operator learns immediately whether the token works.
-- ToolMesh MAY run the health check at startup and expose the result via its own monitoring endpoints. It MUST NOT run it per tool call.
+- ToolMesh MAY run the check at startup and MAY poll it periodically, aggregating results (e.g. a `degraded` state naming the failing backend) into its own monitoring endpoints. Whether and how often it polls is **deployment configuration** (`backends.yaml`), not part of the DADL. It MUST NOT run the check per tool call.
 
-**Authoring rules:** the health endpoint MUST be side-effect-free (`read` semantics) and SHOULD be the cheapest such endpoint the API offers (e.g. Stripe `GET /balance`, GitHub `GET /rate_limit`) — not a list endpoint returning large payloads. When the API has a dedicated status/ping endpoint that is not worth exposing as a tool, `health` is the right place for it: the block does not create a tool and is invisible to the LLM.
+**Authoring rules:** the health endpoint MUST be side-effect-free (`read` semantics) and SHOULD be the cheapest such endpoint the API offers (e.g. Stripe `GET /balance`, GitHub `GET /rate_limit`) — not a list endpoint returning large payloads. Every DADL whose API offers a suitable endpoint SHOULD declare `health`.
 
 ---
 
@@ -1268,6 +1294,7 @@ A file is a **conforming DADL document** when:
    - `replaced_by` references an existing tool or composite in the same file;
    - every load-bearing feature the file uses (`redact`, `idempotency` — Section 15.3) is declared in `requires.features`;
    - a file using any feature marked *(since v0.2)* declares a v0.2 `spec` URL;
+   - `health.tool` references an existing tool in the same file, and that tool has no required parameters;
    - includes are at most one level deep, and include fragments carry `_fragment: true`.
 
    Author obligations — not machine-checkable; registries enforce by review:

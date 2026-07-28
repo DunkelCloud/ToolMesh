@@ -330,32 +330,68 @@
       ]
     },
     "Health": {
-      "type": "object",
-      "required": ["path"],
-      "properties": {
-        "method": {
-          "type": "string",
-          "description": "HTTP method (default: GET)"
+      "description": "Health-check declaration: reference a declared tool (form 1) or an inline endpoint (form 2). A declared check is exposed as a synthetic 'health' tool with a standardized result unless expose is false.",
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["tool"],
+          "properties": {
+            "tool": {
+              "type": "string",
+              "description": "Name of a declared tool to use as the check; MUST have no required parameters"
+            },
+            "expect_status": {
+              "type": "integer",
+              "description": "Exact expected status code (default: any 2xx)"
+            },
+            "expect_path": {
+              "type": "string",
+              "description": "JSONPath that must exist in the response body"
+            },
+            "timeout": {
+              "type": "string",
+              "description": "Request timeout (default: 5s)"
+            },
+            "expose": {
+              "type": "boolean",
+              "description": "Expose as synthetic 'health' tool (default: true)"
+            }
+          },
+          "additionalProperties": false
         },
-        "path": {
-          "type": "string",
-          "pattern": "^[^{}]+$",
-          "description": "URL path relative to base_url; no {param} placeholders"
-        },
-        "expect_status": {
-          "type": "integer",
-          "description": "Exact expected status code (default: any 2xx)"
-        },
-        "expect_path": {
-          "type": "string",
-          "description": "JSONPath that must exist in the response body"
-        },
-        "timeout": {
-          "type": "string",
-          "description": "Request timeout (default: 5s)"
+        {
+          "type": "object",
+          "required": ["path"],
+          "properties": {
+            "method": {
+              "type": "string",
+              "description": "HTTP method (default: GET)"
+            },
+            "path": {
+              "type": "string",
+              "pattern": "^[^{}]+$",
+              "description": "URL path relative to base_url; no {param} placeholders"
+            },
+            "expect_status": {
+              "type": "integer",
+              "description": "Exact expected status code (default: any 2xx)"
+            },
+            "expect_path": {
+              "type": "string",
+              "description": "JSONPath that must exist in the response body"
+            },
+            "timeout": {
+              "type": "string",
+              "description": "Request timeout (default: 5s)"
+            },
+            "expose": {
+              "type": "boolean",
+              "description": "Expose as synthetic 'health' tool (default: true)"
+            }
+          },
+          "additionalProperties": false
         }
-      },
-      "additionalProperties": false
+      ]
     },
     "Defaults": {
       "type": "object",

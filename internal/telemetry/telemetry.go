@@ -105,7 +105,7 @@ func New(dataDir, version string, logger *slog.Logger) *Collector {
 	}
 
 	if disabled {
-		logger.Warn("anonymous telemetry is disabled — set DO_NOT_SEND_ANONYMOUS_STATISTICS= to re-enable; see https://toolmesh.io/telemetry for details")
+		logger.Warn("anonymous telemetry is disabled — set DO_NOT_SEND_ANONYMOUS_STATISTICS= to re-enable; see https://www.toolmesh.io/en/configuration/#telemetry for details")
 	}
 
 	c.loadState()

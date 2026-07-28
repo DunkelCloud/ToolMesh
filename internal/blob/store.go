@@ -46,7 +46,31 @@ type blobEntry struct {
 	FilePath    string
 	ContentType string
 	Size        int64
+	Filename    string // original upload filename; empty when none was provided
 	ExpiresAt   time.Time
+}
+
+// BlobInfo describes a stored blob.
+type BlobInfo struct {
+	ID          string
+	ContentType string
+	Size        int64
+	Filename    string // never empty: falls back to the on-disk name (<id>.<ext>)
+	ExpiresAt   time.Time
+}
+
+func (e *blobEntry) info(id string) *BlobInfo {
+	filename := e.Filename
+	if filename == "" {
+		filename = filepath.Base(e.FilePath)
+	}
+	return &BlobInfo{
+		ID:          id,
+		ContentType: e.ContentType,
+		Size:        e.Size,
+		Filename:    filename,
+		ExpiresAt:   e.ExpiresAt,
+	}
 }
 
 // NewStore creates a blob store. baseURL is the externally reachable server URL
@@ -67,14 +91,20 @@ func NewStore(dir, baseURL string, logger *slog.Logger) (*Store, error) {
 
 // Put writes data to a new blob and returns its ID.
 func (s *Store) Put(body io.Reader, contentType string, ttl time.Duration) (id string, size int64, err error) {
+	return s.PutNamed(body, contentType, "", ttl)
+}
+
+// PutNamed writes data to a new blob, remembering the original filename so
+// downstream multipart uploads can carry it. An empty filename is allowed.
+func (s *Store) PutNamed(body io.Reader, contentType, filename string, ttl time.Duration) (id string, size int64, err error) {
 	id, err = generateID()
 	if err != nil {
 		return "", 0, fmt.Errorf("generate blob id: %w", err)
 	}
 
 	ext := extensionForType(contentType)
-	filename := id + ext
-	path := filepath.Join(s.dir, filename)
+	diskName := id + ext
+	path := filepath.Join(s.dir, diskName)
 
 	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0o600) //nolint:gosec // path is constructed from trusted dir + generated ID
 	if err != nil {
@@ -97,6 +127,7 @@ func (s *Store) Put(body io.Reader, contentType string, ttl time.Duration) (id s
 		FilePath:    path,
 		ContentType: contentType,
 		Size:        n,
+		Filename:    filename,
 		ExpiresAt:   time.Now().Add(ttl),
 	}
 	s.mu.Unlock()
@@ -116,9 +147,57 @@ func (s *Store) URL(id string) string {
 	return s.baseURL + "/blobs/" + id
 }
 
-// ServeHTTP handles GET /blobs/{id} requests.
+// Stat returns metadata for a non-expired blob.
+func (s *Store) Stat(id string) (*BlobInfo, error) {
+	s.mu.RLock()
+	entry, ok := s.blobs[id]
+	s.mu.RUnlock()
+	if !ok || time.Now().After(entry.ExpiresAt) {
+		return nil, fmt.Errorf("blob %q not found or expired", id)
+	}
+	return entry.info(id), nil
+}
+
+// Open returns the content of a non-expired blob for reading, along with its
+// metadata. The caller must close the reader.
+func (s *Store) Open(id string) (io.ReadCloser, *BlobInfo, error) {
+	s.mu.RLock()
+	entry, ok := s.blobs[id]
+	s.mu.RUnlock()
+	if !ok || time.Now().After(entry.ExpiresAt) {
+		return nil, nil, fmt.Errorf("blob %q not found or expired", id)
+	}
+	f, err := os.Open(entry.FilePath) //nolint:gosec // path is constructed from trusted dir + generated ID
+	if err != nil {
+		return nil, nil, fmt.Errorf("open blob %q: %w", id, err)
+	}
+	return f, entry.info(id), nil
+}
+
+// Delete removes a blob and its on-disk file. Deleting an unknown ID returns
+// an error; deleting a not-yet-cleaned expired blob succeeds.
+func (s *Store) Delete(id string) error {
+	s.mu.Lock()
+	entry, ok := s.blobs[id]
+	if ok {
+		delete(s.blobs, id)
+	}
+	s.mu.Unlock()
+	if !ok {
+		return fmt.Errorf("blob %q not found", id)
+	}
+	if err := os.Remove(entry.FilePath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove blob file for %q: %w", id, err)
+	}
+	s.logger.Info("blob deleted", "blob_id", id)
+	return nil
+}
+
+// ServeHTTP handles GET/HEAD/DELETE /blobs/{id} requests. All three are
+// capability-based: the unguessable blob ID is the only credential, bounded
+// by the TTL.
 func (s *Store) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead && r.Method != http.MethodDelete {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
@@ -126,6 +205,15 @@ func (s *Store) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimPrefix(r.URL.Path, "/blobs/")
 	if id == "" || strings.Contains(id, "/") {
 		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+
+	if r.Method == http.MethodDelete {
+		if err := s.Delete(id); err != nil {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
 		return
 	}
 

@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"regexp"
 	"sort"
 	"strconv"
@@ -25,6 +26,7 @@ import (
 	"time"
 
 	"github.com/DunkelCloud/ToolMesh/internal/backend"
+	"github.com/DunkelCloud/ToolMesh/internal/blob"
 	"github.com/DunkelCloud/ToolMesh/internal/executor"
 	"github.com/DunkelCloud/ToolMesh/internal/metrics"
 	"github.com/DunkelCloud/ToolMesh/internal/toolindex"
@@ -53,6 +55,11 @@ type Handler struct {
 	metrics       *metrics.Registry
 	logger        *slog.Logger
 	debugTools    bool // when true, expose debug_echo and debug_generate
+
+	// File broker plumbing for the upload_file built-in (nil = tool hidden).
+	blobStore         *blob.Store
+	uploadLimits      blob.UploadLimits
+	uploadFetchClient *http.Client
 }
 
 // NewHandler creates a new MCP tool call handler. The metrics registry is
@@ -100,6 +107,8 @@ func (h *Handler) isBuiltinTool(name string) bool {
 	switch name {
 	case toolDiscoverTools, toolExecuteCode:
 		return true
+	case toolUploadFile:
+		return h.blobStore != nil
 	case toolDebugEcho, toolDebugGenerate:
 		return h.debugTools
 	}
@@ -147,6 +156,10 @@ func (h *Handler) HandleToolCall(ctx context.Context, toolName string, params ma
 		return h.handleDiscoverTools(ctx, params)
 	case toolExecuteCode:
 		return h.handleExecuteCode(ctx, params), nil
+	case toolUploadFile:
+		// handleUploadFile reports a clear "not configured" error itself when
+		// no blob store is set; the tool is only advertised when one is.
+		return h.handleUploadFile(ctx, params)
 	case toolDebugEcho:
 		if !h.debugTools {
 			return debugDisabledResult(toolName), nil
@@ -423,7 +436,19 @@ func (h *Handler) handleExecuteCode(ctx context.Context, params map[string]any) 
 
 	h.logger.DebugContext(ctx, "execute_code input", argNameCode, code)
 
-	result, err := h.codeRunner.Execute(ctx, code)
+	// include_results is optional; accept a real boolean or its string form
+	// (some clients serialize booleans as strings).
+	includeResults := false
+	switch v := params[argNameIncludeResults].(type) {
+	case bool:
+		includeResults = v
+	case string:
+		if parsed, perr := strconv.ParseBool(v); perr == nil {
+			includeResults = parsed
+		}
+	}
+
+	result, err := h.codeRunner.ExecuteWithOptions(ctx, code, ExecuteOptions{IncludeResults: includeResults})
 	if err != nil {
 		h.logger.WarnContext(ctx, "execute_code failed", outcomeError, err)
 		// If we got a partial result (e.g. some calls succeeded before error),
@@ -460,7 +485,7 @@ func (h *Handler) BuildToolList(ctx context.Context) ([]ToolDefinition, error) {
 	backendDesc := h.buildBackendDescription()
 
 	discoverToolsDesc := "Discovery tool for ToolMesh. Two search modes: `pattern` (case-insensitive regex matched against tool names and descriptions, e.g. \"github\" or \"^netbox_list\") and `query` (free text, BM25-ranked, returns the top 25 most relevant tools — preferred for exploratory searches like \"dns record management\"). Output detail auto-scales with result count: few matches return full TypeScript signatures, more matches return one-line summaries, then names only, then a per-backend overview; override with detail:\"full\"|\"summary\"|\"names\"|\"overview\" and cap results with limit:N. Every response ends with a footer stating matched/shown counts and refine hints. Call this as a SEPARATE MCP tool — inside execute_code use toolmesh.discover(query) and toolmesh.describe(name) instead."
-	executeCodeDesc := "Executes JavaScript that calls backend tools via toolmesh.<backend>_<function>(...). Tools are exposed as a flat snake_case namespace — `toolmesh.github_list_user_repos`, NOT `toolmesh.github.list_user_repos`. Example: `const repos = await toolmesh.github_list_user_repos({username: \"octocat\"}); return repos.slice(0, 5);`. The last expression or an explicit `return` is sent back; tool calls are recorded in order. In-sandbox discovery: `toolmesh.discover(\"<free text>\", limit?)` returns ranked {name, description, backend} matches and `toolmesh.describe(\"<tool_name>\")` returns the full parameter schema — use them instead of guessing function names or parameters. discover_tools is NOT a toolmesh.* member and must NOT be invoked from inside this `code` parameter"
+	executeCodeDesc := "Executes JavaScript that calls backend tools via toolmesh.<backend>_<function>(...). Tools are exposed as a flat snake_case namespace — `toolmesh.github_list_user_repos`, NOT `toolmesh.github.list_user_repos`. Example: `const repos = await toolmesh.github_list_user_repos({username: \"octocat\"}); return repos.slice(0, 5);`. The value you `return` is the response — project/filter inside the code and return only what you need; each tool call is then listed as a compact {tool, status, resultBytes} entry (failed calls keep their full error). Without an explicit `return`, the full results of all calls are returned in order; include_results:true forces full results alongside a return value. In-sandbox discovery: `toolmesh.discover(\"<free text>\", limit?)` returns ranked {name, description, backend} matches and `toolmesh.describe(\"<tool_name>\")` returns the full parameter schema — use them instead of guessing function names or parameters. discover_tools is NOT a toolmesh.* member and must NOT be invoked from inside this `code` parameter"
 	if backendDesc != "" {
 		executeCodeDesc += ". " + backendDesc
 	}
@@ -505,6 +530,10 @@ func (h *Handler) BuildToolList(ctx context.Context) ([]ToolDefinition, error) {
 						contentKeyType:       jsonTypeString,
 						schemaKeyDescription: "JavaScript body that calls toolmesh.<backend>_<function>(...). Tools are flat snake_case — `toolmesh.github_list_user_repos`, NOT `toolmesh.github.list_user_repos` (the latter throws TypeError because `toolmesh.<backend>` is undefined). Top-level await is supported. Example: `const r = await toolmesh.github_list_user_repos({username: \"octocat\"}); return r[0].name;`",
 					},
+					argNameIncludeResults: map[string]any{
+						contentKeyType:       jsonTypeBoolean,
+						schemaKeyDescription: "Include the full result of every tool call in the response even when the code returns a value. Default false: with an explicit return, successful calls are compacted to {tool, status, resultBytes} and only the return value carries data.",
+					},
 				},
 				schemaKeyRequired: []string{argNameCode},
 			},
@@ -516,6 +545,10 @@ func (h *Handler) BuildToolList(ctx context.Context) ([]ToolDefinition, error) {
 	// discover_tools too — listing them at the MCP root is purely a
 	// convenience for high-frequency tools where the discovery round-trip
 	// would waste context.
+	if h.blobStore != nil {
+		tools = append(tools, uploadFileToolDefinition())
+	}
+
 	tools = append(tools, h.promotedToolDefinitions(ctx)...)
 
 	if h.debugTools {

@@ -37,12 +37,13 @@ const (
 	jsonKeyName = "name"
 
 	// MCP tool argument names referenced in built-in tool schemas.
-	argNamePattern = "pattern"
-	argNameQuery   = "query"
-	argNameDetail  = "detail"
-	argNameLimit   = "limit"
-	argNameCode    = "code"
-	argNamePayload = "payload"
+	argNamePattern        = "pattern"
+	argNameQuery          = "query"
+	argNameDetail         = "detail"
+	argNameLimit          = "limit"
+	argNameCode           = "code"
+	argNameIncludeResults = "include_results"
+	argNamePayload        = "payload"
 
 	// Common debug_generate pattern values.
 	debugPatternASCII = "ascii"

@@ -178,10 +178,11 @@ type AuthConfig struct {
 	UsernameCredential string `yaml:"username_credential"` // credential ref for username
 	PasswordCredential string `yaml:"password_credential"` // credential ref for password (optional, default "")
 	// OAuth2
-	Flow                   string   `yaml:"flow"` // client_credentials
+	Flow                   string   `yaml:"flow"` // client_credentials (default), refresh_token
 	TokenURL               string   `yaml:"token_url"`
 	ClientIDCredential     string   `yaml:"client_id_credential"`
-	ClientSecretCredential string   `yaml:"client_secret_credential"`
+	ClientSecretCredential string   `yaml:"client_secret_credential"` // optional for flow refresh_token (public clients)
+	RefreshTokenCredential string   `yaml:"refresh_token_credential"` // required for flow refresh_token
 	Scopes                 []string `yaml:"scopes"`
 	TokenCacheKey          string   `yaml:"token_cache_key"`
 	RefreshBeforeExpiry    string   `yaml:"refresh_before_expiry"`

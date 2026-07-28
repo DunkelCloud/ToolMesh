@@ -212,6 +212,66 @@ backend:
 `,
 			wantErr: "strategy must be one of",
 		},
+		{
+			name: "invalid oauth2 flow",
+			yaml: `
+spec: "https://dadl.ai/spec/dadl-spec-v0.1.md"
+backend:
+  name: x
+  type: rest
+  base_url: https://api.example.com
+  auth:
+    type: oauth2
+    flow: authorization_code
+    token_url: https://api.example.com/token
+  tools:
+    t1:
+      method: GET
+      path: /x
+`,
+			wantErr: "auth.flow must be client_credentials or refresh_token",
+		},
+		{
+			name: "refresh_token flow without refresh_token_credential",
+			yaml: `
+spec: "https://dadl.ai/spec/dadl-spec-v0.2.md"
+backend:
+  name: x
+  type: rest
+  base_url: https://api.example.com
+  auth:
+    type: oauth2
+    flow: refresh_token
+    token_url: https://api.example.com/token
+    client_id_credential: cid
+  tools:
+    t1:
+      method: GET
+      path: /x
+`,
+			wantErr: "requires auth.refresh_token_credential",
+		},
+		{
+			name: "refresh_token flow under v0.1 spec declaration",
+			yaml: `
+spec: "https://dadl.ai/spec/dadl-spec-v0.1.md"
+backend:
+  name: x
+  type: rest
+  base_url: https://api.example.com
+  auth:
+    type: oauth2
+    flow: refresh_token
+    token_url: https://api.example.com/token
+    client_id_credential: cid
+    refresh_token_credential: rt
+  tools:
+    t1:
+      method: GET
+      path: /x
+`,
+			wantErr: "requires spec v0.2",
+		},
 	}
 
 	for _, tt := range tests {
@@ -224,6 +284,42 @@ backend:
 				t.Errorf("error %q does not contain %q", err.Error(), tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestParseBytes_OAuth2RefreshTokenFlow(t *testing.T) {
+	yaml := `
+spec: "https://dadl.ai/spec/dadl-spec-v0.2.md"
+backend:
+  name: googleapi
+  type: rest
+  base_url: https://www.googleapis.com
+  auth:
+    type: oauth2
+    flow: refresh_token
+    token_url: https://oauth2.googleapis.com/token
+    client_id_credential: google_client_id
+    client_secret_credential: google_client_secret
+    refresh_token_credential: google_refresh_token
+    refresh_before_expiry: 60s
+  tools:
+    t1:
+      method: GET
+      path: /x
+`
+	spec, err := ParseBytes([]byte(yaml))
+	if err != nil {
+		t.Fatalf("ParseBytes: %v", err)
+	}
+	a := spec.Backend.Auth
+	if a.Flow != oauth2FlowRefreshToken {
+		t.Errorf("flow = %q, want refresh_token", a.Flow)
+	}
+	if a.RefreshTokenCredential != "google_refresh_token" {
+		t.Errorf("refresh_token_credential = %q", a.RefreshTokenCredential)
+	}
+	if a.ClientSecretCredential != "google_client_secret" {
+		t.Errorf("client_secret_credential = %q", a.ClientSecretCredential)
 	}
 }
 

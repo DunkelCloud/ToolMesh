@@ -22,7 +22,7 @@ Write a `.dadl` file — ToolMesh handles the rest.
 - Section 6: normative override semantics — a tool-level `response`, `errors`, or `pagination` object replaces the corresponding `defaults` object; `response.redact` is the deliberate exception and merges additively.
 - Section 11.1: YAML merge keys (`<<`) are now discouraged (shallow-merge data loss, dropped from YAML 1.2, rejected by the public registry); examples use whole-node anchors.
 - Section 12.3: composites can carry an `access` classification, mirroring tools (Section 6.4); the composite is the authorization boundary for its inner calls.
-- Section 4.6: optional `health` declaration (absent = no check, nothing runs). Two forms: reference a declared tool or an inline endpoint. A declared check is exposed as a synthetic `health` tool returning a standardized result — for `toolmesh setup`, monitoring, and LLM self-diagnosis.
+- Section 4.6: optional `health` declaration (absent = no check, nothing runs). Two forms: reference a declared tool or an inline endpoint. A declared check is exposed as a synthetic `health` tool returning a standardized result — including an optional `auth_expires_at` (from `auth_expires_path` or deployment metadata) for proactive credential-expiry warnings. For `toolmesh setup`, monitoring, and LLM self-diagnosis.
 - Section 6: new per-tool fields `returns` (typed results, Section 6.5), `idempotency` (safe write retries, Section 6.6), and `deprecated` / `replaced_by` (migration paths, Section 6.7).
 - Section 8.2: new `errors.map` — HTTP status codes are mapped to semantic error codes (`not_found`, `conflict`, `rate_limited`, …) so Code Mode error handling can branch on stable values.
 - Section 9.3: new `response.redact` — declarative masking of sensitive response fields via JSONPath list, complementing the Output Gate.
@@ -290,6 +290,7 @@ backend:
 | `path` | string | form 2: yes | URL path relative to `base_url`. Must not contain `{param}` placeholders. |
 | `expect_status` | integer | no | Exact expected status code. Default: any `2xx` passes. |
 | `expect_path` | string | no | JSONPath that must exist in the response body (e.g. `"$.status"`). |
+| `auth_expires_path` | string | no | JSONPath extracting the credential-expiry timestamp from the check response (e.g. GitLab `GET /personal_access_tokens/self` → `"$.expires_at"`). See `auth_expires_at` below. |
 | `timeout` | string | no | Request timeout. Default: `5s`. |
 | `expose` | boolean | no | Expose the check as a synthetic `health` tool in the generated interface. Default: `true`. |
 
@@ -297,13 +298,21 @@ backend:
 
 ```typescript
 health(): Promise<{
-  ok: boolean;           // check passed (status/expect rules)
-  http_status: number;   // raw HTTP status of the check call
+  ok: boolean;              // check passed (status/expect rules)
+  http_status: number;      // raw HTTP status of the check call
   latency_ms: number;
-  checked_at: string;    // ISO 8601
-  error?: string;        // present when ok is false (mapped per Section 8.2)
+  checked_at: string;       // ISO 8601
+  auth_expires_at?: string; // ISO 8601 — when the backend credential expires, if known
+  error?: string;           // present when ok is false (mapped per Section 8.2)
 }>
 ```
+
+`auth_expires_at` turns the check from reactive (credential *is* expired → `ok: false`) into proactive (credential *will* expire). It is filled from two sources, in order of precedence:
+
+1. **The check response**, when the DADL declares `auth_expires_path` — the API's own answer is authoritative. Runtimes SHOULD accept common timestamp formats (RFC 3339 / ISO 8601, Unix epoch) at that path and normalize to ISO 8601.
+2. **Deployment metadata** — an operator-supplied expiry recorded next to the credential (`backends.yaml` / credential store), for APIs whose cheap check endpoint does not report it (e.g. a Tailscale API key: fixed 90-day lifetime, expiry known at creation time). Configuration syntax is deployment-specific, not part of the DADL.
+
+When neither source yields a value, the field is absent. Monitoring consumers MAY raise a warning state once `auth_expires_at` falls within a configurable window (e.g. 7 days) — turning "surprise 401 in October" into a scheduled credential rotation.
 
 The standardized shape is produced by the check layer, not by the API: with form 1, calling the referenced tool directly still returns its raw API response — only the synthetic `health` tool normalizes. This lets LLM-written code self-diagnose identically across backends (`if (!(await api.health()).ok) …` — distinguishing "backend or credential broken" from "my parameters are wrong") without leaking payload internals.
 

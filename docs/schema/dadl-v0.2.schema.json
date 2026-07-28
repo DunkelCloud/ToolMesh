@@ -348,6 +348,10 @@
               "type": "string",
               "description": "JSONPath that must exist in the response body"
             },
+            "auth_expires_path": {
+              "type": "string",
+              "description": "JSONPath extracting the credential-expiry timestamp from the check response (feeds auth_expires_at in the standardized result)"
+            },
             "timeout": {
               "type": "string",
               "description": "Request timeout (default: 5s)"
@@ -379,6 +383,10 @@
             "expect_path": {
               "type": "string",
               "description": "JSONPath that must exist in the response body"
+            },
+            "auth_expires_path": {
+              "type": "string",
+              "description": "JSONPath extracting the credential-expiry timestamp from the check response (feeds auth_expires_at in the standardized result)"
             },
             "timeout": {
               "type": "string",

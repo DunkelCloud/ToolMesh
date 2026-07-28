@@ -80,6 +80,16 @@ func (b *Backend) Init(ctx context.Context) error {
 		descs[i].Backend = "unit:" + b.name
 	}
 	b.descriptors = descs
+
+	// Surface expose.tools typos once, at load time, rather than letting a
+	// misspelled name silently produce no promotion. PromotedTools skips the
+	// same unknown entries on every request.
+	for _, name := range b.expose.Tools {
+		if _, ok := b.LookupTool(name); !ok {
+			b.logger.Warn("unit expose.tools names an unknown tool; it will not be promoted",
+				"unit", b.name, "tool", name)
+		}
+	}
 	return nil
 }
 
@@ -101,6 +111,41 @@ func (b *Backend) LookupTool(toolName string) (backend.ToolDescriptor, bool) {
 		}
 	}
 	return backend.ToolDescriptor{}, false
+}
+
+// Compile-time proof that a unit participates in root-level tool promotion.
+// The composite backend type-asserts every child against backend.ToolPromoter;
+// without this a unit would silently never promote.
+var _ backend.ToolPromoter = (*Backend)(nil)
+
+// PromotedTools implements backend.ToolPromoter. It returns one Promotion per
+// expose.tools entry that matches a describe()-declared tool, so the MCP
+// handler can advertise those tools at the root in addition to
+// discover_tools / execute_code.
+//
+// Both Descriptor.Name and Canonical are the full "<unit>_<tool>" form: unit
+// tools are never promoted under a bare alias (see ExposeConfig.Tools for why),
+// so the composite's bare-name conflict handling is a no-op for them and the
+// advertised name equals the routing name. Unknown entries are skipped — Init
+// has already logged them once — so a stale name never produces a phantom tool.
+func (b *Backend) PromotedTools() []backend.Promotion {
+	if len(b.expose.Tools) == 0 {
+		return nil
+	}
+	out := make([]backend.Promotion, 0, len(b.expose.Tools))
+	for _, name := range b.expose.Tools {
+		desc, ok := b.LookupTool(name)
+		if !ok {
+			continue
+		}
+		canonical := b.name + "_" + name
+		desc.Name = canonical
+		out = append(out, backend.Promotion{
+			Descriptor: desc,
+			Canonical:  canonical,
+		})
+	}
+	return out
 }
 
 // Healthy always returns nil for the unit itself; sub-backend health is

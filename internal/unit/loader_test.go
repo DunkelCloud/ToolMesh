@@ -90,3 +90,51 @@ func writeUnitYAML(t *testing.T, dir string) {
 		t.Fatalf("write unit.yaml: %v", err)
 	}
 }
+
+// TestResolveSubBackendDADL covers every branch of the DADL path resolution a
+// unit sub-backend goes through: absolute verbatim, bundled-next-to-unit,
+// bare-name fallback to the global dir (the config/backends.yaml convention),
+// bundled taking precedence when a name exists in both, and the missing-file
+// cases whose returned path drives the parse error message.
+func TestResolveSubBackendDADL(t *testing.T) {
+	unitDir := t.TempDir()
+	dadlDir := t.TempDir()
+
+	writeFile(t, filepath.Join(unitDir, "bundled.dadl"))
+	writeFile(t, filepath.Join(dadlDir, "global.dadl"))
+	// A name present in BOTH locations — bundled must win.
+	writeFile(t, filepath.Join(unitDir, "both.dadl"))
+	writeFile(t, filepath.Join(dadlDir, "both.dadl"))
+
+	abs := filepath.Join(t.TempDir(), "abs.dadl")
+
+	tests := []struct {
+		name    string
+		ref     string
+		dadlDir string
+		want    string
+	}{
+		{"absolute used verbatim", abs, dadlDir, abs},
+		{"bundled next to unit", "bundled.dadl", dadlDir, filepath.Join(unitDir, "bundled.dadl")},
+		{"bare name falls back to global dir", "global.dadl", dadlDir, filepath.Join(dadlDir, "global.dadl")},
+		{"bundled wins over global", "both.dadl", dadlDir, filepath.Join(unitDir, "both.dadl")},
+		{"missing, no global dir, stays unit-local", "missing.dadl", "", filepath.Join(unitDir, "missing.dadl")},
+		{"missing locally, resolves to global path", "missing.dadl", dadlDir, filepath.Join(dadlDir, "missing.dadl")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := resolveSubBackendDADL(unitDir, tt.dadlDir, tt.ref)
+			if got != tt.want {
+				t.Errorf("resolveSubBackendDADL(unitDir, %q, %q) = %q, want %q",
+					tt.dadlDir, tt.ref, got, tt.want)
+			}
+		})
+	}
+}
+
+func writeFile(t *testing.T, path string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
+}

@@ -92,7 +92,7 @@ func TestDiceUnit_StatisticalDistribution(t *testing.T) {
 	creds := credentials.NewEmbeddedStore()
 
 	ctx := context.Background()
-	res, err := unit.LoadUnit(ctx, unitDir, creds, nil, logger)
+	res, err := unit.LoadUnit(ctx, unitDir, "", creds, nil, logger)
 	if err != nil {
 		t.Fatalf("LoadUnit: %v", err)
 	}

@@ -49,12 +49,12 @@
       "description": "Creation or last-modified date (YYYY-MM-DD)"
     },
     "backend": {
-      "$ref": "#/$defs/Backend"
+      "$ref": "#/definitions/Backend"
     },
     "includes": {
       "type": "array",
       "items": {
-        "$ref": "#/$defs/Include"
+        "$ref": "#/definitions/Include"
       },
       "description": "Reusable fragments to merge in"
     }
@@ -65,7 +65,7 @@
     }
   },
   "additionalProperties": false,
-  "$defs": {
+  "definitions": {
     "Backend": {
       "type": "object",
       "required": ["name", "type", "description", "auth", "tools"],
@@ -82,7 +82,8 @@
         },
         "version": {
           "type": "string",
-          "description": "Semantic version of this DADL file (e.g. '1.0', '1.2.1'). Used for upgrade detection."
+          "pattern": "^\\d+\\.\\d+(\\.\\d+)?$",
+          "description": "SemVer-compatible shorthand (e.g. '1.0', '1.2.1'); '1.2' is compared as '1.2.0'. Used for upgrade detection."
         },
         "base_url": {
           "type": "string",
@@ -101,13 +102,13 @@
           "description": "Path or URL to Arazzo workflow file"
         },
         "auth": {
-          "$ref": "#/$defs/Auth"
+          "$ref": "#/definitions/Auth"
         },
         "health": {
-          "$ref": "#/$defs/Health"
+          "$ref": "#/definitions/Health"
         },
         "defaults": {
-          "$ref": "#/$defs/Defaults"
+          "$ref": "#/definitions/Defaults"
         },
         "types": {
           "type": "object",
@@ -118,7 +119,7 @@
           "type": "object",
           "description": "Map of tool definitions",
           "additionalProperties": {
-            "$ref": "#/$defs/Tool"
+            "$ref": "#/definitions/Tool"
           },
           "minProperties": 1
         },
@@ -126,18 +127,18 @@
           "type": "object",
           "description": "Composite tool definitions (server-side TypeScript)",
           "additionalProperties": {
-            "$ref": "#/$defs/Composite"
+            "$ref": "#/definitions/Composite"
           }
         },
         "examples": {
           "type": "array",
           "items": {
-            "$ref": "#/$defs/Example"
+            "$ref": "#/definitions/Example"
           },
           "description": "Code examples for multi-step workflows"
         },
         "coverage": {
-          "$ref": "#/$defs/Coverage"
+          "$ref": "#/definitions/Coverage"
         },
         "hints": {
           "type": "object",
@@ -150,7 +151,7 @@
           }
         },
         "setup": {
-          "$ref": "#/$defs/Setup"
+          "$ref": "#/definitions/Setup"
         }
       },
       "additionalProperties": false
@@ -217,6 +218,24 @@
         "refresh_token_credential": {
           "type": "string",
           "description": "Credential holding the OAuth2 refresh token (refresh_token flow: obtained out-of-band; authorization_code flow: persisted here by toolmesh setup)"
+        },
+        "rotates_refresh_token": {
+          "type": "boolean",
+          "description": "Provider issues a new refresh token on exchange; runtime must persist atomically or refuse to load (requires.features: refresh_token_rotation)"
+        },
+        "authorization_params": {
+          "type": "object",
+          "additionalProperties": { "type": "string" },
+          "description": "Provider-specific parameters appended to the authorize request (authorization_code flow), e.g. access_type/prompt for Google"
+        },
+        "redirect_uri": {
+          "type": "string",
+          "description": "Exact pre-registered redirect URI (authorization_code flow); default: RFC 8252 loopback chosen by the setup tool"
+        },
+        "token_auth": {
+          "type": "string",
+          "enum": ["post", "basic"],
+          "description": "Client authentication on the token request (default: post)"
         },
         "service_account_credential": {
           "type": "string",
@@ -290,6 +309,18 @@
         {
           "if": { "properties": { "type": { "enum": ["api_key", "apikey"] } }, "required": ["type"] },
           "then": { "required": ["credential"] }
+        },
+        {
+          "if": { "properties": { "type": { "enum": ["bearer", "basic", "api_key", "apikey"] } }, "required": ["type"] },
+          "then": { "properties": { "token_url": false, "authorize_url": false, "flow": false, "client_id_credential": false, "client_secret_credential": false, "service_account_credential": false, "refresh_token_credential": false, "login": false, "inject": false } }
+        },
+        {
+          "if": { "properties": { "type": { "const": "oauth2" } }, "required": ["type"] },
+          "then": { "properties": { "credential": false, "login": false, "inject": false } }
+        },
+        {
+          "if": { "properties": { "inject_into": { "const": "query" } }, "required": ["inject_into"] },
+          "then": { "required": ["query_param"] }
         },
         {
           "if": { "properties": { "type": { "const": "basic" } }, "required": ["type"] },
@@ -414,13 +445,13 @@
           "description": "Default request-body content type inherited by all tools; per-tool content_type overrides it"
         },
         "pagination": {
-          "$ref": "#/$defs/Pagination"
+          "$ref": "#/definitions/Pagination"
         },
         "errors": {
-          "$ref": "#/$defs/Errors"
+          "$ref": "#/definitions/Errors"
         },
         "response": {
-          "$ref": "#/$defs/Response"
+          "$ref": "#/definitions/Response"
         }
       },
       "additionalProperties": false
@@ -555,7 +586,7 @@
         "params": {
           "type": "object",
           "additionalProperties": {
-            "$ref": "#/$defs/Param"
+            "$ref": "#/definitions/Param"
           }
         },
         "content_type": {
@@ -572,17 +603,17 @@
           "description": "Tools that should be called first"
         },
         "response": {
-          "$ref": "#/$defs/Response"
+          "$ref": "#/definitions/Response"
         },
         "pagination": {
           "description": "'none' to disable or object to override",
           "oneOf": [
             { "type": "string", "const": "none" },
-            { "$ref": "#/$defs/Pagination" }
+            { "$ref": "#/definitions/Pagination" }
           ]
         },
         "errors": {
-          "$ref": "#/$defs/Errors"
+          "$ref": "#/definitions/Errors"
         },
         "returns": {
           "description": "Result type after the response pipeline — a types name or an inline JSON Schema subset (spec Section 6.5)",
@@ -592,7 +623,7 @@
           ]
         },
         "idempotency": {
-          "$ref": "#/$defs/Idempotency"
+          "$ref": "#/definitions/Idempotency"
         },
         "deprecated": {
           "description": "Marks the tool as deprecated; a string carries the reason (spec Section 6.7)",
@@ -600,6 +631,10 @@
             { "type": "boolean" },
             { "type": "string" }
           ]
+        },
+        "retry_unsafe": {
+          "type": "boolean",
+          "description": "Opt-in: allow automatic retries although the call is not idempotent and declares no idempotency (spec Section 8)"
         },
         "replaced_by": {
           "type": "string",
@@ -663,6 +698,11 @@
         "access": {
           "type": "string",
           "description": "Access classification, same values and policy mapping as for tools (spec Section 6.4)"
+        },
+        "delegates": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Inner tools this composite intends to call under its own authority; effective only with deployment-policy approval (spec Section 12.3)"
         },
         "params": {
           "type": "object",

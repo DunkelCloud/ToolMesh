@@ -8,7 +8,7 @@ Write a `.dadl` file — ToolMesh handles the rest.
 | | |
 |---|---|
 | Version | 0.2.0-draft |
-| Date | 2026-07-23 |
+| Date | 2026-07-30 |
 | Author | Dunkel Cloud GmbH |
 | License | [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/) |
 
@@ -31,8 +31,21 @@ Write a `.dadl` file — ToolMesh handles the rest.
 - Section 16: non-normative outlook on v0.3 (session semantics for LLM backends).
 - Section 6: documented `HEAD` as a supported HTTP method (implemented since v0.1 but previously undocumented).
 - Section 5.3: PKCE (RFC 7636, S256) specified for public `authorization_code` clients; RFC 7523 `sub`-claim note for `jwt_bearer`.
-- Section 8: the error-mapping trigger (non-2xx) and the default for unlisted statuses are now explicit.
+- Section 8: the error-mapping trigger (non-2xx) and the default for unlisted statuses are now explicit; catch-all codes `client_error` / `server_error` / `unexpected_status`; automatic retries MUST NOT re-execute non-idempotent calls (new opt-in `retry_unsafe`).
 - Section 9.4: the DADL JSONPath dialect is pinned — RFC 9535 syntax and semantics for name, index, and wildcard selectors.
+- Section 5.3: refresh-token rotation supported via `rotates_refresh_token` (atomic persistence rules; feature identifier `refresh_token_rotation`); declarative `authorization_params`, `redirect_uri`, and `token_auth` replace provider-specific behavior.
+- Section 12.3: composite authorization is fail-closed by default (inner calls re-checked against the caller); deliberate encapsulation requires declared `delegates` plus deployment-policy approval.
+- Sections 6.2 / 9.1 / 15.2: consumer security requirements for `file_url` fetching (SSRF hardening), ad-hoc jq sandbox limits, and the registry publication profile (mandatory `access`).
+- Section 15.4: consumer conformance restructured into three profiles (Document Validator, Core Runtime, Full Runtime).
+
+**Compatibility notes** (why the additivity claim above holds, item by item):
+
+| Topic | Status |
+|---|---|
+| `auth.type: api_key` (v0.1 spelling) | Runtimes and validators MUST accept it as an alias for `apikey` (Section 5.5). |
+| YAML merge keys (`<<`, shown in v0.1 §11.1) | Merge keys are resolved by the YAML parser before validation — document conformance is unaffected. The public registry's rejection of `<<` is pre-existing CI policy, not a v0.2 conformance rule; Section 11.1 now documents the shallow-merge pitfall that motivated it. |
+| Hint values (v0.1: "key-value pairs") | v0.2 pins values to scalars. This documents long-standing validation practice (the registry schema always required scalar values) and is a *relaxation* of that practice (numbers and booleans are now accepted alongside strings). |
+| Tool-level `response`/`errors`/`pagination` overrides | The replace-not-merge semantics in Section 6 document behavior ToolMesh has always implemented; v0.2 adds the `redact` additive exception on top. No existing file changes behavior. |
 
 ---
 
@@ -53,6 +66,8 @@ Claude → ToolMesh → REST API  (via declarative .dadl file)
 > **Code Mode only.** DADL backends are always exposed via Code Mode. The LLM writes JavaScript against auto-generated TypeScript interfaces. No tool-per-endpoint explosion — regardless of API size.
 
 Normative keywords (MUST, SHOULD, MAY, …) are used throughout this document as defined in Section 15.1.
+
+This document mixes three concerns, marked as such where they appear: the **portable DADL document format** (normative for every consumer), **ToolMesh runtime behavior** (normative for ToolMesh; other consumers implement the equivalent contract), and **registry/deployment policy** (publication profiles and operator configuration — explicitly outside the document format). A future revision may split these into separate profiles.
 
 ---
 
@@ -127,7 +142,7 @@ backend:
 | `openapi_source` | string | no | Path or URL to OpenAPI 3.x spec. When provided, schemas and parameters are derived from it. |
 | `arazzo_source` | string | no | Path or URL to Arazzo workflow file. Used as documentation context for Code Mode, not executed. |
 | `auth` | object | yes | Authentication configuration |
-| `defaults` | object | no | Default headers, pagination, error, and response config for all tools. Supports `headers` (map of default HTTP headers), `content_type` (default request-body content type; per-tool `content_type` overrides it), `pagination`, `errors`, and `response`. |
+| `defaults` | object | no | Default headers, pagination, error, and response config for all tools. Supports `headers` (map of default HTTP headers), `content_type` (default request-body content type; per-tool `content_type` overrides it), `pagination`, `errors`, and `response`. `content_type` governs body encoding *and* the `Content-Type` header — do not additionally set `defaults.headers.Content-Type`; when both are present, `content_type` wins. |
 | `types` | object | no | Type definitions (JSON Schema subset). Only needed without `openapi_source`. |
 | `tools` | object | yes | Map of tool definitions |
 | `examples` | array | no | Code examples for multi-step workflows (few-shot prompts for the LLM). See Section 4.4. |
@@ -248,7 +263,7 @@ backend:
   # ...
 ```
 
-**Format:** Any string that follows [Semantic Versioning](https://semver.org/) conventions. Both `"1.2"` (major.minor) and `"1.2.1"` (major.minor.patch) are valid.
+**Format:** SemVer-compatible shorthand — `MAJOR.MINOR` or `MAJOR.MINOR.PATCH` (`"1.2"`, `"1.2.1"`). Strict [Semantic Versioning](https://semver.org/) requires three components; DADL additionally permits the two-component form, which consumers compare as if `.0` were appended (`"1.2"` ≡ `"1.2.0"`).
 
 **Semantics:**
 
@@ -299,13 +314,16 @@ backend:
 ```typescript
 health(): Promise<{
   ok: boolean;              // check passed (status/expect rules)
-  http_status: number;      // raw HTTP status of the check call
+  http_status?: number;     // raw HTTP status — absent when no response was received
+  error_code?: string;      // transport failure: dns_error | tls_error | connection_refused | timeout | protocol_error
   latency_ms: number;
   checked_at: string;       // ISO 8601
   auth_expires_at?: string; // ISO 8601 — when the backend credential expires, if known
-  error?: string;           // present when ok is false (mapped per Section 8.2)
+  error?: string;           // present when ok is false (mapped per Section 8.2 for HTTP errors)
 }>
 ```
+
+Semantics: `api.health()` **never rejects** — every outcome, including transport failures, is delivered as a result object (that is the point: LLM code branches on `ok`, not on exceptions). When no HTTP response was received, `http_status` is absent and `error_code` names the transport failure. `expect_path` asserts **existence** of the path in the response body — the value itself is not inspected. `expect_path` and `auth_expires_path` are evaluated against the **raw** response body of the check call, for both forms — a referenced tool's `response` pipeline (Section 9) does not apply to the check.
 
 `auth_expires_at` turns the check from reactive (credential *is* expired → `ok: false`) into proactive (credential *will* expire). It is filled from two sources, in order of precedence:
 
@@ -316,7 +334,7 @@ When neither source yields a value, the field is absent. Monitoring consumers MA
 
 The standardized shape is produced by the check layer, not by the API: with form 1, calling the referenced tool directly still returns its raw API response — only the synthetic `health` tool normalizes. This lets LLM-written code self-diagnose identically across backends (`if (!(await api.health()).ok) …` — distinguishing "backend or credential broken" from "my parameters are wrong") without leaking payload internals.
 
-- **Name collision:** if the file declares its own tool or composite named `health`, the declared one wins and no synthetic tool is generated; validators warn. (Referencing that tool via `health.tool: health` still enables the check for setup and monitoring.)
+- **Name collision:** if the file declares its own tool or composite named `health`, the declared one wins and no synthetic tool is generated; validators warn. This is safe: the generated interface always shows the declared tool's real signature and JSDoc, so LLM code is written against what is actually there — and the synthetic tool, where it exists, is marked as such in its JSDoc ("standardized backend health check"). Referencing the declared tool via `health.tool: health` (with `expose: false`) still enables the check for setup and monitoring.
 - **Discovery:** the synthetic tool exists on every backend that declares a check, so it MUST NOT be ranked in tool-discovery indexes — it is always reachable as `api.health()` and would only add noise.
 
 **Consumers:**
@@ -358,7 +376,9 @@ ToolMesh builds the `Authorization: Basic base64(username:password)` header auto
 
 ### 5.3 OAuth 2.0
 
-Four flows are supported via the `flow` field (default: `client_credentials`). For all of them, ToolMesh caches the access token in memory and renews it lazily: a request that finds the cached token within `refresh_before_expiry` of its expiry fetches a fresh one first. On a 401 the cache is invalidated and the request retried once with a new token. **The LLM never sees tokens** — acquisition, refresh, and injection happen entirely inside ToolMesh.
+Four flows are supported via the `flow` field (default: `client_credentials`). For all of them, ToolMesh caches the access token in memory and renews it lazily: a request that finds the cached token within `refresh_before_expiry` of its expiry fetches a fresh one first. On a 401 the cache is invalidated and the request retried once with a new token. **The LLM never sees tokens** — acquisition, refresh, and injection happen entirely inside ToolMesh; tokens MUST NOT appear in logs, audit payloads, or workflow history.
+
+Protocol details common to all flows: token requests and responses follow [RFC 6749](https://www.rfc-editor.org/rfc/rfc6749) (`access_token`, `token_type`, `expires_in`; scopes are space-separated). Client authentication on the token request is controlled by `token_auth`: `post` (credentials in the form body — default, matching the implemented behavior) or `basic` (HTTP Basic per RFC 6749 §2.3.1).
 
 | Flow | Use case | Interactive consent |
 |------|----------|---------------------|
@@ -396,7 +416,16 @@ auth:
   refresh_before_expiry: 60s
 ```
 
-The interactive consent that produces the refresh token happens once, out-of-band — describe it in the `setup` section (for Google: OAuth client in production status, consent URL with `access_type=offline&prompt=consent`). `scopes` is not sent on this flow; scopes are fixed at consent time (declaring `scopes` anyway is not an error — the field is simply ignored). Providers that rotate refresh tokens on every exchange are not supported: the stored refresh token must remain valid (Google does not rotate by default).
+The interactive consent that produces the refresh token happens once, out-of-band — describe it in the `setup` section (for Google: OAuth client in production status, consent URL with `access_type=offline&prompt=consent`). `scopes` is not sent on this flow; scopes are fixed at consent time (declaring `scopes` anyway is not an error — the field is simply ignored).
+
+**Refresh-token rotation.** Providers that issue a new refresh token on every exchange (common for public clients and modern OAuth security profiles) are supported via the declaration `rotates_refresh_token: true`. Files using a rotating provider MUST declare it — and MUST list the feature identifier `refresh_token_rotation` in `requires.features` (Section 15.3), because a runtime that silently ignored the declaration would lose the credential after the first refresh. Normative runtime behavior when the declaration is present:
+
+- a newly issued refresh token **replaces** the stored one atomically; when the response carries no new refresh token, the stored one is kept;
+- persistence failure fails the refresh (fail-closed) — the runtime MUST NOT continue with a possibly-invalidated old token;
+- concurrent refreshes for the same credential are serialized or resolved by compare-and-swap;
+- a runtime whose credential store cannot write (e.g. an environment-variable store) MUST refuse to load the file.
+
+Without the declaration, the stored refresh token is treated as stable (Google does not rotate by default).
 
 `jwt_bearer` *(since v0.2)* — service-account APIs per [RFC 7523](https://www.rfc-editor.org/rfc/rfc7523): ToolMesh builds an RS256-signed JWT from a service-account key and exchanges it at the token endpoint for a short-lived access token. Fully headless — no consent screen, no refresh token. This is the preferred flow for Google APIs that support service accounts (Search Console: add the service-account email as a property user; Workspace APIs: domain-wide delegation). Files using this flow MUST declare spec v0.2:
 
@@ -412,7 +441,7 @@ auth:
   refresh_before_expiry: 60s
 ```
 
-`service_account_credential` resolves to the **complete service-account key** (for Google: the JSON key file content with `client_email`, `private_key`, `token_uri`). ToolMesh signs the assertion (`iss` = client email, `aud` = token URL, `scope` from `scopes`, `exp` ≤ 1 hour) and caches the resulting access token like any other flow. The optional `subject` sets the `sub` claim to impersonate a user — required for Google Workspace domain-wide delegation, omitted for APIs where the service account acts as itself. (RFC 7523 note: the RFC itself requires a `sub` claim; omitting it for self-acting service accounts follows Google's token-endpoint profile. Strictly RFC-conforming endpoints expect `sub` = `iss` — runtimes SHOULD send that when `subject` is absent and the endpoint rejects assertions without `sub`.)
+`service_account_credential` resolves to the **complete service-account key** (for Google: the JSON key file content with `client_email`, `private_key`, `token_uri`). A declared `token_url` takes precedence; when absent, the key's own `token_uri` is used. ToolMesh signs the assertion (`iss` = client email, `aud` = token URL, `scope` from `scopes`, `exp` ≤ 1 hour) and caches the resulting access token like any other flow. The optional `subject` sets the `sub` claim to impersonate a user — required for Google Workspace domain-wide delegation, omitted for APIs where the service account acts as itself. (RFC 7523 note: the RFC itself requires a `sub` claim; omitting it for self-acting service accounts follows Google's token-endpoint profile. Strictly RFC-conforming endpoints expect `sub` = `iss` — runtimes SHOULD send that when `subject` is absent and the endpoint rejects assertions without `sub`.)
 
 `authorization_code` *(since v0.2)* — three-legged OAuth for user-delegated APIs that do **not** support service accounts (e.g. YouTube). Unlike `flow: refresh_token`, where the refresh token is obtained out-of-band, this flow declares the full consent configuration so ToolMesh can drive it: `toolmesh setup <name>` (or the identity plugin) opens `authorize_url` in a browser, receives the authorization code on a local callback, exchanges it at `token_url`, and **persists the refresh token** in the credential store under `refresh_token_credential`. At runtime the flow then behaves exactly like `refresh_token` — silent renewal, no user interaction. Files using this flow MUST declare spec v0.2:
 
@@ -427,12 +456,15 @@ auth:
   client_secret_credential: vault/youtube-client-secret  # optional — omit for public (PKCE) clients
   refresh_token_credential: vault/youtube-refresh-token
   scopes: ["https://www.googleapis.com/auth/youtube"]
+  authorization_params:            # provider-specific extras, appended to the authorize request
+    access_type: offline           # Google: required for a refresh token
+    prompt: consent
   refresh_before_expiry: 60s
 ```
 
-`scopes` is sent during consent and fixed afterwards. **PKCE:** public clients (no `client_secret_credential`) MUST use PKCE ([RFC 7636](https://www.rfc-editor.org/rfc/rfc7636)) with the `S256` challenge method — the setup tool generates the verifier, sends the challenge on the authorize request, and the verifier on the token exchange; confidential clients MAY add PKCE on top of the secret. The redirect target is a loopback address per [RFC 8252](https://www.rfc-editor.org/rfc/rfc8252); the setup tool chooses the exact `redirect_uri`, which must be registered with the OAuth app. The refresh-token rotation caveat from `flow: refresh_token` applies equally: the persisted refresh token must remain valid across exchanges.
+`scopes` is sent during consent and fixed afterwards. Provider-specific authorize-request parameters are declared in `authorization_params` — a plain string map appended to the authorize URL. There is no host-based provider detection; the DADL says what the provider needs (Google: `access_type=offline&prompt=consent`, without which no refresh token is issued). **PKCE:** public clients (no `client_secret_credential`) MUST use PKCE ([RFC 7636](https://www.rfc-editor.org/rfc/rfc7636)) with the `S256` challenge method — the setup tool generates the verifier, sends the challenge on the authorize request, and the verifier on the token exchange; confidential clients MAY add PKCE on top of the secret. **Redirect:** by default the setup tool uses a loopback redirect per [RFC 8252](https://www.rfc-editor.org/rfc/rfc8252); providers that require an exact pre-registered URI get it declared via the optional `redirect_uri` field. Either way, the effective URI must be registered with the OAuth app. Rotation is handled as declared via `rotates_refresh_token` (see above).
 
-Provider notes (belong in `setup`): when the `authorize_url` host is `accounts.google.com`, the setup tool appends `access_type=offline&prompt=consent` to obtain a refresh token. Google OAuth apps in *Testing* status expire refresh tokens after 7 days — publish the app to *In production* (or *Internal* for Workspace) before relying on this flow.
+Provider note (belongs in `setup`): Google OAuth apps in *Testing* status expire refresh tokens after 7 days — publish the app to *In production* (or *Internal* for Workspace) before relying on this flow.
 
 ### 5.4 Session-based (Login → Token → Use)
 
@@ -471,7 +503,7 @@ auth:
   query_param: api_key         # when inject_into: query
 ```
 
-The canonical type name is `apikey` *(corrected in v0.2: the v0.1 document spelled it `api_key`, which the ToolMesh parser has never accepted — published DADL files use `apikey`)*. The canonical JSON Schema accepts `api_key` as a compatibility alias for documents written against the v0.1 text; runtimes MAY normalize it to `apikey`.
+The canonical type name is `apikey` *(corrected in v0.2: the v0.1 document spelled it `api_key`, which the ToolMesh parser has never accepted — published DADL files use `apikey`)*. Because the v0.1 text declared `api_key` valid, consumers MUST accept it: validators and runtimes MUST treat `api_key` as an alias for `apikey`. New files SHOULD write `apikey`.
 
 With `inject_into: query`, `query_param` names the query parameter that carries the key (e.g. `?api_key=...`); `header_name` is ignored. With `inject_into: header` (the default), `header_name` names the header and `query_param` is ignored.
 
@@ -496,6 +528,7 @@ Each tool maps to one REST API endpoint. In Code Mode, tools become methods on t
 | `errors` | object | no | Error mapping (overrides `defaults.errors`) |
 | `returns` | string\|object | no | Result type for TypeScript generation — a `types` name or an inline schema. See Section 6.5. |
 | `idempotency` | object | no | Idempotency-key configuration for safe retries of write calls. See Section 6.6. |
+| `retry_unsafe` | boolean | no | Opt-in: allow automatic retries (Section 8) although the call is not idempotent and declares no `idempotency`. Default: `false`. |
 | `deprecated` | boolean\|string | no | Marks the tool as deprecated; a string carries the reason. See Section 6.7. |
 | `replaced_by` | string | no | Name of the successor tool in this file. See Section 6.7. |
 
@@ -546,6 +579,8 @@ Supported `in:` values:
 ### 6.2 File Handling
 
 Files in DADL are always referenced by **URL** — never as inline data or local file paths. This keeps tool calls lightweight (only a URL string in the context, not megabytes of Base64) and works with any storage backend (S3, MinIO, NextCloud, ToolMesh's built-in file broker).
+
+> **Consumer security requirements** *(normative since v0.2)*: fetching caller-supplied URLs is an SSRF surface. A conforming consumer MUST support restricting fetches to an allowlist (or broker-only mode), MUST block private, loopback, and link-local address ranges by default (including after DNS resolution and after each redirect — re-validate the target, guard against DNS rebinding), MUST disable `file://` by default (same-host deployments may opt in), and MUST enforce size and content-type limits on fetched files.
 
 #### 6.2.1 File Input (`type: file_url`)
 
@@ -730,7 +765,9 @@ tools:
 Two forms are accepted:
 
 - **String** — the name of a type defined in `types` (Section 10). The generated signature becomes `Promise<Customer>`.
-- **Object** — an inline schema using the same JSON Schema subset as Section 10. Inside it, a bare string in `items` or `$ref` position refers to a `types` entry.
+- **Object** — an inline schema using the same JSON Schema subset as Section 10, plus one DADL extension: a **bare type name** (string) may stand in any *type position* (`returns` itself, `items`, a property value) and refers to a `types` entry. This shorthand is DADL-specific — it is not JSON Schema. `$ref`, by contrast, keeps its JSON Schema meaning and takes a pointer: `$ref: "#/backend/types/Customer"`. Do not put a bare name into `$ref`.
+
+Type names match `^[A-Za-z_][A-Za-z0-9_]*$` (usable as TypeScript identifiers). Validators MUST reject a bare-name or `$ref` reference that does not resolve to a declared type (Section 15.2).
 
 **Semantics:** `returns` describes the value **after** the response pipeline (`result_path`, `transform`, Section 9) has run — the shape the Code Mode caller actually receives, not the raw API body. It is used for TypeScript generation and documentation only; ToolMesh does NOT validate responses against it at runtime. When `openapi_source` is present, `returns` overrides the derived type — useful when a `transform` changes the shape the OpenAPI spec describes.
 
@@ -754,7 +791,7 @@ create_charge:
 | `header` | string | yes | Header name the API expects (e.g. `Idempotency-Key`, `X-Request-Id`). |
 | `generate` | string | no | Key generator. `uuid_v4` (default) is the only value defined in v0.2; further generators are reserved. |
 
-**Semantics:** ToolMesh generates the key **once per logical tool call** and reuses the same key for every retry of that call — including retries after a process restart, because the key is part of the durable Activity state. Two distinct tool calls always get distinct keys. The header is managed by ToolMesh; callers cannot override it.
+**Semantics:** ToolMesh generates the key **before the first attempt** of a logical tool call and persists it as part of the durable Activity input (workflow history) — every retry of that call, including after a worker crash or process restart, replays the same key. Two distinct tool calls always get distinct keys. The header is managed by ToolMesh; callers cannot override it, and the declared header name MUST NOT collide with a `params` entry of `in: header` or a `defaults.headers` key (Section 15.2).
 
 > **Best practice:** declare `idempotency` on every `POST` tool whose API supports it. `GET`/`PUT`/`DELETE` are typically idempotent by design and do not need it.
 
@@ -811,7 +848,15 @@ When `behavior` is `auto`, ToolMesh fetches all pages transparently. When `expos
 
 ## 8 Error Mapping
 
-Error mapping triggers on **non-2xx responses**. `2xx` bodies always flow through the response pipeline (Section 9) — APIs that embed error indicators in `200` responses cannot be mapped here. A status listed in neither `retry_on` nor `terminal` is treated as terminal (no retry). The single automatic re-authentication retry on `401` (Sections 5.3/5.4) happens below error mapping and is not affected by `terminal: [401]`.
+Error mapping triggers on **non-2xx responses**. `2xx` bodies always flow through the response pipeline (Section 9) — APIs that embed error indicators in `200` responses cannot be mapped here. Redirects are followed by the HTTP transport; a `3xx` that still surfaces (redirect loop, limit reached) enters error mapping like any other status. A status listed in neither `retry_on` nor `terminal` is treated as terminal (no retry); a status MUST NOT appear in both lists (Section 15.2). The single automatic re-authentication retry on `401` (Sections 5.3/5.4) happens below error mapping and is not affected by `terminal: [401]` — it is safe for every method, because a `401` means the server rejected the request before executing it.
+
+**Retry safety** *(normative since v0.2)*: an automatic retry re-executes the request — after a timeout or `5xx`, the provider may already have performed the operation. Consumers MUST therefore apply `retry_on` (and the rate-limit retries of Section 8.1) only when at least one of the following holds:
+
+- the method is idempotent by HTTP semantics (`GET`, `HEAD`, `PUT`, `DELETE`),
+- the tool declares `idempotency` (Section 6.6) — the reused key makes re-execution safe,
+- the tool opts in explicitly with `retry_unsafe: true` (the author accepts duplicate execution).
+
+A `POST` or `PATCH` without `idempotency` and without `retry_unsafe` fails on the first retryable error instead of being retried.
 
 ```yaml
 # defaults.errors
@@ -902,6 +947,11 @@ try {
 | `rate_limited` | 429 |
 | `internal` | 500 |
 | `unavailable` | 502, 503, 504 |
+| `client_error` | any other 4xx |
+| `server_error` | any other 5xx |
+| `unexpected_status` | anything else that surfaces (e.g. an unresolved 3xx) |
+
+The last three are catch-alls — every non-2xx status maps to *some* semantic code; `e.code` is never absent.
 
 `map` overrides the defaults selectively — declare it only for statuses the API uses in a non-standard way (e.g. `400` for missing resources). Only `4xx`/`5xx` statuses can be mapped; `2xx` responses never enter error mapping (see the trigger rule above). Note for validation: YAML integer keys (`404:`) are stringified (`"404"`) when a document is checked against the canonical JSON Schema. Like `access`, the code values are not restricted: custom codes (e.g. `insufficient_funds`) are passed through as opaque strings, but the well-known codes above SHOULD be preferred so error-handling code stays portable across backends.
 
@@ -953,7 +1003,7 @@ get_all_device_status:
 | `metadata_path` | string | JSONPath to pagination/meta info (not sent to LLM). |
 | `transform` | string | jq filter applied after `result_path` extraction. Use to flatten, rename, or filter fields. |
 | `max_items` | integer | Truncate arrays to this length (prevents context overflow). |
-| `allow_jq_override` | boolean | When `true`, the LLM can pass ad-hoc jq filters at call time. |
+| `allow_jq_override` | boolean | When `true`, the LLM can pass ad-hoc jq filters at call time. Consumers MUST run such filters under resource limits: CPU/wall-clock time, memory, maximum serialized output size, and recursion depth — an ad-hoc filter can burn resources even though it cannot unmask redacted data. |
 | `redact` | array of string | JSONPaths whose values are masked before the response leaves ToolMesh. *(since v0.2 — see Section 9.3)* |
 
 > **Best practice:** Always add `response.transform` to status/list endpoints that return more than ~5KB per item. LLM context is expensive — strip firmware versions, MAC addresses, WiFi RSSI, uptime counters, and other system internals unless they are the primary purpose of the tool.
@@ -993,10 +1043,12 @@ Every field that takes a JSONPath expression — `result_path`, `metadata_path`,
 
 | Construct | Example | Support |
 |-----------|---------|---------|
-| Root + name selectors (dot notation) | `$.data.items` | REQUIRED everywhere |
-| Index selector, including negative | `$.data[-1].id` | REQUIRED everywhere |
-| Wildcard selector | `$[*].secret` | REQUIRED for `redact`; OPTIONAL elsewhere |
+| Root + name selectors (dot notation) | `$.data.items` | REQUIRED |
+| Index selector, including negative | `$.data[-1].id` | REQUIRED |
+| Wildcard selector | `$[*].secret` | REQUIRED |
 | Descendant segments, slices, filters | `$..id`, `$[1:3]`, `$[?(...)]` | Not part of the dialect — authors MUST NOT use them |
+
+All three selector kinds are REQUIRED in **every** JSONPath field — a conforming consumer supports the same dialect everywhere, so a valid document behaves identically across consumers. Validators MUST reject paths outside the dialect (Section 15.2).
 
 A consumer that encounters a construct it does not implement MUST fail the call (or reject the file at load time) rather than silently returning nothing — for `redact`, a non-matching path is a no-op only when the path is *valid* and simply absent from the data, never because the engine could not parse it.
 
@@ -1126,12 +1178,20 @@ composites:
 |-------|------|----------|-------------|
 | `description` | string | yes | Used as JSDoc comment in TypeScript interface |
 | `access` | string | no | Access classification, same values and policy mapping as for tools (Section 6.4). *(since v0.2)* |
+| `delegates` | array | no | Inner tools this composite intends to call under **its own** authority instead of the caller's — effective only with deployment-policy approval. See Authorization below. *(since v0.2)* |
 | `params` | object | no | Input parameters (same syntax as tool params, but `in:` is not used) |
 | `code` | string | yes | TypeScript/JavaScript function body. Has access to `api.*` (all tools in this backend) and `params` (input parameters). |
 | `timeout` | string | no | Max execution time (default: `30s`). Killed after timeout. |
 | `depends_on` | array | no | Informational: primitive tools called internally. |
 
-**Authorization** *(since v0.2)*: the policy layer treats a composite exactly like a tool — its `access` value feeds the same role mapping. The composite is the **authorization boundary**: a caller authorized for the composite may trigger all of its inner `api.*` calls, which run server-side under the composite's execution context and are NOT re-checked against the caller's per-tool permissions (each inner call is still audited individually, Section 12.4). Choose `access` to reflect what the composite actually does: it SHOULD carry at least the highest classification among the tools it calls — unless the composite deliberately narrows scope (e.g. hard-wired parameters that turn a broad `write` primitive into one specific, safe operation), in which case the narrower value is the point.
+**Authorization** *(since v0.2)*: the policy layer treats a composite exactly like a tool — its `access` value feeds the same role mapping. For its inner calls, the default is **fail-closed**: every inner `api.*` call is additionally checked against the **caller's** per-tool permissions. A caller cannot reach anything through a composite that it could not call directly — a DADL file, including one installed from a registry, can never widen privileges by itself.
+
+Deliberate encapsulation (hard-wired parameters turning a broad `write` primitive into one specific, safe operation that e.g. `read` users should be able to invoke) uses a two-key mechanism:
+
+1. The composite **declares** which inner tools it intends to run under its own authority: `delegates: [delete_item]`. The declaration alone changes nothing; validators check that every entry names an existing tool (Section 15.2), registries and audits can flag it.
+2. The **deployment policy** approves the delegation (per backend or per composite). Only then do the listed inner calls skip the caller re-check and run under the composite's authority.
+
+Runtimes MUST NOT honor `delegates` without deployment approval — the author proposes, the operator decides, mirroring the `access` → policy-mapping split. Inner calls are audited individually in every mode (Section 12.4). `access` SHOULD reflect what the composite does from the caller's perspective; with approved delegation the narrower value is exactly the point.
 
 ### 12.4 Sandbox & Security
 
@@ -1190,8 +1250,7 @@ backend:
     timeout: 5s
 
   defaults:
-    headers:
-      Content-Type: application/x-www-form-urlencoded
+    content_type: application/x-www-form-urlencoded
     pagination:
       strategy: cursor
       request:
@@ -1301,9 +1360,14 @@ A file is a **conforming DADL document** when:
 3. it satisfies the constraints that JSON Schema cannot express. Machine-checkable — validators MUST enforce:
    - every `{param}` placeholder in a `path` has a matching `params` entry with `in: path`, and vice versa;
    - `replaced_by` references an existing tool or composite in the same file;
-   - every load-bearing feature the file uses (`redact`, `idempotency` — Section 15.3) is declared in `requires.features`;
+   - every load-bearing feature the file uses (`redact`, `idempotency`, `rotates_refresh_token` — Section 15.3) is declared in `requires.features`;
    - a file using any feature marked *(since v0.2)* declares a v0.2 `spec` URL;
    - `health.tool` references an existing tool in the same file, and that tool has no required parameters;
+   - every `delegates` entry references an existing tool in the same file;
+   - every `returns` / bare-name / `$ref` type reference resolves to a declared type (Section 6.5);
+   - every JSONPath expression parses within the Section 9.4 dialect;
+   - no status code appears in both `retry_on` and `terminal`;
+   - a declared `idempotency.header` does not collide with a `params` entry of `in: header` or a `defaults.headers` key;
    - includes are at most one level deep, and include fragments carry `_fragment: true`.
 
    Author obligations — not machine-checkable; registries enforce by review:
@@ -1314,7 +1378,9 @@ Document conformance is evaluated **after includes are resolved**; fragment file
 
 **Validation strictness is context-dependent** (see Section 15.3): publish-time validators (registry CI, `dadl validate`) MUST treat unknown keys as errors; runtime consumers MUST NOT.
 
-Registries MAY impose additional publication requirements beyond document conformance — the public DADL registry, for example, requires `credits`, `source_name`, `source_url`, and `date`.
+The canonical schema is the **strict publish-time profile** (unknown keys are errors). Runtimes do not consume it with these settings — their warn-and-ignore behavior (Section 15.3) is a different validation profile by design; the two must not be conflated.
+
+Registries MAY impose additional publication requirements beyond document conformance — the public DADL registry, for example, requires `credits`, `source_name`, `source_url`, `date`, and an explicit `access` classification on every tool and composite (tools without `access` are unrestricted by access-based policies, Section 6.4 — an acceptable default for private files, not for published ones).
 
 ### 15.3 Forward Compatibility: Unknown Keys & `requires`
 
@@ -1352,8 +1418,9 @@ A runtime that cannot satisfy every entry in `requires` MUST refuse to load the 
 | `deprecation` | 6.7 |
 | `semantic_errors` | 8.2 |
 | `redact` | 9.3 |
+| `refresh_token_rotation` | 5.3 |
 
-> **Authoring rule:** files MUST declare `requires.features` for every feature whose silent absence would change semantics dangerously — `redact` and `idempotency` always; `returns` or `deprecation` (documentation-only) need not be declared. Validators enforce this mechanically (feature used ⟹ feature declared). The OAuth flows need no `requires` entry: they are covered by the unknown-value policy (`auth.flow` is behavior-determining) plus the mandatory v0.2 `spec` URL.
+> **Authoring rule:** files MUST declare `requires.features` for every feature whose silent absence would change semantics dangerously — `redact`, `idempotency`, and `refresh_token_rotation` always; `returns` or `deprecation` (documentation-only) need not be declared. Validators enforce this mechanically (feature used ⟹ feature declared). The OAuth flows themselves need no `requires` entry: they are covered by the unknown-value policy (`auth.flow` is behavior-determining) plus the mandatory v0.2 `spec` URL.
 
 **Bootstrap limitation.** The fail-closed guarantee of `requires` binds only consumers that implement `requires` itself (spec v0.2 and later). A consumer predating it sees an unknown top-level key and — under its own policy — ignores it; the `spec:` URL is the only signal such a consumer can act on. This is inherent to introducing the mechanism and is why a consumer SHOULD warn whenever it loads a file declaring a spec version newer than the one it implements (Section 15.4).
 
@@ -1361,14 +1428,22 @@ The design rationale is recorded in ADR-0003 (*DADL Spec Versioning & Forward Co
 
 ### 15.4 Consumer Conformance
 
-A **conforming DADL consumer** (runtime):
+Consumer conformance comes in three profiles, so "supports DADL v0.2" always has a precise meaning:
 
-- MUST implement the unknown-key policy above and MUST honor `requires` fail-closed;
-- MUST resolve credentials outside the LLM context — credential values, tokens, and signed assertions MUST NOT appear in tool results, generated interfaces, or logs;
-- MUST apply `response.redact` before any caller-visible output, including ad-hoc jq overrides and audit payloads;
-- MUST keep idempotency keys stable across retries of the same logical call;
-- SHOULD implement every auth type (Section 5) and pagination strategy (Section 7) of the spec version it advertises, and MUST reject files declaring an unsupported value of a behavior-determining enum (`backend.type`, `auth.type`, `auth.flow`, `pagination.strategy`, `pagination.behavior`, `idempotency.generate`, `response.stream_handling`) rather than guessing — never call the API unauthenticated or with wrong semantics;
-- MAY load files declaring a *newer* spec version than it implements (best effort, with a warning and per-key warnings on unknown keys) — unless `requires` says otherwise.
+**Profile 1 — Document Validator** (registry CI, `dadl validate`, linters): implements the canonical schema plus every machine-checkable constraint of Section 15.2, with strict unknown-key handling. Makes no claims about execution.
+
+**Profile 2 — Core Runtime**: executes DADL files and MUST, without exception:
+
+- implement the unknown-key policy (warn and ignore) and honor `requires` fail-closed;
+- reject files declaring an unsupported value of a behavior-determining enum (`backend.type`, `auth.type`, `auth.flow`, `pagination.strategy`, `pagination.behavior`, `idempotency.generate`, `response.stream_handling`) rather than guessing — never call the API unauthenticated or with wrong semantics;
+- accept `api_key` as an alias for `apikey`;
+- resolve credentials outside the LLM context — credential values, tokens, and signed assertions MUST NOT appear in tool results, generated interfaces, logs, or workflow history;
+- apply `response.redact` before any caller-visible output (including ad-hoc jq overrides and audit payloads), enforce the retry-safety rules of Section 8, keep idempotency keys stable across retries, apply the composite authorization default of Section 12.3, and meet the `file_url` security requirements of Section 6.2 for the features it implements;
+- implement the Section 9.4 JSONPath dialect wherever it accepts JSONPath.
+
+A Core Runtime MAY leave whole features unimplemented (an auth flow, pagination strategy, composites, the file broker) — the unknown-value policy and `requires` turn every such gap into a clean load-time rejection instead of wrong behavior. It MAY load files declaring a *newer* spec version than it implements (best effort, with a warning and per-key warnings) — unless `requires` says otherwise.
+
+**Profile 3 — Full Runtime**: a Core Runtime that implements **every** non-optional semantic this specification defines — all auth types and flows (Section 5), all pagination strategies (Section 7), health checks, composites, and file handling. "Full v0.2 support" claims this profile; anything less names the profile and its gaps (e.g. "Core Runtime; no `jwt_bearer`, no composites").
 
 ---
 

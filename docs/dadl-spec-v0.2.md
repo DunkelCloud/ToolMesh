@@ -21,7 +21,7 @@ Write a `.dadl` file — ToolMesh handles the rest.
 - Section 4: corrected `base_url` to optional (the v0.1 document said required; the runtime has always treated it as optional — self-hosted APIs get their URL from the deployment's `backends.yaml`).
 - Section 6: normative override semantics — a tool-level `response`, `errors`, or `pagination` object replaces the corresponding `defaults` object; `response.redact` is the deliberate exception and merges additively.
 - Section 11.1: YAML merge keys (`<<`) are now discouraged (shallow-merge data loss, dropped from YAML 1.2, rejected by the public registry); examples use whole-node anchors.
-- Section 12.3: composites can carry an `access` classification, mirroring tools (Section 6.4); the composite is the authorization boundary for its inner calls.
+- Section 12.3: composites can carry an `access` classification, mirroring tools (Section 6.4); for the authorization semantics of their inner calls see the fail-closed item below.
 - Section 4.6: optional `health` declaration (absent = no check, nothing runs). Two forms: reference a declared tool or an inline endpoint. A declared check is exposed as a synthetic `health` tool returning a standardized result — including an optional `auth_expires_at` (from `auth_expires_path` or deployment metadata) for proactive credential-expiry warnings. For `toolmesh setup`, monitoring, and LLM self-diagnosis.
 - Section 6: new per-tool fields `returns` (typed results, Section 6.5), `idempotency` (safe write retries, Section 6.6), and `deprecated` / `replaced_by` (migration paths, Section 6.7).
 - Section 8.2: new `errors.map` — HTTP status codes are mapped to semantic error codes (`not_found`, `conflict`, `rate_limited`, …) so Code Mode error handling can branch on stable values.
@@ -35,7 +35,7 @@ Write a `.dadl` file — ToolMesh handles the rest.
 - Section 9.4: the DADL JSONPath dialect is pinned — RFC 9535 syntax and semantics for name, index, and wildcard selectors.
 - Section 5.3: refresh-token rotation supported via `rotates_refresh_token` (atomic persistence rules; feature identifier `refresh_token_rotation`); declarative `authorization_params`, `redirect_uri`, and `token_auth` replace provider-specific behavior.
 - Section 12.3: composite authorization is fail-closed by default (inner calls re-checked against the caller); deliberate encapsulation requires declared `delegates` plus deployment-policy approval.
-- Sections 6.2 / 9.1 / 15.2: consumer security requirements for `file_url` fetching (SSRF hardening), ad-hoc jq sandbox limits, and the registry publication profile (mandatory `access`).
+- Sections 6.2 / 9.2 / 15.2: consumer security requirements for `file_url` fetching (SSRF hardening), ad-hoc jq sandbox limits, and the registry publication profile (mandatory `access`).
 - Section 15.4: consumer conformance restructured into three profiles (Document Validator, Core Runtime, Full Runtime).
 
 **Compatibility notes** (why the additivity claim above holds, item by item):
@@ -46,6 +46,8 @@ Write a `.dadl` file — ToolMesh handles the rest.
 | YAML merge keys (`<<`, shown in v0.1 §11.1) | Merge keys are resolved by the YAML parser before validation — document conformance is unaffected. The public registry's rejection of `<<` is pre-existing CI policy, not a v0.2 conformance rule; Section 11.1 now documents the shallow-merge pitfall that motivated it. |
 | Hint values (v0.1: "key-value pairs") | v0.2 pins values to scalars. This documents long-standing validation practice (the registry schema always required scalar values) and is a *relaxation* of that practice (numbers and booleans are now accepted alongside strings). |
 | Tool-level `response`/`errors`/`pagination` overrides | The replace-not-merge semantics in Section 6 document behavior ToolMesh has always implemented; v0.2 adds the `redact` additive exception on top. No existing file changes behavior. |
+| `params` without `in:` | Now rejected at validation time (Section 6.1). This surfaces a bug rather than changing behavior: such parameters were **silently dropped** by the runtime since v0.1 — a file relying on them was already broken. |
+| `inject_into: query` without `query_param` | Documents declaring v0.2 MUST name the query parameter (validator rule, Section 15.2) — an injection without a parameter name cannot work. The canonical schema keeps `query_param` optional so that v0.1 files (which could not know the field) remain schema-valid. |
 
 ---
 
@@ -145,6 +147,7 @@ backend:
 | `defaults` | object | no | Default headers, pagination, error, and response config for all tools. Supports `headers` (map of default HTTP headers), `content_type` (default request-body content type; per-tool `content_type` overrides it), `pagination`, `errors`, and `response`. `content_type` governs body encoding *and* the `Content-Type` header — do not additionally set `defaults.headers.Content-Type`; when both are present, `content_type` wins. |
 | `types` | object | no | Type definitions (JSON Schema subset). Only needed without `openapi_source`. |
 | `tools` | object | yes | Map of tool definitions |
+| `composites` | object | no | Map of composite tool definitions (server-side TypeScript). See Section 12. |
 | `examples` | array | no | Code examples for multi-step workflows (few-shot prompts for the LLM). See Section 4.4. |
 | `coverage` | object | no | API coverage metadata. Helps LLMs understand scope and users assess fitness. |
 | `hints` | object | no | Per-tool domain knowledge for LLM consumers (structured key-value). Injected into tool descriptions at load time. Subject to security scanning. |
@@ -288,7 +291,9 @@ Two forms:
 backend:
   health:
     tool: get_health       # existing tool in this file; MUST have no required params
+```
 
+```yaml
 # health — form 2: inline endpoint (when no tool is worth declaring for it)
 backend:
   health:
@@ -300,7 +305,7 @@ backend:
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `tool` | string | form 1: yes | Name of a declared tool to use as the check. The tool MUST NOT have required parameters. Mutually exclusive with `method`/`path`. |
+| `tool` | string | form 1: yes | Name of a declared **tool** (not a composite) to use as the check. The tool MUST NOT have required parameters. Mutually exclusive with `method`/`path`. |
 | `method` | string | no | HTTP method (form 2). Default: `GET`. |
 | `path` | string | form 2: yes | URL path relative to `base_url`. Must not contain `{param}` placeholders. |
 | `expect_status` | integer | no | Exact expected status code. Default: any `2xx` passes. |
@@ -505,7 +510,7 @@ auth:
 
 The canonical type name is `apikey` *(corrected in v0.2: the v0.1 document spelled it `api_key`, which the ToolMesh parser has never accepted — published DADL files use `apikey`)*. Because the v0.1 text declared `api_key` valid, consumers MUST accept it: validators and runtimes MUST treat `api_key` as an alias for `apikey`. New files SHOULD write `apikey`.
 
-With `inject_into: query`, `query_param` names the query parameter that carries the key (e.g. `?api_key=...`); `header_name` is ignored. With `inject_into: header` (the default), `header_name` names the header and `query_param` is ignored.
+With `inject_into: query`, `query_param` names the query parameter that carries the key (e.g. `?api_key=...`); `header_name` is ignored. Documents declaring v0.2 MUST set `query_param` when using `inject_into: query` — an injection without a parameter name cannot work (validators enforce this; the canonical schema leaves the field optional for v0.1 compatibility). With `inject_into: header` (the default), `header_name` names the header and `query_param` is ignored.
 
 ---
 
@@ -683,12 +688,19 @@ tools:
     path: /repos/{owner}/{repo}/branches/{branch}/protection
     access: admin
     description: "Update branch protection rules"
+    params:
+      owner: { type: string, in: path, required: true }
+      repo: { type: string, in: path, required: true }
+      branch: { type: string, in: path, required: true }
 
   delete_repo:
     method: DELETE
     path: /repos/{owner}/{repo}
     access: dangerous
     description: "Delete a repository"
+    params:
+      owner: { type: string, in: path, required: true }
+      repo: { type: string, in: path, required: true }
 ```
 
 #### Well-Known Values
@@ -791,7 +803,7 @@ create_charge:
 | `header` | string | yes | Header name the API expects (e.g. `Idempotency-Key`, `X-Request-Id`). |
 | `generate` | string | no | Key generator. `uuid_v4` (default) is the only value defined in v0.2; further generators are reserved. |
 
-**Semantics:** ToolMesh generates the key **before the first attempt** of a logical tool call and persists it as part of the durable Activity input (workflow history) — every retry of that call, including after a worker crash or process restart, replays the same key. Two distinct tool calls always get distinct keys. The header is managed by ToolMesh; callers cannot override it, and the declared header name MUST NOT collide with a `params` entry of `in: header` or a `defaults.headers` key (Section 15.2).
+**Semantics:** ToolMesh generates the key **before the first attempt** of a logical tool call and persists it as part of the durable Activity input (workflow history) — every retry of that call, including after a worker crash or process restart, replays the same key. Two distinct tool calls always get distinct keys. The header is managed by ToolMesh; callers cannot override it, and the declared header name MUST NOT collide — case-insensitively, as HTTP header names compare — with a `params` entry of `in: header` or a `defaults.headers` key (Section 15.2).
 
 > **Best practice:** declare `idempotency` on every `POST` tool whose API supports it. `GET`/`PUT`/`DELETE` are typically idempotent by design and do not need it.
 
@@ -842,7 +854,7 @@ pagination:
   max_pages: 10              # safety limit
 ```
 
-When `behavior` is `auto`, ToolMesh fetches all pages transparently. When `expose`, the LLM controls pagination via the cursor parameter in Code Mode: ToolMesh injects the cursor/page parameter (named by `request.cursor_param` / `page_param`) into the generated TypeScript interface from the pagination config — declaring it in `params` is OPTIONAL and only useful to customize its description.
+When `behavior` is `auto`, ToolMesh fetches all pages transparently. When `expose`, the LLM controls pagination via the cursor parameter in Code Mode: ToolMesh injects the paging parameter (named by `request.cursor_param` / `page_param` / `offset_param`, matching the strategy) into the generated TypeScript interface from the pagination config — declaring it in `params` is OPTIONAL and only useful to customize its description. For `page`-strategy APIs that report the page count in a header, `response.total_pages_header` names it.
 
 ---
 
@@ -879,6 +891,8 @@ errors:
     429: rate_limited
 ```
 
+`format` declares how error bodies are parsed: `json` (the fully specified value — `message_path`/`code_path` apply), `text` (the whole body becomes the message; the paths are ignored), or `xml` (reserved — parsing behavior is implementation-defined in v0.2). `retry_strategy.backoff: exponential` is the defined strategy; other values are implementation-defined.
+
 ### 8.1 Rate Limit Behavior
 
 When `rate_limit` is configured, ToolMesh performs **proactive throttling** — it inspects rate-limit headers on every response and acts before the API rejects requests.
@@ -891,8 +905,8 @@ When `rate_limit` is configured, ToolMesh performs **proactive throttling** — 
    - The `retry_after_header` response header (e.g. `Retry-After: 30`) — seconds or HTTP date.
    - The `X-RateLimit-Reset` header if present — Unix timestamp.
    - Fallback: exponential backoff starting at `retry_strategy.initial_delay`.
-4. After waiting, ToolMesh retries the request. This counts toward `retry_strategy.max_retries`.
-5. If a `429` response arrives despite proactive throttling (race condition, shared quota), it is handled by `retry_on` with the same backoff strategy.
+4. After waiting, ToolMesh sends the request. Proactive waiting happens **before** anything was sent — it is not a re-execution and is exempt from the Section 8 retry-safety rule; the wait still counts toward `retry_strategy.max_retries` as a budget.
+5. If a `429` response arrives despite proactive throttling (race condition, shared quota), it is handled by `retry_on` with the same backoff strategy — this *is* a re-execution, so the Section 8 retry-safety rule applies.
 
 **When `rate_limit` is not configured:** ToolMesh relies solely on `retry_on` — a `429` response triggers reactive retries with the configured backoff strategy. No proactive throttling occurs.
 
@@ -1039,7 +1053,7 @@ list_webhooks:
 
 ### 9.4 JSONPath Dialect *(pinned in v0.2)*
 
-Every field that takes a JSONPath expression — `result_path`, `metadata_path`, `redact`, `errors.message_path` / `code_path`, `pagination.response.next_cursor` / `has_more`, `health.expect_path`, and session `extract` — uses [RFC 9535](https://www.rfc-editor.org/rfc/rfc9535) syntax and semantics, restricted to this subset:
+Every field that takes a JSONPath expression — `result_path`, `metadata_path`, `redact`, `errors.message_path` / `code_path`, `pagination.response.next_cursor` / `has_more`, `health.expect_path` / `auth_expires_path`, and session `extract` — uses [RFC 9535](https://www.rfc-editor.org/rfc/rfc9535) syntax and semantics, restricted to this subset:
 
 | Construct | Example | Support |
 |-----------|---------|---------|
@@ -1167,7 +1181,7 @@ composites:
         name: nameMap[d.id] || d.id
       }));
       if (params.only_on) {
-        return result.filter(d => d.relay_on || d.light_on || d.switch_on);
+        return result.filter(d => d.relay_on || d.switch_on);
       }
       return result;
 ```
@@ -1367,7 +1381,8 @@ A file is a **conforming DADL document** when:
    - every `returns` / bare-name / `$ref` type reference resolves to a declared type (Section 6.5);
    - every JSONPath expression parses within the Section 9.4 dialect;
    - no status code appears in both `retry_on` and `terminal`;
-   - a declared `idempotency.header` does not collide with a `params` entry of `in: header` or a `defaults.headers` key;
+   - a declared `idempotency.header` does not collide (case-insensitively — HTTP header names) with a `params` entry of `in: header` or a `defaults.headers` key;
+   - in documents declaring v0.2: `auth.inject_into: query` declares `query_param`;
    - includes are at most one level deep, and include fragments carry `_fragment: true`.
 
    Author obligations — not machine-checkable; registries enforce by review:
@@ -1419,6 +1434,8 @@ A runtime that cannot satisfy every entry in `requires` MUST refuse to load the 
 | `semantic_errors` | 8.2 |
 | `redact` | 9.3 |
 | `refresh_token_rotation` | 5.3 |
+| `composites` | 12 |
+| `file_url` | 6.2 |
 
 > **Authoring rule:** files MUST declare `requires.features` for every feature whose silent absence would change semantics dangerously — `redact`, `idempotency`, and `refresh_token_rotation` always; `returns` or `deprecation` (documentation-only) need not be declared. Validators enforce this mechanically (feature used ⟹ feature declared). The OAuth flows themselves need no `requires` entry: they are covered by the unknown-value policy (`auth.flow` is behavior-determining) plus the mandatory v0.2 `spec` URL.
 
@@ -1441,7 +1458,7 @@ Consumer conformance comes in three profiles, so "supports DADL v0.2" always has
 - apply `response.redact` before any caller-visible output (including ad-hoc jq overrides and audit payloads), enforce the retry-safety rules of Section 8, keep idempotency keys stable across retries, apply the composite authorization default of Section 12.3, and meet the `file_url` security requirements of Section 6.2 for the features it implements;
 - implement the Section 9.4 JSONPath dialect wherever it accepts JSONPath.
 
-A Core Runtime MAY leave whole features unimplemented (an auth flow, pagination strategy, composites, the file broker) — the unknown-value policy and `requires` turn every such gap into a clean load-time rejection instead of wrong behavior. It MAY load files declaring a *newer* spec version than it implements (best effort, with a warning and per-key warnings) — unless `requires` says otherwise.
+A Core Runtime MAY leave whole features unimplemented — the unknown-value policy covers gaps in enum-declared behavior (an auth flow, a pagination strategy), and `requires.features` covers optional feature areas (`composites`, `file_url`): files depending on such an area SHOULD declare it, turning the gap into a clean load-time rejection instead of silently missing tools. It MAY load files declaring a *newer* spec version than it implements (best effort, with a warning and per-key warnings) — unless `requires` says otherwise.
 
 **Profile 3 — Full Runtime**: a Core Runtime that implements **every** non-optional semantic this specification defines — all auth types and flows (Section 5), all pagination strategies (Section 7), health checks, composites, and file handling. "Full v0.2 support" claims this profile; anything less names the profile and its gaps (e.g. "Core Runtime; no `jwt_bearer`, no composites").
 

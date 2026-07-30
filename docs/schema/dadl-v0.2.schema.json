@@ -22,7 +22,7 @@
         "features": {
           "type": "array",
           "items": { "type": "string" },
-          "description": "Feature identifiers this file depends on, fail-closed (v0.2: refresh_token, jwt_bearer, authorization_code, health, returns, idempotency, deprecation, semantic_errors, redact)"
+          "description": "Feature identifiers this file depends on, fail-closed (v0.2: refresh_token, jwt_bearer, authorization_code, refresh_token_rotation, health, returns, idempotency, deprecation, semantic_errors, redact, composites, file_url)"
         }
       },
       "additionalProperties": false
@@ -82,8 +82,8 @@
         },
         "version": {
           "type": "string",
-          "pattern": "^\\d+\\.\\d+(\\.\\d+)?$",
-          "description": "SemVer-compatible shorthand (e.g. '1.0', '1.2.1'); '1.2' is compared as '1.2.0'. Used for upgrade detection."
+          "pattern": "^\\d+\\.\\d+(\\.\\d+)?(-[0-9A-Za-z.-]+)?(\\+[0-9A-Za-z.-]+)?$",
+          "description": "SemVer-compatible shorthand (e.g. '1.0', '1.2.1', '1.2.0-beta'); '1.2' is compared as '1.2.0'. Used for upgrade detection."
         },
         "base_url": {
           "type": "string",
@@ -312,15 +312,15 @@
         },
         {
           "if": { "properties": { "type": { "enum": ["bearer", "basic", "api_key", "apikey"] } }, "required": ["type"] },
-          "then": { "properties": { "token_url": false, "authorize_url": false, "flow": false, "client_id_credential": false, "client_secret_credential": false, "service_account_credential": false, "refresh_token_credential": false, "login": false, "inject": false } }
+          "then": { "properties": { "token_url": false, "authorize_url": false, "flow": false, "client_id_credential": false, "client_secret_credential": false, "service_account_credential": false, "refresh_token_credential": false, "rotates_refresh_token": false, "authorization_params": false, "redirect_uri": false, "token_auth": false, "subject": false, "scopes": false, "token_cache_key": false, "refresh_before_expiry": false, "login": false, "inject": false, "refresh": false } }
         },
         {
           "if": { "properties": { "type": { "const": "oauth2" } }, "required": ["type"] },
-          "then": { "properties": { "credential": false, "login": false, "inject": false } }
+          "then": { "properties": { "credential": false, "username_credential": false, "password_credential": false, "login": false, "inject": false, "refresh": false } }
         },
         {
-          "if": { "properties": { "inject_into": { "const": "query" } }, "required": ["inject_into"] },
-          "then": { "required": ["query_param"] }
+          "if": { "properties": { "type": { "const": "session" } }, "required": ["type"] },
+          "then": { "properties": { "credential": false, "token_url": false, "authorize_url": false, "flow": false, "client_id_credential": false, "client_secret_credential": false, "service_account_credential": false, "refresh_token_credential": false, "rotates_refresh_token": false, "authorization_params": false, "redirect_uri": false, "token_auth": false, "subject": false, "scopes": false, "token_cache_key": false, "refresh_before_expiry": false } }
         },
         {
           "if": { "properties": { "type": { "const": "basic" } }, "required": ["type"] },
@@ -331,7 +331,12 @@
           "then": { "required": ["login", "inject"] }
         },
         {
-          "if": { "properties": { "type": { "const": "oauth2" } }, "required": ["type"] },
+          "if": {
+            "allOf": [
+              { "properties": { "type": { "const": "oauth2" } }, "required": ["type"] },
+              { "not": { "properties": { "flow": { "const": "jwt_bearer" } }, "required": ["flow"] } }
+            ]
+          },
           "then": { "required": ["token_url"] }
         },
         {
@@ -400,6 +405,7 @@
           "properties": {
             "method": {
               "type": "string",
+              "enum": ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"],
               "description": "HTTP method (default: GET)"
             },
             "path": {

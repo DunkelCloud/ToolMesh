@@ -1,6 +1,6 @@
 ---
-status: proposed
-date: 2026-07-23
+status: accepted
+date: 2026-07-30
 ---
 
 # DADL Spec Versioning & Forward Compatibility
@@ -68,8 +68,8 @@ requires:
 A runtime that cannot satisfy every entry MUST refuse to load the file
 (fail-closed) with a message naming the missing capability. Each spec release
 defines the feature identifiers it introduces (v0.2: `refresh_token`, `jwt_bearer`,
-`authorization_code`, `health`, `returns`, `idempotency`, `deprecation`,
-`semantic_errors`, `redact`).
+`authorization_code`, `refresh_token_rotation`, `health`, `returns`, `idempotency`,
+`deprecation`, `semantic_errors`, `redact`, `composites`, `file_url`).
 
 `requires.features` is preferred over `requires.toolmesh` for portability: it names
 the capability rather than one implementation's version number, so non-ToolMesh
@@ -77,8 +77,8 @@ consumers can evaluate it too. The version range remains available for
 implementation-specific needs (e.g. a known runtime bug fixed in a given release).
 
 Authoring rule: files MUST declare `requires.features` for every feature whose
-silent absence would change semantics dangerously (`redact`, `idempotency`);
-documentation-only features need not be declared.
+silent absence would change semantics dangerously (`redact`, `idempotency`,
+`refresh_token_rotation`); documentation-only features need not be declared.
 
 Spec versions themselves stay additive within the 0.x line: every valid v0.1 file
 is a valid v0.2 file, and the `spec:` URL pins which schema a file validates

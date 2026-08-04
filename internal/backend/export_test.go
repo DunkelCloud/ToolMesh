@@ -48,6 +48,11 @@ const (
 	testToolFetchURL  = "fetch_url"
 	testDescWebSearch = "search the web"
 
+	// Fixture tool names for the MCP include_tools tests: a backend that
+	// offers two useful tools plus one an operator would rather hide.
+	testToolFetchURLs      = "fetch_urls"
+	testToolBrowserInstall = "browser_install"
+
 	// Vendor backend names used across promotion tests.
 	testVendorBrave  = "brave"
 	testVendorTavily = "tavily"

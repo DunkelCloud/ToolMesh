@@ -15,9 +15,12 @@
 package backend
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -37,6 +40,31 @@ type BackendConfig struct {
 	Backends []BackendEntry `yaml:"backends"`
 }
 
+// UnmarshalBackendConfig decodes a backends.yaml document in strict mode: a
+// key that no field claims is a parse error rather than a silent no-op.
+//
+// Leniency is the wrong default here. A backends.yaml is an operator's
+// statement of intent about which tools an agent may reach; a typo in
+// "expose_tools", or a field ToolMesh never had, would otherwise be dropped
+// without a trace and leave the operator believing a restriction is active
+// when it is not. Failing the parse turns that silent gap into a startup
+// error naming the offending line.
+//
+// An empty document decodes to a zero config rather than an error, so an
+// operator can comment a backends.yaml out entirely without the server
+// refusing to boot.
+func UnmarshalBackendConfig(data []byte, cfg *BackendConfig) error {
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	if err := dec.Decode(cfg); err != nil {
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
 // BackendEntry represents a single backend server configuration.
 type BackendEntry struct {
 	Name            string            `yaml:"name"`
@@ -52,7 +80,7 @@ type BackendEntry struct {
 	Options         map[string]string `yaml:"options"`           // backend-specific options (e.g. blob_ttl: "1h")
 	Env             map[string]string `yaml:"env"`               // credential env remapping (DADL name → actual env var)
 	ExposeTools     []string          `yaml:"expose_tools"`      // tool names to also expose as direct top-level MCP tools (in addition to discover_tools)
-	IncludeTools    []string          `yaml:"include_tools"`     // when set, the ONLY tools this backend exposes (restricts the surface); REST/DADL backends only
+	IncludeTools    []string          `yaml:"include_tools"`     // when set, the ONLY tools this backend exposes (restricts the surface); honored for every transport
 	// AllowPrivateFileURL permits caller-supplied file_url parameters to resolve
 	// to private/loopback/link-local addresses. Default false (independent of
 	// allow_private_url, which only governs the admin-configured base_url).
@@ -94,6 +122,39 @@ type backendConn struct {
 	entry   BackendEntry
 	session *mcp.ClientSession
 	tools   []ToolDescriptor
+	// include is the include_tools allow-set, or nil when the backend places
+	// no restriction on its surface. It is built once at registration and
+	// never mutated afterwards — unlike session and tools, which discovery
+	// and reconnect rewrite — so it is safe to read without holding the
+	// adapter lock.
+	include map[string]bool
+}
+
+// included reports whether a tool name is exposed by this backend. With no
+// include_tools restriction configured (include == nil) every name is
+// included; otherwise only names in the allow-set are.
+func (c *backendConn) included(name string) bool {
+	if c.include == nil {
+		return true
+	}
+	return c.include[name]
+}
+
+// buildMCPIncludeSet turns an include_tools list into a lookup set, returning
+// nil for an empty list ("no restriction").
+//
+// Unlike the REST path, entries cannot be validated here: an MCP backend's
+// tool list is only known after the upstream ListTools call, which happens on
+// connect. Names that match nothing upstream are reported by discoverTools.
+func buildMCPIncludeSet(names []string) map[string]bool {
+	if len(names) == 0 {
+		return nil
+	}
+	set := make(map[string]bool, len(names))
+	for _, name := range names {
+		set[name] = true
+	}
+	return set
 }
 
 // BackendCount returns the number of configured MCP server backends.
@@ -115,7 +176,7 @@ func NewMCPAdapter(configPath string, creds credentials.CredentialStore, logger 
 	}
 
 	var cfg BackendConfig
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
+	if err := UnmarshalBackendConfig(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parse backends config: %w", err)
 	}
 	return NewMCPAdapterFromEntries(cfg.Backends, creds, logger), nil
@@ -138,7 +199,10 @@ func NewMCPAdapterFromEntries(entries []BackendEntry, creds credentials.Credenti
 		if entry.Transport == transportTypeREST {
 			continue
 		}
-		adapter.backends[entry.Name] = &backendConn{entry: entry}
+		adapter.backends[entry.Name] = &backendConn{
+			entry:   entry,
+			include: buildMCPIncludeSet(entry.IncludeTools),
+		}
 		logger.Info("registered backend", "name", entry.Name, "transport", entry.Transport)
 	}
 	return adapter
@@ -265,8 +329,22 @@ func (a *MCPAdapter) discoverTools(ctx context.Context, name string, conn *backe
 	}
 
 	a.logger.Debug("raw tools from backend", "backend", name, "count", len(result.Tools))
+
+	// upstream holds every name the backend offered, before include_tools is
+	// applied. The validation below needs it to tell "you excluded this
+	// yourself" apart from "the backend has no such tool".
+	upstream := make(map[string]struct{}, len(result.Tools))
 	conn.tools = make([]ToolDescriptor, 0, len(result.Tools))
+	hidden := 0
 	for _, t := range result.Tools {
+		upstream[t.Name] = struct{}{}
+
+		if !conn.included(t.Name) {
+			hidden++
+			a.logger.Debug("tool hidden by include_tools", "backend", name, "tool", t.Name)
+			continue
+		}
+
 		schema := make(map[string]any)
 		if t.InputSchema != nil {
 			schemaBytes, _ := json.Marshal(t.InputSchema)
@@ -282,24 +360,57 @@ func (a *MCPAdapter) discoverTools(ctx context.Context, name string, conn *backe
 		})
 	}
 
+	if hidden > 0 {
+		a.logger.Info("tools hidden by include_tools",
+			"backend", name,
+			"hidden", hidden,
+			"exposed", len(conn.tools),
+		)
+	}
 	a.logger.Info("discovered tools", "backend", name, "count", len(conn.tools))
 
-	if len(conn.entry.ExposeTools) > 0 {
-		known := make(map[string]struct{}, len(conn.tools))
-		for _, t := range conn.tools {
-			known[t.Name] = struct{}{}
-		}
-		for _, want := range conn.entry.ExposeTools {
-			if _, ok := known[want]; !ok {
-				a.logger.Warn("expose_tools entry does not match any tool from backend, skipping",
-					"backend", name,
-					"tool", want,
-				)
-			}
+	a.validateSurfaceConfig(name, conn, upstream)
+
+	return nil
+}
+
+// validateSurfaceConfig reports include_tools and expose_tools entries that
+// do not line up with what the backend actually offers. Neither list can be
+// checked before discovery, so the check runs on every (re)connect.
+//
+// Nothing here is fatal: a stale entry costs the operator that one tool, and
+// dropping an entire backend over it would be the harsher failure. The
+// warnings exist so the mismatch is visible in the log instead of showing up
+// later as a tool that mysteriously never appears.
+func (a *MCPAdapter) validateSurfaceConfig(name string, conn *backendConn, upstream map[string]struct{}) {
+	for _, want := range conn.entry.IncludeTools {
+		if _, ok := upstream[want]; !ok {
+			a.logger.Warn("include_tools entry does not match any tool from backend, skipping",
+				"backend", name,
+				"tool", want,
+			)
 		}
 	}
 
-	return nil
+	for _, want := range conn.entry.ExposeTools {
+		if _, ok := upstream[want]; !ok {
+			a.logger.Warn("expose_tools entry does not match any tool from backend, skipping",
+				"backend", name,
+				"tool", want,
+			)
+			continue
+		}
+		// Promoting a tool that include_tools hides would advertise a
+		// top-level tool that discover_tools and execute_code cannot see.
+		// PromotedTools already skips it (it reads the filtered tool list);
+		// the warning tells the operator their config contradicts itself.
+		if !conn.included(want) {
+			a.logger.Warn("expose_tools entry is excluded by include_tools, skipping",
+				"backend", name,
+				"tool", want,
+			)
+		}
+	}
 }
 
 // Execute routes a tool call to the appropriate backend via MCP.
@@ -325,6 +436,13 @@ func (a *MCPAdapter) Execute(ctx context.Context, toolName string, params map[st
 			"realTool", realTool,
 		)
 		return nil, fmt.Errorf("no backend found for tool %q", toolName)
+	}
+
+	// Enforce the include_tools allow-list at the execution boundary too, so a
+	// hidden tool cannot be invoked by guessing its name even though it never
+	// appears in discover_tools/execute_code.
+	if !conn.included(realTool) {
+		return nil, fmt.Errorf("tool %q not found in MCP backend %q", realTool, backendName)
 	}
 
 	if conn.session == nil {

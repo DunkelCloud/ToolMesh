@@ -4,6 +4,11 @@ backends:
   #   transport: http
   #   url: "https://my-service.example.com/mcp"
   #   api_key_env: "MY_SERVICE_API_KEY"
+  #   # Domain knowledge an agent needs to use this backend well — conventions
+  #   # to follow, a page to read first, a gotcha to avoid. It is folded into
+  #   # the execute_code tool description AND attached to the first tool call
+  #   # each caller makes into this backend, so it still arrives in full once
+  #   # the combined description grows long enough for clients to truncate it.
   #   hint: "Short description shown to AI agents"
   #   # Optional: promote selected tools to direct top-level MCP tools (in
   #   # addition to the always-available discover_tools / execute_code surface).

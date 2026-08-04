@@ -54,7 +54,8 @@ type Handler struct {
 	rawTS         string // raw TypeScript content for built-in tools
 	metrics       *metrics.Registry
 	logger        *slog.Logger
-	debugTools    bool // when true, expose debug_echo and debug_generate
+	debugTools    bool          // when true, expose debug_echo and debug_generate
+	hints         *hintNotifier // first-use backend hint delivery; nil = disabled
 
 	// File broker plumbing for the upload_file built-in (nil = tool hidden).
 	blobStore         *blob.Store
@@ -90,6 +91,11 @@ func NewHandler(exec *executor.Executor, back backend.ToolBackend, coercer *tsde
 	if r, ok := back.(backend.ToolAliasResolver); ok {
 		h.aliasResolver = r
 	}
+	// One notifier shared with the code runner, so a backend's hint is
+	// delivered once per principal no matter which surface the call came
+	// through — a direct tool call or one made from inside execute_code.
+	h.hints = newHintNotifier(back)
+	runner.hints = h.hints
 	return h
 }
 
@@ -198,9 +204,34 @@ func (h *Handler) HandleToolCall(ctx context.Context, toolName string, params ma
 			h.logger.DebugContext(ctx, "tool execution error", logKeyTool, toolName, outcomeError, err)
 			return nil, err
 		}
+		h.attachBackendHint(ctx, toolName, result)
 		h.logger.DebugContext(ctx, "tool execution result", logKeyTool, toolName, "isError", result.IsError)
 		return result, nil
 	}
+}
+
+// attachBackendHint prepends the owning backend's configured hint to a result
+// the first time a principal calls into that backend.
+//
+// The notice rides as its own text content block ahead of the payload, never
+// merged into it: consumers read the response body as a unit — response
+// transforms and the code sandbox both parse the first text block as JSON —
+// so text mixed into it would corrupt the result rather than annotate it.
+// Logged at info level so the delivery can be correlated with what the caller
+// did next.
+func (h *Handler) attachBackendHint(ctx context.Context, toolName string, result *backend.ToolResult) {
+	if result == nil {
+		return
+	}
+	notice := h.hints.noticeFor(ctx, toolName)
+	if notice == "" {
+		return
+	}
+	h.logger.InfoContext(ctx, "delivered backend hint on first use", logKeyTool, toolName)
+	result.Content = append([]any{map[string]any{
+		contentKeyType: contentKeyText,
+		contentKeyText: notice,
+	}}, result.Content...)
 }
 
 func (h *Handler) handleDiscoverTools(ctx context.Context, params map[string]any) (*backend.ToolResult, error) {

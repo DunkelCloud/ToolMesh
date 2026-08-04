@@ -28,6 +28,16 @@ for the full narrative and details.
 
 ### Added
 
+- A backend's `hint:` (backends.yaml) is now delivered with the first tool call
+  each caller makes into that backend, in addition to the `execute_code` tool
+  description. That description carries every backend's hint at once, so on a
+  large mesh it grows long enough for clients to truncate it and the hints past
+  the cut are never seen. Attaching the hint to the call delivers it in full, at
+  the moment it is relevant, to whoever is actually using the backend. On a
+  direct call the note arrives as its own content block ahead of the payload;
+  inside `execute_code` it rides beside the result as `notice` (never merged
+  into it — the script consumes the result as data). Delivery is per caller and
+  best-effort: a missed or repeated note costs a few tokens and nothing else.
 - `execute_code`'s wall-clock budget is configurable via `TOOLMESH_CODE_TIMEOUT`
   (seconds, default 120), so an orchestration of several slow backend calls is
   not capped below the backends' own timeouts.

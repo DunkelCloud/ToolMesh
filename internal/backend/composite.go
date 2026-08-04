@@ -309,6 +309,18 @@ func (c *CompositeBackend) LookupTool(toolName string) (ToolDescriptor, bool) {
 	return ToolDescriptor{}, false
 }
 
+// ResolveBackendName reports which backend owns toolName, resolved with the
+// same longest-prefix routing [CompositeBackend.Execute] uses, so the answer
+// always matches where the call would actually go. Both directly-named
+// backends and passthrough sub-backends are covered.
+func (c *CompositeBackend) ResolveBackendName(toolName string) (string, bool) {
+	match, ok := c.longestPrefix(toolName, c.state.Load())
+	if !ok || match.name == "" {
+		return "", false
+	}
+	return match.name, true
+}
+
 // BackendNames returns the names under which this CompositeBackend will
 // route tool calls — both directly-named entries and the sub-backends
 // surfaced via passthrough BackendSummaries. Use this for collision

@@ -100,6 +100,20 @@ type ToolPromoter interface {
 	PromotedTools() []Promotion
 }
 
+// BackendNameResolver maps a canonical "<backend>_<tool>" tool name to the
+// name of the backend that owns it — the same name [BackendInfo.Name] reports,
+// which is what per-backend configuration is keyed by.
+//
+// Callers must not derive the name by splitting on the first underscore:
+// backend names may themselves contain underscores (e.g. "web_search"), and
+// [ToolDescriptor.Backend] is no substitute either, since several backend
+// entries can share one DADL spec and therefore report the same value.
+type BackendNameResolver interface {
+	// ResolveBackendName returns the owning backend's name, or false when no
+	// backend claims the tool. Implementations must be safe for concurrent use.
+	ResolveBackendName(toolName string) (string, bool)
+}
+
 // ToolAliasResolver maps a public promoted tool name to its routing
 // canonical "<backend>_<tool>" form. Returns the input unchanged when no
 // alias is registered for it. Used by the MCP handler to canonicalize tool

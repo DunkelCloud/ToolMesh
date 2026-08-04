@@ -59,6 +59,11 @@ const (
 	resultKeyStatus = "status"
 	resultKeyBytes  = "resultBytes"
 	resultStatusOK  = "ok"
+	// resultKeyNotice carries a gateway-level note about the call (currently
+	// a backend's first-use hint). It sits beside the result rather than
+	// inside it — the script consumes the result as data, so a note folded
+	// into it would corrupt the value the script sees.
+	resultKeyNotice = "notice"
 )
 
 // CodeRunner executes JavaScript code in a sandboxed goja runtime,
@@ -71,6 +76,10 @@ type CodeRunner struct {
 	coercer         *tsdef.Coercer
 	logger          *slog.Logger
 	timeout         time.Duration // wall-clock budget for one Execute; 0 → codeTimeout
+	// hints delivers a backend's first-use hint alongside the call that
+	// triggered it. Set by NewHandler to the handler's own notifier so both
+	// surfaces share one ledger; nil is valid and emits nothing.
+	hints *hintNotifier
 }
 
 // SetTimeout overrides the wall-clock budget for a single execute_code run.
@@ -276,12 +285,19 @@ func (r *CodeRunner) ExecuteWithOptions(ctx context.Context, code string, opts E
 				)
 			}
 
-			// Collect result for the wire-format output
-			mu.Lock()
-			results = append(results, map[string]any{
+			// Collect result for the wire-format output. A first-use backend
+			// hint travels as a sibling key: the script reads the result
+			// itself, so the note must not be inside it.
+			entry := map[string]any{
 				logKeyTool:      cn,
 				resultKeyResult: result,
-			})
+			}
+			if notice := r.hints.noticeFor(ctx, cn); notice != "" {
+				r.logger.InfoContext(ctx, "delivered backend hint on first use", logKeyTool, cn)
+				entry[resultKeyNotice] = notice
+			}
+			mu.Lock()
+			results = append(results, entry)
 			mu.Unlock()
 
 			// Return the actual API response content for JS consumption,
@@ -576,11 +592,17 @@ func compactCallResults(results []any) []any {
 			compacted[i] = entry
 			continue
 		}
-		compacted[i] = map[string]any{
+		compact := map[string]any{
 			logKeyTool:      m[logKeyTool],
 			resultKeyStatus: resultStatusOK,
 			resultKeyBytes:  contentBytes(tr),
 		}
+		// Carry the notice through compaction — it is the one part of the
+		// entry the caller cannot recover by re-reading the returned data.
+		if notice, ok := m[resultKeyNotice]; ok {
+			compact[resultKeyNotice] = notice
+		}
+		compacted[i] = compact
 	}
 	return compacted
 }

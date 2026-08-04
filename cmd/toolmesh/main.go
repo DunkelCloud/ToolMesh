@@ -47,7 +47,6 @@ import (
 	"github.com/DunkelCloud/ToolMesh/internal/unit"
 	"github.com/DunkelCloud/ToolMesh/internal/version"
 	"github.com/redis/go-redis/v9"
-	"gopkg.in/yaml.v3"
 )
 
 func main() {
@@ -594,11 +593,9 @@ func loadRESTBackendsInto(named map[string]backend.ToolBackend, backendsConfigPa
 	}
 
 	for _, entry := range cfg.Backends {
+		// Non-REST entries are wired by the MCPAdapter, which applies
+		// include_tools/expose_tools itself after upstream tool discovery.
 		if entry.Transport != "rest" {
-			if len(entry.IncludeTools) > 0 {
-				logger.Warn("include_tools is only honored for transport: rest backends; ignoring",
-					"name", entry.Name, "transport", entry.Transport)
-			}
 			continue
 		}
 		if entry.DADL == "" {
@@ -726,9 +723,12 @@ func loadRESTBackendsInto(named map[string]backend.ToolBackend, backendsConfigPa
 	}
 }
 
-// backendsYAMLUnmarshal unmarshals backends YAML config.
+// backendsYAMLUnmarshal unmarshals backends YAML config. It shares the strict
+// decoder with the MCP adapter so both readers of backends.yaml reject the
+// same unknown keys — a config that parses for one and fails for the other
+// would be worse than either behavior alone.
 func backendsYAMLUnmarshal(data []byte, cfg *backend.BackendConfig) error {
-	return yaml.Unmarshal(data, cfg)
+	return backend.UnmarshalBackendConfig(data, cfg)
 }
 
 // loadUnits scans the units directory, loads every unit it finds, and adds

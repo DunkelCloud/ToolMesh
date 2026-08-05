@@ -24,7 +24,8 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - uses: docker/setup-qemu-action@v3
+      # No setup-qemu-action: the builder stage is pinned to the native
+      # platform and Go cross-compiles, so no target-arch code ever executes.
 
       - uses: docker/setup-buildx-action@v3
 

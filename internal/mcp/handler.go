@@ -269,10 +269,16 @@ func (h *Handler) handleDiscoverTools(ctx context.Context, params map[string]any
 		return nil, fmt.Errorf("list tools: %w", err)
 	}
 
-	// Filter tools by pattern (matched against name and description)
+	// Filter tools by pattern, matched against the description and against
+	// both spellings of the name: the canonical one and the sanitized form
+	// every result tier actually prints (see sanitizeName — "tabula-wiki_read"
+	// renders as "tabula_wiki_read"). Matching only the canonical name made
+	// discovery contradict itself: copying a name straight out of a result
+	// into the next pattern returned nothing, for every backend whose name
+	// carries a character that is not a JavaScript identifier.
 	filtered := make([]backend.ToolDescriptor, 0, len(tools))
 	for _, t := range tools {
-		if re.MatchString(t.Name) || re.MatchString(t.Description) {
+		if re.MatchString(t.Name) || re.MatchString(sanitizeName(t.Name)) || re.MatchString(t.Description) {
 			filtered = append(filtered, t)
 		}
 	}

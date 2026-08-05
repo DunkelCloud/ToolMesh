@@ -1,0 +1,845 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://dadl.ai/schema/v0.2.json",
+  "title": "DADL — Dunkel API Description Language v0.2",
+  "description": "Canonical schema for .dadl files conforming to spec v0.2 (https://dadl.ai/spec/dadl-spec-v0.2.md). Document conformance requires spec and backend only; registries MAY require additional metadata (credits, source_name, source_url, date). This schema implements the strict publish-time profile: unknown keys are errors (spec Section 15.3).",
+  "type": "object",
+  "required": ["spec", "backend"],
+  "properties": {
+    "spec": {
+      "type": "string",
+      "pattern": "^https://dadl\\.ai/spec/dadl-spec-v0\\.[12](\\.md)?$",
+      "description": "URL of the DADL specification this file conforms to (v0.1 or v0.2, with or without .md)"
+    },
+    "requires": {
+      "type": "object",
+      "description": "Minimum runtime requirements — a runtime that cannot satisfy them MUST refuse to load the file (spec Section 15.3)",
+      "properties": {
+        "toolmesh": {
+          "type": "string",
+          "description": "Minimum ToolMesh version as a semver range (e.g. '>=0.9.0')"
+        },
+        "features": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Feature identifiers this file depends on, fail-closed (v0.2: refresh_token, jwt_bearer, authorization_code, refresh_token_rotation, health, returns, idempotency, deprecation, semantic_errors, redact, composites, file_url)"
+        }
+      },
+      "additionalProperties": false
+    },
+    "credits": {
+      "type": "array",
+      "items": { "type": "string" },
+      "minItems": 1,
+      "description": "Free-form list of contributors, maintainers, and sponsors"
+    },
+    "source_name": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Name of the source API being described"
+    },
+    "source_url": {
+      "type": "string",
+      "pattern": "^https?://",
+      "description": "URL to the original API documentation"
+    },
+    "date": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+      "description": "Creation or last-modified date (YYYY-MM-DD)"
+    },
+    "backend": {
+      "$ref": "#/definitions/Backend"
+    },
+    "includes": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/Include"
+      },
+      "description": "Reusable fragments to merge in"
+    }
+  },
+  "patternProperties": {
+    "^_": {
+      "description": "Underscore-prefixed keys are ignored by ToolMesh (used for YAML anchors)"
+    }
+  },
+  "additionalProperties": false,
+  "definitions": {
+    "Backend": {
+      "type": "object",
+      "required": ["name", "type", "description", "auth", "tools"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]*$",
+          "description": "Unique backend identifier (slug format: lowercase, hyphens)"
+        },
+        "type": {
+          "type": "string",
+          "const": "rest",
+          "description": "Backend type — always 'rest' for DADL"
+        },
+        "version": {
+          "type": "string",
+          "pattern": "^\\d+\\.\\d+(\\.\\d+)?(-[0-9A-Za-z.-]+)?(\\+[0-9A-Za-z.-]+)?$",
+          "description": "SemVer-compatible shorthand (e.g. '1.0', '1.2.1', '1.2.0-beta'); '1.2' is compared as '1.2.0'. Used for upgrade detection."
+        },
+        "base_url": {
+          "type": "string",
+          "description": "Base URL for all API requests. Optional: self-hosted APIs omit it and the deployment's backends.yaml url supplies (or overrides) it."
+        },
+        "description": {
+          "type": "string",
+          "description": "Human-readable description"
+        },
+        "openapi_source": {
+          "type": "string",
+          "description": "Path or URL to OpenAPI 3.x spec"
+        },
+        "arazzo_source": {
+          "type": "string",
+          "description": "Path or URL to Arazzo workflow file"
+        },
+        "auth": {
+          "$ref": "#/definitions/Auth"
+        },
+        "health": {
+          "$ref": "#/definitions/Health"
+        },
+        "defaults": {
+          "$ref": "#/definitions/Defaults"
+        },
+        "types": {
+          "type": "object",
+          "description": "Type definitions (JSON Schema subset)",
+          "additionalProperties": true
+        },
+        "tools": {
+          "type": "object",
+          "description": "Map of tool definitions",
+          "additionalProperties": {
+            "$ref": "#/definitions/Tool"
+          },
+          "minProperties": 1
+        },
+        "composites": {
+          "type": "object",
+          "description": "Composite tool definitions (server-side TypeScript)",
+          "additionalProperties": {
+            "$ref": "#/definitions/Composite"
+          }
+        },
+        "examples": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Example"
+          },
+          "description": "Code examples for multi-step workflows"
+        },
+        "coverage": {
+          "$ref": "#/definitions/Coverage"
+        },
+        "hints": {
+          "type": "object",
+          "description": "Per-tool domain knowledge for LLM consumers; values are scalars",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": {
+              "type": ["string", "number", "boolean"]
+            }
+          }
+        },
+        "setup": {
+          "$ref": "#/definitions/Setup"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Auth": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["bearer", "basic", "oauth2", "session", "api_key", "apikey"],
+          "description": "Authentication type"
+        },
+        "credential": {
+          "type": "string",
+          "description": "Credential reference for bearer/api_key"
+        },
+        "inject_into": {
+          "type": "string",
+          "enum": ["header", "query"],
+          "description": "Where to inject the credential"
+        },
+        "header_name": {
+          "type": "string",
+          "description": "HTTP header name for injection"
+        },
+        "prefix": {
+          "type": "string",
+          "description": "Value prefix (e.g. 'Bearer ')"
+        },
+        "query_param": {
+          "type": "string",
+          "description": "Query parameter name for api_key injection"
+        },
+        "username_credential": {
+          "type": "string",
+          "description": "Username credential reference (basic auth)"
+        },
+        "password_credential": {
+          "type": "string",
+          "description": "Password credential reference (basic auth)"
+        },
+        "flow": {
+          "type": "string",
+          "enum": ["client_credentials", "refresh_token", "jwt_bearer", "authorization_code"],
+          "description": "OAuth2 flow type (default: client_credentials)"
+        },
+        "token_url": {
+          "type": "string",
+          "description": "OAuth2 token endpoint"
+        },
+        "authorize_url": {
+          "type": "string",
+          "description": "OAuth2 authorization endpoint (authorization_code flow — consent driven by toolmesh setup)"
+        },
+        "client_id_credential": {
+          "type": "string",
+          "description": "OAuth2 client ID credential"
+        },
+        "client_secret_credential": {
+          "type": "string",
+          "description": "OAuth2 client secret credential (omit for public/PKCE clients)"
+        },
+        "refresh_token_credential": {
+          "type": "string",
+          "description": "Credential holding the OAuth2 refresh token (refresh_token flow: obtained out-of-band; authorization_code flow: persisted here by toolmesh setup)"
+        },
+        "rotates_refresh_token": {
+          "type": "boolean",
+          "description": "Provider issues a new refresh token on exchange; runtime must persist atomically or refuse to load (requires.features: refresh_token_rotation)"
+        },
+        "authorization_params": {
+          "type": "object",
+          "additionalProperties": { "type": "string" },
+          "description": "Provider-specific parameters appended to the authorize request (authorization_code flow), e.g. access_type/prompt for Google"
+        },
+        "redirect_uri": {
+          "type": "string",
+          "description": "Exact pre-registered redirect URI (authorization_code flow); default: RFC 8252 loopback chosen by the setup tool"
+        },
+        "token_auth": {
+          "type": "string",
+          "enum": ["post", "basic"],
+          "description": "Client authentication on the token request (default: post)"
+        },
+        "service_account_credential": {
+          "type": "string",
+          "description": "Credential holding the complete service-account key (jwt_bearer flow, RFC 7523)"
+        },
+        "subject": {
+          "type": "string",
+          "description": "Impersonation subject ('sub' claim) for domain-wide delegation (jwt_bearer flow)"
+        },
+        "scopes": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "OAuth2 scopes"
+        },
+        "token_cache_key": {
+          "type": "string",
+          "description": "OAuth2 token cache key"
+        },
+        "refresh_before_expiry": {
+          "type": "string",
+          "description": "OAuth2 token refresh window"
+        },
+        "login": {
+          "type": "object",
+          "description": "Session-based login config",
+          "required": ["method", "path"],
+          "properties": {
+            "method": { "type": "string" },
+            "path": { "type": "string" },
+            "body": {
+              "type": "object",
+              "description": "Login request body; values (any depth) can be credential refs"
+            },
+            "extract": {
+              "type": "object",
+              "additionalProperties": { "type": "string" },
+              "description": "Token name → JSONPath"
+            }
+          },
+          "additionalProperties": false
+        },
+        "inject": {
+          "type": "array",
+          "description": "Session-based header injection",
+          "items": {
+            "type": "object",
+            "required": ["header", "value"],
+            "properties": {
+              "header": { "type": "string" },
+              "value": { "type": "string", "description": "Template with {{token}} placeholders" }
+            },
+            "additionalProperties": false
+          }
+        },
+        "refresh": {
+          "type": "object",
+          "description": "Session-based refresh config",
+          "properties": {
+            "trigger": { "type": "string" },
+            "action": { "type": "string" }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": { "properties": { "type": { "const": "bearer" } }, "required": ["type"] },
+          "then": { "required": ["credential"] }
+        },
+        {
+          "if": { "properties": { "type": { "enum": ["api_key", "apikey"] } }, "required": ["type"] },
+          "then": { "required": ["credential"] }
+        },
+        {
+          "if": { "properties": { "type": { "enum": ["bearer", "basic", "api_key", "apikey"] } }, "required": ["type"] },
+          "then": { "properties": { "token_url": false, "authorize_url": false, "flow": false, "client_id_credential": false, "client_secret_credential": false, "service_account_credential": false, "refresh_token_credential": false, "rotates_refresh_token": false, "authorization_params": false, "redirect_uri": false, "token_auth": false, "subject": false, "scopes": false, "token_cache_key": false, "refresh_before_expiry": false, "login": false, "inject": false, "refresh": false } }
+        },
+        {
+          "if": { "properties": { "type": { "const": "oauth2" } }, "required": ["type"] },
+          "then": { "properties": { "credential": false, "username_credential": false, "password_credential": false, "login": false, "inject": false, "refresh": false } }
+        },
+        {
+          "if": { "properties": { "type": { "const": "session" } }, "required": ["type"] },
+          "then": { "properties": { "credential": false, "token_url": false, "authorize_url": false, "flow": false, "client_id_credential": false, "client_secret_credential": false, "service_account_credential": false, "refresh_token_credential": false, "rotates_refresh_token": false, "authorization_params": false, "redirect_uri": false, "token_auth": false, "subject": false, "scopes": false, "token_cache_key": false, "refresh_before_expiry": false } }
+        },
+        {
+          "if": { "properties": { "type": { "const": "basic" } }, "required": ["type"] },
+          "then": { "required": ["username_credential"] }
+        },
+        {
+          "if": { "properties": { "type": { "const": "session" } }, "required": ["type"] },
+          "then": { "required": ["login", "inject"] }
+        },
+        {
+          "if": {
+            "allOf": [
+              { "properties": { "type": { "const": "oauth2" } }, "required": ["type"] },
+              { "not": { "properties": { "flow": { "const": "jwt_bearer" } }, "required": ["flow"] } }
+            ]
+          },
+          "then": { "required": ["token_url"] }
+        },
+        {
+          "if": {
+            "allOf": [
+              { "properties": { "type": { "const": "oauth2" } }, "required": ["type"] },
+              { "anyOf": [
+                { "not": { "required": ["flow"] } },
+                { "properties": { "flow": { "const": "client_credentials" } }, "required": ["flow"] }
+              ] }
+            ]
+          },
+          "then": { "required": ["client_id_credential", "client_secret_credential"] }
+        },
+        {
+          "if": { "properties": { "flow": { "const": "refresh_token" } }, "required": ["flow"] },
+          "then": { "required": ["client_id_credential", "refresh_token_credential"] }
+        },
+        {
+          "if": { "properties": { "flow": { "const": "jwt_bearer" } }, "required": ["flow"] },
+          "then": { "required": ["service_account_credential"] }
+        },
+        {
+          "if": { "properties": { "flow": { "const": "authorization_code" } }, "required": ["flow"] },
+          "then": { "required": ["authorize_url", "client_id_credential", "refresh_token_credential"] }
+        }
+      ]
+    },
+    "Health": {
+      "description": "Health-check declaration: reference a declared tool (form 1) or an inline endpoint (form 2). A declared check is exposed as a synthetic 'health' tool with a standardized result unless expose is false.",
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["tool"],
+          "properties": {
+            "tool": {
+              "type": "string",
+              "description": "Name of a declared tool to use as the check; MUST have no required parameters"
+            },
+            "expect_status": {
+              "type": "integer",
+              "description": "Exact expected status code (default: any 2xx)"
+            },
+            "expect_path": {
+              "type": "string",
+              "description": "JSONPath that must exist in the response body"
+            },
+            "auth_expires_path": {
+              "type": "string",
+              "description": "JSONPath extracting the credential-expiry timestamp from the check response (feeds auth_expires_at in the standardized result)"
+            },
+            "timeout": {
+              "type": "string",
+              "description": "Request timeout (default: 5s)"
+            },
+            "expose": {
+              "type": "boolean",
+              "description": "Expose as synthetic 'health' tool (default: true)"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["path"],
+          "properties": {
+            "method": {
+              "type": "string",
+              "enum": ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"],
+              "description": "HTTP method (default: GET)"
+            },
+            "path": {
+              "type": "string",
+              "pattern": "^[^{}]+$",
+              "description": "URL path relative to base_url; no {param} placeholders"
+            },
+            "expect_status": {
+              "type": "integer",
+              "description": "Exact expected status code (default: any 2xx)"
+            },
+            "expect_path": {
+              "type": "string",
+              "description": "JSONPath that must exist in the response body"
+            },
+            "auth_expires_path": {
+              "type": "string",
+              "description": "JSONPath extracting the credential-expiry timestamp from the check response (feeds auth_expires_at in the standardized result)"
+            },
+            "timeout": {
+              "type": "string",
+              "description": "Request timeout (default: 5s)"
+            },
+            "expose": {
+              "type": "boolean",
+              "description": "Expose as synthetic 'health' tool (default: true)"
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "Defaults": {
+      "type": "object",
+      "properties": {
+        "headers": {
+          "type": "object",
+          "additionalProperties": { "type": "string" },
+          "description": "Default HTTP headers"
+        },
+        "content_type": {
+          "type": "string",
+          "description": "Default request-body content type inherited by all tools; per-tool content_type overrides it"
+        },
+        "pagination": {
+          "$ref": "#/definitions/Pagination"
+        },
+        "errors": {
+          "$ref": "#/definitions/Errors"
+        },
+        "response": {
+          "$ref": "#/definitions/Response"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Pagination": {
+      "type": "object",
+      "properties": {
+        "strategy": {
+          "type": "string",
+          "enum": ["cursor", "offset", "page", "link_header"],
+          "description": "Pagination strategy"
+        },
+        "request": {
+          "type": "object",
+          "properties": {
+            "cursor_param": { "type": "string" },
+            "page_param": { "type": "string" },
+            "offset_param": { "type": "string" },
+            "limit_param": { "type": "string" },
+            "limit_default": { "type": "integer" }
+          },
+          "additionalProperties": false
+        },
+        "response": {
+          "type": "object",
+          "properties": {
+            "next_cursor": { "type": "string" },
+            "has_more": { "type": "string" },
+            "total_pages_header": { "type": "string" }
+          },
+          "additionalProperties": false
+        },
+        "behavior": {
+          "type": "string",
+          "enum": ["auto", "expose"],
+          "description": "Pagination behavior"
+        },
+        "max_pages": {
+          "type": "integer",
+          "description": "Safety limit for max pages"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Errors": {
+      "type": "object",
+      "properties": {
+        "format": {
+          "type": "string",
+          "enum": ["json", "text", "xml"]
+        },
+        "message_path": { "type": "string" },
+        "code_path": { "type": "string" },
+        "retry_on": {
+          "type": "array",
+          "items": { "type": "integer" }
+        },
+        "terminal": {
+          "type": "array",
+          "items": { "type": "integer" }
+        },
+        "retry_strategy": {
+          "type": "object",
+          "properties": {
+            "max_retries": { "type": "integer" },
+            "backoff": { "type": "string" },
+            "initial_delay": { "type": "string" }
+          },
+          "additionalProperties": false
+        },
+        "rate_limit": {
+          "type": "object",
+          "properties": {
+            "header": { "type": "string" },
+            "retry_after_header": { "type": "string" }
+          },
+          "additionalProperties": false
+        },
+        "map": {
+          "type": "object",
+          "propertyNames": { "pattern": "^[45][0-9][0-9]$" },
+          "additionalProperties": { "type": "string" },
+          "description": "HTTP status code (4xx/5xx only; YAML integer keys are stringified) → semantic error code (well-known: invalid_input, unauthorized, forbidden, not_found, conflict, timeout, rate_limited, internal, unavailable; custom codes allowed)"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Response": {
+      "type": "object",
+      "properties": {
+        "result_path": { "type": "string" },
+        "metadata_path": { "type": "string" },
+        "transform": { "type": "string" },
+        "max_items": { "type": "integer" },
+        "allow_jq_override": { "type": "boolean" },
+        "redact": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "JSONPaths whose values are replaced with [REDACTED] after transform, before any jq override"
+        },
+        "type": { "type": "string" },
+        "ttl": { "type": "string" },
+        "binary": { "type": "boolean" },
+        "content_type": { "type": "string" },
+        "streaming": { "type": "boolean" },
+        "stream_handling": { "type": "string", "enum": ["collect", "skip"] },
+        "max_duration": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "Tool": {
+      "type": "object",
+      "required": ["method", "path", "description"],
+      "properties": {
+        "method": {
+          "type": "string",
+          "enum": ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"],
+          "description": "HTTP method"
+        },
+        "path": {
+          "type": "string",
+          "description": "URL path with optional {param} placeholders"
+        },
+        "access": {
+          "type": "string",
+          "description": "Access classification for authorization and policy mapping. Well-known values: read, write, admin, dangerous. Custom values allowed."
+        },
+        "description": {
+          "type": "string",
+          "description": "Tool description (used as JSDoc comment)"
+        },
+        "params": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/definitions/Param"
+          }
+        },
+        "content_type": {
+          "type": "string",
+          "description": "Request content type (inherits defaults.content_type)"
+        },
+        "max_body_size": {
+          "type": "string",
+          "description": "Max upload size"
+        },
+        "depends_on": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Tools that should be called first"
+        },
+        "response": {
+          "$ref": "#/definitions/Response"
+        },
+        "pagination": {
+          "description": "'none' to disable or object to override",
+          "oneOf": [
+            { "type": "string", "const": "none" },
+            { "$ref": "#/definitions/Pagination" }
+          ]
+        },
+        "errors": {
+          "$ref": "#/definitions/Errors"
+        },
+        "returns": {
+          "description": "Result type after the response pipeline — a types name or an inline JSON Schema subset (spec Section 6.5)",
+          "oneOf": [
+            { "type": "string" },
+            { "type": "object" }
+          ]
+        },
+        "idempotency": {
+          "$ref": "#/definitions/Idempotency"
+        },
+        "deprecated": {
+          "description": "Marks the tool as deprecated; a string carries the reason (spec Section 6.7)",
+          "oneOf": [
+            { "type": "boolean" },
+            { "type": "string" }
+          ]
+        },
+        "retry_unsafe": {
+          "type": "boolean",
+          "description": "Opt-in: allow automatic retries although the call is not idempotent and declares no idempotency (spec Section 8)"
+        },
+        "replaced_by": {
+          "type": "string",
+          "description": "Name of the successor tool in this file"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Idempotency": {
+      "type": "object",
+      "required": ["header"],
+      "properties": {
+        "header": {
+          "type": "string",
+          "description": "Header name the API expects (e.g. Idempotency-Key)"
+        },
+        "generate": {
+          "type": "string",
+          "enum": ["uuid_v4"],
+          "description": "Key generator (default and only defined value in v0.2: uuid_v4)"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Param": {
+      "type": "object",
+      "required": ["type", "in"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["string", "integer", "number", "boolean", "array", "object", "file_url"],
+          "description": "Parameter type"
+        },
+        "in": {
+          "type": "string",
+          "enum": ["path", "query", "body", "header"],
+          "description": "Parameter location"
+        },
+        "required": {
+          "type": "boolean",
+          "description": "Whether the parameter is required"
+        },
+        "default": {
+          "description": "Default value"
+        },
+        "description": {
+          "type": "string",
+          "description": "Parameter description"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Composite": {
+      "type": "object",
+      "required": ["description", "code"],
+      "properties": {
+        "description": {
+          "type": "string",
+          "description": "Composite tool description"
+        },
+        "access": {
+          "type": "string",
+          "description": "Access classification, same values and policy mapping as for tools (spec Section 6.4)"
+        },
+        "delegates": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Inner tools this composite intends to call under its own authority; effective only with deployment-policy approval (spec Section 12.3)"
+        },
+        "params": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "required": ["type"],
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": ["string", "integer", "number", "boolean", "array", "object", "file_url"]
+              },
+              "default": {},
+              "description": { "type": "string" },
+              "required": { "type": "boolean" }
+            },
+            "additionalProperties": false
+          }
+        },
+        "code": {
+          "type": "string",
+          "description": "TypeScript/JavaScript function body"
+        },
+        "timeout": {
+          "type": "string",
+          "description": "Max execution time"
+        },
+        "depends_on": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      },
+      "additionalProperties": false
+    },
+    "Example": {
+      "type": "object",
+      "required": ["name", "description", "code"],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "code": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Coverage": {
+      "type": "object",
+      "properties": {
+        "endpoints": {
+          "type": "integer",
+          "description": "Number of tools defined"
+        },
+        "total_endpoints": {
+          "type": "integer",
+          "description": "Total endpoints in the target API"
+        },
+        "percentage": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100,
+          "description": "Coverage percentage"
+        },
+        "focus": {
+          "type": "string",
+          "description": "Covered API areas"
+        },
+        "missing": {
+          "type": "string",
+          "description": "Uncovered API areas"
+        },
+        "last_reviewed": {
+          "type": "string",
+          "description": "Date when coverage was last verified"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Setup": {
+      "type": "object",
+      "properties": {
+        "credential_steps": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Step-by-step credential instructions"
+        },
+        "env_var": {
+          "type": "string",
+          "description": "Environment variable name"
+        },
+        "backends_yaml": {
+          "type": "string",
+          "description": "Example backends.yaml entry"
+        },
+        "required_scopes": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "optional_scopes": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "docs_url": {
+          "type": "string",
+          "description": "Authentication documentation URL"
+        },
+        "notes": {
+          "type": "string",
+          "description": "Additional setup notes"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Include": {
+      "type": "object",
+      "required": ["path", "merge_into"],
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "merge_into": {
+          "type": "string"
+        },
+        "overrides": {
+          "type": "object"
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

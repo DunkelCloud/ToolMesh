@@ -11,6 +11,12 @@ for the full narrative and details.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-08-05
+
+DADL v0.2 Core Runtime: the seven runtime features of the finalized
+DADL spec v0.2, plus the transport, discovery, and file-handling work
+accumulated since 0.3.0.
+
 ### Fixed
 
 - A backend's `hint:` (backends.yaml) is now honored for `transport: rest`.
@@ -44,6 +50,33 @@ for the full narrative and details.
 
 ### Added
 
+- DADL v0.2 `requires` gate: a file's `requires` block (`toolmesh` semver
+  range, `features` list) is enforced fail-closed at load time; unknown keys
+  are collected into per-file warnings (warn-and-ignore, deduplicated) instead
+  of vanishing silently. Implemented feature identifiers: `refresh_token`,
+  `composites`, `file_url`, `redact`, `semantic_errors`, `idempotency`,
+  `jwt_bearer`, `authorization_code`, `returns`, `deprecation`.
+- `response.redact` (spec §9.3): declared JSONPaths are masked with
+  `[REDACTED]` after the transform pipeline and before any caller-visible
+  output, merging additively across defaults and tool level. The JSONPath
+  engine now implements the full §9.4 dialect including the wildcard selector;
+  descendant segments (`$..`) are rejected instead of silently misread.
+- Semantic error codes (spec §8.2): failed calls carry a stable code from
+  `errors.map` or the well-known default table, the raw HTTP status, the
+  extracted message, and the provider's own code via the previously inert
+  `errors.code_path`. Composite `api.*` failures throw errors composite code
+  can branch on (`e.code`, `e.http_status`, `e.provider_code`).
+- Idempotency keys (spec §6.6): tools declaring `idempotency` get a `uuid_v4`
+  key generated before the first attempt and replayed on every retry of the
+  same logical call; distinct calls and pagination pages get distinct keys.
+- OAuth2 `jwt_bearer` (RFC 7523 service accounts, RS256-signed with the
+  standard library) and `authorization_code` (runtime renewal identical to
+  `refresh_token`; consent configuration declared for the setup tooling).
+- `returns`, `deprecated`, and `replaced_by` (spec §6.5/§6.7): typed results
+  and deprecation markers flow into generated TypeScript and into the live
+  tool descriptors — descriptions lead with `DEPRECATED … use X instead` and
+  trail with `Returns: <type>`.
+- `auth.type: api_key` is accepted as an alias for `apikey` (spec §15.4).
 - A backend's `hint:` (backends.yaml) is now delivered with the first tool call
   each caller makes into that backend, in addition to the `execute_code` tool
   description. That description carries every backend's hint at once, so on a
@@ -97,6 +130,22 @@ for the full narrative and details.
 
 ### Changed (BREAKING)
 
+- Retry safety (spec §8, normative): automatic retries now require an
+  idempotent method (`GET`/`HEAD`/`PUT`/`DELETE`), a declared `idempotency`
+  block, or `retry_unsafe: true`. A `POST`/`PATCH` with none of these fails on
+  the first retryable error instead of being retried — re-execution could
+  duplicate the write. The error text names both remedies. Write tools
+  inheriting a default `retry_on` list stop auto-retrying until their DADL
+  opts in deliberately.
+- Behavior-determining enum values are now rejected fail-closed at load time
+  (spec §15.3): unknown values of `auth.flow`, `pagination.strategy`,
+  `pagination.behavior` (only `auto`/`expose`), `response.stream_handling`
+  (only `collect`/`skip`), and `idempotency.generate` refuse the file instead
+  of being silently ignored. DADLs carrying informal values (e.g.
+  `behavior: manual`) must be corrected before upgrading.
+- A DADL whose `requires` block names a capability this build does not
+  implement (e.g. `refresh_token_rotation`) is refused at load time with a
+  message naming the missing capability — by design, fail-closed.
 - `backends.yaml` is now parsed strictly: a key that no backend field claims
   aborts startup with the offending line instead of being silently dropped.
   Lenient parsing let a misspelled or invented option (e.g. `tools_filter`)

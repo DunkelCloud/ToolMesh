@@ -48,4 +48,13 @@ const (
 
 	// Common test API key value used in mock credentials.
 	testKey123 = "key123" //nolint:gosec // test fixture, not a real credential
+
+	// Version literals reused across the requires-gate tests.
+	testVersionDev  = "dev"
+	testVersion100  = "1.0.0"
+	testVersion123  = "1.2.3"
+	testRangeGte090 = ">=0.9.0"
+
+	// Common tool name shared between tsgen and requires tests.
+	testToolListItems = "list_items"
 )

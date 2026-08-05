@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"regexp"
@@ -25,6 +26,8 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/DunkelCloud/ToolMesh/internal/version"
 )
 
 // pathParamRe matches {param} placeholders in URL paths.
@@ -83,6 +86,11 @@ func Parse(path string) (*Spec, error) {
 }
 
 // ParseBytes parses DADL content from bytes.
+//
+// Keys the runtime does not implement are collected into Spec.Warnings and
+// otherwise ignored (DADL spec §15.3 warn-and-ignore) — except when the
+// file's requires block names a missing capability, which refuses the load
+// entirely (fail-closed, ADR-0003).
 func ParseBytes(data []byte) (*Spec, error) {
 	var spec Spec
 	if err := yaml.Unmarshal(data, &spec); err != nil {
@@ -91,11 +99,113 @@ func ParseBytes(data []byte) (*Spec, error) {
 	if err := Validate(&spec); err != nil {
 		return nil, fmt.Errorf("validate dadl: %w", err)
 	}
+	spec.Warnings = unknownKeyWarnings(data)
+	if err := checkRequires(&spec, version.Version); err != nil {
+		return nil, fmt.Errorf("refusing to load dadl: %w", err)
+	}
 	// Normalize CRLF to LF so the same file produces the same hash on Windows and Linux.
 	normalized := bytes.ReplaceAll(data, []byte("\r\n"), []byte("\n"))
 	hash := sha256.Sum256(normalized)
 	spec.ContentHash = hex.EncodeToString(hash[:])
 	return &spec, nil
+}
+
+// yamlFieldErrRe matches the unknown-field messages gopkg.in/yaml.v3 emits
+// under Decoder.KnownFields(true): "line N: field F not found in type T".
+var yamlFieldErrRe = regexp.MustCompile(`^line (\d+): field (\S+) not found in type (\S+)$`)
+
+// yamlTypeContext maps the Go struct names appearing in yaml.v3 unknown-field
+// messages to the DADL document location they represent, so warnings speak
+// spec language instead of Go type names.
+var yamlTypeContext = map[string]string{
+	"dadl.Spec":                "top level",
+	"dadl.RequiresConfig":      "requires",
+	"dadl.BackendDef":          "backend",
+	"dadl.AuthConfig":          "auth",
+	"dadl.SessionLogin":        "auth.login",
+	"dadl.InjectRule":          "auth.inject",
+	"dadl.RefreshConfig":       "auth.refresh",
+	"dadl.DefaultsConfig":      "defaults",
+	"dadl.PaginationConfig":    "pagination",
+	"dadl.PaginationRequest":   "pagination.request",
+	"dadl.PaginationResponse":  "pagination.response",
+	"dadl.ErrorConfig":         "errors",
+	"dadl.RateLimitConfig":     "errors.rate_limit",
+	"dadl.RetryStrategyConfig": "errors.retry_strategy",
+	"dadl.ResponseConfig":      "response",
+	"dadl.ToolDef":             "tool definition",
+	"dadl.ParamDef":            "parameter definition",
+	"dadl.BodyDef":             "body",
+	"dadl.CompositeDef":        "composite definition",
+	"dadl.ScopingConfig":       "scoping",
+	"dadl.ScopeDef":            "scoping.scopes",
+	"dadl.DiscoveryConfig":     "scoping.discovery",
+}
+
+// unknownKeyWarnings re-decodes data strictly and reports every key this
+// runtime does not know, implementing the spec §15.3 runtime policy: warn
+// and ignore, so a file using only additive newer features keeps working —
+// degraded but visibly. Underscore-prefixed keys are the spec's YAML anchor
+// workspace and stay silent.
+//
+// It relies on the lenient decode in ParseBytes having succeeded: the only
+// errors the strict re-decode can add are unknown-field errors.
+func unknownKeyWarnings(data []byte) []string {
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	var strict Spec
+	err := dec.Decode(&strict)
+	if err == nil {
+		return nil
+	}
+	var typeErr *yaml.TypeError
+	if !errors.As(err, &typeErr) {
+		// Unexpected given the lenient decode succeeded — surface rather than drop.
+		return []string{fmt.Sprintf("strict re-parse failed: %v", err)}
+	}
+	// Aggregate per key and location kind: a key repeated across many tools
+	// (e.g. max_body_size on every upload tool) yields one warning with a
+	// count, not one per occurrence.
+	type unknownKey struct {
+		field, context, firstLine string
+		count                     int
+	}
+	var warnings []string
+	var order []*unknownKey
+	seen := make(map[string]*unknownKey)
+	for _, msg := range typeErr.Errors {
+		m := yamlFieldErrRe.FindStringSubmatch(msg)
+		if m == nil {
+			warnings = append(warnings, msg)
+			continue
+		}
+		line, field, goType := m[1], m[2], m[3]
+		if strings.HasPrefix(field, "_") {
+			continue
+		}
+		dedupeKey := field + "\x00" + goType
+		if entry, ok := seen[dedupeKey]; ok {
+			entry.count++
+			continue
+		}
+		context, ok := yamlTypeContext[goType]
+		if !ok {
+			context = strings.TrimPrefix(goType, "dadl.")
+		}
+		entry := &unknownKey{field: field, context: context, firstLine: line, count: 1}
+		seen[dedupeKey] = entry
+		order = append(order, entry)
+	}
+	for _, e := range order {
+		location := fmt.Sprintf("line %s", e.firstLine)
+		if e.count > 1 {
+			location = fmt.Sprintf("%d occurrences, first at line %s", e.count, e.firstLine)
+		}
+		warnings = append(warnings, fmt.Sprintf(
+			"unknown key %q in %s (%s): not implemented by this ToolMesh version, ignored (DADL spec 15.3)",
+			e.field, e.context, location))
+	}
+	return warnings
 }
 
 // validAuthTypes lists the supported authentication types.

@@ -19,10 +19,13 @@ package composite
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 
 	"github.com/dop251/goja"
+
+	"github.com/DunkelCloud/ToolMesh/internal/dadl"
 )
 
 // ToolExecutor is the function signature for executing a primitive tool.
@@ -134,7 +137,20 @@ func newRuntime(
 			mu.Unlock()
 
 			if err != nil {
-				panic(rt.NewGoError(fmt.Errorf("composite %s: api.%s failed: %w", compositeName, tn, err)))
+				goErr := rt.NewGoError(fmt.Errorf("composite %s: api.%s failed: %w", compositeName, tn, err))
+				// DADL spec §8.2: a failed call rejects with an error the
+				// code can branch on — expose the semantic fields as
+				// properties next to the (fuller) message text.
+				var apiErr *dadl.APIError
+				if errors.As(err, &apiErr) {
+					_ = goErr.Set("code", apiErr.Code)
+					_ = goErr.Set("http_status", apiErr.HTTPStatus)
+					_ = goErr.Set("api_message", apiErr.Message)
+					if apiErr.ProviderCode != "" {
+						_ = goErr.Set("provider_code", apiErr.ProviderCode)
+					}
+				}
+				panic(goErr)
 			}
 
 			return rt.ToValue(result)

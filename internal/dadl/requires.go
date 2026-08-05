@@ -27,10 +27,11 @@ import (
 // ToolMesh build implements. checkRequires matches requires.features entries
 // against this set at load time — extend it as features land in the runtime.
 var implementedFeatures = map[string]bool{
-	"refresh_token": true, // §5.3: oauth2 flow refresh_token
-	"composites":    true, // §12: composite tools
-	"file_url":      true, // §6.2: file handling (input params + response type)
-	"redact":        true, // §9.3: response.redact masking
+	"refresh_token":   true, // §5.3: oauth2 flow refresh_token
+	"composites":      true, // §12: composite tools
+	"file_url":        true, // §6.2: file handling (input params + response type)
+	"redact":          true, // §9.3: response.redact masking
+	"semantic_errors": true, // §8.2: errors.map semantic codes + code_path
 }
 
 // checkRequires enforces the file's requires block (DADL spec §15.3,

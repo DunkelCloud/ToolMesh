@@ -13,6 +13,12 @@ for the full narrative and details.
 
 ### Fixed
 
+- `discover_tools` now matches its `pattern` against the tool name it actually
+  prints, not just the canonical one. Results render names in JavaScript form
+  (`tabula-wiki_read_page` prints as `tabula_wiki_read_page`), so copying a name
+  from a result into the next pattern returned nothing — for every backend whose
+  name contains a character that is not a JavaScript identifier. Both spellings
+  now match.
 - Long-running tool calls no longer abort with "The connector's server isn't
   responding." A `tools/call` is now delivered over an MCP Streamable HTTP SSE
   stream when the client accepts one, with a keepalive comment emitted every

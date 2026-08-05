@@ -70,6 +70,13 @@ const (
 	testMethodGET  = "GET"
 	testMethodPOST = "POST"
 
+	// Retry-strategy fixture literals shared across tests.
+	testBackoffFixed = "fixed"
+	testDelay1ms     = "1ms"
+
+	// Idempotency-key header fixture (spec §6.6 tests).
+	testIdemHeader = "Idempotency-Key"
+
 	// Common header names asserted in tests.
 	testHeaderContentType = "Content-Type"
 	testHeaderAccept      = "Accept"

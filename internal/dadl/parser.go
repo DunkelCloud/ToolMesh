@@ -51,8 +51,12 @@ const (
 
 // HTTP method literals used in DADL tool definitions.
 const (
-	httpMethodGET  = "GET"
-	httpMethodPOST = "POST"
+	httpMethodGET    = "GET"
+	httpMethodPOST   = "POST"
+	httpMethodPUT    = "PUT"
+	httpMethodPATCH  = "PATCH"
+	httpMethodDELETE = "DELETE"
+	httpMethodHEAD   = "HEAD"
 )
 
 // Backend transport / param-location literals used in DADL specs.
@@ -60,6 +64,7 @@ const (
 	backendTypeREST = "rest"
 	paramInPath     = "path"
 	paramInBody     = "body"
+	paramInHeader   = "header"
 )
 
 // supportedSpecs lists spec URLs accepted by this version of ToolMesh.
@@ -227,12 +232,12 @@ var validPaginationStrategies = map[string]bool{
 
 // validMethods lists the supported HTTP methods.
 var validMethods = map[string]bool{
-	httpMethodGET:  true,
-	httpMethodPOST: true,
-	"PUT":          true,
-	"PATCH":        true,
-	"DELETE":       true,
-	"HEAD":         true,
+	httpMethodGET:    true,
+	httpMethodPOST:   true,
+	httpMethodPUT:    true,
+	httpMethodPATCH:  true,
+	httpMethodDELETE: true,
+	httpMethodHEAD:   true,
 }
 
 // Validate checks a Spec for structural correctness.
@@ -307,7 +312,7 @@ func Validate(spec *Spec) error {
 	}
 
 	for name, tool := range b.Tools {
-		if err := validateTool(name, &tool); err != nil {
+		if err := validateTool(name, &tool, &b.Defaults); err != nil {
 			return err
 		}
 	}
@@ -322,7 +327,7 @@ func Validate(spec *Spec) error {
 	return nil
 }
 
-func validateTool(name string, tool *ToolDef) error {
+func validateTool(name string, tool *ToolDef, defaults *DefaultsConfig) error {
 	if tool.Method == "" {
 		return fmt.Errorf("tool %q: method is required", name)
 	}
@@ -350,11 +355,46 @@ func validateTool(name string, tool *ToolDef) error {
 		return err
 	}
 
+	if err := validateIdempotency(name, tool, defaults); err != nil {
+		return err
+	}
+
 	if err := validateErrors(tool.Errors, fmt.Sprintf("tool %q: errors", name)); err != nil {
 		return err
 	}
 
 	return validateResponse(tool.Response, fmt.Sprintf("tool %q: response", name))
+}
+
+// validateIdempotency checks a tool's idempotency block (spec §6.6): the
+// header name is required and must not collide — case-insensitively, as
+// HTTP header names compare — with an `in: header` param or a
+// defaults.headers key, and the generator must be one this runtime
+// implements (behavior-determining enum, fail-closed per §15.3).
+func validateIdempotency(name string, tool *ToolDef, defaults *DefaultsConfig) error {
+	idem := tool.Idempotency
+	if idem == nil {
+		return nil
+	}
+	if idem.Header == "" {
+		return fmt.Errorf("tool %q: idempotency.header is required", name)
+	}
+	switch idem.Generate {
+	case "", generateUUIDv4:
+	default:
+		return fmt.Errorf("tool %q: idempotency.generate %q is not implemented (defined in v0.2: %s)", name, idem.Generate, generateUUIDv4)
+	}
+	for pname, p := range tool.Params {
+		if p.In == paramInHeader && strings.EqualFold(pname, idem.Header) {
+			return fmt.Errorf("tool %q: idempotency.header %q collides with header param %q", name, idem.Header, pname)
+		}
+	}
+	for hname := range defaults.Headers {
+		if strings.EqualFold(hname, idem.Header) {
+			return fmt.Errorf("tool %q: idempotency.header %q collides with defaults.headers key %q", name, idem.Header, hname)
+		}
+	}
+	return nil
 }
 
 // validateErrors checks an errors block (tool-level or backend defaults):
@@ -370,6 +410,16 @@ func validateErrors(ec *ErrorConfig, prefix string) error {
 		}
 		if code == "" {
 			return fmt.Errorf("%s.map: status %d maps to an empty code", prefix, status)
+		}
+	}
+	// A status must not appear in both retry_on and terminal (spec §8/§15.2).
+	retryable := make(map[int]bool, len(ec.RetryOn))
+	for _, s := range ec.RetryOn {
+		retryable[s] = true
+	}
+	for _, s := range ec.Terminal {
+		if retryable[s] {
+			return fmt.Errorf("%s: status %d appears in both retry_on and terminal", prefix, s)
 		}
 	}
 	if ec.MessagePath != "" {

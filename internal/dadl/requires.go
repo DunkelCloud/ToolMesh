@@ -32,6 +32,7 @@ var implementedFeatures = map[string]bool{
 	"file_url":        true, // §6.2: file handling (input params + response type)
 	"redact":          true, // §9.3: response.redact masking
 	"semantic_errors": true, // §8.2: errors.map semantic codes + code_path
+	"idempotency":     true, // §6.6: idempotency-key header + §8 retry safety
 }
 
 // checkRequires enforces the file's requires block (DADL spec §15.3,

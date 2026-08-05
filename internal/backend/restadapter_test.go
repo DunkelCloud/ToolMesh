@@ -472,24 +472,50 @@ func TestRESTAdapter_PromotedTools_Empty(t *testing.T) {
 	}
 }
 
+// A backend's own description and an operator's hint are different things and
+// must not be conflated: the description says what the API is, the hint is what
+// this deployment's admin wants callers to know. Reporting the description as a
+// hint makes every backend look like it carries operator guidance.
 func TestRESTAdapter_BackendSummaries(t *testing.T) {
-	spec := &dadl.Spec{
-		Backend: dadl.BackendDef{
-			Name:        "myapi",
-			Description: "My API description",
-			Type:        transportTypeREST,
-			BaseURL:     "https://example.com",
-			Tools:       map[string]dadl.ToolDef{"t": {Method: testMethodGET, Path: "/"}},
-		},
+	newSpec := func() *dadl.Spec {
+		return &dadl.Spec{
+			Backend: dadl.BackendDef{
+				Name:        "myapi",
+				Description: testDescMyAPI,
+				Type:        transportTypeREST,
+				BaseURL:     "https://example.com",
+				Tools:       map[string]dadl.ToolDef{"t": {Method: testMethodGET, Path: "/"}},
+			},
+		}
 	}
-	adapter, _ := NewRESTAdapter(spec, &testCredStore{}, slog.Default(), testRESTOpts)
-	summaries := adapter.BackendSummaries()
-	if len(summaries) != 1 {
-		t.Fatalf("got %d summaries, want 1", len(summaries))
-	}
-	if summaries[0].Name != "myapi" || summaries[0].Hint != "My API description" {
-		t.Errorf("summary = %+v", summaries[0])
-	}
+
+	t.Run("no hint configured", func(t *testing.T) {
+		adapter, _ := NewRESTAdapter(newSpec(), &testCredStore{}, slog.Default(), testRESTOpts)
+		summaries := adapter.BackendSummaries()
+		if len(summaries) != 1 {
+			t.Fatalf("got %d summaries, want 1", len(summaries))
+		}
+		got := summaries[0]
+		if got.Name != "myapi" || got.Description != testDescMyAPI {
+			t.Errorf("summary = %+v, want the DADL description reported as Description", got)
+		}
+		if got.Hint != "" {
+			t.Errorf("Hint = %q, want empty — no operator hint was configured", got.Hint)
+		}
+	})
+
+	t.Run("hint configured in backends.yaml", func(t *testing.T) {
+		opts := testRESTOpts
+		opts.Hint = "read the wiki_rules page before writing"
+		adapter, _ := NewRESTAdapter(newSpec(), &testCredStore{}, slog.Default(), opts)
+		got := adapter.BackendSummaries()[0]
+		if got.Hint != "read the wiki_rules page before writing" {
+			t.Errorf("Hint = %q, want the configured hint", got.Hint)
+		}
+		if got.Description != testDescMyAPI {
+			t.Errorf("Description = %q, want the DADL description alongside the hint", got.Description)
+		}
+	})
 }
 
 func extractText(t *testing.T, result *ToolResult) string {

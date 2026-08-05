@@ -44,7 +44,7 @@ And unlike MCP gateways that just pass tool calls through, ToolMesh adds what pr
 
 Want to try ToolMesh before installing? Connect to our public demo instance — no Docker, no config, no API keys:
 
-**[demo.toolmesh.io](https://toolmesh.io/demo)** — Hacker News APIs via ToolMesh. Works with Claude Desktop, Claude Code, and ChatGPT. Login: `dadl` / `toolmesh`.
+**[demo.toolmesh.io](https://www.toolmesh.io/en/demo/)** — Hacker News APIs via ToolMesh. Works with Claude Desktop, Claude Code, and ChatGPT. Login: `dadl` / `toolmesh`.
 
 ## Quickstart
 
@@ -341,7 +341,7 @@ The companion **[DADL registry](https://dadl.ai/browse)** currently ships
 4-tool Hacker News reader to a 608-tool NetBox DCIM/IPAM surface — each with a
 visible API-coverage percentage so you can see exactly how complete it is.
 
-- 🌐 Website: [toolmesh.io](https://toolmesh.io)
+- 🌐 Website: [toolmesh.io](https://www.toolmesh.io/)
 - 📖 DADL spec & registry: [dadl.ai](https://dadl.ai)
 - 🐛 Security contact: security@dunkel.cloud (see [SECURITY.md](SECURITY.md))
 

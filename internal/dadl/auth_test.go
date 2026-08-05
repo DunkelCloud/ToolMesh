@@ -155,7 +155,7 @@ func TestRestAuth_OAuth2(t *testing.T) {
 	}}
 	auth := newTestRestAuth(AuthConfig{
 		Type:                   authTypeOAuth2,
-		Flow:                   oauth2GrantType,
+		Flow:                   oauth2FlowClientCredentials,
 		TokenURL:               server.URL,
 		ClientIDCredential:     "client-id",
 		ClientSecretCredential: "client-secret",
@@ -275,7 +275,7 @@ func (a *testRestAuth) injectOAuth2(ctx context.Context, req *http.Request) erro
 	clientSecret, _ := a.creds.Get(ctx, a.config.ClientSecretCredential, nil)
 
 	data := url.Values{
-		"grant_type":    {oauth2GrantType},
+		"grant_type":    {oauth2FlowClientCredentials},
 		"client_id":     {clientID},
 		"client_secret": {clientSecret},
 	}

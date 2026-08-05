@@ -23,6 +23,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/DunkelCloud/ToolMesh/internal/credentials"
@@ -157,7 +158,7 @@ func TestRestAuth_InjectOAuth2(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	creds := &realMockCreds{creds: map[string]string{testCredOAuth2ClientID: "cid", testCredOAuth2ClientSecret: "sec"}}
+	creds := &realMockCreds{creds: map[string]string{testCredOAuth2ClientID: testOAuth2CID, testCredOAuth2ClientSecret: testOAuth2Secret}}
 	auth := NewRestAuth(AuthConfig{
 		Type:                   authTypeOAuth2,
 		ClientIDCredential:     testCredOAuth2ClientID,
@@ -195,7 +196,7 @@ func TestRestAuth_InjectOAuth2_TokenEndpointFails(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	creds := &realMockCreds{creds: map[string]string{testCredOAuth2ClientID: "cid", testCredOAuth2ClientSecret: "sec"}}
+	creds := &realMockCreds{creds: map[string]string{testCredOAuth2ClientID: testOAuth2CID, testCredOAuth2ClientSecret: testOAuth2Secret}}
 	auth := NewRestAuth(AuthConfig{
 		Type:                   authTypeOAuth2,
 		ClientIDCredential:     testCredOAuth2ClientID,
@@ -206,6 +207,172 @@ func TestRestAuth_InjectOAuth2_TokenEndpointFails(t *testing.T) {
 	req, _ := http.NewRequestWithContext(context.Background(), httpMethodGET, "http://example.com/", nil)
 	if err := auth.InjectAuth(context.Background(), req); err == nil {
 		t.Error("expected token endpoint failure")
+	}
+}
+
+// tokenEndpointRecorder is an httptest handler that records the form values
+// of every token request in a race-safe way.
+type tokenEndpointRecorder struct {
+	mu    sync.Mutex
+	forms []url.Values
+	token string
+}
+
+func (rec *tokenEndpointRecorder) handler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		rec.mu.Lock()
+		rec.forms = append(rec.forms, r.PostForm)
+		rec.mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"access_token": rec.token,
+			"expires_in":   3600,
+		})
+	}
+}
+
+func (rec *tokenEndpointRecorder) recorded() []url.Values {
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	return append([]url.Values(nil), rec.forms...)
+}
+
+func TestRestAuth_InjectOAuth2_RefreshTokenFlow(t *testing.T) {
+	rec := &tokenEndpointRecorder{token: "refreshed-tok"}
+	srv := httptest.NewServer(rec.handler())
+	defer srv.Close()
+
+	creds := &realMockCreds{creds: map[string]string{
+		testCredOAuth2ClientID:     testOAuth2CID,
+		testCredOAuth2ClientSecret: testOAuth2Secret,
+		testCredOAuth2RefreshToken: testOAuth2RefreshValue,
+	}}
+	auth := NewRestAuth(AuthConfig{
+		Type:                   authTypeOAuth2,
+		Flow:                   oauth2FlowRefreshToken,
+		TokenURL:               srv.URL,
+		ClientIDCredential:     testCredOAuth2ClientID,
+		ClientSecretCredential: testCredOAuth2ClientSecret,
+		RefreshTokenCredential: testCredOAuth2RefreshToken,
+		Scopes:                 []string{"scope-a", "scope-b"},
+	}, "", creds, newQuietLogger())
+
+	req, _ := http.NewRequestWithContext(context.Background(), httpMethodGET, "http://example.com/", nil)
+	if err := auth.InjectAuth(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+	if got := req.Header.Get(headerAuthorization); got != "Bearer refreshed-tok" {
+		t.Errorf("Authorization = %q", got)
+	}
+
+	forms := rec.recorded()
+	if len(forms) != 1 {
+		t.Fatalf("token endpoint called %d times, want 1", len(forms))
+	}
+	form := forms[0]
+	if got := form.Get("grant_type"); got != oauth2FlowRefreshToken {
+		t.Errorf("grant_type = %q, want %q", got, oauth2FlowRefreshToken)
+	}
+	if got := form.Get("refresh_token"); got != testOAuth2RefreshValue {
+		t.Errorf("refresh_token = %q, want rt-1", got)
+	}
+	if got := form.Get("client_id"); got != testOAuth2CID {
+		t.Errorf("client_id = %q, want cid", got)
+	}
+	if got := form.Get("client_secret"); got != testOAuth2Secret {
+		t.Errorf("client_secret = %q, want sec", got)
+	}
+	if form.Has("scope") {
+		t.Error("scope must not be sent on the refresh_token grant (fixed at consent time)")
+	}
+
+	// Second call hits the in-memory cache — no extra token request.
+	req2, _ := http.NewRequestWithContext(context.Background(), httpMethodGET, "http://example.com/", nil)
+	if err := auth.InjectAuth(context.Background(), req2); err != nil {
+		t.Fatal(err)
+	}
+	if got := req2.Header.Get(headerAuthorization); got != "Bearer refreshed-tok" {
+		t.Errorf("cached Authorization = %q", got)
+	}
+	if got := len(rec.recorded()); got != 1 {
+		t.Errorf("token endpoint called %d times after cached call, want 1", got)
+	}
+
+	// HandleUnauthorized clears the cache; the next call re-exchanges the
+	// same stored refresh token.
+	if err := auth.HandleUnauthorized(context.Background()); err != nil {
+		t.Fatalf("HandleUnauthorized: %v", err)
+	}
+	req3, _ := http.NewRequestWithContext(context.Background(), httpMethodGET, "http://example.com/", nil)
+	if err := auth.InjectAuth(context.Background(), req3); err != nil {
+		t.Fatal(err)
+	}
+	forms = rec.recorded()
+	if len(forms) != 2 {
+		t.Fatalf("token endpoint called %d times after 401 handling, want 2", len(forms))
+	}
+	if got := forms[1].Get("refresh_token"); got != testOAuth2RefreshValue {
+		t.Errorf("re-exchange refresh_token = %q, want rt-1", got)
+	}
+}
+
+func TestRestAuth_InjectOAuth2_RefreshTokenPublicClient(t *testing.T) {
+	rec := &tokenEndpointRecorder{token: "pkce-tok"}
+	srv := httptest.NewServer(rec.handler())
+	defer srv.Close()
+
+	creds := &realMockCreds{creds: map[string]string{
+		testCredOAuth2ClientID:     testOAuth2CID,
+		testCredOAuth2RefreshToken: "rt-2",
+	}}
+	auth := NewRestAuth(AuthConfig{
+		Type:                   authTypeOAuth2,
+		Flow:                   oauth2FlowRefreshToken,
+		TokenURL:               srv.URL,
+		ClientIDCredential:     testCredOAuth2ClientID,
+		RefreshTokenCredential: testCredOAuth2RefreshToken,
+	}, "", creds, newQuietLogger())
+
+	req, _ := http.NewRequestWithContext(context.Background(), httpMethodGET, "http://example.com/", nil)
+	if err := auth.InjectAuth(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+	if got := req.Header.Get(headerAuthorization); got != "Bearer pkce-tok" {
+		t.Errorf("Authorization = %q", got)
+	}
+	forms := rec.recorded()
+	if len(forms) != 1 {
+		t.Fatalf("token endpoint called %d times, want 1", len(forms))
+	}
+	if forms[0].Has("client_secret") {
+		t.Error("client_secret must not be sent when no credential is configured (public client)")
+	}
+}
+
+func TestRestAuth_InjectOAuth2_RefreshTokenMissingCredSkipped(t *testing.T) {
+	rec := &tokenEndpointRecorder{token: "never-issued"}
+	srv := httptest.NewServer(rec.handler())
+	defer srv.Close()
+
+	creds := &realMockCreds{creds: map[string]string{testCredOAuth2ClientID: testOAuth2CID}}
+	auth := NewRestAuth(AuthConfig{
+		Type:                   authTypeOAuth2,
+		Flow:                   oauth2FlowRefreshToken,
+		TokenURL:               srv.URL,
+		ClientIDCredential:     testCredOAuth2ClientID,
+		RefreshTokenCredential: testCredMissing,
+	}, "", creds, newQuietLogger())
+
+	req, _ := http.NewRequestWithContext(context.Background(), httpMethodGET, "http://example.com/", nil)
+	if err := auth.InjectAuth(context.Background(), req); err != nil {
+		t.Errorf("missing refresh token credential should be skipped without error, got %v", err)
+	}
+	if req.Header.Get(headerAuthorization) != "" {
+		t.Error("no auth header should be set when the refresh token credential is missing")
+	}
+	if got := len(rec.recorded()); got != 0 {
+		t.Errorf("token endpoint called %d times, want 0", got)
 	}
 }
 

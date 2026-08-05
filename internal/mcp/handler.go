@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"regexp"
 	"sort"
 	"strconv"
@@ -25,6 +26,7 @@ import (
 	"time"
 
 	"github.com/DunkelCloud/ToolMesh/internal/backend"
+	"github.com/DunkelCloud/ToolMesh/internal/blob"
 	"github.com/DunkelCloud/ToolMesh/internal/executor"
 	"github.com/DunkelCloud/ToolMesh/internal/metrics"
 	"github.com/DunkelCloud/ToolMesh/internal/toolindex"
@@ -52,7 +54,13 @@ type Handler struct {
 	rawTS         string // raw TypeScript content for built-in tools
 	metrics       *metrics.Registry
 	logger        *slog.Logger
-	debugTools    bool // when true, expose debug_echo and debug_generate
+	debugTools    bool          // when true, expose debug_echo and debug_generate
+	hints         *hintNotifier // first-use backend hint delivery; nil = disabled
+
+	// File broker plumbing for the upload_file built-in (nil = tool hidden).
+	blobStore         *blob.Store
+	uploadLimits      blob.UploadLimits
+	uploadFetchClient *http.Client
 }
 
 // NewHandler creates a new MCP tool call handler. The metrics registry is
@@ -83,6 +91,11 @@ func NewHandler(exec *executor.Executor, back backend.ToolBackend, coercer *tsde
 	if r, ok := back.(backend.ToolAliasResolver); ok {
 		h.aliasResolver = r
 	}
+	// One notifier shared with the code runner, so a backend's hint is
+	// delivered once per principal no matter which surface the call came
+	// through — a direct tool call or one made from inside execute_code.
+	h.hints = newHintNotifier(back)
+	runner.hints = h.hints
 	return h
 }
 
@@ -100,6 +113,8 @@ func (h *Handler) isBuiltinTool(name string) bool {
 	switch name {
 	case toolDiscoverTools, toolExecuteCode:
 		return true
+	case toolUploadFile:
+		return h.blobStore != nil
 	case toolDebugEcho, toolDebugGenerate:
 		return h.debugTools
 	}
@@ -147,6 +162,10 @@ func (h *Handler) HandleToolCall(ctx context.Context, toolName string, params ma
 		return h.handleDiscoverTools(ctx, params)
 	case toolExecuteCode:
 		return h.handleExecuteCode(ctx, params), nil
+	case toolUploadFile:
+		// handleUploadFile reports a clear "not configured" error itself when
+		// no blob store is set; the tool is only advertised when one is.
+		return h.handleUploadFile(ctx, params)
 	case toolDebugEcho:
 		if !h.debugTools {
 			return debugDisabledResult(toolName), nil
@@ -185,9 +204,34 @@ func (h *Handler) HandleToolCall(ctx context.Context, toolName string, params ma
 			h.logger.DebugContext(ctx, "tool execution error", logKeyTool, toolName, outcomeError, err)
 			return nil, err
 		}
+		h.attachBackendHint(ctx, toolName, result)
 		h.logger.DebugContext(ctx, "tool execution result", logKeyTool, toolName, "isError", result.IsError)
 		return result, nil
 	}
+}
+
+// attachBackendHint prepends the owning backend's configured hint to a result
+// the first time a principal calls into that backend.
+//
+// The notice rides as its own text content block ahead of the payload, never
+// merged into it: consumers read the response body as a unit — response
+// transforms and the code sandbox both parse the first text block as JSON —
+// so text mixed into it would corrupt the result rather than annotate it.
+// Logged at info level so the delivery can be correlated with what the caller
+// did next.
+func (h *Handler) attachBackendHint(ctx context.Context, toolName string, result *backend.ToolResult) {
+	if result == nil {
+		return
+	}
+	notice := h.hints.noticeFor(ctx, toolName)
+	if notice == "" {
+		return
+	}
+	h.logger.InfoContext(ctx, "delivered backend hint on first use", logKeyTool, toolName)
+	result.Content = append([]any{map[string]any{
+		contentKeyType: contentKeyText,
+		contentKeyText: notice,
+	}}, result.Content...)
 }
 
 func (h *Handler) handleDiscoverTools(ctx context.Context, params map[string]any) (*backend.ToolResult, error) {
@@ -532,6 +576,10 @@ func (h *Handler) BuildToolList(ctx context.Context) ([]ToolDefinition, error) {
 	// discover_tools too — listing them at the MCP root is purely a
 	// convenience for high-frequency tools where the discovery round-trip
 	// would waste context.
+	if h.blobStore != nil {
+		tools = append(tools, uploadFileToolDefinition())
+	}
+
 	tools = append(tools, h.promotedToolDefinitions(ctx)...)
 
 	if h.debugTools {
@@ -627,11 +675,17 @@ func (h *Handler) buildBackendDescription() string {
 	return desc
 }
 
-// buildGroupedHints renders a "name1: hint; name2, name3: hint; ..." line by
+// buildGroupedHints renders a "name1: blurb; name2, name3: blurb; ..." line by
 // collapsing infos that share a non-empty SpecID into one entry. Backends with
 // an empty SpecID are rendered individually. Group ordering follows the
 // position of the first member in the input slice; instance names within a
-// group are sorted alphabetically. Infos with no hint are skipped entirely.
+// group are sorted alphabetically. Infos with nothing to say are skipped.
+//
+// The blurb is the backend's Description — what the API is — falling back to
+// the operator Hint for backends that carry no description of their own
+// (upstream MCP servers). The first-use notice takes the opposite view and
+// delivers only Hint: this catalog line describes the shelf, the notice passes
+// on what the operator wants known before someone reaches for it.
 func buildGroupedHints(infos []backend.BackendInfo) string {
 	type hintGroup struct {
 		names []string
@@ -642,7 +696,11 @@ func buildGroupedHints(infos []backend.BackendInfo) string {
 	groupBySpec := make(map[string]*hintGroup) // populated only for non-empty SpecID
 
 	for _, info := range infos {
-		if info.Hint == "" {
+		blurb := info.Description
+		if blurb == "" {
+			blurb = info.Hint
+		}
+		if blurb == "" {
 			continue
 		}
 		if info.SpecID != "" {
@@ -650,12 +708,12 @@ func buildGroupedHints(infos []backend.BackendInfo) string {
 				g.names = append(g.names, info.Name)
 				continue
 			}
-			g := &hintGroup{names: []string{info.Name}, hint: info.Hint}
+			g := &hintGroup{names: []string{info.Name}, hint: blurb}
 			groupBySpec[info.SpecID] = g
 			groups = append(groups, g)
 			continue
 		}
-		groups = append(groups, &hintGroup{names: []string{info.Name}, hint: info.Hint})
+		groups = append(groups, &hintGroup{names: []string{info.Name}, hint: blurb})
 	}
 
 	if len(groups) == 0 {

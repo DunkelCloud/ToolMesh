@@ -35,6 +35,7 @@ Write a `.dadl` file — ToolMesh handles the rest.
 - Section 9.4: the DADL JSONPath dialect is pinned — RFC 9535 syntax and semantics for name, index, and wildcard selectors.
 - Section 5.3: refresh-token rotation supported via `rotates_refresh_token` (atomic persistence rules; feature identifier `refresh_token_rotation`); declarative `authorization_params`, `redirect_uri`, and `token_auth` replace provider-specific behavior.
 - Section 12.3: composite authorization is fail-closed by default (inner calls re-checked against the caller); deliberate encapsulation requires declared `delegates` plus deployment-policy approval.
+- Section 6.2: blob handles (`tm-blob://<blob-id>`) let callers reference broker-stored files in any parameter, with `#base64` / `#dataurl` / `#url` materialization (new section 6.2.4). File broker endpoints are now normative (section 6.2.3). This is runtime behavior of the caller-facing tool interface — existing DADL files need no changes and no spec-version bump to benefit.
 - Sections 6.2 / 9.2 / 15.2: consumer security requirements for `file_url` fetching (SSRF hardening), ad-hoc jq sandbox limits, and the registry publication profile (mandatory `access`).
 - Section 15.4: consumer conformance restructured into three profiles (Document Validator, Core Runtime, Full Runtime).
 
@@ -594,8 +595,10 @@ When a tool accepts a file, the parameter type is `file_url`. The caller provide
 Supported URL schemes:
 
 - `https://s3.amazonaws.com/bucket/file.pdf` — S3 / MinIO / any HTTP(S) URL
-- `https://toolmesh-host/files/f-abc123` — ToolMesh file broker (uploaded via `POST /files/upload`)
-- `file:///path/on/host` — local filesystem (only for same-host deployments)
+- `tm-blob://9f8a3c1b2e4d5f60718293a4b5c6d7e8` — a blob in ToolMesh's built-in file broker (section 6.2.3). Resolved by reading the blob store directly — no HTTP fetch, no network reachability requirement.
+- `file:///path/on/host` — local filesystem (only for same-host deployments, restricted to the allowed upload directory)
+
+HTTP(S) download URLs issued by the file broker (`https://toolmesh-host/blobs/<blob-id>`) also work, but the `tm-blob://` form is preferred: it stays valid even when the caller and ToolMesh cannot reach each other over HTTP.
 
 ```yaml
 # file upload tool — URL-based
@@ -633,9 +636,72 @@ ToolMesh provides a built-in file broker for uploading and downloading files out
 
 | Endpoint | Method | Description |
 |---|---|---|
-| `/files/upload` | POST | Upload a file (multipart). Returns `{"file_id": "f-...", "url": "...", "expires": "..."}` |
-| `/files/{file_id}` | GET | Download a file by ID |
-| `/files/{file_id}` | DELETE | Delete a file before TTL expires |
+| `/files/upload` | POST | Upload a file (multipart field `file`, optional form field `ttl` as a Go duration like `24h`). Requires the same authentication as the MCP endpoint. |
+| `/blobs/{blob_id}` | GET, HEAD | Download a blob. Capability URL: the unguessable ID is the only credential, bounded by the TTL. |
+| `/blobs/{blob_id}` | DELETE | Delete a blob before its TTL expires. Capability-based like GET: possession of the ID authorizes deletion. |
+
+The upload response carries both the handle and the download URL:
+
+```json
+{
+  "file_id": "9f8a3c1b2e4d5f60718293a4b5c6d7e8",
+  "handle": "tm-blob://9f8a3c1b2e4d5f60718293a4b5c6d7e8",
+  "url": "https://toolmesh-host/blobs/9f8a3c1b2e4d5f60718293a4b5c6d7e8",
+  "expires": "2026-07-23T09:00:00Z",
+  "size": 204800,
+  "content_type": "image/jpeg"
+}
+```
+
+Callers that cannot speak multipart HTTP can use the built-in `upload_file` MCP tool instead: it takes a URL, fetches it server-side, stores the content as a blob, and returns the same structure — the bytes never pass through the model context.
+
+#### 6.2.4 Blob Handle Substitution
+
+Large binary values must never travel through the model context: an LLM cannot reproduce a 20&nbsp;KB Base64 string verbatim in a tool call. Blob handles make the reference the payload — ToolMesh materializes the bytes server-side when it builds the backend request.
+
+A **blob handle** is `tm-blob://<blob-id>`, optionally followed by a format fragment. Handles are accepted in two places:
+
+1. **`file_url` parameters** (section 6.2.1): the bare handle resolves to the blob's content, exactly like an HTTP URL — streamed as raw body or multipart part depending on the tool's `content_type`. No fragment needed.
+
+2. **Any other string parameter**, at any nesting depth inside object/array parameters: when the *entire* parameter value is a handle carrying an explicit format fragment, ToolMesh replaces it before the request is built:
+
+| Fragment | Substituted value | Typical use |
+|---|---|---|
+| `#base64` | Raw Base64 of the blob content (no prefix) | Anthropic `source.data` image blocks |
+| `#dataurl` | `data:<content-type>;base64,<data>` | OpenAI `image_url` |
+| `#url` | The blob's HTTP download URL | APIs that fetch from a URL themselves |
+
+```json
+// Caller-side tool call — the model only ever handles the reference:
+{
+  "input": [{
+    "role": "user",
+    "content": [
+      { "type": "input_text",  "text": "Transcribe this scan." },
+      { "type": "input_image", "image_url": "tm-blob://9f8a3c1b2e4d5f60718293a4b5c6d7e8#dataurl" }
+    ]
+  }]
+}
+```
+
+Substitution rules:
+
+- **Whole-value match only.** A handle embedded inside a longer string is left untouched. This keeps substitution predictable and prevents accidental expansion inside free-text fields.
+- **A bare handle (no fragment) outside a `file_url` parameter is an error** — the runtime cannot guess the intended encoding. Conversely, `file_url` parameters take only the bare handle; fragments are rejected there.
+- **Unknown, expired, or malformed handles fail the tool call** with an error — they are never passed through to the backend as literal strings.
+- **Size limits apply.** Inline substitution (`#base64`, `#dataurl`) is capped well below the general file-fetch ceiling (10&nbsp;MB by default): Base64 inflates payloads by ~33% and the request body is buffered in memory. `#url` and `file_url` parameters stream and carry no such cap — prefer them for large files.
+- Handles are capability references: possession of the ID grants access to the content for the duration of the TTL, matching the semantics of broker download URLs.
+
+Substitution is runtime behavior of the caller-facing tool interface. DADL files declare nothing to enable it, and it works identically for tools invoked directly via MCP and from `execute_code`.
+
+#### 6.2.5 Security Model
+
+The file broker deliberately trades some inspectability and isolation for the ability to move binary content without routing it through the model context. Deployments should treat these as conscious properties, not oversights:
+
+- **Blob IDs are capabilities.** IDs are unguessable (128-bit random) and time-bounded by the TTL. Possession of an ID grants read access to the content — that is the mechanism that lets a download URL (or a `#url` handle) be handed to a backend without sharing MCP credentials. `GET`/`HEAD /blobs/{id}` are therefore unauthenticated. `POST /files/upload` and `DELETE /blobs/{id}` are **not** capability operations — they require the same authentication as the MCP endpoint (there is no legitimate reason for an unauthenticated party to create or destroy a blob).
+- **No per-tenant ownership.** Blobs live in one flat namespace with no owner tag. For a single-tenant or single-trust-domain deployment this is fine. A deployment serving mutually distrusting tenants over one broker MUST add and enforce an owner/tenant tag on access, because a leaked ID (via logs, errors, or shared audit) would otherwise cross the tenant boundary.
+- **Handles materialize downstream of the pre-execution gate.** Substitution and `file_url` resolution happen while the backend request is being built — after authorization and the request-side (pre-execution) policy gate have inspected the call. Those layers, and the audit trail, therefore see the `tm-blob://` handle, not the materialized bytes. This matches how the broker already behaves outbound (a binary response is gated as a URL, not as its bytes). A policy that must inspect *content* leaving to a backend cannot rely on seeing blob-carried payloads; gate on the handle, the tool, and the access class instead.
+- **`upload_file` is an authenticated, public-only fetcher.** It resolves URLs server-side with SSRF protection at the dial layer (private, loopback, link-local, and cloud-metadata addresses are refused, redirects included). It is not an open proxy — every fetch is tied to an authenticated caller in the audit log — but it does let any authenticated caller have ToolMesh briefly re-host public content under ToolMesh's own origin (download-only: `Content-Disposition: attachment` + `nosniff`). Deployments that issue low-trust caller credentials may want to gate it by access class or shorten its default TTL.
 
 ### 6.3 Binary Download & Streaming
 

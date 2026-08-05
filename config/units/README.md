@@ -33,5 +33,34 @@ A unit is a directory with:
   `describe()` function (returns the tool list) plus one exported
   function per tool.
 
+A REST sub-backend's `dadl:` path is resolved like this: an absolute path
+is used as-is; a relative path is looked for next to `unit.yaml` first (so a
+unit can bundle its DADL self-contained), and if not found there it falls
+back to the global DADL directory (`TOOLMESH_DADL_DIR`), the same place a
+bare filename in `config/backends.yaml` points to. So `dadl: netbox.dadl`
+reuses the shared DADL, while `dadl: ./custom.dadl` pins a bundled copy.
+
 See `examples/dice/` for the smallest possible version
 (pure JavaScript, no sub-backends).
+
+## Promoting unit tools to the MCP root
+
+By default a unit's tools are reachable through `discover_tools` and
+`execute_code`, like every other backend. To also advertise selected tools
+directly at the MCP root — skipping the discovery round-trip for
+high-frequency entry points — list them under `expose.tools`:
+
+```yaml
+unit: federated_internal
+implementation: ./federated_internal.js
+expose:
+  audit: full
+  tools:
+    - search            # advertised at the root as federated_internal_search
+```
+
+Unlike the `expose_tools` field on `backends.yaml` entries, unit tools are
+always promoted under their full `<unit>_<tool>` name, never a bare alias:
+unit tool names are frequently generic (`search`, `roll`), so the prefixed
+form is what keeps the root surface unambiguous. A listed name that matches
+no `describe()` tool is logged at load time and skipped.

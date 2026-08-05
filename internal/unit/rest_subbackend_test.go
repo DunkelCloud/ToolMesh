@@ -117,7 +117,7 @@ async function fetch(args) {
 
 	// Pass nil blobStore — this DADL has no binary responses so the
 	// blob store is unused. The loader must tolerate that.
-	res, err := unit.LoadUnit(ctx, unitDir, creds, nil, logger)
+	res, err := unit.LoadUnit(ctx, unitDir, "", creds, nil, logger)
 	if err != nil {
 		t.Fatalf("LoadUnit: %v", err)
 	}
@@ -159,5 +159,83 @@ async function fetch(args) {
 		}
 	} else if summary.Limit != "3" {
 		t.Fatalf("limit=%q want 3", summary.Limit)
+	}
+}
+
+// TestUnit_RESTSubBackend_GlobalDADLDir proves the config/backends.yaml
+// convention end to end for units: a sub-backend references its DADL by bare
+// filename, no copy is bundled next to unit.yaml, and LoadUnit resolves it
+// against the global DADL directory it is handed. The DADL exists ONLY in
+// that directory, so the unit would fail to load if dadlDir were ignored or
+// the resolver looked only in the unit directory.
+func TestUnit_RESTSubBackend_GlobalDADLDir(t *testing.T) {
+	var hits int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/thing" {
+			http.NotFound(w, r)
+			return
+		}
+		hits++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok": true}`))
+	}))
+	t.Cleanup(server.Close)
+
+	// The DADL lives in the global directory, NOT next to the unit.
+	dadlDir := t.TempDir()
+	dadlSrc := `spec: "https://dadl.ai/spec/dadl-spec-v0.1.md"
+backend:
+  name: thingapi
+  type: rest
+  base_url: "http://placeholder.invalid"
+  description: "Thing API"
+  tools:
+    get_thing:
+      method: GET
+      path: /thing
+      description: "Get the thing"
+`
+	if err := os.WriteFile(filepath.Join(dadlDir, "thingapi.dadl"), []byte(dadlSrc), 0o600); err != nil {
+		t.Fatalf("write global dadl: %v", err)
+	}
+
+	// Bare filename, nothing bundled here — resolution must reach dadlDir.
+	unitDir := t.TempDir()
+	unitYAML := "" +
+		"unit: things\n" +
+		"implementation: ./things.js\n" +
+		"backends:\n" +
+		"  - name: thingapi\n" +
+		"    transport: rest\n" +
+		"    dadl: thingapi.dadl\n" +
+		"    url: \"" + server.URL + "\"\n" +
+		"    allow_private_url: true\n"
+	if err := os.WriteFile(filepath.Join(unitDir, "unit.yaml"), []byte(unitYAML), 0o600); err != nil {
+		t.Fatalf("write unit.yaml: %v", err)
+	}
+	js := `function describe() {
+  return { tools: [{ name: "get", description: "Get the thing" }] };
+}
+async function get() { return await api.thingapi.get_thing({}); }
+`
+	if err := os.WriteFile(filepath.Join(unitDir, "things.js"), []byte(js), 0o600); err != nil {
+		t.Fatalf("write things.js: %v", err)
+	}
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	creds := credentials.NewEmbeddedStore()
+	ctx := context.Background()
+
+	res, err := unit.LoadUnit(ctx, unitDir, dadlDir, creds, nil, logger)
+	if err != nil {
+		t.Fatalf("LoadUnit with global dadlDir: %v", err)
+	}
+	defer res.Adapter.Close()
+
+	if _, err := res.Backend.Execute(ctx, "get", nil); err != nil {
+		t.Fatalf("Execute get: %v", err)
+	}
+	if hits != 1 {
+		t.Fatalf("expected 1 HTTP hit (proves the globally-resolved DADL was loaded and wired), got %d", hits)
 	}
 }

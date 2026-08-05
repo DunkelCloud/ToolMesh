@@ -70,13 +70,19 @@ const (
 	authTypeSession = "session"
 )
 
-// Common HTTP header names and OAuth2 / API-key auth literals.
+// Common HTTP header names and API-key / session auth literals.
 const (
 	headerAuthorization = "Authorization"
 	headerXAPIKey       = "X-API-Key" //nolint:gosec // header name, not a credential
 	authInjectQuery     = "query"
-	oauth2GrantType     = "client_credentials" //nolint:gosec // OAuth2 grant_type value, not a credential
 	sessionRefreshLogin = "re_login"
+)
+
+// AuthConfig.Flow values for oauth2 auth. Each doubles as the grant_type
+// sent to the token endpoint. An empty flow defaults to client_credentials.
+const (
+	oauth2FlowClientCredentials = "client_credentials" //nolint:gosec // OAuth2 grant_type value, not a credential
+	oauth2FlowRefreshToken      = "refresh_token"      //nolint:gosec // OAuth2 grant_type value, not a credential
 )
 
 // RestAuth manages authentication token lifecycle for REST API calls.
@@ -267,28 +273,12 @@ func (a *RestAuth) getOAuth2Token(ctx context.Context) (string, error) {
 	}
 
 	// Fetch new token
-	clientID, err := a.creds.Get(ctx, a.config.ClientIDCredential, credentials.TenantInfo{})
+	data, err := a.buildOAuth2TokenRequest(ctx)
 	if err != nil {
-		if errors.Is(err, credentials.ErrCredentialNotFound) {
-			return "", nil
-		}
-		return "", fmt.Errorf("get oauth2 client_id: %w", err)
+		return "", err
 	}
-	clientSecret, err := a.creds.Get(ctx, a.config.ClientSecretCredential, credentials.TenantInfo{})
-	if err != nil {
-		if errors.Is(err, credentials.ErrCredentialNotFound) {
-			return "", nil
-		}
-		return "", fmt.Errorf("get oauth2 client_secret: %w", err)
-	}
-
-	data := url.Values{
-		"grant_type":    {oauth2GrantType},
-		"client_id":     {clientID},
-		"client_secret": {clientSecret},
-	}
-	if len(a.config.Scopes) > 0 {
-		data.Set("scope", strings.Join(a.config.Scopes, " "))
+	if data == nil {
+		return "", nil // required credential missing: caller skips the auth header
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "POST", a.config.TokenURL, strings.NewReader(data.Encode()))
@@ -327,8 +317,63 @@ func (a *RestAuth) getOAuth2Token(ctx context.Context) (string, error) {
 		a.tokenExpiry = time.Now().Add(time.Hour) // default 1h
 	}
 
-	a.logger.Info("oauth2 token acquired", "expires_in", tokenResp.ExpiresIn)
+	a.logger.Info("oauth2 token acquired", "flow", data.Get("grant_type"), "expires_in", tokenResp.ExpiresIn)
 	return a.cachedToken, nil
+}
+
+// buildOAuth2TokenRequest assembles the token-endpoint form values for the
+// configured oauth2 flow. It returns (nil, nil) when a required credential is
+// not in the store — callers treat that as "skip auth", consistent with the
+// other inject* methods.
+func (a *RestAuth) buildOAuth2TokenRequest(ctx context.Context) (url.Values, error) {
+	clientID, err := a.creds.Get(ctx, a.config.ClientIDCredential, credentials.TenantInfo{})
+	if err != nil {
+		if errors.Is(err, credentials.ErrCredentialNotFound) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("get oauth2 client_id: %w", err)
+	}
+	data := url.Values{"client_id": {clientID}}
+
+	switch a.config.Flow {
+	case oauth2FlowRefreshToken:
+		refreshToken, err := a.creds.Get(ctx, a.config.RefreshTokenCredential, credentials.TenantInfo{})
+		if err != nil {
+			if errors.Is(err, credentials.ErrCredentialNotFound) {
+				return nil, nil
+			}
+			return nil, fmt.Errorf("get oauth2 refresh_token: %w", err)
+		}
+		data.Set("grant_type", oauth2FlowRefreshToken)
+		data.Set("refresh_token", refreshToken)
+		// Scopes are fixed at consent time for this flow, so no scope
+		// parameter is sent. client_secret is optional: public (PKCE)
+		// clients have none.
+		if a.config.ClientSecretCredential != "" {
+			clientSecret, err := a.creds.Get(ctx, a.config.ClientSecretCredential, credentials.TenantInfo{})
+			if err != nil {
+				if errors.Is(err, credentials.ErrCredentialNotFound) {
+					return nil, nil
+				}
+				return nil, fmt.Errorf("get oauth2 client_secret: %w", err)
+			}
+			data.Set("client_secret", clientSecret)
+		}
+	default: // "" defaults to client_credentials
+		clientSecret, err := a.creds.Get(ctx, a.config.ClientSecretCredential, credentials.TenantInfo{})
+		if err != nil {
+			if errors.Is(err, credentials.ErrCredentialNotFound) {
+				return nil, nil
+			}
+			return nil, fmt.Errorf("get oauth2 client_secret: %w", err)
+		}
+		data.Set("grant_type", oauth2FlowClientCredentials)
+		data.Set("client_secret", clientSecret)
+		if len(a.config.Scopes) > 0 {
+			data.Set("scope", strings.Join(a.config.Scopes, " "))
+		}
+	}
+	return data, nil
 }
 
 // defaultSessionTTL is the maximum lifetime for session tokens before re-login.

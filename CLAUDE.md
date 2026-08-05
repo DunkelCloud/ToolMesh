@@ -176,8 +176,8 @@ Auth -> AuthZ -> Credential Injection -> Execution -> Output Gate -> Audit
 
 ## What's Next
 
-- [Architecture](https://toolmesh.io/architecture) — understand the execution pipeline
+- [Architecture](https://www.toolmesh.io/en/architecture/) — understand the execution pipeline
 - [DADL Spec](https://dadl.ai/spec/dadl-spec-v0.1) — full specification
 - [DADL Registry](https://dadl.ai/browse) — pre-built API descriptions
-- [Configuration](https://toolmesh.io/configuration) — all environment variables
-- [Authentication](https://toolmesh.io/authentication) — OAuth 2.1, API keys, multi-user
+- [Configuration](https://www.toolmesh.io/en/configuration/) — all environment variables
+- [Authentication](https://www.toolmesh.io/en/authentication/) — OAuth 2.1, API keys, multi-user

@@ -47,7 +47,6 @@ import (
 	"github.com/DunkelCloud/ToolMesh/internal/unit"
 	"github.com/DunkelCloud/ToolMesh/internal/version"
 	"github.com/redis/go-redis/v9"
-	"gopkg.in/yaml.v3"
 )
 
 func main() {
@@ -221,7 +220,7 @@ func main() {
 	// Load unit-backends. Each unit appears in the composite under its own
 	// name and is indistinguishable from any other backend for authz,
 	// audit and gate purposes. Failed units are logged and skipped.
-	unitAdapters := loadUnits(ctx, cfg.UnitsDir, credStore, blobStore, compositeBackend, logger)
+	unitAdapters := loadUnits(ctx, cfg.UnitsDir, cfg.DADLDir, credStore, blobStore, compositeBackend, logger)
 	defer func() {
 		for _, a := range unitAdapters {
 			a.Close()
@@ -379,11 +378,14 @@ func main() {
 	// Initialize MCP handler and server
 	mcpHandler := mcp.NewHandler(exec, compositeBackend, coercer, rawTS, metricsReg, logger, cfg.DebugTools)
 	mcpHandler.SetCodeTimeout(time.Duration(cfg.CodeTimeout) * time.Second)
+	mcpHandler.SetBlobStore(blobStore, blob.DefaultUploadLimits())
 	mcpServer := mcp.NewServer(mcpHandler, cfg, logger, tokenStore, userStore, apiKeyStore, rateLimiter, callerClasses, metricsReg)
+	mcpServer.SetBlobStore(blobStore, blob.DefaultUploadLimits())
 
 	httpMux := http.NewServeMux()
+	// SetupRoutes registers /blobs/ (GET/HEAD capability-based, DELETE
+	// authenticated) and /files/upload when a blob store is configured.
 	mcpServer.SetupRoutes(httpMux)
-	httpMux.Handle("/blobs/", blobStore)
 
 	// Wrap with middleware: panic recovery (outermost) → security headers → request logging.
 	httpHandler := mcp.PanicRecovery(logger)(mcp.SecurityHeaders(mcp.RequestLogging(logger)(httpMux)))
@@ -591,11 +593,9 @@ func loadRESTBackendsInto(named map[string]backend.ToolBackend, backendsConfigPa
 	}
 
 	for _, entry := range cfg.Backends {
+		// Non-REST entries are wired by the MCPAdapter, which applies
+		// include_tools/expose_tools itself after upstream tool discovery.
 		if entry.Transport != "rest" {
-			if len(entry.IncludeTools) > 0 {
-				logger.Warn("include_tools is only honored for transport: rest backends; ignoring",
-					"name", entry.Name, "transport", entry.Transport)
-			}
 			continue
 		}
 		if entry.DADL == "" {
@@ -680,6 +680,7 @@ func loadRESTBackendsInto(named map[string]backend.ToolBackend, backendsConfigPa
 			TLSSkipVerify:       entry.TLSSkipVerify,
 			ExposeTools:         entry.ExposeTools,
 			IncludeTools:        entry.IncludeTools,
+			Hint:                entry.Hint,
 		})
 		if err != nil {
 			logger.Error("failed to create REST adapter", "name", entry.Name, "error", err)
@@ -723,16 +724,19 @@ func loadRESTBackendsInto(named map[string]backend.ToolBackend, backendsConfigPa
 	}
 }
 
-// backendsYAMLUnmarshal unmarshals backends YAML config.
+// backendsYAMLUnmarshal unmarshals backends YAML config. It shares the strict
+// decoder with the MCP adapter so both readers of backends.yaml reject the
+// same unknown keys — a config that parses for one and fails for the other
+// would be worse than either behavior alone.
 func backendsYAMLUnmarshal(data []byte, cfg *backend.BackendConfig) error {
-	return yaml.Unmarshal(data, cfg)
+	return backend.UnmarshalBackendConfig(data, cfg)
 }
 
 // loadUnits scans the units directory, loads every unit it finds, and adds
 // each one to the composite backend under its declared name. Returns the
 // list of MCPAdapter instances owning the per-unit sub-backend sessions so
 // the caller can close them on shutdown.
-func loadUnits(ctx context.Context, unitsDir string, creds credentials.CredentialStore, blobStore *blob.Store, comp *backend.CompositeBackend, logger *slog.Logger) []*backend.MCPAdapter {
+func loadUnits(ctx context.Context, unitsDir, dadlDir string, creds credentials.CredentialStore, blobStore *blob.Store, comp *backend.CompositeBackend, logger *slog.Logger) []*backend.MCPAdapter {
 	dirs, err := unit.ScanDir(unitsDir)
 	if err != nil {
 		logger.Error("failed to scan units dir", "dir", unitsDir, "error", err)
@@ -755,7 +759,7 @@ func loadUnits(ctx context.Context, unitsDir string, creds credentials.Credentia
 
 	adapters := make([]*backend.MCPAdapter, 0, len(dirs))
 	for _, d := range dirs {
-		res, loadErr := unit.LoadUnit(ctx, d, creds, blobStore, logger)
+		res, loadErr := unit.LoadUnit(ctx, d, dadlDir, creds, blobStore, logger)
 		if loadErr != nil {
 			logger.Error("failed to load unit", "dir", d, "error", loadErr)
 			continue

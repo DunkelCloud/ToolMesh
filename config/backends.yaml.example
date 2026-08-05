@@ -1,10 +1,34 @@
+# This file is parsed strictly: a key no backend field claims aborts startup
+# with the offending line, rather than being ignored. A silently dropped
+# "expose_tool" typo would otherwise read as an active restriction that is not
+# actually in force.
+
 backends:
   # MCP server over HTTP (Streamable HTTP or legacy SSE)
   # - name: my-service
   #   transport: http
   #   url: "https://my-service.example.com/mcp"
   #   api_key_env: "MY_SERVICE_API_KEY"
-  #   hint: "Short description shown to AI agents"
+  #   # Operator guidance for THIS deployment: conventions to follow, a page to
+  #   # read first, a local gotcha. It is delivered on the first tool call each
+  #   # caller makes into this backend, so it arrives in full even when the
+  #   # combined catalog blurb grows long enough for clients to truncate it.
+  #   # Honored for every transport (rest, http, stdio).
+  #   #
+  #   # Say what the caller must DO, not what the backend is — the catalog line
+  #   # already carries the description from the API definition, and repeating
+  #   # it teaches nothing. Good: "Page names need a type prefix; read the
+  #   # wiki_rules page before creating any page."
+  #   hint: "What agents must know before using this backend"
+  #   # Optional: restrict the surface to exactly these upstream tool names.
+  #   # Everything else the MCP server offers disappears from discover_tools,
+  #   # execute_code, and direct calls — useful when a server ships
+  #   # housekeeping tools an agent has no business calling. Unlike the REST
+  #   # path, entries are validated after the upstream tools/list, so a name
+  #   # that matches nothing is reported in the log on connect.
+  #   include_tools:
+  #     - fetch_url
+  #     - fetch_urls
   #   # Optional: promote selected tools to direct top-level MCP tools (in
   #   # addition to the always-available discover_tools / execute_code surface).
   #   # Use for high-frequency tools so the LLM can call them without a
@@ -68,7 +92,7 @@ backends:
   #   # disappears from discover_tools, execute_code, and direct calls. This
   #   # keeps the tool catalog small and stops the LLM picking an endpoint the
   #   # server does not implement. Omit it to expose every tool (the default).
-  #   # NOTE: honored for transport: rest backends only.
+  #   # Honored for every transport (rest, http, stdio).
   #   include_tools:
   #     - create_chat_completion
   #     - create_chat_completion_streaming

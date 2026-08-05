@@ -28,6 +28,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/DunkelCloud/ToolMesh/internal/blob"
 	"github.com/DunkelCloud/ToolMesh/internal/dadl"
 )
 
@@ -122,10 +123,13 @@ func (a *RESTAdapter) writeFileURLPart(ctx context.Context, writer *multipart.Wr
 }
 
 // fetchFileURL resolves a caller-provided file URL into a byte stream.
-// Supported schemes (DADL spec §6.2.1): http(s) for any web location including
-// the ToolMesh file broker / blob store, and file for same-host paths inside
-// the allowed upload directory.
+// Supported schemes (DADL spec §6.2.1): http(s) for any web location, tm-blob
+// for the embedded file broker (read directly, no network), and file for
+// same-host paths inside the allowed upload directory.
 func (a *RESTAdapter) fetchFileURL(ctx context.Context, paramName, rawURL string) (*fetchedFile, error) {
+	if blob.IsHandle(rawURL) {
+		return a.openBlobHandle(paramName, rawURL)
+	}
 	u, err := url.Parse(rawURL)
 	if err != nil {
 		return nil, fmt.Errorf("file parameter %q: invalid URL %q: %w", paramName, rawURL, err)
@@ -136,7 +140,7 @@ func (a *RESTAdapter) fetchFileURL(ctx context.Context, paramName, rawURL string
 	case "file":
 		return a.openLocalFileURL(paramName, u)
 	default:
-		return nil, fmt.Errorf("file parameter %q: unsupported URL scheme %q (use http, https, or file)", paramName, u.Scheme)
+		return nil, fmt.Errorf("file parameter %q: unsupported URL scheme %q (use http, https, tm-blob, or file)", paramName, u.Scheme)
 	}
 }
 

@@ -13,6 +13,16 @@ for the full narrative and details.
 
 ### Fixed
 
+- A backend's `hint:` (backends.yaml) is now honored for `transport: rest`.
+  It was only ever read for MCP backends, so a hint configured on a REST
+  backend was silently dropped — it reached neither the catalog blurb nor
+  anything else. As a consequence the first-use notice was delivering the
+  DADL's `backend.description` instead of the operator's hint, announcing what
+  an API is to a caller who had just chosen a tool from it. `BackendInfo` now
+  keeps the two apart: `Description` (what the backend is, from the API
+  definition) drives the `execute_code` catalog line as before, while `Hint`
+  (what the operator wants known here) drives the first-use notice and nothing
+  else. Backends without a configured hint now stay silent.
 - Long-running tool calls no longer abort with "The connector's server isn't
   responding." A `tools/call` is now delivered over an MCP Streamable HTTP SSE
   stream when the client accepts one, with a keepalive comment emitted every
@@ -28,15 +38,30 @@ for the full narrative and details.
 
 ### Added
 
+- A backend's `hint:` (backends.yaml) is now delivered with the first tool call
+  each caller makes into that backend, in addition to the `execute_code` tool
+  description. That description carries every backend's hint at once, so on a
+  large mesh it grows long enough for clients to truncate it and the hints past
+  the cut are never seen. Attaching the hint to the call delivers it in full, at
+  the moment it is relevant, to whoever is actually using the backend. On a
+  direct call the note arrives as its own content block ahead of the payload;
+  inside `execute_code` it rides beside the result as `notice` (never merged
+  into it — the script consumes the result as data). Delivery is per caller and
+  best-effort: a missed or repeated note costs a few tokens and nothing else.
 - `execute_code`'s wall-clock budget is configurable via `TOOLMESH_CODE_TIMEOUT`
   (seconds, default 120), so an orchestration of several slow backend calls is
   not capped below the backends' own timeouts.
-- `include_tools` backends.yaml option (transport: rest) restricts a backend's
-  exposed surface to exactly the named tools/composites — everything else in the
-  DADL disappears from `discover_tools`, `execute_code`, and direct calls. Lets a
-  broad shared DADL (e.g. `openai.dadl`) be pointed at a chat-only endpoint
-  (Ollama, vLLM) while advertising only chat/embeddings, keeping the catalog
-  small and preventing the LLM from picking an unimplemented endpoint.
+- `include_tools` backends.yaml option restricts a backend's exposed surface to
+  exactly the named tools/composites — everything else disappears from
+  `discover_tools`, `execute_code`, and direct calls. Lets a broad shared DADL
+  (e.g. `openai.dadl`) be pointed at a chat-only endpoint (Ollama, vLLM) while
+  advertising only chat/embeddings, keeping the catalog small and preventing the
+  LLM from picking an unimplemented endpoint. Honored for every transport: MCP
+  backends (`http`, `stdio`) apply the allow-list to the upstream `tools/list`
+  result and enforce it again on execution, so an MCP server's housekeeping
+  tools can be kept off the agent's surface. Entries that match no upstream
+  tool, and `expose_tools` entries the allow-list excludes, are reported in the
+  log on connect.
 - Progressive discovery for large tool catalogs. `discover_tools` now
   auto-scales its output with the number of matches (≤25 full TypeScript
   signatures, ≤250 one-line summaries, ≤2000 names only, above that a
@@ -66,6 +91,14 @@ for the full narrative and details.
 
 ### Changed (BREAKING)
 
+- `backends.yaml` is now parsed strictly: a key that no backend field claims
+  aborts startup with the offending line instead of being silently dropped.
+  Lenient parsing let a misspelled or invented option (e.g. `tools_filter`)
+  vanish without a trace, leaving an operator convinced a restriction was in
+  force while the backend exposed its full tool surface. Operators must remove
+  or correct unknown keys before upgrading; a hot-reload that hits one keeps
+  the previous backends running and logs the error rather than taking the
+  server down. Empty or fully commented-out files still mean "no backends".
 - The `list_tools` MCP meta-tool was renamed to `discover_tools`. There is no
   backwards-compatible alias — clients that hard-code the old name must be
   updated. The rename is harness-stable: clients that sort tool listings

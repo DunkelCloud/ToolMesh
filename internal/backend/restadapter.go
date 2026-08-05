@@ -72,6 +72,7 @@ type RESTAdapter struct {
 	includeTools        map[string]bool   // when non-nil, the only tools/composites this backend exposes (from backends.yaml include_tools)
 	fileURLAllowedHosts map[string]bool   // optional allowlist of lowercase hostnames for caller file_url fetches; nil/empty = no restriction
 	childGuard          ChildGuard        // authorizes composite child api.* calls; nil = no per-child checks (e.g. standalone/tests)
+	hint                string            // operator guidance from backends.yaml hint:; empty = none configured
 }
 
 // SetChildGuard installs the guard used to authorize composite child api.*
@@ -115,6 +116,13 @@ type RESTAdapterOptions struct {
 	// (Ollama, vLLM) while advertising only chat/embeddings. Empty means expose
 	// every tool (the default). Unknown names are dropped with a warning.
 	IncludeTools []string
+	// Hint is the operator guidance configured for this backend in
+	// backends.yaml (`hint:`). It is deployment-specific — what an admin wants
+	// agents to know before using this particular instance — and is delivered
+	// on a caller's first tool call into the backend. Distinct from the DADL's
+	// backend.description, which says what the API is; empty means the
+	// operator configured no hint.
+	Hint string
 }
 
 // NewRESTAdapter creates a RESTAdapter from a parsed DADL spec.
@@ -217,6 +225,7 @@ func NewRESTAdapter(spec *dadl.Spec, creds credentials.CredentialStore, logger *
 		exposeTools:         exposeTools,
 		includeTools:        includeTools,
 		fileURLAllowedHosts: fileURLAllowedHosts,
+		hint:                opts.Hint,
 	}, nil
 }
 
@@ -364,6 +373,17 @@ func (a *RESTAdapter) Execute(ctx context.Context, toolName string, params map[s
 	tool, ok := a.spec.Backend.Tools[toolName]
 	if !ok {
 		return nil, fmt.Errorf("tool %q not found in REST backend %q", toolName, a.spec.Backend.Name)
+	}
+
+	// Materialize tm-blob:// handles in string parameters before any request
+	// building (DADL spec §6.2.4). file_url parameters keep their bare
+	// handles — the file_url pipeline streams those directly from the store.
+	params, err := a.substituteBlobHandles(&tool, params)
+	if err != nil {
+		return &ToolResult{
+			Content: []any{textContent(fmt.Sprintf("Error: %s", err))},
+			IsError: true,
+		}, nil
 	}
 
 	a.logger.InfoContext(ctx, "executing REST tool",
@@ -545,9 +565,10 @@ func (a *RESTAdapter) LookupTool(toolName string) (ToolDescriptor, bool) {
 // multiple instances of the same DADL spec into one line.
 func (a *RESTAdapter) BackendSummaries() []BackendInfo {
 	return []BackendInfo{{
-		Name:   a.spec.Backend.Name,
-		Hint:   a.spec.Backend.Description,
-		SpecID: a.spec.ContentHash,
+		Name:        a.spec.Backend.Name,
+		Description: a.spec.Backend.Description,
+		Hint:        a.hint,
+		SpecID:      a.spec.ContentHash,
 	}}
 }
 

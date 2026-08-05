@@ -63,6 +63,7 @@ const (
 	testPathAudio     = "/audio"
 	testDescGetItem   = "Get an item"
 	testDescListItems = "List items"
+	testDescMyAPI     = "My API description"
 
 	// Fixture HTTP method literals (separate from "GET"/"POST" because tests
 	// also assert on them as strings).

@@ -13,6 +13,16 @@ for the full narrative and details.
 
 ### Fixed
 
+- A backend's `hint:` (backends.yaml) is now honored for `transport: rest`.
+  It was only ever read for MCP backends, so a hint configured on a REST
+  backend was silently dropped — it reached neither the catalog blurb nor
+  anything else. As a consequence the first-use notice was delivering the
+  DADL's `backend.description` instead of the operator's hint, announcing what
+  an API is to a caller who had just chosen a tool from it. `BackendInfo` now
+  keeps the two apart: `Description` (what the backend is, from the API
+  definition) drives the `execute_code` catalog line as before, while `Hint`
+  (what the operator wants known here) drives the first-use notice and nothing
+  else. Backends without a configured hint now stay silent.
 - `discover_tools` now matches its `pattern` against the tool name it actually
   prints, not just the canonical one. Results render names in JavaScript form
   (`tabula-wiki_read_page` prints as `tabula_wiki_read_page`), so copying a name

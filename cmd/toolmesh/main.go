@@ -680,6 +680,7 @@ func loadRESTBackendsInto(named map[string]backend.ToolBackend, backendsConfigPa
 			TLSSkipVerify:       entry.TLSSkipVerify,
 			ExposeTools:         entry.ExposeTools,
 			IncludeTools:        entry.IncludeTools,
+			Hint:                entry.Hint,
 		})
 		if err != nil {
 			logger.Error("failed to create REST adapter", "name", entry.Name, "error", err)

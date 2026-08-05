@@ -20,6 +20,7 @@ const (
 	// Fixture backend / hostname names.
 	testBackendNameGitHub = "github"
 	testHintLocalMemory   = "Local memory store"
+	testDescGitHub        = "GitHub REST API"
 	// Sanitized (JavaScript-identifier) spellings of tools on a backend whose
 	// name is not a valid identifier — what discovery prints for them.
 	testToolTabulaReadJS   = "tabula_wiki_read_page"

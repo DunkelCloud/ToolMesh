@@ -118,9 +118,9 @@ func TestCheckRequires(t *testing.T) {
 		},
 		{
 			name:     "unimplemented feature refused",
-			requires: &RequiresConfig{Features: []string{"redact"}},
+			requires: &RequiresConfig{Features: []string{"idempotency"}},
 			version:  testVersion100,
-			wantErr:  `requires feature "redact"`,
+			wantErr:  `requires feature "idempotency"`,
 		},
 		{
 			name:     "unknown feature identifier refused",
@@ -159,9 +159,9 @@ func TestCheckRequires(t *testing.T) {
 		},
 		{
 			name:     "feature check runs before version skip",
-			requires: &RequiresConfig{ToolMesh: ">=0.1.0", Features: []string{"redact"}},
+			requires: &RequiresConfig{ToolMesh: ">=0.1.0", Features: []string{"idempotency"}},
 			version:  testVersionDev,
-			wantErr:  `requires feature "redact"`,
+			wantErr:  `requires feature "idempotency"`,
 		},
 	}
 	for _, tt := range tests {
@@ -217,10 +217,10 @@ backend:
 		}
 	})
 	t.Run("missing feature refuses load", func(t *testing.T) {
-		yaml := strings.Replace(base, "%s", "requires:\n  features: [redact]", 1)
+		yaml := strings.Replace(base, "%s", "requires:\n  features: [idempotency]", 1)
 		_, err := ParseBytes([]byte(yaml))
-		if err == nil || !strings.Contains(err.Error(), "refusing to load dadl") || !strings.Contains(err.Error(), `"redact"`) {
-			t.Fatalf("error = %v, want refusal naming redact", err)
+		if err == nil || !strings.Contains(err.Error(), "refusing to load dadl") || !strings.Contains(err.Error(), `"idempotency"`) {
+			t.Fatalf("error = %v, want refusal naming idempotency", err)
 		}
 	})
 	t.Run("dev build skips version range with warning", func(t *testing.T) {
@@ -260,8 +260,6 @@ backend:
       returns: Item
       params:
         id: { type: integer, in: path, required: true, descriptionn: "typo" }
-      response:
-        redact: ["$.secret"]
 `
 	spec, err := ParseBytes([]byte(yaml))
 	if err != nil {
@@ -272,7 +270,6 @@ backend:
 		`unknown key "health" in backend`,
 		`unknown key "returns" in tool definition`,
 		`unknown key "descriptionn" in parameter definition`,
-		`unknown key "redact" in response`,
 	}
 	if len(spec.Warnings) != len(wantSubstrings) {
 		t.Fatalf("got %d warnings, want %d: %v", len(spec.Warnings), len(wantSubstrings), spec.Warnings)

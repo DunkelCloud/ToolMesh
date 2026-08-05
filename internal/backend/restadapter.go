@@ -492,9 +492,28 @@ func (a *RESTAdapter) Execute(ctx context.Context, toolName string, params map[s
 		}
 	}
 
-	// Transform response
+	// Transform response, then redact (DADL spec §9.3 pipeline order:
+	// result_path → transform → redact). Redaction is fail-closed: with a
+	// redact list declared, neither a transform error (paths are relative
+	// to the transformed result — positions would be unverifiable) nor a
+	// redact error may leak the unredacted body.
 	body, err = a.transformResponse(&tool, body)
-	if err != nil {
+	redactPaths := a.effectiveRedactPaths(&tool)
+	if len(redactPaths) > 0 {
+		if err != nil {
+			return &ToolResult{
+				Content: []any{textContent(fmt.Sprintf("Error: response transformation failed on a tool with response.redact; refusing unredacted output: %s", err))},
+				IsError: true,
+			}, nil
+		}
+		body, err = dadl.RedactResult(body, redactPaths)
+		if err != nil {
+			return &ToolResult{
+				Content: []any{textContent(fmt.Sprintf("Error: response redaction failed: %s", err))},
+				IsError: true,
+			}, nil
+		}
+	} else if err != nil {
 		a.logger.Warn("response transformation error", "error", err)
 	}
 
@@ -1198,6 +1217,29 @@ func (a *RESTAdapter) effectiveResponseConfig(tool *dadl.ToolDef) *dadl.Response
 		return tool.Response
 	}
 	return a.spec.Backend.Defaults.Response
+}
+
+// effectiveRedactPaths merges redact lists additively across defaults and
+// tool level (DADL spec §9.3): unlike the rest of the response config — where
+// a tool-level block replaces the defaults wholesale — a tool can extend the
+// default redactions but never remove them. Duplicates are dropped.
+func (a *RESTAdapter) effectiveRedactPaths(tool *dadl.ToolDef) []string {
+	var paths []string
+	seen := make(map[string]bool)
+	add := func(rc *dadl.ResponseConfig) {
+		if rc == nil {
+			return
+		}
+		for _, p := range rc.Redact {
+			if !seen[p] {
+				seen[p] = true
+				paths = append(paths, p)
+			}
+		}
+	}
+	add(a.spec.Backend.Defaults.Response)
+	add(tool.Response)
+	return paths
 }
 
 // isBinaryResponse reports whether the response config routes the body

@@ -16,23 +16,29 @@ package dadl
 
 import (
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 )
 
-// JSONPath provides minimal JSONPath extraction for dot-notation paths.
-// Supports: $.field, $.field.nested, $.field[0], $.field[-1].
+// JSONPath implements the dialect pinned in DADL spec §9.4: an RFC 9535
+// subset of root, name selectors (dot notation), index selectors including
+// negative, and the wildcard selector. Descendant segments, slices, and
+// filters are outside the dialect and rejected by the parser.
+// Supports: $.field, $.field.nested, $.field[0], $.data[-1], $[*].secret,
+// $.data[*].id, $.settings.*.
 type JSONPath struct {
 	segments []pathSegment
 }
 
 type pathSegment struct {
-	field string
-	index *int // nil = no index, non-nil = array index (negative = from end)
+	field    string
+	index    *int // nil = no index, non-nil = array index (negative = from end)
+	wildcard bool // [*] or .* — selects every child of the current node
 }
 
-// NewJSONPath parses a JSONPath expression. Only dot-notation with optional
-// array indices is supported (e.g. "$.data", "$.items[0].id", "$.data[-1]").
+// NewJSONPath parses a JSONPath expression in the §9.4 dialect
+// (e.g. "$.data", "$.items[0].id", "$.data[-1]", "$[*].secret").
 func NewJSONPath(expr string) (*JSONPath, error) {
 	if expr == "" {
 		return nil, fmt.Errorf("empty jsonpath expression")
@@ -63,8 +69,18 @@ func NewJSONPath(expr string) (*JSONPath, error) {
 }
 
 func parseSegment(s string) (pathSegment, error) {
+	if s == "" {
+		// A ".." in the expression: descendant segments are outside the
+		// §9.4 dialect — reject instead of silently misreading the path.
+		return pathSegment{}, fmt.Errorf("empty segment (descendant segments are not part of the DADL JSONPath dialect)")
+	}
 	bracketIdx := strings.Index(s, "[")
 	if bracketIdx < 0 {
+		// RFC 9535 wildcard shorthand ".*"; a literal member named "*"
+		// would need quoted bracket notation, which the dialect omits.
+		if s == "*" {
+			return pathSegment{wildcard: true}, nil
+		}
 		return pathSegment{field: s}, nil
 	}
 
@@ -75,6 +91,9 @@ func parseSegment(s string) (pathSegment, error) {
 		return pathSegment{}, fmt.Errorf("unclosed bracket in %q", s)
 	}
 	idxStr := rest[1 : len(rest)-1]
+	if idxStr == "*" {
+		return pathSegment{field: field, wildcard: true}, nil
+	}
 	idx, err := strconv.Atoi(idxStr)
 	if err != nil {
 		return pathSegment{}, fmt.Errorf("invalid array index %q: %w", idxStr, err)
@@ -82,8 +101,26 @@ func parseSegment(s string) (pathSegment, error) {
 	return pathSegment{field: field, index: &idx}, nil
 }
 
-// Extract applies the JSONPath to parsed JSON data and returns the matched value.
+// hasWildcard reports whether any segment selects every child.
+func (jp *JSONPath) hasWildcard() bool {
+	for _, seg := range jp.segments {
+		if seg.wildcard {
+			return true
+		}
+	}
+	return false
+}
+
+// Extract applies the JSONPath to parsed JSON data and returns the matched
+// value. A path without wildcards returns the single matched node, or an
+// error when the path is absent (pre-wildcard behavior, unchanged). A path
+// with wildcards returns the RFC 9535 nodelist as []any — branches that do
+// not match are skipped, never an error — so an empty result is possible.
 func (jp *JSONPath) Extract(data any) (any, error) {
+	if jp.hasWildcard() {
+		return collectNodes(data, jp.segments), nil
+	}
+
 	current := data
 	for _, seg := range jp.segments {
 		if seg.field != "" {
@@ -114,6 +151,70 @@ func (jp *JSONPath) Extract(data any) (any, error) {
 		}
 	}
 	return current, nil
+}
+
+// collectNodes gathers every node the segments select, RFC 9535
+// nodelist-style: non-matching branches drop out silently.
+func collectNodes(data any, segs []pathSegment) []any {
+	if len(segs) == 0 {
+		return []any{data}
+	}
+	seg, rest := segs[0], segs[1:]
+
+	current := data
+	if seg.field != "" {
+		m, ok := current.(map[string]any)
+		if !ok {
+			return nil
+		}
+		val, exists := m[seg.field]
+		if !exists {
+			return nil
+		}
+		current = val
+	}
+
+	switch {
+	case seg.wildcard:
+		var out []any
+		switch v := current.(type) {
+		case []any:
+			for _, item := range v {
+				out = append(out, collectNodes(item, rest)...)
+			}
+		case map[string]any:
+			for _, key := range sortedKeys(v) {
+				out = append(out, collectNodes(v[key], rest)...)
+			}
+		}
+		return out
+	case seg.index != nil:
+		arr, ok := current.([]any)
+		if !ok {
+			return nil
+		}
+		idx := *seg.index
+		if idx < 0 {
+			idx = len(arr) + idx
+		}
+		if idx < 0 || idx >= len(arr) {
+			return nil
+		}
+		return collectNodes(arr[idx], rest)
+	default:
+		return collectNodes(current, rest)
+	}
+}
+
+// sortedKeys returns map keys in sorted order so wildcard-over-object
+// results are deterministic.
+func sortedKeys(m map[string]any) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 // ExtractResult applies a JSONPath expression string to JSON data bytes.

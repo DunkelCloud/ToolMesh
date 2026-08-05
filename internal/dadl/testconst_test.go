@@ -57,4 +57,8 @@ const (
 
 	// Common tool name shared between tsgen and requires tests.
 	testToolListItems = "list_items"
+
+	// Fixtures shared across redact/transform tests.
+	testRedactPathSecret = "$[*].secret"
+	testJSONTinyObject   = `{"a":1}`
 )

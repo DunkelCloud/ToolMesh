@@ -175,12 +175,17 @@ type ResponseConfig struct {
 	Transform       string `yaml:"transform"`     // jq expression
 	MaxItems        int    `yaml:"max_items"`
 	AllowJQOverride bool   `yaml:"allow_jq_override"`
-	Binary          bool   `yaml:"binary"`
-	Streaming       bool   `yaml:"streaming"`
-	StreamHandling  string `yaml:"stream_handling"` // collect, skip
-	MaxDuration     string `yaml:"max_duration"`
-	MaxStreamItems  int    `yaml:"max_stream_items"`
-	ContentType     string `yaml:"content_type"`
+	// Redact lists JSONPaths (§9.4 dialect) whose matches are replaced with
+	// "[REDACTED]" before the result becomes visible anywhere (spec §9.3).
+	// Unlike the rest of this struct, redact merges additively across
+	// defaults and tool level; it cannot be disabled by the caller.
+	Redact         []string `yaml:"redact"`
+	Binary         bool     `yaml:"binary"`
+	Streaming      bool     `yaml:"streaming"`
+	StreamHandling string   `yaml:"stream_handling"` // collect, skip
+	MaxDuration    string   `yaml:"max_duration"`
+	MaxStreamItems int      `yaml:"max_stream_items"`
+	ContentType    string   `yaml:"content_type"`
 }
 
 // IsFileURL reports whether the response is stored in the file broker / blob

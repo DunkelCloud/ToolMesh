@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -435,10 +436,7 @@ func (a *RESTAdapter) Execute(ctx context.Context, toolName string, params map[s
 						return r, nil
 					})
 					if retryErr != nil {
-						return &ToolResult{
-							Content: []any{textContent(fmt.Sprintf("Error: %s", retryErr))},
-							IsError: true,
-						}, nil
+						return a.apiErrorResult(retryErr), nil
 					}
 					resp = retryResp
 				}
@@ -462,17 +460,21 @@ func (a *RESTAdapter) Execute(ctx context.Context, toolName string, params map[s
 					}
 				}
 				if apiErr != nil {
-					return &ToolResult{
-						Content: []any{textContent(fmt.Sprintf("Error: %s", apiErr))},
-						IsError: true,
-					}, nil
+					return a.apiErrorResult(apiErr), nil
 				}
 			}
 		}
 	} else if resp.StatusCode >= 400 {
+		// No errors config: no retry semantics, but the §8.2 semantic code
+		// still applies so error-handling code can branch uniformly.
+		code := dadl.DefaultSemanticCode(resp.StatusCode)
 		return &ToolResult{
-			Content: []any{textContent(fmt.Sprintf("HTTP %d: %s", resp.StatusCode, string(body)))},
+			Content: []any{textContent(fmt.Sprintf("[%s] HTTP %d: %s", code, resp.StatusCode, string(body)))},
 			IsError: true,
+			Metadata: map[string]any{
+				metadataKeyErrorCode:  code,
+				metadataKeyStatusCode: resp.StatusCode,
+			},
 		}, nil
 	}
 
@@ -1202,6 +1204,45 @@ func (a *RESTAdapter) effectiveErrorConfig(tool *dadl.ToolDef) *dadl.ErrorConfig
 	return a.spec.Backend.Defaults.Errors
 }
 
+// apiErrorResult builds the error ToolResult for a failed call. When the
+// error is a dadl.APIError, its §8.2 fields travel in the metadata so
+// downstream consumers can branch on the semantic code without re-parsing
+// the text form.
+func (a *RESTAdapter) apiErrorResult(err error) *ToolResult {
+	result := &ToolResult{
+		Content: []any{textContent(fmt.Sprintf("Error: %s", err))},
+		IsError: true,
+	}
+	var apiErr *dadl.APIError
+	if errors.As(err, &apiErr) {
+		result.Metadata = map[string]any{
+			metadataKeyErrorCode:    apiErr.Code,
+			metadataKeyStatusCode:   apiErr.HTTPStatus,
+			metadataKeyErrorMessage: apiErr.Message,
+		}
+		if apiErr.ProviderCode != "" {
+			result.Metadata[metadataKeyProviderCode] = apiErr.ProviderCode
+		}
+	}
+	return result
+}
+
+// apiErrorFromMetadata reconstructs the structured §8.2 error from an
+// IsError ToolResult, or nil when the result carries no semantic code.
+func apiErrorFromMetadata(result *ToolResult) *dadl.APIError {
+	if result == nil || result.Metadata == nil {
+		return nil
+	}
+	code, _ := result.Metadata[metadataKeyErrorCode].(string)
+	if code == "" {
+		return nil
+	}
+	status, _ := result.Metadata[metadataKeyStatusCode].(int)
+	msg, _ := result.Metadata[metadataKeyErrorMessage].(string)
+	provider, _ := result.Metadata[metadataKeyProviderCode].(string)
+	return &dadl.APIError{Code: code, HTTPStatus: status, Message: msg, ProviderCode: provider}
+}
+
 func (a *RESTAdapter) effectivePaginationConfig(tool *dadl.ToolDef) *dadl.PaginationConfig {
 	// Check if tool explicitly disables pagination
 	if tool.Pagination != nil {
@@ -1657,6 +1698,11 @@ func (a *RESTAdapter) executeComposite(ctx context.Context, name string, comp *d
 			return nil, err
 		}
 		if result.IsError {
+			// Surface the §8.2 structured error so the sandbox can expose
+			// e.code / e.http_status / e.provider_code to composite code.
+			if apiErr := apiErrorFromMetadata(result); apiErr != nil {
+				return nil, apiErr
+			}
 			return nil, fmt.Errorf("tool %s returned error: %v", toolName, result.Content)
 		}
 		return extractToolResultContent(result), nil

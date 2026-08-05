@@ -23,6 +23,84 @@ import (
 	"time"
 )
 
+// APIError is the structured error a failed REST call produces (DADL spec
+// §8.2): a stable semantic code for branching, the raw HTTP status, the
+// extracted message, and the API's own error code when errors.code_path
+// names one.
+type APIError struct {
+	// Code is the semantic error code from errors.map, falling back to the
+	// spec §8.2 default mapping. Never empty.
+	Code string
+	// HTTPStatus is the raw HTTP status code.
+	HTTPStatus int
+	// Message is the human-readable message extracted via errors.message_path.
+	Message string
+	// ProviderCode is the API's own error code extracted via errors.code_path
+	// (e.g. Stripe's "resource_missing"). Empty when undeclared or absent.
+	ProviderCode string
+}
+
+// Error renders the stable text form: "[<code>] HTTP <status>: <message>",
+// with the provider code appended when present.
+func (e *APIError) Error() string {
+	if e.ProviderCode != "" {
+		return fmt.Sprintf("[%s] HTTP %d: %s (provider_code=%s)", e.Code, e.HTTPStatus, e.Message, e.ProviderCode)
+	}
+	return fmt.Sprintf("[%s] HTTP %d: %s", e.Code, e.HTTPStatus, e.Message)
+}
+
+// Well-known semantic error codes (DADL spec §8.2). errors.map values are
+// opaque strings and may go beyond this set; these are the defaults every
+// non-2xx status resolves to.
+const (
+	ErrCodeInvalidInput     = "invalid_input"
+	ErrCodeUnauthorized     = "unauthorized"
+	ErrCodeForbidden        = "forbidden"
+	ErrCodeNotFound         = "not_found"
+	ErrCodeConflict         = "conflict"
+	ErrCodeTimeout          = "timeout"
+	ErrCodeRateLimited      = "rate_limited"
+	ErrCodeInternal         = "internal"
+	ErrCodeUnavailable      = "unavailable"
+	ErrCodeClientError      = "client_error"
+	ErrCodeServerError      = "server_error"
+	ErrCodeUnexpectedStatus = "unexpected_status"
+)
+
+// DefaultSemanticCode returns the spec §8.2 well-known semantic code for an
+// HTTP status. The catch-alls client_error / server_error / unexpected_status
+// guarantee every non-2xx status maps to some code.
+func DefaultSemanticCode(status int) string {
+	switch status {
+	case http.StatusBadRequest, http.StatusUnprocessableEntity:
+		return ErrCodeInvalidInput
+	case http.StatusUnauthorized:
+		return ErrCodeUnauthorized
+	case http.StatusForbidden:
+		return ErrCodeForbidden
+	case http.StatusNotFound, http.StatusGone:
+		return ErrCodeNotFound
+	case http.StatusConflict:
+		return ErrCodeConflict
+	case http.StatusRequestTimeout:
+		return ErrCodeTimeout
+	case http.StatusTooManyRequests:
+		return ErrCodeRateLimited
+	case http.StatusInternalServerError:
+		return ErrCodeInternal
+	case http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		return ErrCodeUnavailable
+	}
+	switch {
+	case status >= 400 && status < 500:
+		return ErrCodeClientError
+	case status >= 500 && status < 600:
+		return ErrCodeServerError
+	default:
+		return ErrCodeUnexpectedStatus
+	}
+}
+
 // ErrorMapper checks HTTP responses against error configuration and extracts error messages.
 type ErrorMapper struct {
 	config ErrorConfig
@@ -33,36 +111,47 @@ func NewErrorMapper(config ErrorConfig) *ErrorMapper {
 	return &ErrorMapper{config: config}
 }
 
+// semanticCode resolves the §8.2 semantic code for a status: errors.map
+// wins, the well-known default mapping fills the rest.
+func (m *ErrorMapper) semanticCode(statusCode int) string {
+	if code, ok := m.config.Map[statusCode]; ok {
+		return code
+	}
+	return DefaultSemanticCode(statusCode)
+}
+
 // CheckResponse examines the HTTP status code and returns:
 // - (nil, false) if the response is successful
-// - (error, true) if the error is retryable (status in retry_on)
-// - (error, false) if the error is terminal (status in terminal, or default for 4xx)
+// - (*APIError, true) if the error is retryable (status in retry_on)
+// - (*APIError, false) if the error is terminal (status in terminal, or default for 4xx)
 func (m *ErrorMapper) CheckResponse(statusCode int, body []byte) (err error, retryable bool) {
 	if statusCode >= 200 && statusCode < 300 {
 		return nil, false
 	}
 
-	msg := m.extractMessage(body)
+	apiErr := &APIError{
+		Code:         m.semanticCode(statusCode),
+		HTTPStatus:   statusCode,
+		Message:      m.extractMessage(body),
+		ProviderCode: m.extractProviderCode(body),
+	}
 
 	// Check retryable
 	for _, code := range m.config.RetryOn {
 		if statusCode == code {
-			return fmt.Errorf("HTTP %d: %s", statusCode, msg), true
+			return apiErr, true
 		}
 	}
 
 	// Check terminal
 	for _, code := range m.config.Terminal {
 		if statusCode == code {
-			return fmt.Errorf("HTTP %d: %s", statusCode, msg), false
+			return apiErr, false
 		}
 	}
 
 	// Default: 4xx = terminal, 5xx = retryable
-	if statusCode >= 400 && statusCode < 500 {
-		return fmt.Errorf("HTTP %d: %s", statusCode, msg), false
-	}
-	return fmt.Errorf("HTTP %d: %s", statusCode, msg), true
+	return apiErr, statusCode >= 500 || statusCode < 400
 }
 
 // maxErrorMessageLen is the maximum length of error messages passed to clients (M-16).
@@ -72,23 +161,42 @@ func (m *ErrorMapper) extractMessage(body []byte) string {
 	if len(body) == 0 || m.config.MessagePath == "" {
 		return "(no message)"
 	}
-
-	jp, err := NewJSONPath(m.config.MessagePath)
-	if err != nil {
+	val, ok := extractPathValue(body, m.config.MessagePath)
+	if !ok {
 		return truncateMessage(string(body))
 	}
+	return truncateMessage(fmt.Sprintf("%v", val))
+}
 
+// extractProviderCode pulls the API's own error code via errors.code_path
+// (spec §8.2). Absent path or non-matching data yields "".
+func (m *ErrorMapper) extractProviderCode(body []byte) string {
+	if len(body) == 0 || m.config.CodePath == "" {
+		return ""
+	}
+	val, ok := extractPathValue(body, m.config.CodePath)
+	if !ok || val == nil {
+		return ""
+	}
+	return truncateMessage(fmt.Sprintf("%v", val))
+}
+
+// extractPathValue applies a JSONPath to a JSON body, reporting ok=false
+// when the path does not parse, the body is not JSON, or nothing matches.
+func extractPathValue(body []byte, path string) (any, bool) {
+	jp, err := NewJSONPath(path)
+	if err != nil {
+		return nil, false
+	}
 	var data any
 	if err := jsonUnmarshal(body, &data); err != nil {
-		return truncateMessage(string(body))
+		return nil, false
 	}
-
 	val, err := jp.Extract(data)
 	if err != nil {
-		return truncateMessage(string(body))
+		return nil, false
 	}
-
-	return truncateMessage(fmt.Sprintf("%v", val))
+	return val, true
 }
 
 func truncateMessage(s string) string {

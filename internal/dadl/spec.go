@@ -284,11 +284,17 @@ type PaginationResponse struct {
 type ErrorConfig struct {
 	Format        string               `yaml:"format"`       // json
 	MessagePath   string               `yaml:"message_path"` // JSONPath
-	CodePath      string               `yaml:"code_path"`    // JSONPath
+	CodePath      string               `yaml:"code_path"`    // JSONPath to the API's own error code
 	RetryOn       []int                `yaml:"retry_on"`     // HTTP status codes
 	Terminal      []int                `yaml:"terminal"`     // HTTP status codes (no retry)
 	RateLimit     *RateLimitConfig     `yaml:"rate_limit"`
 	RetryStrategy *RetryStrategyConfig `yaml:"retry_strategy"`
+	// Map assigns semantic error codes to HTTP statuses (spec §8.2),
+	// overriding the well-known default mapping selectively — declare it only
+	// for statuses the API uses in a non-standard way (e.g. 400 for missing
+	// resources). Keys must be 4xx/5xx. Values are opaque strings; the
+	// spec's well-known codes are preferred for portability.
+	Map map[int]string `yaml:"map"`
 }
 
 // RateLimitConfig describes rate limit header handling.

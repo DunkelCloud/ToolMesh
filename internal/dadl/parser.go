@@ -296,6 +296,11 @@ func Validate(spec *Spec) error {
 		return err
 	}
 
+	// Validate default error config
+	if err := validateErrors(b.Defaults.Errors, "defaults.errors"); err != nil {
+		return err
+	}
+
 	// Validate tools
 	if len(b.Tools) == 0 {
 		return fmt.Errorf("backend must define at least one tool")
@@ -345,7 +350,39 @@ func validateTool(name string, tool *ToolDef) error {
 		return err
 	}
 
+	if err := validateErrors(tool.Errors, fmt.Sprintf("tool %q: errors", name)); err != nil {
+		return err
+	}
+
 	return validateResponse(tool.Response, fmt.Sprintf("tool %q: response", name))
+}
+
+// validateErrors checks an errors block (tool-level or backend defaults):
+// errors.map keys must be 4xx/5xx with non-empty codes (spec §8.2), and the
+// message_path / code_path JSONPaths must parse in the §9.4 dialect.
+func validateErrors(ec *ErrorConfig, prefix string) error {
+	if ec == nil {
+		return nil
+	}
+	for status, code := range ec.Map {
+		if status < 400 || status > 599 {
+			return fmt.Errorf("%s.map: status %d cannot be mapped — only 4xx/5xx statuses enter error mapping", prefix, status)
+		}
+		if code == "" {
+			return fmt.Errorf("%s.map: status %d maps to an empty code", prefix, status)
+		}
+	}
+	if ec.MessagePath != "" {
+		if _, err := NewJSONPath(ec.MessagePath); err != nil {
+			return fmt.Errorf("%s.message_path: %w", prefix, err)
+		}
+	}
+	if ec.CodePath != "" {
+		if _, err := NewJSONPath(ec.CodePath); err != nil {
+			return fmt.Errorf("%s.code_path: %w", prefix, err)
+		}
+	}
+	return nil
 }
 
 // validateFileURLParams enforces the file_url constraints of DADL spec §6.2.1:

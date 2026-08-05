@@ -54,6 +54,13 @@ const (
 	metadataKeyTransport  = "transport"
 	metadataKeyStatusCode = "statusCode"
 
+	// Structured error metadata (DADL spec §8.2) set on IsError results so
+	// downstream consumers (composite sandbox, Code Mode wire format) can
+	// branch on the semantic code without re-parsing the error text.
+	metadataKeyErrorCode    = "error_code"
+	metadataKeyErrorMessage = "error_message"
+	metadataKeyProviderCode = "provider_code"
+
 	// Transport identifiers used in backends.yaml entries.
 	transportTypeREST = "rest"
 	transportTypeHTTP = "http"

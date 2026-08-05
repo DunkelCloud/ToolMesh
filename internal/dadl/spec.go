@@ -141,6 +141,31 @@ type ToolDef struct {
 	// although it declares no idempotency — the author accepts duplicate
 	// execution (spec §8 retry safety). Default false.
 	RetryUnsafe bool `yaml:"retry_unsafe"`
+	// Returns types the result for TypeScript generation (spec §6.5):
+	// either the name of a `types` entry (string) or an inline schema
+	// (map). Describes the value after the response pipeline; never
+	// validated against at runtime.
+	Returns any `yaml:"returns"`
+	// Deprecated marks the tool deprecated (spec §6.7): true, or a string
+	// carrying the reason. The tool stays fully functional.
+	Deprecated any `yaml:"deprecated"`
+	// ReplacedBy names the successor tool or composite in this file
+	// (spec §6.7).
+	ReplacedBy string `yaml:"replaced_by"`
+}
+
+// DeprecationInfo reports whether the tool is deprecated and the optional
+// reason string (spec §6.7). A bare `deprecated: true` yields ("", true);
+// `deprecated: false` and absence yield ("", false).
+func (t *ToolDef) DeprecationInfo() (reason string, deprecated bool) {
+	switch v := t.Deprecated.(type) {
+	case bool:
+		return "", v
+	case string:
+		return v, true
+	default:
+		return "", false
+	}
 }
 
 // IdempotencyConfig describes the idempotency-key header of a tool

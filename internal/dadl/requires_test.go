@@ -257,7 +257,7 @@ backend:
     get_item:
       method: GET
       path: /items/{id}
-      returns: Item
+      stream_mode: chunked
       params:
         id: { type: integer, in: path, required: true, descriptionn: "typo" }
 `
@@ -268,7 +268,7 @@ backend:
 	wantSubstrings := []string{
 		`unknown key "frobnicate" in top level`,
 		`unknown key "health" in backend`,
-		`unknown key "returns" in tool definition`,
+		`unknown key "stream_mode" in tool definition`,
 		`unknown key "descriptionn" in parameter definition`,
 	}
 	if len(spec.Warnings) != len(wantSubstrings) {

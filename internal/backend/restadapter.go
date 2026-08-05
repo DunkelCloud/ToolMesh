@@ -319,7 +319,7 @@ func (a *RESTAdapter) ListTools(_ context.Context) ([]ToolDescriptor, error) {
 		schema := buildInputSchema(tool)
 		tools = append(tools, ToolDescriptor{
 			Name:        name,
-			Description: tool.Description,
+			Description: a.describeToolForLLM(&tool),
 			InputSchema: schema,
 			Backend:     "rest:" + a.spec.Backend.Name,
 			Access:      tool.Access,
@@ -344,6 +344,37 @@ func (a *RESTAdapter) ListTools(_ context.Context) ([]ToolDescriptor, error) {
 	// Sort for deterministic output
 	sort.Slice(tools, func(i, j int) bool { return tools[i].Name < tools[j].Name })
 	return tools, nil
+}
+
+// describeToolForLLM composes the descriptor description every LLM-facing
+// surface (discover_tools, toolmesh.describe, Code Mode) receives: the
+// spec §6.7 deprecation marker leads so the model prefers the successor,
+// and a §6.5 returns note trails so the result shape is visible.
+func (a *RESTAdapter) describeToolForLLM(tool *dadl.ToolDef) string {
+	desc := tool.Description
+	if reason, deprecated := tool.DeprecationInfo(); deprecated {
+		marker := "DEPRECATED"
+		if reason != "" {
+			marker += ": " + reason
+		}
+		if tool.ReplacedBy != "" {
+			marker += " — use " + tool.ReplacedBy + " instead"
+		}
+		if desc == "" {
+			desc = marker + "."
+		} else {
+			desc = marker + ". " + desc
+		}
+	}
+	if tool.Returns != nil {
+		if ts, err := dadl.ReturnsToTS(tool.Returns, a.spec.Backend.Types); err == nil {
+			if desc != "" && !strings.HasSuffix(desc, ".") {
+				desc += "."
+			}
+			desc += " Returns: " + ts
+		}
+	}
+	return desc
 }
 
 // included reports whether a tool/composite name is exposed by this backend.
@@ -581,7 +612,7 @@ func (a *RESTAdapter) LookupTool(toolName string) (ToolDescriptor, bool) {
 	if tool, ok := a.spec.Backend.Tools[toolName]; ok {
 		return ToolDescriptor{
 			Name:        toolName,
-			Description: tool.Description,
+			Description: a.describeToolForLLM(&tool),
 			InputSchema: buildInputSchema(tool),
 			Backend:     "rest:" + a.spec.Backend.Name,
 			Access:      tool.Access,
@@ -1703,7 +1734,7 @@ func buildInputSchema(tool dadl.ToolDef) map[string]any {
 		schemaKeyProperties: properties,
 	}
 	if len(required) > 0 {
-		schema["required"] = required
+		schema[schemaKeyRequired] = required
 	}
 	return schema
 }
@@ -1853,7 +1884,7 @@ func buildCompositeInputSchema(comp dadl.CompositeDef) map[string]any {
 		schemaKeyProperties: properties,
 	}
 	if len(required) > 0 {
-		schema["required"] = required
+		schema[schemaKeyRequired] = required
 	}
 	return schema
 }

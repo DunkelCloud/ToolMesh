@@ -347,6 +347,36 @@ func Validate(spec *Spec) error {
 		}
 	}
 
+	// Validate v0.2 tool metadata (spec §6.5/§6.7) — needs the full tool
+	// and composite maps for replaced_by resolution, so it runs after the
+	// per-tool pass.
+	for name := range b.Types {
+		if !typeNameRe.MatchString(name) {
+			return fmt.Errorf("types name %q is not a valid identifier", name)
+		}
+	}
+	for name, tool := range b.Tools {
+		if tool.Deprecated != nil {
+			switch tool.Deprecated.(type) {
+			case bool, string:
+			default:
+				return fmt.Errorf("tool %q: deprecated must be true/false or a reason string, got %T", name, tool.Deprecated)
+			}
+		}
+		if tool.ReplacedBy != "" {
+			_, isTool := b.Tools[tool.ReplacedBy]
+			_, isComp := b.Composites[tool.ReplacedBy]
+			if !isTool && !isComp {
+				return fmt.Errorf("tool %q: replaced_by %q does not name a tool or composite in this file", name, tool.ReplacedBy)
+			}
+		}
+		if tool.Returns != nil {
+			if _, err := ReturnsToTS(tool.Returns, b.Types); err != nil {
+				return fmt.Errorf("tool %q: returns: %w", name, err)
+			}
+		}
+	}
+
 	return nil
 }
 

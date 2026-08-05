@@ -36,6 +36,8 @@ var implementedFeatures = map[string]bool{
 	"jwt_bearer":      true, // §5.3: RFC 7523 service-account flow
 	// §5.3: runtime renewal for setup-driven three-legged OAuth
 	"authorization_code": true,
+	"returns":            true, // §6.5: typed results in TS generation + descriptors
+	"deprecation":        true, // §6.7: deprecated/replaced_by markers
 }
 
 // checkRequires enforces the file's requires block (DADL spec §15.3,

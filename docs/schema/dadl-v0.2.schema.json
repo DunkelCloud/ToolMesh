@@ -450,6 +450,10 @@
           "type": "string",
           "description": "Default request-body content type inherited by all tools; per-tool content_type overrides it"
         },
+        "nest_body_keys": {
+          "type": "boolean",
+          "description": "When true, dotted in:body parameter names nest into body objects (gateway.monitor -> {\"gateway\":{\"monitor\":...}}); per-tool nest_body_keys overrides it"
+        },
         "pagination": {
           "$ref": "#/definitions/Pagination"
         },
@@ -598,6 +602,10 @@
         "content_type": {
           "type": "string",
           "description": "Request content type (inherits defaults.content_type)"
+        },
+        "nest_body_keys": {
+          "type": "boolean",
+          "description": "Overrides defaults.nest_body_keys for this tool in either direction; unset inherits the backend default"
         },
         "max_body_size": {
           "type": "string",

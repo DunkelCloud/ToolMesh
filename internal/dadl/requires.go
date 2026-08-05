@@ -30,6 +30,7 @@ var implementedFeatures = map[string]bool{
 	"refresh_token": true, // §5.3: oauth2 flow refresh_token
 	"composites":    true, // §12: composite tools
 	"file_url":      true, // §6.2: file handling (input params + response type)
+	"redact":        true, // §9.3: response.redact masking
 }
 
 // checkRequires enforces the file's requires block (DADL spec §15.3,

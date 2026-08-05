@@ -396,6 +396,19 @@ func validateResponse(rc *ResponseConfig, prefix string) error {
 			return fmt.Errorf("%s.ttl must be positive, got %q", prefix, rc.TTL)
 		}
 	}
+	if len(rc.Redact) > 0 {
+		// Binary and file_url responses bypass the transform pipeline, so a
+		// redact list in the same block could never apply — reject the
+		// contradiction instead of silently skipping a security control.
+		if rc.Binary || rc.IsFileURL() {
+			return fmt.Errorf("%s.redact cannot be combined with binary or file_url responses", prefix)
+		}
+		for _, p := range rc.Redact {
+			if _, err := NewJSONPath(p); err != nil {
+				return fmt.Errorf("%s.redact path %q: %w", prefix, p, err)
+			}
+		}
+	}
 	return nil
 }
 

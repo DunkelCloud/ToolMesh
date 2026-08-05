@@ -61,6 +61,67 @@ func discoverText(t *testing.T, h *Handler, params map[string]any) string {
 	return extractText(t, result)
 }
 
+// Discovery must be self-consistent: a name taken from a result has to work as
+// the next pattern. Backends whose names are not valid JavaScript identifiers
+// (tabula-wiki, hetzner-cloud, dokuwiki-dunkel.io) are printed in sanitized
+// form, so matching only the canonical name sent the caller in a circle —
+// the listing showed tabula_wiki_read_page, searching for it found nothing.
+func TestDiscoverTools_MatchesTheNameItPrints(t *testing.T) {
+	tools := []backend.ToolDescriptor{
+		{Name: "tabula-wiki_read_page", Description: "Materialize page content.", Backend: "rest:tabula-wiki"},
+		{Name: "tabula-wiki_edit_page", Description: "Replace exact text.", Backend: "rest:tabula-wiki"},
+		{Name: testToolVikunjaList, Description: "List tasks.", Backend: "rest:vikunja"},
+	}
+	h := newHandlerWithTools(t, tools)
+
+	tests := []struct {
+		name    string
+		pattern string
+		want    []string
+		absent  []string
+	}{
+		{
+			name:    "the printed name finds its own tool",
+			pattern: testToolTabulaReadJS,
+			want:    []string{testToolTabulaReadJS},
+			absent:  []string{testToolVikunjaList},
+		},
+		{
+			name:    "anchored prefix over the printed form",
+			pattern: "^tabula_wiki_",
+			want:    []string{testToolTabulaReadJS, testToolTabulaEditJS},
+			absent:  []string{testToolVikunjaList},
+		},
+		{
+			name:    "the canonical hyphenated form keeps working",
+			pattern: "^tabula-wiki_",
+			want:    []string{testToolTabulaReadJS, testToolTabulaEditJS},
+		},
+		{
+			name:    "unrelated backends are still excluded",
+			pattern: "^vikunja_",
+			want:    []string{testToolVikunjaList},
+			absent:  []string{testToolTabulaReadJS},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			text := discoverText(t, h, map[string]any{argNamePattern: tc.pattern})
+			for _, want := range tc.want {
+				if !strings.Contains(text, want) {
+					t.Errorf("pattern %q: expected %q in output, got:\n%s", tc.pattern, want, text)
+				}
+			}
+			for _, absent := range tc.absent {
+				if strings.Contains(text, absent) {
+					t.Errorf("pattern %q: did not expect %q in output, got:\n%s", tc.pattern, absent, text)
+				}
+			}
+		})
+	}
+}
+
 func TestDiscoverTools_AutoTiering(t *testing.T) {
 	tests := []struct {
 		name        string

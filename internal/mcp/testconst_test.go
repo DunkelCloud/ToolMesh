@@ -18,9 +18,13 @@ package mcp
 // tests. Extracted only to keep the goconst linter quiet.
 const (
 	// Fixture backend / hostname names.
-	testBackendNameGitHub  = "github"
-	testHintLocalMemory    = "Local memory store"
-	testDescGitHub         = "GitHub REST API"
+	testBackendNameGitHub = "github"
+	testHintLocalMemory   = "Local memory store"
+	testDescGitHub        = "GitHub REST API"
+	// Sanitized (JavaScript-identifier) spellings of tools on a backend whose
+	// name is not a valid identifier — what discovery prints for them.
+	testToolTabulaReadJS   = "tabula_wiki_read_page"
+	testToolTabulaEditJS   = "tabula_wiki_edit_page"
 	testHintDokuWiki       = "DokuWiki JSON-RPC API"
 	testHostnameDokuWiki   = "dokuwiki-dunkel.io"
 	testHintOPNsense       = "OPNsense REST API"

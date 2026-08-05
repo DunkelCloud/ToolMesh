@@ -49,6 +49,19 @@ const (
 	paginationStrategyLinkHeader = "link_header"
 )
 
+// Pagination behavior values (spec §7): auto-fetch all pages, or expose the
+// paging parameter to the caller.
+const (
+	paginationBehaviorAuto   = "auto"
+	paginationBehaviorExpose = "expose"
+)
+
+// Streaming response handling values (spec §6.3).
+const (
+	streamHandlingCollect = "collect"
+	streamHandlingSkip    = "skip"
+)
+
 // HTTP method literals used in DADL tool definitions.
 const (
 	httpMethodGET    = "GET"
@@ -265,6 +278,11 @@ func Validate(spec *Spec) error {
 	}
 
 	// Validate auth
+	if b.Auth.Type == authTypeAPIKeyAlias {
+		// Core Runtimes MUST accept api_key as an alias for apikey
+		// (spec §15.4); normalize so the rest of the runtime sees one value.
+		b.Auth.Type = authTypeAPIKey
+	}
 	if b.Auth.Type != "" {
 		if !validAuthTypes[b.Auth.Type] {
 			return fmt.Errorf("auth.type must be one of bearer, oauth2, session, apikey, basic; got %q", b.Auth.Type)
@@ -536,6 +554,12 @@ func validateResponse(rc *ResponseConfig, prefix string) error {
 			return fmt.Errorf("%s.ttl must be positive, got %q", prefix, rc.TTL)
 		}
 	}
+	// stream_handling is a behavior-determining enum (spec §15.3).
+	switch rc.StreamHandling {
+	case "", streamHandlingCollect, streamHandlingSkip:
+	default:
+		return fmt.Errorf("%s.stream_handling must be collect or skip; got %q", prefix, rc.StreamHandling)
+	}
 	if len(rc.Redact) > 0 {
 		// Binary and file_url responses bypass the transform pipeline, so a
 		// redact list in the same block could never apply — reject the
@@ -555,6 +579,13 @@ func validateResponse(rc *ResponseConfig, prefix string) error {
 func validatePagination(p *PaginationConfig, prefix string) error {
 	if p.Strategy != "" && !validPaginationStrategies[p.Strategy] {
 		return fmt.Errorf("%s.strategy must be one of cursor, offset, page, link_header; got %q", prefix, p.Strategy)
+	}
+	// behavior is a behavior-determining enum (spec §15.3): an
+	// unimplemented value must be rejected fail-closed, not guessed.
+	switch p.Behavior {
+	case "", paginationBehaviorAuto, paginationBehaviorExpose:
+	default:
+		return fmt.Errorf("%s.behavior must be auto or expose; got %q", prefix, p.Behavior)
 	}
 	return nil
 }

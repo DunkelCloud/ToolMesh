@@ -68,6 +68,10 @@ const (
 	authTypeAPIKey  = "apikey"
 	authTypeOAuth2  = "oauth2"
 	authTypeSession = "session"
+
+	// authTypeAPIKeyAlias is accepted and normalized to authTypeAPIKey —
+	// a Core Runtime MUST accept "api_key" as an alias (spec §15.4).
+	authTypeAPIKeyAlias = "api_key"
 )
 
 // Common HTTP header names and API-key / session auth literals.

@@ -27,8 +27,8 @@ func TestJSONPath_Extract(t *testing.T) {
 			map[string]any{"id": float64(3), testFieldName: "third"},
 		},
 		"meta": map[string]any{
-			"next_cursor": testTokenABC123,
-			"total":       float64(100),
+			"next_cursor":  testTokenABC123,
+			testFieldTotal: float64(100),
 		},
 		"message": "success",
 	}

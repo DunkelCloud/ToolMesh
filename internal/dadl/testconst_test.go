@@ -61,6 +61,12 @@ const (
 	// Idempotency-key header fixture (spec §6.6 tests).
 	testIdemHeader = "Idempotency-Key"
 
+	// Named type fixture for returns tests.
+	testTypeCustomer = "Customer"
+
+	// Common fixture field name.
+	testFieldTotal = "total"
+
 	// Fixtures shared across redact/transform tests.
 	testRedactPathSecret = "$[*].secret"
 	testJSONTinyObject   = `{"a":1}`

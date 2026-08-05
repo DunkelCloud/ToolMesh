@@ -41,7 +41,7 @@ func TestRESTAdapter_SemanticErrorCodes(t *testing.T) {
 			Type:    transportTypeREST,
 			BaseURL: srv.URL,
 			Tools: map[string]dadl.ToolDef{
-				"get_customer": {
+				testToolGetCustomer: {
 					Method: testMethodGET, Path: "/customer",
 					Errors: &dadl.ErrorConfig{
 						Format:      testJSONFormat,
@@ -58,7 +58,7 @@ func TestRESTAdapter_SemanticErrorCodes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := a.Execute(context.Background(), "get_customer", nil)
+	result, err := a.Execute(context.Background(), testToolGetCustomer, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -137,7 +137,7 @@ func TestRESTAdapter_CompositeCatchesSemanticCode(t *testing.T) {
 			Type:    transportTypeREST,
 			BaseURL: srv.URL,
 			Tools: map[string]dadl.ToolDef{
-				"get_customer": {
+				testToolGetCustomer: {
 					Method: testMethodGET, Path: "/customer",
 					Errors: &dadl.ErrorConfig{
 						Format:      testJSONFormat,

@@ -23,6 +23,7 @@ const (
 	schemaTypeBoolean = "boolean"
 	schemaTypeInteger = "integer"
 	schemaTypeObject  = "object"
+	schemaKeyRequired = "required"
 
 	// JSON Schema property keys used when assembling input schemas.
 	schemaKeyType        = "type"

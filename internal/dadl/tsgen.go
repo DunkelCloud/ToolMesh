@@ -31,6 +31,29 @@ func GenerateTypeScript(spec *Spec) string {
 		fmt.Fprintf(&sb, "  // %s — %s\n\n", b.Name, b.Description)
 	}
 
+	// Emit type aliases for every named type a returns declaration
+	// references, transitively (spec §6.5). Aliases (not interfaces) stay
+	// valid for non-object shapes.
+	referenced := make(map[string]bool)
+	for _, tool := range b.Tools {
+		collectReferencedTypes(tool.Returns, b.Types, referenced)
+	}
+	typeNames := make([]string, 0, len(referenced))
+	for name := range referenced {
+		typeNames = append(typeNames, name)
+	}
+	sort.Strings(typeNames)
+	for _, name := range typeNames {
+		ts, err := schemaToTS(b.Types[name], b.Types, 0)
+		if err != nil {
+			continue // validated at load; skip defensively for hand-built specs
+		}
+		fmt.Fprintf(&sb, "  type %s = %s;\n", name, ts)
+	}
+	if len(typeNames) > 0 {
+		sb.WriteString("\n")
+	}
+
 	// Sort tool names for deterministic output
 	names := make([]string, 0, len(b.Tools))
 	for name := range b.Tools {
@@ -42,14 +65,15 @@ func GenerateTypeScript(spec *Spec) string {
 		tool := b.Tools[name]
 		fullName := b.Name + "_" + name
 
-		// JSDoc comment
-		if tool.Description != "" {
-			fmt.Fprintf(&sb, "  /** %s */\n", tool.Description)
-		}
+		writeToolJSDoc(&sb, &tool)
 
-		// Build parameter type
+		// Build parameter type and result type
 		params := buildParamType(tool)
-		fmt.Fprintf(&sb, "  function %s(params: { %s }): Promise<any>;\n\n", fullName, params)
+		returnsTS, err := ReturnsToTS(tool.Returns, b.Types)
+		if err != nil {
+			returnsTS = tsAny // validated at load; defensive for hand-built specs
+		}
+		fmt.Fprintf(&sb, "  function %s(params: { %s }): Promise<%s>;\n\n", fullName, params, returnsTS)
 	}
 
 	// Composites appear identically to primitive tools
@@ -72,6 +96,44 @@ func GenerateTypeScript(spec *Spec) string {
 	}
 
 	return sb.String()
+}
+
+// writeToolJSDoc renders the JSDoc block for a tool: description, the
+// spec §6.7 @deprecated tag (with reason and successor), and the
+// informational depends_on hint (spec §6).
+func writeToolJSDoc(sb *strings.Builder, tool *ToolDef) {
+	var lines []string
+	if tool.Description != "" {
+		lines = append(lines, tool.Description)
+	}
+	reason, deprecated := tool.DeprecationInfo()
+	if deprecated {
+		tag := "@deprecated"
+		if reason != "" {
+			tag += " " + reason
+		}
+		if tool.ReplacedBy != "" {
+			tag += " — use " + tool.ReplacedBy + " instead"
+		}
+		lines = append(lines, tag)
+	} else if tool.ReplacedBy != "" {
+		lines = append(lines, "Prefer "+tool.ReplacedBy+".")
+	}
+	if len(tool.DependsOn) > 0 {
+		lines = append(lines, "Call first: "+strings.Join(tool.DependsOn, ", "))
+	}
+
+	switch len(lines) {
+	case 0:
+	case 1:
+		fmt.Fprintf(sb, "  /** %s */\n", lines[0])
+	default:
+		sb.WriteString("  /**\n")
+		for _, line := range lines {
+			fmt.Fprintf(sb, "   * %s\n", line)
+		}
+		sb.WriteString("   */\n")
+	}
 }
 
 func buildCompositeParamType(comp CompositeDef) string {
@@ -147,6 +209,21 @@ const (
 	jsTypeObject  = "object"
 )
 
+// TypeScript type literals shared by the generators.
+const (
+	tsAny       = "any"
+	tsAnyArray  = "any[]"
+	tsRecordAny = "Record<string, any>"
+)
+
+// JSON Schema keys walked by the returns renderer.
+const (
+	schemaKeyType       = "type"
+	schemaKeyItems      = "items"
+	schemaKeyRequired   = "required"
+	schemaKeyProperties = "properties"
+)
+
 func dadlTypeToTS(t string) string {
 	switch t {
 	case jsTypeString:
@@ -156,13 +233,13 @@ func dadlTypeToTS(t string) string {
 	case jsTypeBoolean:
 		return jsTypeBoolean
 	case jsTypeArray:
-		return "any[]"
+		return tsAnyArray
 	case jsTypeObject:
-		return "Record<string, any>"
+		return tsRecordAny
 	case ParamTypeFileURL, "file":
 		// file_url is a URL string; the legacy "file" type is a local path string.
 		return jsTypeString
 	default:
-		return "any"
+		return tsAny
 	}
 }

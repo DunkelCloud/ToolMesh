@@ -67,8 +67,9 @@ const (
 
 	// Fixture HTTP method literals (separate from "GET"/"POST" because tests
 	// also assert on them as strings).
-	testMethodGET  = "GET"
-	testMethodPOST = "POST"
+	testMethodGET       = "GET"
+	testMethodPOST      = "POST"
+	testToolGetCustomer = "get_customer"
 
 	// Retry-strategy fixture literals shared across tests.
 	testBackoffFixed = "fixed"

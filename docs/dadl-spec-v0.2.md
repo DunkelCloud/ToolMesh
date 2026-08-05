@@ -1,14 +1,14 @@
 # DADL — Dunkel API Description Language
 
-**Specification Draft v0.2**
+**Specification v0.2**
 
 A **declarative YAML format** for describing REST APIs as [ToolMesh](https://toolmesh.io) backends.
 Write a `.dadl` file — ToolMesh handles the rest.
 
 | | |
 |---|---|
-| Version | 0.2.0-draft |
-| Date | 2026-07-30 |
+| Version | 0.2.0 |
+| Date | 2026-08-05 |
 | Author | Dunkel Cloud GmbH |
 | License | [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/) |
 
@@ -17,6 +17,7 @@ Write a `.dadl` file — ToolMesh handles the rest.
 - Section 5.3: new `flow: refresh_token` for `auth.type: oauth2` (user-delegated APIs such as Google or Microsoft Graph), with the new field `refresh_token_credential`. Files using this flow MUST declare spec v0.2.
 - Section 5.3: two more `oauth2` flows — `jwt_bearer` (service accounts, RFC 7523; e.g. Google Search Console and Workspace APIs) and `authorization_code` (three-legged consent driven by `toolmesh setup`, refresh token persisted in the credential store; e.g. YouTube).
 - Section 4: documented `defaults.content_type` (backend-wide default request content type; implemented since v0.1 but previously undocumented).
+- Sections 4/6: documented `defaults.nest_body_keys` and its per-tool override — dotted `in: body` parameter names nest into body objects (Section 6.1; implemented since v0.1 but previously undocumented).
 - Section 5.5: corrected the API-key auth type to its implemented spelling `apikey` (the v0.1 document said `api_key`, which ToolMesh has never accepted; the canonical schema accepts both) and documented `query_param` for `inject_into: query` (implemented since v0.1 but previously undocumented).
 - Section 4: corrected `base_url` to optional (the v0.1 document said required; the runtime has always treated it as optional — self-hosted APIs get their URL from the deployment's `backends.yaml`).
 - Section 6: normative override semantics — a tool-level `response`, `errors`, or `pagination` object replaces the corresponding `defaults` object; `response.redact` is the deliberate exception and merges additively.
@@ -145,7 +146,7 @@ backend:
 | `openapi_source` | string | no | Path or URL to OpenAPI 3.x spec. When provided, schemas and parameters are derived from it. |
 | `arazzo_source` | string | no | Path or URL to Arazzo workflow file. Used as documentation context for Code Mode, not executed. |
 | `auth` | object | yes | Authentication configuration |
-| `defaults` | object | no | Default headers, pagination, error, and response config for all tools. Supports `headers` (map of default HTTP headers), `content_type` (default request-body content type; per-tool `content_type` overrides it), `pagination`, `errors`, and `response`. `content_type` governs body encoding *and* the `Content-Type` header — do not additionally set `defaults.headers.Content-Type`; when both are present, `content_type` wins. |
+| `defaults` | object | no | Default headers, pagination, error, and response config for all tools. Supports `headers` (map of default HTTP headers), `content_type` (default request-body content type; per-tool `content_type` overrides it), `nest_body_keys` (dotted `in: body` parameter names nest into body objects; Section 6.1), `pagination`, `errors`, and `response`. `content_type` governs body encoding *and* the `Content-Type` header — do not additionally set `defaults.headers.Content-Type`; when both are present, `content_type` wins. |
 | `types` | object | no | Type definitions (JSON Schema subset). Only needed without `openapi_source`. |
 | `tools` | object | yes | Map of tool definitions |
 | `composites` | object | no | Map of composite tool definitions (server-side TypeScript). See Section 12. |
@@ -527,6 +528,7 @@ Each tool maps to one REST API endpoint. In Code Mode, tools become methods on t
 | `access` | string | no | Access classification for authorization and policy mapping. See Section 6.4. |
 | `params` | object | no | Parameter definitions (path, query, header, body). See Section 6.1. |
 | `content_type` | string | no | Request content type. Default: `application/json` (or `defaults.content_type` when set). Use `multipart/form-data` for file uploads. |
+| `nest_body_keys` | boolean | no | Overrides `defaults.nest_body_keys` for this tool, in either direction (Section 6.1). Unset inherits the backend default. |
 | `max_body_size` | string | no | Max upload size, e.g. `50MB` |
 | `depends_on` | array | no | Informational: other tools that should be called first. Becomes JSDoc hint. |
 | `response` | object | no | Response transformation config (overrides `defaults.response`) |
@@ -581,6 +583,31 @@ Supported `in:` values:
 | `query` | URL query parameter (`?limit=10`) |
 | `header` | HTTP request header (e.g. `X-Custom-Header: value`) |
 | `body` | JSON body field (for `application/json`) or form field (for `application/x-www-form-urlencoded`) |
+
+**Dotted body-parameter names (`nest_body_keys`)** *(implemented since v0.1, documented in v0.2)*: by default a dot in an `in: body` parameter name is part of the literal key — `bridge.vlan-filtering` is sent as the flat field `"bridge.vlan-filtering"`, which is what APIs with genuinely dotted property names (RouterOS/MikroTik REST) expect. Setting `nest_body_keys: true` — on `defaults` for the whole backend, or per tool via the `nest_body_keys` tool field, which overrides the default in either direction — turns dots into nesting separators instead: `gateway.monitor` is marshaled as `{"gateway": {"monitor": …}}` in JSON bodies and as `gateway[monitor]` in form-urlencoded bodies; names with multiple dots nest recursively. This matches PHP-style model APIs (e.g. OPNsense `set_*`/`add_*` endpoints reading nested `$_POST` trees). Nesting applies to every body field, including declared `default:` values. Collision rule: when nesting would overwrite an explicitly provided sibling — the tool declares both `gateway` and `gateway.monitor`, or an intermediate segment already holds a non-object value — the dotted name is kept as a literal flat key instead, so no provided value is silently dropped.
+
+```yaml
+# nest_body_keys — dotted names become nested body objects
+defaults:
+  content_type: application/x-www-form-urlencoded
+  nest_body_keys: true
+
+tools:
+  set_gateway:
+    method: POST
+    path: /api/routing/settings/setGateway/{uuid}
+    description: "Update a gateway (full-replace read-modify-write)"
+    params:
+      uuid:
+        type: string
+        in: path
+        required: true
+      gateway.monitor:
+        type: string
+        in: body
+        description: "Monitor IP for gateway health checks"
+# → request body: gateway[monitor]=… (form) / {"gateway": {"monitor": "…"}} (JSON)
+```
 
 ### 6.2 File Handling
 

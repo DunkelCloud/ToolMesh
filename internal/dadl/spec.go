@@ -134,6 +134,24 @@ type ToolDef struct {
 	// DependsOn is informational (spec §6): tools that should be called
 	// first, surfaced as a JSDoc hint. Not enforced by the runtime.
 	DependsOn []string `yaml:"depends_on"`
+	// Idempotency declares the idempotency-key header for safe write
+	// retries (spec §6.6). nil = the tool has no key support.
+	Idempotency *IdempotencyConfig `yaml:"idempotency"`
+	// RetryUnsafe opts a non-idempotent write into automatic retries
+	// although it declares no idempotency — the author accepts duplicate
+	// execution (spec §8 retry safety). Default false.
+	RetryUnsafe bool `yaml:"retry_unsafe"`
+}
+
+// IdempotencyConfig describes the idempotency-key header of a tool
+// (spec §6.6): ToolMesh generates the key before the first attempt and
+// replays it on every retry of the same logical call.
+type IdempotencyConfig struct {
+	// Header is the header name the API expects (e.g. "Idempotency-Key").
+	Header string `yaml:"header"`
+	// Generate selects the key generator. "uuid_v4" (default when empty)
+	// is the only generator defined in v0.2.
+	Generate string `yaml:"generate"`
 }
 
 // ParamDef describes a single parameter for a tool.

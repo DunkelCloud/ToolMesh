@@ -403,8 +403,19 @@ func (a *RESTAdapter) Execute(ctx context.Context, toolName string, params map[s
 		return a.executeStreamingBinary(ctx, &tool, params, rc)
 	}
 
+	// Generate the idempotency key before the first attempt (DADL spec
+	// §6.6): every retry of this logical call — including the 401 re-auth
+	// retry — replays the same key; a fresh Execute gets a fresh key.
+	idemKey := ""
+	if tool.Idempotency != nil {
+		idemKey, err = dadl.NewIdempotencyKey(tool.Idempotency)
+		if err != nil {
+			return nil, fmt.Errorf("execute REST tool %q: %w", toolName, err)
+		}
+	}
+
 	// Build and execute request (doRequest reads and closes the response body)
-	resp, body, err := a.doRequest(ctx, &tool, params) //nolint:bodyclose // closed inside doRequest
+	resp, body, err := a.doRequest(ctx, &tool, params, idemKey) //nolint:bodyclose // closed inside doRequest
 	if err != nil {
 		return nil, fmt.Errorf("execute REST tool %q: %w", toolName, err)
 	}
@@ -415,12 +426,19 @@ func (a *RESTAdapter) Execute(ctx context.Context, toolName string, params map[s
 		mapper := dadl.NewErrorMapper(*errConfig)
 		apiErr, retryable := mapper.CheckResponse(resp.StatusCode, body)
 		if apiErr != nil {
+			if retryable && !dadl.CanAutoRetry(&tool) {
+				// Spec §8 retry safety: a POST/PATCH without idempotency and
+				// without retry_unsafe fails on the first retryable error —
+				// the provider may already have executed the operation.
+				return a.apiErrorResultNote(apiErr,
+					"automatic retry suppressed: non-idempotent write without idempotency or retry_unsafe (DADL spec 8)"), nil
+			}
 			if retryable {
 				// Retry with backoff
 				if errConfig.RetryStrategy != nil {
 					retryer := dadl.NewRetryer(*errConfig.RetryStrategy, a.logger)
 					retryResp, retryErr := retryer.Do(ctx, func() (*http.Response, error) { //nolint:bodyclose // closed inside doRequest
-						r, b, e := a.doRequest(ctx, &tool, params) //nolint:bodyclose // closed inside doRequest
+						r, b, e := a.doRequest(ctx, &tool, params, idemKey) //nolint:bodyclose // closed inside doRequest
 						if e != nil {
 							return nil, e
 						}
@@ -449,7 +467,7 @@ func (a *RESTAdapter) Execute(ctx context.Context, toolName string, params map[s
 				if resp.StatusCode == 401 {
 					if err := a.auth.HandleUnauthorized(ctx); err == nil {
 						// Retry once after re-auth
-						resp, body, err = a.doRequest(ctx, &tool, params) //nolint:bodyclose // closed inside doRequest
+						resp, body, err = a.doRequest(ctx, &tool, params, idemKey) //nolint:bodyclose // closed inside doRequest
 						if err != nil {
 							return &ToolResult{
 								Content: []any{textContent(fmt.Sprintf("Error after re-auth: %s", err))},
@@ -622,10 +640,18 @@ func (a *RESTAdapter) PromotedTools() []Promotion {
 	return out
 }
 
-func (a *RESTAdapter) doRequest(ctx context.Context, tool *dadl.ToolDef, params map[string]any) (*http.Response, []byte, error) {
+// doRequest builds and executes one HTTP request. idemKey, when non-empty,
+// is set as the tool's declared idempotency header (spec §6.6) — the caller
+// owns key generation so retries of the same logical call replay one key.
+func (a *RESTAdapter) doRequest(ctx context.Context, tool *dadl.ToolDef, params map[string]any, idemKey string) (*http.Response, []byte, error) {
 	req, err := a.buildHTTPRequest(ctx, tool, params)
 	if err != nil {
 		return nil, nil, err
+	}
+	if idemKey != "" && tool.Idempotency != nil {
+		// Managed by ToolMesh — set after all param/default headers, so the
+		// generated key always wins (callers cannot override it, §6.6).
+		req.Header.Set(tool.Idempotency.Header, idemKey)
 	}
 
 	// Debug-level request trace. Header-based auth is not in the URL, but a
@@ -1227,6 +1253,15 @@ func (a *RESTAdapter) apiErrorResult(err error) *ToolResult {
 	return result
 }
 
+// apiErrorResultNote builds the error ToolResult like apiErrorResult, with
+// an explanatory note appended to the text form (e.g. why an automatic
+// retry was suppressed).
+func (a *RESTAdapter) apiErrorResultNote(err error, note string) *ToolResult {
+	result := a.apiErrorResult(err)
+	result.Content = []any{textContent(fmt.Sprintf("Error: %s — %s", err, note))}
+	return result
+}
+
 // apiErrorFromMetadata reconstructs the structured §8.2 error from an
 // IsError ToolResult, or nil when the result carries no semantic code.
 func apiErrorFromMetadata(result *ToolResult) *dadl.APIError {
@@ -1406,7 +1441,15 @@ func (a *RESTAdapter) handleBinaryResponse(ctx context.Context, _ *dadl.ToolDef,
 // executeStreamingBinary handles streaming binary responses by piping the HTTP
 // response body directly to the file broker without buffering in memory.
 func (a *RESTAdapter) executeStreamingBinary(ctx context.Context, tool *dadl.ToolDef, params map[string]any, respConfig *dadl.ResponseConfig) (*ToolResult, error) {
-	resp, err := a.doRequestRaw(ctx, tool, params)
+	idemKey := ""
+	if tool.Idempotency != nil {
+		var err error
+		idemKey, err = dadl.NewIdempotencyKey(tool.Idempotency)
+		if err != nil {
+			return nil, fmt.Errorf("streaming binary request: %w", err)
+		}
+	}
+	resp, err := a.doRequestRaw(ctx, tool, params, idemKey)
 	if err != nil {
 		return nil, fmt.Errorf("streaming binary request: %w", err)
 	}
@@ -1469,11 +1512,15 @@ func (a *RESTAdapter) executeStreamingBinary(ctx context.Context, tool *dadl.Too
 }
 
 // doRequestRaw performs the HTTP request but returns the raw response without
-// reading the body. The caller is responsible for closing resp.Body.
-func (a *RESTAdapter) doRequestRaw(ctx context.Context, tool *dadl.ToolDef, params map[string]any) (*http.Response, error) {
+// reading the body. The caller is responsible for closing resp.Body. idemKey
+// follows the doRequest contract (spec §6.6).
+func (a *RESTAdapter) doRequestRaw(ctx context.Context, tool *dadl.ToolDef, params map[string]any, idemKey string) (*http.Response, error) {
 	req, err := a.buildHTTPRequest(ctx, tool, params)
 	if err != nil {
 		return nil, err
+	}
+	if idemKey != "" && tool.Idempotency != nil {
+		req.Header.Set(tool.Idempotency.Header, idemKey)
 	}
 
 	a.logger.DebugContext(ctx, "REST streaming request",
@@ -1548,7 +1595,18 @@ func (a *RESTAdapter) paginateResults(ctx context.Context, tool *dadl.ToolDef, p
 			nextToolParams[k] = v
 		}
 
-		resp, body, err := a.doRequest(ctx, tool, nextToolParams) //nolint:bodyclose // closed inside doRequest
+		// Each page fetch is a distinct request: it must not replay the
+		// previous page's idempotency key (spec §6.6 — distinct calls get
+		// distinct keys), or the API would dedupe page N to page 1.
+		pageKey := ""
+		if tool.Idempotency != nil {
+			key, keyErr := dadl.NewIdempotencyKey(tool.Idempotency)
+			if keyErr != nil {
+				return marshallResults(allResults), fmt.Errorf("pagination page %d: %w", page+1, keyErr)
+			}
+			pageKey = key
+		}
+		resp, body, err := a.doRequest(ctx, tool, nextToolParams, pageKey) //nolint:bodyclose // closed inside doRequest
 		if err != nil {
 			return marshallResults(allResults), fmt.Errorf("pagination page %d: %w", page+1, err)
 		}

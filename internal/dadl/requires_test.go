@@ -118,9 +118,9 @@ func TestCheckRequires(t *testing.T) {
 		},
 		{
 			name:     "unimplemented feature refused",
-			requires: &RequiresConfig{Features: []string{"idempotency"}},
+			requires: &RequiresConfig{Features: []string{"jwt_bearer"}},
 			version:  testVersion100,
-			wantErr:  `requires feature "idempotency"`,
+			wantErr:  `requires feature "jwt_bearer"`,
 		},
 		{
 			name:     "unknown feature identifier refused",
@@ -159,9 +159,9 @@ func TestCheckRequires(t *testing.T) {
 		},
 		{
 			name:     "feature check runs before version skip",
-			requires: &RequiresConfig{ToolMesh: ">=0.1.0", Features: []string{"idempotency"}},
+			requires: &RequiresConfig{ToolMesh: ">=0.1.0", Features: []string{"jwt_bearer"}},
 			version:  testVersionDev,
-			wantErr:  `requires feature "idempotency"`,
+			wantErr:  `requires feature "jwt_bearer"`,
 		},
 	}
 	for _, tt := range tests {
@@ -217,10 +217,10 @@ backend:
 		}
 	})
 	t.Run("missing feature refuses load", func(t *testing.T) {
-		yaml := strings.Replace(base, "%s", "requires:\n  features: [idempotency]", 1)
+		yaml := strings.Replace(base, "%s", "requires:\n  features: [jwt_bearer]", 1)
 		_, err := ParseBytes([]byte(yaml))
-		if err == nil || !strings.Contains(err.Error(), "refusing to load dadl") || !strings.Contains(err.Error(), `"idempotency"`) {
-			t.Fatalf("error = %v, want refusal naming idempotency", err)
+		if err == nil || !strings.Contains(err.Error(), "refusing to load dadl") || !strings.Contains(err.Error(), `"jwt_bearer"`) {
+			t.Fatalf("error = %v, want refusal naming jwt_bearer", err)
 		}
 	})
 	t.Run("dev build skips version range with warning", func(t *testing.T) {

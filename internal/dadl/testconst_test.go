@@ -58,6 +58,9 @@ const (
 	// Common tool name shared between tsgen and requires tests.
 	testToolListItems = "list_items"
 
+	// Idempotency-key header fixture (spec §6.6 tests).
+	testIdemHeader = "Idempotency-Key"
+
 	// Fixtures shared across redact/transform tests.
 	testRedactPathSecret = "$[*].secret"
 	testJSONTinyObject   = `{"a":1}`

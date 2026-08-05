@@ -116,7 +116,7 @@ Tools are now available as `deepl_translate`, `deepl_list_languages`, etc.
 A DADL file describes a REST API in YAML. Minimal structure:
 
 ```yaml
-spec: "https://dadl.ai/spec/dadl-spec-v0.1.md"
+spec: "https://dadl.ai/spec/dadl-spec-v0.2.md"
 credits:
   - "Your Name"
 source_name: "My API"
@@ -148,7 +148,7 @@ backend:
           description: "Max items to return"
 ```
 
-Full spec: [dadl.ai/spec](https://dadl.ai/spec/dadl-spec-v0.1)
+Full spec: [dadl.ai/spec](https://dadl.ai/spec/dadl-spec-v0.2)
 
 ## Useful Commands
 
@@ -177,7 +177,7 @@ Auth -> AuthZ -> Credential Injection -> Execution -> Output Gate -> Audit
 ## What's Next
 
 - [Architecture](https://www.toolmesh.io/en/architecture/) — understand the execution pipeline
-- [DADL Spec](https://dadl.ai/spec/dadl-spec-v0.1) — full specification
+- [DADL Spec](https://dadl.ai/spec/dadl-spec-v0.2) — full specification
 - [DADL Registry](https://dadl.ai/browse) — pre-built API descriptions
 - [Configuration](https://www.toolmesh.io/en/configuration/) — all environment variables
 - [Authentication](https://www.toolmesh.io/en/authentication/) — OAuth 2.1, API keys, multi-user

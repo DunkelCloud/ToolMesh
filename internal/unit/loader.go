@@ -220,6 +220,7 @@ func loadRESTSubBackend(
 		FileURLAllowedHosts: entry.FileURLAllowedHosts,
 		TLSSkipVerify:       entry.TLSSkipVerify,
 		ExposeTools:         entry.ExposeTools,
+		Hint:                entry.Hint,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("build REST adapter: %w", err)

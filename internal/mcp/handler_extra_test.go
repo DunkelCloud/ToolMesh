@@ -311,10 +311,27 @@ func TestBuildGroupedHints(t *testing.T) {
 		{
 			name: "two distinct DADL specs — two groups in input order",
 			infos: []backend.BackendInfo{
-				{Name: testBackendNameGitHub, Hint: "GitHub REST API", SpecID: "sha-gh"},
+				{Name: testBackendNameGitHub, Hint: testDescGitHub, SpecID: "sha-gh"},
 				{Name: "jira", Hint: "Jira API", SpecID: "sha-jira"},
 			},
 			want: "github: GitHub REST API; jira: Jira API",
+		},
+		{
+			// The catalog line describes what a backend is, so a description
+			// wins over operator guidance here — the hint gets its own channel
+			// (the first-use notice) where it is not competing for space.
+			name: "description wins over hint",
+			infos: []backend.BackendInfo{
+				{Name: testBackendNameGitHub, Description: testDescGitHub, Hint: "ask before merging"},
+			},
+			want: "github: GitHub REST API",
+		},
+		{
+			name: "hint carries the line when there is no description",
+			infos: []backend.BackendInfo{
+				{Name: testBackendMemorizer, Hint: testHintLocalMemory},
+			},
+			want: "memorizer: Local memory store",
 		},
 		{
 			name: "mix of DADL and native backends",
@@ -339,7 +356,7 @@ func TestBuildGroupedHints(t *testing.T) {
 		{
 			name: "infos without hints are skipped",
 			infos: []backend.BackendInfo{
-				{Name: testBackendNameGitHub, Hint: "GitHub REST API", SpecID: "sha-gh"},
+				{Name: testBackendNameGitHub, Hint: testDescGitHub, SpecID: "sha-gh"},
 				{Name: userAnonymous, Hint: ""},
 				{Name: "another", Hint: "", SpecID: "sha-anon"},
 			},

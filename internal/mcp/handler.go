@@ -675,11 +675,17 @@ func (h *Handler) buildBackendDescription() string {
 	return desc
 }
 
-// buildGroupedHints renders a "name1: hint; name2, name3: hint; ..." line by
+// buildGroupedHints renders a "name1: blurb; name2, name3: blurb; ..." line by
 // collapsing infos that share a non-empty SpecID into one entry. Backends with
 // an empty SpecID are rendered individually. Group ordering follows the
 // position of the first member in the input slice; instance names within a
-// group are sorted alphabetically. Infos with no hint are skipped entirely.
+// group are sorted alphabetically. Infos with nothing to say are skipped.
+//
+// The blurb is the backend's Description — what the API is — falling back to
+// the operator Hint for backends that carry no description of their own
+// (upstream MCP servers). The first-use notice takes the opposite view and
+// delivers only Hint: this catalog line describes the shelf, the notice passes
+// on what the operator wants known before someone reaches for it.
 func buildGroupedHints(infos []backend.BackendInfo) string {
 	type hintGroup struct {
 		names []string
@@ -690,7 +696,11 @@ func buildGroupedHints(infos []backend.BackendInfo) string {
 	groupBySpec := make(map[string]*hintGroup) // populated only for non-empty SpecID
 
 	for _, info := range infos {
-		if info.Hint == "" {
+		blurb := info.Description
+		if blurb == "" {
+			blurb = info.Hint
+		}
+		if blurb == "" {
 			continue
 		}
 		if info.SpecID != "" {
@@ -698,12 +708,12 @@ func buildGroupedHints(infos []backend.BackendInfo) string {
 				g.names = append(g.names, info.Name)
 				continue
 			}
-			g := &hintGroup{names: []string{info.Name}, hint: info.Hint}
+			g := &hintGroup{names: []string{info.Name}, hint: blurb}
 			groupBySpec[info.SpecID] = g
 			groups = append(groups, g)
 			continue
 		}
-		groups = append(groups, &hintGroup{names: []string{info.Name}, hint: info.Hint})
+		groups = append(groups, &hintGroup{names: []string{info.Name}, hint: blurb})
 	}
 
 	if len(groups) == 0 {

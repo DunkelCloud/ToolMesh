@@ -32,8 +32,14 @@ const maxTrackedHintPrincipals = 10000
 // the backend's own response.
 const hintNoticePrefix = "[ToolMesh note: "
 
-// hintNotifier delivers a backend's configured hint (backends.yaml `hint:`)
-// on the first tool call a principal makes into that backend.
+// hintNotifier delivers a backend's operator-configured hint (backends.yaml
+// `hint:`) on the first tool call a principal makes into that backend.
+//
+// Only the operator hint qualifies — never a backend's own description. A
+// description says what an API is, which the caller already learned from the
+// tool it just picked; repeating it costs tokens and teaches nothing. The
+// hint is the part no catalog can supply: what this particular deployment
+// expects of whoever uses it.
 //
 // The hint text is also folded into the execute_code tool description, but
 // that channel does not scale: with a few dozen backends the combined string

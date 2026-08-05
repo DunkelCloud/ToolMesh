@@ -20,6 +20,7 @@ const (
 	// Fixture backend / hostname names.
 	testBackendNameGitHub  = "github"
 	testHintLocalMemory    = "Local memory store"
+	testDescGitHub         = "GitHub REST API"
 	testHintDokuWiki       = "DokuWiki JSON-RPC API"
 	testHostnameDokuWiki   = "dokuwiki-dunkel.io"
 	testHintOPNsense       = "OPNsense REST API"

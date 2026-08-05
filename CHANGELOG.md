@@ -13,6 +13,16 @@ for the full narrative and details.
 
 ### Fixed
 
+- A backend's `hint:` (backends.yaml) is now honored for `transport: rest`.
+  It was only ever read for MCP backends, so a hint configured on a REST
+  backend was silently dropped — it reached neither the catalog blurb nor
+  anything else. As a consequence the first-use notice was delivering the
+  DADL's `backend.description` instead of the operator's hint, announcing what
+  an API is to a caller who had just chosen a tool from it. `BackendInfo` now
+  keeps the two apart: `Description` (what the backend is, from the API
+  definition) drives the `execute_code` catalog line as before, while `Hint`
+  (what the operator wants known here) drives the first-use notice and nothing
+  else. Backends without a configured hint now stay silent.
 - Long-running tool calls no longer abort with "The connector's server isn't
   responding." A `tools/call` is now delivered over an MCP Streamable HTTP SSE
   stream when the client accepts one, with a keepalive comment emitted every

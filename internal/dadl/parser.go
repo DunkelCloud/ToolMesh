@@ -270,21 +270,44 @@ func Validate(spec *Spec) error {
 			return fmt.Errorf("auth.type must be one of bearer, oauth2, session, apikey, basic; got %q", b.Auth.Type)
 		}
 		if b.Auth.Type == authTypeOAuth2 {
+			// The v0.2 flows are rejected under a v0.1 declaration: this
+			// keeps the spec URL an honest capability contract — pre-v0.2
+			// runtimes fail such files at load time instead of sending the
+			// wrong grant at call time.
+			requireV02 := func(flow string) error {
+				if spec.Spec == dadlSpecV01URL {
+					return fmt.Errorf("auth.flow %q requires spec v0.2 (%s)", flow, dadlSpecV02URL)
+				}
+				return nil
+			}
 			switch b.Auth.Flow {
 			case "", oauth2FlowClientCredentials:
 			case oauth2FlowRefreshToken:
-				// Introduced with spec v0.2. Rejecting it under a v0.1
-				// declaration keeps the spec URL an honest capability
-				// contract: pre-v0.2 runtimes fail such files at load
-				// time instead of sending the wrong grant at call time.
-				if spec.Spec == dadlSpecV01URL {
-					return fmt.Errorf("auth.flow %q requires spec v0.2 (%s)", oauth2FlowRefreshToken, dadlSpecV02URL)
+				if err := requireV02(oauth2FlowRefreshToken); err != nil {
+					return err
 				}
 				if b.Auth.RefreshTokenCredential == "" {
 					return fmt.Errorf("auth.flow %q requires auth.refresh_token_credential", oauth2FlowRefreshToken)
 				}
+			case oauth2FlowJWTBearer:
+				if err := requireV02(oauth2FlowJWTBearer); err != nil {
+					return err
+				}
+				if b.Auth.ServiceAccountCredential == "" {
+					return fmt.Errorf("auth.flow %q requires auth.service_account_credential", oauth2FlowJWTBearer)
+				}
+			case oauth2FlowAuthorizationCode:
+				if err := requireV02(oauth2FlowAuthorizationCode); err != nil {
+					return err
+				}
+				if b.Auth.RefreshTokenCredential == "" {
+					return fmt.Errorf("auth.flow %q requires auth.refresh_token_credential (populated by the setup flow)", oauth2FlowAuthorizationCode)
+				}
+				if b.Auth.AuthorizeURL == "" {
+					return fmt.Errorf("auth.flow %q requires auth.authorize_url", oauth2FlowAuthorizationCode)
+				}
 			default:
-				return fmt.Errorf("auth.flow must be client_credentials or refresh_token; got %q", b.Auth.Flow)
+				return fmt.Errorf("auth.flow must be one of client_credentials, refresh_token, jwt_bearer, authorization_code; got %q", b.Auth.Flow)
 			}
 		}
 	}

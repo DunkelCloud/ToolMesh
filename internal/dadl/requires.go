@@ -33,6 +33,9 @@ var implementedFeatures = map[string]bool{
 	"redact":          true, // §9.3: response.redact masking
 	"semantic_errors": true, // §8.2: errors.map semantic codes + code_path
 	"idempotency":     true, // §6.6: idempotency-key header + §8 retry safety
+	"jwt_bearer":      true, // §5.3: RFC 7523 service-account flow
+	// §5.3: runtime renewal for setup-driven three-legged OAuth
+	"authorization_code": true,
 }
 
 // checkRequires enforces the file's requires block (DADL spec §15.3,

@@ -238,14 +238,26 @@ type AuthConfig struct {
 	UsernameCredential string `yaml:"username_credential"` // credential ref for username
 	PasswordCredential string `yaml:"password_credential"` // credential ref for password (optional, default "")
 	// OAuth2
-	Flow                   string   `yaml:"flow"` // client_credentials (default), refresh_token
+	Flow                   string   `yaml:"flow"` // client_credentials (default), refresh_token, jwt_bearer, authorization_code
 	TokenURL               string   `yaml:"token_url"`
 	ClientIDCredential     string   `yaml:"client_id_credential"`
-	ClientSecretCredential string   `yaml:"client_secret_credential"` // optional for flow refresh_token (public clients)
-	RefreshTokenCredential string   `yaml:"refresh_token_credential"` // required for flow refresh_token
+	ClientSecretCredential string   `yaml:"client_secret_credential"` // optional for refresh_token/authorization_code (public clients)
+	RefreshTokenCredential string   `yaml:"refresh_token_credential"` // required for flows refresh_token and authorization_code
 	Scopes                 []string `yaml:"scopes"`
 	TokenCacheKey          string   `yaml:"token_cache_key"`
 	RefreshBeforeExpiry    string   `yaml:"refresh_before_expiry"`
+	// jwt_bearer (spec §5.3, RFC 7523): the credential resolves to the
+	// complete service-account key JSON (client_email, private_key,
+	// token_uri). Subject optionally impersonates a user (Google Workspace
+	// domain-wide delegation).
+	ServiceAccountCredential string `yaml:"service_account_credential"`
+	Subject                  string `yaml:"subject"`
+	// authorization_code (spec §5.3): consent configuration driven by the
+	// setup tooling. At runtime the flow renews silently like refresh_token;
+	// these fields exist so one DADL declares the whole flow.
+	AuthorizeURL        string            `yaml:"authorize_url"`
+	AuthorizationParams map[string]string `yaml:"authorization_params"`
+	RedirectURI         string            `yaml:"redirect_uri"`
 	// Session
 	Login   *SessionLogin  `yaml:"login"`
 	Inject  []InjectRule   `yaml:"inject"`

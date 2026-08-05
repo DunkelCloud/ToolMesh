@@ -51,11 +51,14 @@ lint-dadl: build ## Scan DADL composites for security violations
 clean: ## Remove build artifacts
 	rm -rf $(BIN_DIR) coverage.out coverage.html
 
+# DOCKER_BUILDKIT=1: the Dockerfile pins its builder stage to $BUILDPLATFORM,
+# which the legacy builder cannot parse. Distro packages (Ubuntu docker.io)
+# still default to it, so set it explicitly rather than relying on the default.
 docker: ## Build Docker image
-	docker build -t toolmesh:$(VERSION) -t toolmesh:latest .
+	DOCKER_BUILDKIT=1 docker build -t toolmesh:$(VERSION) -t toolmesh:latest .
 
 docker-dev: ## Build and push dev Docker image
-	docker build -t ghcr.io/dunkelcloud/toolmesh:dev \
+	DOCKER_BUILDKIT=1 docker build -t ghcr.io/dunkelcloud/toolmesh:dev \
 		--build-arg VERSION=$(shell git describe --always --dirty) \
 		.
 	docker push ghcr.io/dunkelcloud/toolmesh:dev

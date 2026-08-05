@@ -18,6 +18,7 @@ Write a `.dadl` file — ToolMesh handles the rest.
 - Section 5.3: two more `oauth2` flows — `jwt_bearer` (service accounts, RFC 7523; e.g. Google Search Console and Workspace APIs) and `authorization_code` (three-legged consent driven by `toolmesh setup`, refresh token persisted in the credential store; e.g. YouTube).
 - Section 4: documented `defaults.content_type` (backend-wide default request content type; implemented since v0.1 but previously undocumented).
 - Sections 4/6: documented `defaults.nest_body_keys` and its per-tool override — dotted `in: body` parameter names nest into body objects (Section 6.1; implemented since v0.1 but previously undocumented).
+- Section 7: documented `pagination.response.total_count_header` — the HTTP header carrying the total record count, sibling of `total_pages_header` (implemented since v0.1 but previously undocumented).
 - Section 5.5: corrected the API-key auth type to its implemented spelling `apikey` (the v0.1 document said `api_key`, which ToolMesh has never accepted; the canonical schema accepts both) and documented `query_param` for `inject_into: query` (implemented since v0.1 but previously undocumented).
 - Section 4: corrected `base_url` to optional (the v0.1 document said required; the runtime has always treated it as optional — self-hosted APIs get their URL from the deployment's `backends.yaml`).
 - Section 6: normative override semantics — a tool-level `response`, `errors`, or `pagination` object replaces the corresponding `defaults` object; `response.redact` is the deliberate exception and merges additively.
@@ -947,7 +948,7 @@ pagination:
   max_pages: 10              # safety limit
 ```
 
-When `behavior` is `auto`, ToolMesh fetches all pages transparently. When `expose`, the LLM controls pagination via the cursor parameter in Code Mode: ToolMesh injects the paging parameter (named by `request.cursor_param` / `page_param` / `offset_param`, matching the strategy) into the generated TypeScript interface from the pagination config — declaring it in `params` is OPTIONAL and only useful to customize its description. For `page`-strategy APIs that report the page count in a header, `response.total_pages_header` names it.
+When `behavior` is `auto`, ToolMesh fetches all pages transparently. When `expose`, the LLM controls pagination via the cursor parameter in Code Mode: ToolMesh injects the paging parameter (named by `request.cursor_param` / `page_param` / `offset_param`, matching the strategy) into the generated TypeScript interface from the pagination config — declaring it in `params` is OPTIONAL and only useful to customize its description. For `page`-strategy APIs that report the page count in a header, `response.total_pages_header` names it; `response.total_count_header` names the header carrying the total record count (e.g. GitLab's `x-total`).
 
 ---
 

@@ -490,7 +490,8 @@
           "properties": {
             "next_cursor": { "type": "string" },
             "has_more": { "type": "string" },
-            "total_pages_header": { "type": "string" }
+            "total_pages_header": { "type": "string" },
+            "total_count_header": { "type": "string" }
           },
           "additionalProperties": false
         },

@@ -188,6 +188,10 @@ func loadRESTSubBackend(
 	if err != nil {
 		return nil, fmt.Errorf("parse %s: %w", dadlPath, err)
 	}
+	// Surface keys the runtime ignored (DADL spec §15.3 warn-and-ignore)
+	for _, w := range spec.Warnings {
+		logger.Warn(w, "dadl", dadlPath)
+	}
 	if entry.URL != "" {
 		spec.Backend.BaseURL = entry.URL
 	}

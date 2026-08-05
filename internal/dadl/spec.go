@@ -19,18 +19,39 @@ import "time"
 
 // Spec represents a parsed .dadl file.
 type Spec struct {
-	Spec       string     `yaml:"spec"`
-	Credits    []string   `yaml:"credits"`
-	SourceName string     `yaml:"source_name"`
-	SourceURL  string     `yaml:"source_url"`
-	Date       string     `yaml:"date"`
-	Backend    BackendDef `yaml:"backend"`
+	Spec       string          `yaml:"spec"`
+	Requires   *RequiresConfig `yaml:"requires"`
+	Credits    []string        `yaml:"credits"`
+	SourceName string          `yaml:"source_name"`
+	SourceURL  string          `yaml:"source_url"`
+	Date       string          `yaml:"date"`
+	Backend    BackendDef      `yaml:"backend"`
 
 	// ContentHash is the hex-encoded SHA-256 digest of the DADL file content
 	// with CRLF line endings normalized to LF, so the value is identical on
 	// Windows and Linux for the same logical file.
 	// Populated by ParseBytes; not part of the YAML schema.
 	ContentHash string `yaml:"-"`
+
+	// Warnings collects non-fatal findings from parsing: every key the
+	// runtime does not implement (DADL spec §15.3 warn-and-ignore) and a
+	// note when requires.toolmesh cannot be checked because the build
+	// carries no semver version. Populated by ParseBytes; callers decide
+	// where to log them.
+	Warnings []string `yaml:"-"`
+}
+
+// RequiresConfig is the top-level requires block (DADL spec §15.3): hard
+// requirements the loading runtime must satisfy — otherwise it refuses to
+// load the file (fail-closed, ADR-0003).
+type RequiresConfig struct {
+	// ToolMesh is a semver range the running ToolMesh version must satisfy,
+	// e.g. ">=0.9.0" or ">=0.9.0, <2.0.0" — comparison operators >=, >, <=,
+	// <, = joined by comma-separated AND.
+	ToolMesh string `yaml:"toolmesh"`
+	// Features lists spec-defined feature identifiers the runtime must
+	// implement, e.g. "redact", "jwt_bearer" (see the spec §15.3 table).
+	Features []string `yaml:"features"`
 }
 
 // ContainsCode returns true if the spec has composite tools (inline JavaScript).
@@ -53,6 +74,16 @@ type BackendDef struct {
 	Composites  map[string]CompositeDef `yaml:"composites"`     // server-side JS functions combining tools
 	Scoping     *ScopingConfig          `yaml:"scoping"`        // nil = expose all tools
 	OpenAPI     string                  `yaml:"openapi_source"` // optional path to OpenAPI spec
+
+	// Documentation-oriented fields (spec §§3–4), parsed so spec-conformant
+	// files do not trip the §15.3 unknown-key warning. The request pipeline
+	// does not interpret them; they are read by registry tooling and future
+	// interface generation.
+	ArazzoSource string `yaml:"arazzo_source"` // §4: Arazzo workflow doc context
+	Coverage     any    `yaml:"coverage"`      // §4.1: API coverage metadata
+	Hints        any    `yaml:"hints"`         // §4.2: per-tool domain knowledge
+	Setup        any    `yaml:"setup"`         // §4.3: credential/setup instructions
+	Examples     any    `yaml:"examples"`      // §4.4: multi-step code examples
 }
 
 // DefaultsConfig provides default settings inherited by all tools unless overridden.
@@ -100,6 +131,9 @@ type ToolDef struct {
 	// NestBodyKeys overrides DefaultsConfig.NestBodyKeys for this tool. nil
 	// inherits the backend default; a non-nil value forces nesting on or off.
 	NestBodyKeys *bool `yaml:"nest_body_keys"`
+	// DependsOn is informational (spec §6): tools that should be called
+	// first, surfaced as a JSDoc hint. Not enforced by the runtime.
+	DependsOn []string `yaml:"depends_on"`
 }
 
 // ParamDef describes a single parameter for a tool.
@@ -108,6 +142,9 @@ type ParamDef struct {
 	In       string `yaml:"in"`   // path, query, header, body
 	Required bool   `yaml:"required"`
 	Default  any    `yaml:"default"`
+	// Description documents the parameter (spec §6.1). Not yet emitted into
+	// the generated TypeScript interface.
+	Description string `yaml:"description"`
 }
 
 // ParamTypeFileURL is the ParamDef.Type for file inputs referenced by URL

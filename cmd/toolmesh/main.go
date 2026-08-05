@@ -615,6 +615,11 @@ func loadRESTBackendsInto(named map[string]backend.ToolBackend, backendsConfigPa
 			continue
 		}
 
+		// Surface keys the runtime ignored (DADL spec §15.3 warn-and-ignore)
+		for _, w := range spec.Warnings {
+			logger.Warn(w, "name", entry.Name)
+		}
+
 		// Check if a newer DADL spec version is available
 		if specManifest != nil {
 			if warning, checkErr := dadl.CheckSpecVersion(spec.Spec, specManifest); checkErr != nil {

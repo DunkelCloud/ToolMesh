@@ -222,14 +222,33 @@ backend:
   base_url: https://api.example.com
   auth:
     type: oauth2
-    flow: authorization_code
+    flow: implicit
     token_url: https://api.example.com/token
   tools:
     t1:
       method: GET
       path: /x
 `,
-			wantErr: "auth.flow must be client_credentials or refresh_token",
+			wantErr: "auth.flow must be one of client_credentials, refresh_token, jwt_bearer, authorization_code",
+		},
+		{
+			name: "v0.2 oauth2 flow under v0.1 declaration",
+			yaml: `
+spec: "https://dadl.ai/spec/dadl-spec-v0.1.md"
+backend:
+  name: x
+  type: rest
+  base_url: https://api.example.com
+  auth:
+    type: oauth2
+    flow: jwt_bearer
+    service_account_credential: sa
+  tools:
+    t1:
+      method: GET
+      path: /x
+`,
+			wantErr: "requires spec v0.2",
 		},
 		{
 			name: "refresh_token flow without refresh_token_credential",

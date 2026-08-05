@@ -78,11 +78,16 @@ const (
 	sessionRefreshLogin = "re_login"
 )
 
-// AuthConfig.Flow values for oauth2 auth. Each doubles as the grant_type
-// sent to the token endpoint. An empty flow defaults to client_credentials.
+// AuthConfig.Flow values for oauth2 auth. An empty flow defaults to
+// client_credentials. The first two double as the grant_type sent to the
+// token endpoint; jwt_bearer sends the RFC 7523 grant-type URN, and
+// authorization_code renews via grant_type=refresh_token at runtime — its
+// interactive consent leg lives in the setup tooling (spec §5.3).
 const (
 	oauth2FlowClientCredentials = "client_credentials" //nolint:gosec // OAuth2 grant_type value, not a credential
 	oauth2FlowRefreshToken      = "refresh_token"      //nolint:gosec // OAuth2 grant_type value, not a credential
+	oauth2FlowJWTBearer         = "jwt_bearer"
+	oauth2FlowAuthorizationCode = "authorization_code"
 )
 
 // RestAuth manages authentication token lifecycle for REST API calls.
@@ -273,7 +278,7 @@ func (a *RestAuth) getOAuth2Token(ctx context.Context) (string, error) {
 	}
 
 	// Fetch new token
-	data, err := a.buildOAuth2TokenRequest(ctx)
+	data, tokenURL, err := a.buildOAuth2TokenRequest(ctx)
 	if err != nil {
 		return "", err
 	}
@@ -281,7 +286,7 @@ func (a *RestAuth) getOAuth2Token(ctx context.Context) (string, error) {
 		return "", nil // required credential missing: caller skips the auth header
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", a.config.TokenURL, strings.NewReader(data.Encode()))
+	req, err := http.NewRequestWithContext(ctx, "POST", tokenURL, strings.NewReader(data.Encode()))
 	if err != nil {
 		return "", fmt.Errorf("create oauth2 token request: %w", err)
 	}
@@ -321,41 +326,81 @@ func (a *RestAuth) getOAuth2Token(ctx context.Context) (string, error) {
 	return a.cachedToken, nil
 }
 
-// buildOAuth2TokenRequest assembles the token-endpoint form values for the
-// configured oauth2 flow. It returns (nil, nil) when a required credential is
-// not in the store — callers treat that as "skip auth", consistent with the
-// other inject* methods.
-func (a *RestAuth) buildOAuth2TokenRequest(ctx context.Context) (url.Values, error) {
+// buildOAuth2TokenRequest assembles the token-endpoint form values and the
+// endpoint URL for the configured oauth2 flow. It returns (nil, "", nil)
+// when a required credential is not in the store — callers treat that as
+// "skip auth", consistent with the other inject* methods.
+func (a *RestAuth) buildOAuth2TokenRequest(ctx context.Context) (url.Values, string, error) {
+	tokenURL := a.config.TokenURL
+
+	// jwt_bearer needs no client_id — the signed assertion is the client
+	// identity (RFC 7523).
+	if a.config.Flow == oauth2FlowJWTBearer {
+		raw, err := a.creds.Get(ctx, a.config.ServiceAccountCredential, credentials.TenantInfo{})
+		if err != nil {
+			if errors.Is(err, credentials.ErrCredentialNotFound) {
+				return nil, "", nil
+			}
+			return nil, "", fmt.Errorf("get oauth2 service account: %w", err)
+		}
+		key, err := parseServiceAccountKey(raw)
+		if err != nil {
+			return nil, "", err
+		}
+		// A declared token_url takes precedence; else the key's token_uri.
+		if tokenURL == "" {
+			tokenURL = key.TokenURI
+		}
+		if tokenURL == "" {
+			return nil, "", fmt.Errorf("jwt_bearer: no token_url declared and service account key has no token_uri")
+		}
+		assertion, err := buildJWTAssertion(key, tokenURL, a.config.Subject, a.config.Scopes, time.Now())
+		if err != nil {
+			return nil, "", err
+		}
+		return url.Values{
+			"grant_type": {jwtBearerGrantType},
+			"assertion":  {assertion},
+		}, tokenURL, nil
+	}
+
 	clientID, err := a.creds.Get(ctx, a.config.ClientIDCredential, credentials.TenantInfo{})
 	if err != nil {
 		if errors.Is(err, credentials.ErrCredentialNotFound) {
-			return nil, nil
+			return nil, "", nil
 		}
-		return nil, fmt.Errorf("get oauth2 client_id: %w", err)
+		return nil, "", fmt.Errorf("get oauth2 client_id: %w", err)
 	}
 	data := url.Values{"client_id": {clientID}}
 
 	switch a.config.Flow {
-	case oauth2FlowRefreshToken:
+	case oauth2FlowRefreshToken, oauth2FlowAuthorizationCode:
+		// authorization_code differs from refresh_token only in how the
+		// refresh token came to exist (consent driven by the setup tooling,
+		// spec §5.3) — runtime renewal is the same silent exchange.
 		refreshToken, err := a.creds.Get(ctx, a.config.RefreshTokenCredential, credentials.TenantInfo{})
 		if err != nil {
 			if errors.Is(err, credentials.ErrCredentialNotFound) {
-				return nil, nil
+				if a.config.Flow == oauth2FlowAuthorizationCode {
+					a.logger.InfoContext(ctx, "authorization_code refresh token not in store — run the setup flow to complete consent",
+						"credential", a.config.RefreshTokenCredential)
+				}
+				return nil, "", nil
 			}
-			return nil, fmt.Errorf("get oauth2 refresh_token: %w", err)
+			return nil, "", fmt.Errorf("get oauth2 refresh_token: %w", err)
 		}
 		data.Set("grant_type", oauth2FlowRefreshToken)
 		data.Set("refresh_token", refreshToken)
-		// Scopes are fixed at consent time for this flow, so no scope
+		// Scopes are fixed at consent time for these flows, so no scope
 		// parameter is sent. client_secret is optional: public (PKCE)
 		// clients have none.
 		if a.config.ClientSecretCredential != "" {
 			clientSecret, err := a.creds.Get(ctx, a.config.ClientSecretCredential, credentials.TenantInfo{})
 			if err != nil {
 				if errors.Is(err, credentials.ErrCredentialNotFound) {
-					return nil, nil
+					return nil, "", nil
 				}
-				return nil, fmt.Errorf("get oauth2 client_secret: %w", err)
+				return nil, "", fmt.Errorf("get oauth2 client_secret: %w", err)
 			}
 			data.Set("client_secret", clientSecret)
 		}
@@ -363,9 +408,9 @@ func (a *RestAuth) buildOAuth2TokenRequest(ctx context.Context) (url.Values, err
 		clientSecret, err := a.creds.Get(ctx, a.config.ClientSecretCredential, credentials.TenantInfo{})
 		if err != nil {
 			if errors.Is(err, credentials.ErrCredentialNotFound) {
-				return nil, nil
+				return nil, "", nil
 			}
-			return nil, fmt.Errorf("get oauth2 client_secret: %w", err)
+			return nil, "", fmt.Errorf("get oauth2 client_secret: %w", err)
 		}
 		data.Set("grant_type", oauth2FlowClientCredentials)
 		data.Set("client_secret", clientSecret)
@@ -373,7 +418,7 @@ func (a *RestAuth) buildOAuth2TokenRequest(ctx context.Context) (url.Values, err
 			data.Set("scope", strings.Join(a.config.Scopes, " "))
 		}
 	}
-	return data, nil
+	return data, tokenURL, nil
 }
 
 // defaultSessionTTL is the maximum lifetime for session tokens before re-login.

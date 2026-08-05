@@ -54,6 +54,41 @@ func newHintfulBackend(hint string) *hintfulBackend {
 	}
 }
 
+// A backend that only describes itself carries no operator intent. Delivering
+// its description as a note would fire on nearly every backend and tell the
+// caller nothing it did not already know from the tool it just picked.
+func TestHintNotifier_DescriptionIsNotAHint(t *testing.T) {
+	b := newHintfulBackend("")
+	b.infos = []backend.BackendInfo{{
+		Name:        testHintBackend,
+		Description: "Some REST API — users, orders, invoices",
+	}}
+
+	n := newHintNotifier(b)
+	if notice := n.noticeFor(ctxForUser("alice"), testToolFoo); notice != "" {
+		t.Errorf("notice = %q, want empty — a description is not operator guidance", notice)
+	}
+}
+
+// With both present the notice carries the hint alone; the description belongs
+// to the catalog line, not to every first call.
+func TestHintNotifier_PrefersHintOverDescription(t *testing.T) {
+	b := newHintfulBackend("")
+	b.infos = []backend.BackendInfo{{
+		Name:        testHintBackend,
+		Description: "Some REST API — users, orders, invoices",
+		Hint:        testHintText,
+	}}
+
+	notice := newHintNotifier(b).noticeFor(ctxForUser("alice"), testToolFoo)
+	if !strings.Contains(notice, testHintText) {
+		t.Errorf("notice = %q, want the operator hint", notice)
+	}
+	if strings.Contains(notice, "users, orders, invoices") {
+		t.Errorf("notice = %q, want the description left out", notice)
+	}
+}
+
 func ctxForUser(userID string) context.Context {
 	return userctx.WithUserContext(context.Background(), &userctx.UserContext{
 		UserID:        userID,

@@ -102,7 +102,16 @@ type BackendEntry struct {
 // Leave empty for backends without an underlying DADL spec — those are
 // rendered individually.
 type BackendInfo struct {
-	Name   string
+	Name string
+	// Description says what the backend is, sourced from the API definition
+	// itself (a DADL's backend.description). It is written for whoever reads
+	// the catalog and is safe to show unprompted.
+	Description string
+	// Hint is operator intent: guidance an admin configured for this specific
+	// deployment via the backends.yaml `hint:` field — conventions to follow,
+	// a page to read first, a local gotcha. Unlike Description it is
+	// deployment-specific, which is why it drives the first-use notice while
+	// Description drives the catalog blurb. Empty when no hint is configured.
 	Hint   string
 	SpecID string
 }

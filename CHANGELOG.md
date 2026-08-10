@@ -127,6 +127,22 @@ accumulated since 0.3.0.
   bytes as text. File fetches use a dedicated HTTP client that never carries
   the backend's cookies, credentials, or relaxed TLS settings, and are
   capped at 100 MB.
+- File broker ingest and `tm-blob://` handles (spec §6.2.3/§6.2.4), so binary
+  content never has to travel through the model context. `POST /files/upload`
+  now serves the broker endpoint the built-in `FileBrokerClient` always
+  expected, guarded by MCP authentication, and the new `upload_file` built-in
+  fetches a public URL server-side (SSRF-safe) and returns a handle. A handle
+  resolves straight from the store in `file_url` parameters — no HTTP hop —
+  and any other string parameter whose whole value is a handle carrying an
+  explicit `#base64`, `#dataurl`, or `#url` fragment is materialized
+  server-side before egress, at any nesting depth; malformed or unknown
+  handles fail the call. Inline forms are capped at 10 MB, `#url` streams.
+  Substitution sits in the REST adapter, so direct calls and `execute_code`
+  behave identically. `GET`/`HEAD` on `/blobs/{id}` stay capability-based —
+  the unguessable ID plus the TTL — so a download URL can be handed to a
+  backend without sharing credentials, while `DELETE` is destructive and
+  requires MCP authentication. The blob metadata index is still in memory: a
+  restart drops the handles.
 
 ### Changed (BREAKING)
 
@@ -170,6 +186,19 @@ accumulated since 0.3.0.
   `dokuwiki-prod, dokuwiki-staging: DokuWiki JSON-RPC API` instead of two
   identical lines). Native backends without a DADL spec continue to render
   individually.
+- `execute_code` no longer echoes every tool call's full result beside the
+  script's return value. When the script returns a value, successful call
+  entries are compacted to `{tool, status, resultBytes}`: the return value is
+  the script's own projection of the data it fetched, so the full echo
+  transported the same payload twice and defeated Code Mode's token economy —
+  a script returning a two-field summary of a transaction list still produced
+  a 144 KB response. Entries carrying an error keep their full content (both
+  dispatch failures and tool-level `isError` results), because re-running a
+  side-effectful call to recover the diagnostic is exactly what this avoids,
+  and scripts without a return value are unchanged, since there the trace is
+  the result. A caller that parses the per-call `result` must read the return
+  value instead, or set the new `include_results: true` to restore the full
+  echo.
 
 ### Security
 

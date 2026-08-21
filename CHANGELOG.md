@@ -11,6 +11,19 @@ for the full narrative and details.
 
 ## [Unreleased]
 
+### Added
+
+- A browser that opens the MCP endpoint now gets a page explaining what the
+  endpoint is, with the URL to copy into a connector and links to the setup
+  docs, instead of the bare `Method not allowed` that reads like a broken
+  service. The branch is taken only for `Accept: text/html`: an MCP client
+  attempting a server-initiated SSE stream sends `text/event-stream` and still
+  receives the 405 it always did, as do `curl` and anything else that sends
+  `*/*` or no `Accept` header at all. The site root serves the same page rather
+  than `404 page not found`; every other unmatched path still 404s. The page is
+  unauthenticated by design — it carries no credentials, only the endpoint URL
+  and whether authentication is required.
+
 ## [0.4.0] - 2026-08-05
 
 DADL v0.2 Core Runtime: the seven runtime features of the finalized

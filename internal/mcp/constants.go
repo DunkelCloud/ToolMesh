@@ -80,4 +80,13 @@ const (
 	userAnonymous  = "anonymous"
 	userDefault    = "default"
 	clientClaudeAI = "claudeai"
+
+	// URL schemes checked when validating redirect URIs, file-broker URLs,
+	// and when reconstructing the endpoint URL for the landing page.
+	schemeHTTP  = "http"
+	schemeHTTPS = "https"
+
+	// Media types negotiated on the MCP endpoint.
+	mimeTextHTML    = "text/html"
+	mimeEventStream = "text/event-stream"
 )

@@ -71,7 +71,7 @@ func (h *Handler) handleUploadFile(ctx context.Context, params map[string]any) (
 		return uploadFileError(`parameter "url" is required`), nil
 	}
 	u, err := url.Parse(rawURL)
-	if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
+	if err != nil || (u.Scheme != schemeHTTP && u.Scheme != schemeHTTPS) {
 		return uploadFileError(fmt.Sprintf("invalid url %q: only http(s) URLs can be fetched; for local or private sources POST the file to /files/upload directly", rawURL)), nil
 	}
 

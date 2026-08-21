@@ -64,6 +64,14 @@ func endpointURL(r *http.Request) string {
 // they got a bare 404 before and still do. Serving the page at the site root
 // keeps a visitor who trimmed the URL down to the bare host from concluding
 // the service is broken.
+//
+// A deployment that has somewhere better to send them — a demo page, an
+// internal wiki — sets TOOLMESH_ROOT_REDIRECT and gets a redirect instead. The
+// status is 302 and not 301 on purpose: a permanent redirect is cached by
+// browsers indefinitely, so an operator who later clears or retargets the
+// setting could not reach their own root again without the visitor clearing
+// their cache. Only / redirects; /mcp keeps serving the page, since a visitor
+// who landed there needs the URL in front of them to copy.
 func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/" {
 		http.NotFound(w, r)
@@ -71,6 +79,10 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.cfg.RootRedirect != "" {
+		http.Redirect(w, r, s.cfg.RootRedirect, http.StatusFound)
 		return
 	}
 	s.serveLanding(w, r)

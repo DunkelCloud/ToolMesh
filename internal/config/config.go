@@ -17,9 +17,16 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
+)
+
+// URL schemes accepted for operator-configured redirect targets.
+const (
+	schemeHTTP  = "http"
+	schemeHTTPS = "https"
 )
 
 // OpenFGA authorization modes for OpenFGAMode / OPENFGA_MODE.
@@ -38,6 +45,13 @@ type Config struct {
 	AuthPassword string
 	APIKey       string
 	Issuer       string
+
+	// RootRedirect sends GET / to an absolute http(s) URL instead of rendering
+	// the built-in landing page. A deployment whose documentation lives
+	// elsewhere (the public demo, say) can point visitors straight at it
+	// without that URL being compiled into the binary. Empty by default, which
+	// keeps the landing page. TOOLMESH_ROOT_REDIRECT.
+	RootRedirect string
 
 	// Audit
 	AuditStore         string // "log" (default) | "sqlite"
@@ -140,6 +154,7 @@ func Load() (*Config, error) {
 		AuthPassword:            envStr("TOOLMESH_AUTH_PASSWORD", ""),
 		APIKey:                  envStr("TOOLMESH_API_KEY", ""),
 		Issuer:                  envStr("TOOLMESH_ISSUER", "https://toolmesh.io/"),
+		RootRedirect:            envStr("TOOLMESH_ROOT_REDIRECT", ""),
 		AuditStore:              envStr("AUDIT_STORE", "log"),
 		AuditRetentionDays:      envInt("AUDIT_RETENTION_DAYS", 90),
 		ExecTimeout:             envInt("TOOLMESH_EXEC_TIMEOUT", envInt("TOOLMESH_ACTIVITY_TIMEOUT", 120)),
@@ -192,6 +207,19 @@ func Load() (*Config, error) {
 
 	if cfg.AuditStore != "log" && cfg.AuditStore != "sqlite" {
 		return nil, fmt.Errorf("invalid AUDIT_STORE: %q (must be \"log\" or \"sqlite\")", cfg.AuditStore)
+	}
+
+	// Fail fast on a typo here: the value only ever surfaces as a Location
+	// header on the site root, where a silently-ignored setting would look
+	// exactly like the landing page working as intended.
+	if cfg.RootRedirect != "" {
+		u, err := url.Parse(cfg.RootRedirect)
+		if err != nil {
+			return nil, fmt.Errorf("invalid TOOLMESH_ROOT_REDIRECT: %q is not a valid URL: %w", cfg.RootRedirect, err)
+		}
+		if (u.Scheme != schemeHTTP && u.Scheme != schemeHTTPS) || u.Host == "" {
+			return nil, fmt.Errorf("invalid TOOLMESH_ROOT_REDIRECT: %q (must be an absolute http:// or https:// URL)", cfg.RootRedirect)
+		}
 	}
 
 	return cfg, nil

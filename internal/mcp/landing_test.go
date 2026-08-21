@@ -251,6 +251,57 @@ func TestServer_Root_UnknownPathStill404(t *testing.T) {
 	}
 }
 
+// TestServer_Root_Redirect: an operator with somewhere better to send visitors
+// points TOOLMESH_ROOT_REDIRECT at it and the site root forwards there.
+func TestServer_Root_Redirect(t *testing.T) {
+	const target = "https://www.toolmesh.io/en/demo/"
+	_, mux := newTestServer(t, &config.Config{RootRedirect: target})
+
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusFound {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusFound)
+	}
+	if loc := w.Header().Get("Location"); loc != target {
+		t.Errorf("Location = %q, want %q", loc, target)
+	}
+}
+
+// TestServer_MCP_RedirectDoesNotCoverEndpoint: /mcp keeps the page even when a
+// root redirect is configured — a visitor who landed there needs the URL in
+// front of them, not a trip to a docs site.
+func TestServer_MCP_RedirectDoesNotCoverEndpoint(t *testing.T) {
+	_, mux := newTestServer(t, &config.Config{RootRedirect: "https://www.toolmesh.io/en/demo/"})
+
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/mcp", nil)
+	req.Header.Set("Accept", acceptHTML)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+	if !strings.Contains(w.Body.String(), "This is an MCP endpoint") {
+		t.Error("/mcp did not serve the landing page")
+	}
+}
+
+// TestServer_Root_RedirectUnknownPathStill404: the redirect is bound to "/",
+// not to the catch-all, so a wrong path must not be forwarded to the target.
+func TestServer_Root_RedirectUnknownPathStill404(t *testing.T) {
+	_, mux := newTestServer(t, &config.Config{RootRedirect: "https://www.toolmesh.io/en/demo/"})
+
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/nope", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusNotFound)
+	}
+}
+
 func TestServer_Root_MethodNotAllowed(t *testing.T) {
 	_, mux := newTestServer(t, &config.Config{})
 

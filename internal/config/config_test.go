@@ -175,3 +175,39 @@ func TestLoad_PortIsAlwaysFixed(t *testing.T) {
 		t.Errorf("Port = %d, want 8080 (fixed)", cfg.Port)
 	}
 }
+
+func TestConfig_RootRedirect(t *testing.T) {
+	tests := []struct {
+		name    string
+		value   string
+		wantErr bool
+	}{
+		{"unset keeps the landing page", "", false},
+		{"https target", "https://www.toolmesh.io/en/demo/", false},
+		{"http target", "http://localhost:4321/demo", false},
+		{"relative path", "/demo", true},
+		{"scheme only", "https://", true},
+		{"not a url", "://nope", true},
+		{"wrong scheme", "ftp://example.com/", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("TOOLMESH_ROOT_REDIRECT", tt.value)
+
+			cfg, err := Load()
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("Load() succeeded for %q, want an error", tt.value)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error for %q: %v", tt.value, err)
+			}
+			if cfg.RootRedirect != tt.value {
+				t.Errorf("RootRedirect = %q, want %q", cfg.RootRedirect, tt.value)
+			}
+		})
+	}
+}

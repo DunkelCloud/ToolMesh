@@ -98,6 +98,8 @@ func (s *Server) SetupRoutes(mux *http.ServeMux) {
 		mux.HandleFunc("/files/upload", s.cors(s.handleFileUpload))
 		mux.HandleFunc("/blobs/", s.handleBlobs)
 	}
+	// Registered last: "/" is the catch-all, so every pattern above still wins.
+	mux.HandleFunc("/", s.cors(s.handleRoot))
 }
 
 // handleFileUpload guards the broker upload endpoint with MCP authentication
@@ -212,9 +214,18 @@ func (s *Server) originAllowed(origin string) bool {
 func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	if r.Method == http.MethodGet {
-		// MCP clients may attempt GET for SSE streaming.
-		// We don't support server-initiated events; return 405.
+	if r.Method == http.MethodGet || r.Method == http.MethodHead {
+		// A browser that was handed this URL gets a page explaining what the
+		// endpoint is, instead of a bare "Method not allowed" that reads like
+		// a broken service. Only Accept: text/html takes that branch — MCP
+		// clients attempting a server-initiated SSE stream send
+		// text/event-stream and keep the 405 below, since we do not support
+		// server-initiated events.
+		if wantsHTML(r) {
+			s.logger.DebugContext(ctx, "mcp browser GET served landing page")
+			s.serveLanding(w, r)
+			return
+		}
 		s.logger.DebugContext(ctx, "mcp GET request rejected (SSE not supported)")
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -392,7 +403,7 @@ func (s *Server) handleToolsCallStreaming(w http.ResponseWriter, ctx context.Con
 	// SSE handshake: announce the stream and flush headers immediately so the
 	// client starts reading before the (possibly slow) tool call completes.
 	h := w.Header()
-	h.Set("Content-Type", "text/event-stream")
+	h.Set("Content-Type", mimeEventStream)
 	h.Set("Cache-Control", "no-cache")
 	h.Set("Connection", "keep-alive")
 	h.Set("X-Accel-Buffering", "no") // disable response buffering in nginx-style proxies
@@ -450,7 +461,7 @@ func (s *Server) handleToolsCallStreaming(w http.ResponseWriter, ctx context.Con
 // "Accept: application/json, text/event-stream". A client that does not list
 // text/event-stream gets the buffered JSON response instead.
 func acceptsSSE(r *http.Request) bool {
-	return strings.Contains(r.Header.Get("Accept"), "text/event-stream")
+	return strings.Contains(r.Header.Get("Accept"), mimeEventStream)
 }
 
 // unwrapFlusher walks the ResponseWriter's Unwrap chain to find an
@@ -695,10 +706,10 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: oauthErrInvalidRedURI, oauthErrorDescription: fmt.Sprintf("malformed URI: %s", uri)})
 			return
 		}
-		if parsed.Scheme == "http" && (parsed.Hostname() == "localhost" || parsed.Hostname() == "127.0.0.1" || parsed.Hostname() == "::1") {
+		if parsed.Scheme == schemeHTTP && (parsed.Hostname() == "localhost" || parsed.Hostname() == "127.0.0.1" || parsed.Hostname() == "::1") {
 			continue // http://localhost is allowed for development
 		}
-		if parsed.Scheme != "https" {
+		if parsed.Scheme != schemeHTTPS {
 			writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: oauthErrInvalidRedURI, oauthErrorDescription: fmt.Sprintf("redirect_uri must use https scheme: %s", uri)})
 			return
 		}

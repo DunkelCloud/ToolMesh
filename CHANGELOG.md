@@ -11,6 +11,28 @@ for the full narrative and details.
 
 ## [Unreleased]
 
+### Added
+
+- A browser that opens the MCP endpoint now gets a page explaining what the
+  endpoint is, with the URL to copy into a connector and links to the setup
+  docs, instead of the bare `Method not allowed` that reads like a broken
+  service. The branch is taken only for `Accept: text/html`: an MCP client
+  attempting a server-initiated SSE stream sends `text/event-stream` and still
+  receives the 405 it always did, as do `curl` and anything else that sends
+  `*/*` or no `Accept` header at all. The site root serves the same page rather
+  than `404 page not found`; every other unmatched path still 404s. The page is
+  unauthenticated by design — it carries no credentials, only the endpoint URL
+  and whether authentication is required.
+- `TOOLMESH_ROOT_REDIRECT` points `GET /` at an absolute http(s) URL instead of
+  the built-in page, so a deployment whose documentation lives elsewhere — the
+  public demo, an internal wiki — can send visitors straight there without that
+  URL being compiled into the binary. The redirect is a 302 so it can be
+  retargeted or cleared later without waiting out a browser cache, and it is
+  bound to `/` alone: `/mcp` keeps serving the page, since a visitor who landed
+  there needs the URL in front of them to copy. An invalid value fails startup
+  rather than being ignored, which on a site root would look exactly like the
+  page working as intended.
+
 ## [0.4.0] - 2026-08-05
 
 DADL v0.2 Core Runtime: the seven runtime features of the finalized

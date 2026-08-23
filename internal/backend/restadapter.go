@@ -72,6 +72,7 @@ type RESTAdapter struct {
 	exposeTools         []string          // bare tool names to promote as direct MCP tools (from backends.yaml expose_tools)
 	includeTools        map[string]bool   // when non-nil, the only tools/composites this backend exposes (from backends.yaml include_tools)
 	fileURLAllowedHosts map[string]bool   // optional allowlist of lowercase hostnames for caller file_url fetches; nil/empty = no restriction
+	maxBodySizes        map[string]int64  // declared max_body_size string → effective byte ceiling; see resolveMaxBodySizes
 	childGuard          ChildGuard        // authorizes composite child api.* calls; nil = no per-child checks (e.g. standalone/tests)
 	hint                string            // operator guidance from backends.yaml hint:; empty = none configured
 }
@@ -213,6 +214,11 @@ func NewRESTAdapter(spec *dadl.Spec, creds credentials.CredentialStore, logger *
 		}
 	}
 
+	maxBodySizes, err := resolveMaxBodySizes(spec, logger)
+	if err != nil {
+		return nil, err
+	}
+
 	return &RESTAdapter{
 		spec:                spec,
 		httpClient:          httpClient,
@@ -226,8 +232,75 @@ func NewRESTAdapter(spec *dadl.Spec, creds credentials.CredentialStore, logger *
 		exposeTools:         exposeTools,
 		includeTools:        includeTools,
 		fileURLAllowedHosts: fileURLAllowedHosts,
+		maxBodySizes:        maxBodySizes,
 		hint:                opts.Hint,
 	}, nil
+}
+
+// resolveMaxBodySizes parses every tool's `max_body_size` (DADL spec §6) once,
+// at load time, into the effective byte ceiling for that tool.
+//
+// Two rules shape the result. A malformed size fails the load rather than
+// being ignored: every fallback available here is a wider limit than the
+// author wrote, so a typo would quietly lift the cap it was meant to impose.
+// And a declared size larger than maxUploadBytes is clamped to it — the
+// runtime ceiling bounds what this process will buffer or stream, and a DADL,
+// which may come from a public registry, must not be able to raise it. The
+// clamp is logged: an author who wrote 512MB should learn that 100MB is what
+// they get, rather than discovering it from a failed upload.
+// The map is keyed by the declared string rather than the tool name: two
+// tools writing "50MB" resolve to the same ceiling, and keying this way lets
+// the lookup work from a *dadl.ToolDef alone, which is all the request
+// builders carry. Every tool is still visited, so a malformed value anywhere
+// fails the load and each clamp is reported against its own tool.
+func resolveMaxBodySizes(spec *dadl.Spec, logger *slog.Logger) (map[string]int64, error) {
+	var sizes map[string]int64
+	names := make([]string, 0, len(spec.Backend.Tools))
+	for name := range spec.Backend.Tools {
+		names = append(names, name)
+	}
+	sort.Strings(names) // deterministic warning order
+
+	for _, name := range names {
+		declared := spec.Backend.Tools[name].MaxBodySize
+		if declared == "" {
+			continue
+		}
+		limit, err := dadl.ParseByteSize(declared)
+		if err != nil {
+			return nil, fmt.Errorf("REST backend %q: tool %q: max_body_size: %w", spec.Backend.Name, name, err)
+		}
+		if limit > maxUploadBytes {
+			logger.Warn("max_body_size exceeds the runtime upload ceiling, clamping",
+				"backend", spec.Backend.Name,
+				"tool", name,
+				"declared", declared,
+				"effective", dadl.FormatByteSize(maxUploadBytes),
+			)
+			limit = maxUploadBytes
+		}
+		if sizes == nil {
+			sizes = make(map[string]int64)
+		}
+		sizes[declared] = limit
+	}
+	return sizes, nil
+}
+
+// effectiveMaxBodySize returns the byte ceiling for this tool's request body:
+// the tool's declared max_body_size when it has one, otherwise the runtime
+// ceiling. Never larger than maxUploadBytes — resolveMaxBodySizes clamped the
+// declared values at load time.
+func (a *RESTAdapter) effectiveMaxBodySize(tool *dadl.ToolDef) int64 {
+	if tool.MaxBodySize == "" {
+		return maxUploadBytes
+	}
+	if limit, ok := a.maxBodySizes[tool.MaxBodySize]; ok {
+		return limit
+	}
+	// Unreachable for adapters built by NewRESTAdapter; a hand-constructed
+	// adapter falls back to the ceiling rather than to no limit at all.
+	return maxUploadBytes
 }
 
 // buildIncludeSet validates an include_tools list against the spec and returns
@@ -831,12 +904,20 @@ func (a *RESTAdapter) buildHTTPRequest(ctx context.Context, tool *dadl.ToolDef, 
 //   - effective content_type application/x-www-form-urlencoded (tool, else
 //     backend defaults.content_type) → form encoding
 //   - otherwise → JSON
+//
+// Every branch is bounded by the tool's effective max_body_size (DADL spec
+// §6). The buffered branches — multipart, form, JSON — know their exact byte
+// count and are checked against it outright. The raw file branch streams, so
+// its bound is enforced where the bytes are read: fetchFileURL pre-checks a
+// declared Content-Length and caps the stream itself, which is what stops an
+// upstream that under-reports its length.
 func (a *RESTAdapter) buildRequestBody(ctx context.Context, tool *dadl.ToolDef, params map[string]any) (body io.Reader, contentType string, size int64, err error) {
+	maxBody := a.effectiveMaxBodySize(tool)
 	switch {
 	case a.hasFileURLParams(tool) && tool.ContentType != dadl.ContentTypeMultipartForm:
-		return a.buildRawFileBody(ctx, tool, params)
+		return a.buildRawFileBody(ctx, tool, params, maxBody)
 	case a.hasFileURLParams(tool) || a.hasFileParams(tool):
-		mr, ct, err := a.buildMultipartBody(ctx, tool, params)
+		mr, ct, err := a.buildMultipartBody(ctx, tool, params, maxBody)
 		if err != nil {
 			return nil, "", -1, fmt.Errorf("build multipart body: %w", err)
 		}
@@ -846,7 +927,11 @@ func (a *RESTAdapter) buildRequestBody(ctx context.Context, tool *dadl.ToolDef, 
 		if bodyData == nil {
 			return nil, "", -1, nil
 		}
-		return strings.NewReader(a.buildFormEncoded(bodyData)), "", -1, nil
+		encoded := a.buildFormEncoded(bodyData)
+		if err := checkBodySize(int64(len(encoded)), maxBody); err != nil {
+			return nil, "", -1, err
+		}
+		return strings.NewReader(encoded), "", -1, nil
 	default:
 		bodyData := a.buildBody(tool, params)
 		if bodyData == nil {
@@ -856,8 +941,22 @@ func (a *RESTAdapter) buildRequestBody(ctx context.Context, tool *dadl.ToolDef, 
 		if err != nil {
 			return nil, "", -1, fmt.Errorf("marshal body: %w", err)
 		}
+		if err := checkBodySize(int64(len(bodyJSON)), maxBody); err != nil {
+			return nil, "", -1, err
+		}
 		return bytes.NewReader(bodyJSON), "", -1, nil
 	}
+}
+
+// checkBodySize rejects an assembled request body that exceeds the tool's
+// limit. The message reports both numbers in the vocabulary the DADL uses, so
+// an author reading it can compare it against what they wrote.
+func checkBodySize(size, limit int64) error {
+	if size <= limit {
+		return nil
+	}
+	return fmt.Errorf("request body is %s, exceeding the %s limit for this tool (max_body_size)",
+		dadl.FormatByteSize(size), dadl.FormatByteSize(limit))
 }
 
 // joinURL combines a backend base URL with a tool path using RFC 3986
@@ -1201,7 +1300,11 @@ func (a *RESTAdapter) hasFileParams(tool *dadl.ToolDef) bool {
 // the local allowed upload directory. Non-file body params are added as form
 // fields, falling back to their declared default when omitted (matching
 // buildBody). Returns the body reader and the Content-Type header (with boundary).
-func (a *RESTAdapter) buildMultipartBody(ctx context.Context, tool *dadl.ToolDef, params map[string]any) (io.Reader, string, error) {
+//
+// maxBody bounds each file part as it is read and the assembled body as a
+// whole — several parts each under the limit can still exceed it together,
+// and the whole body is what actually goes on the wire.
+func (a *RESTAdapter) buildMultipartBody(ctx context.Context, tool *dadl.ToolDef, params map[string]any, maxBody int64) (io.Reader, string, error) {
 	var buf bytes.Buffer
 	writer := multipart.NewWriter(&buf)
 
@@ -1228,7 +1331,7 @@ func (a *RESTAdapter) buildMultipartBody(ctx context.Context, tool *dadl.ToolDef
 			if !ok {
 				return nil, "", fmt.Errorf("file parameter %q: expected URL string, got %T", name, val)
 			}
-			if err := a.writeFileURLPart(ctx, writer, name, rawURL); err != nil {
+			if err := a.writeFileURLPart(ctx, writer, name, rawURL, maxBody); err != nil {
 				return nil, "", err
 			}
 		case paramTypeFile:
@@ -1243,6 +1346,20 @@ func (a *RESTAdapter) buildMultipartBody(ctx context.Context, tool *dadl.ToolDef
 			f, err := os.Open(cleanPath) //nolint:gosec // validated against allowedUploadDir above
 			if err != nil {
 				return nil, "", fmt.Errorf("open file %q for param %q: %w", filePath, name, err)
+			}
+			// Stat before copying: this path buffers the whole file into the
+			// multipart writer, and unlike the file_url branch it had no size
+			// check at all — an oversized local file was read into memory in
+			// full before anything noticed.
+			fi, err := f.Stat()
+			if err != nil {
+				_ = f.Close()
+				return nil, "", fmt.Errorf("stat file %q for param %q: %w", filePath, name, err)
+			}
+			if fi.Size() > maxBody {
+				_ = f.Close()
+				return nil, "", fmt.Errorf("file param %q: file is %s, exceeding the %s limit for this tool",
+					name, dadl.FormatByteSize(fi.Size()), dadl.FormatByteSize(maxBody))
 			}
 			part, err := writer.CreateFormFile(name, filepath.Base(filePath))
 			if err != nil {
@@ -1263,6 +1380,9 @@ func (a *RESTAdapter) buildMultipartBody(ctx context.Context, tool *dadl.ToolDef
 
 	if err := writer.Close(); err != nil {
 		return nil, "", fmt.Errorf("close multipart writer: %w", err)
+	}
+	if err := checkBodySize(int64(buf.Len()), maxBody); err != nil {
+		return nil, "", err
 	}
 
 	return &buf, writer.FormDataContentType(), nil

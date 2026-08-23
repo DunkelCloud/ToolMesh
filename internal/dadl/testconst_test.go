@@ -67,6 +67,10 @@ const (
 	// Common fixture field name.
 	testFieldTotal = "total"
 
+	// Fixtures for the byte-size parsing tests (max_body_size, spec §6).
+	testSize50MB       = "50MB"
+	testErrUnknownUnit = "unknown unit"
+
 	// Fixtures shared across redact/transform tests.
 	testRedactPathSecret = "$[*].secret"
 	testJSONTinyObject   = `{"a":1}`

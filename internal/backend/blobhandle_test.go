@@ -182,7 +182,7 @@ func TestFetchFileURL_BlobHandle(t *testing.T) {
 	adapter, _, id := newBlobTestAdapter(t, testBaseURLExample)
 
 	t.Run("bare handle streams from store", func(t *testing.T) {
-		fetched, err := adapter.fetchFileURL(context.Background(), paramTypeFile, blob.Handle(id))
+		fetched, err := adapter.fetchFileURL(context.Background(), paramTypeFile, blob.Handle(id), maxUploadBytes)
 		if err != nil {
 			t.Fatalf("fetchFileURL: %v", err)
 		}
@@ -194,14 +194,14 @@ func TestFetchFileURL_BlobHandle(t *testing.T) {
 	})
 
 	t.Run("fragment on file_url handle fails", func(t *testing.T) {
-		_, err := adapter.fetchFileURL(context.Background(), paramTypeFile, blob.Handle(id)+"#base64")
+		_, err := adapter.fetchFileURL(context.Background(), paramTypeFile, blob.Handle(id)+"#base64", maxUploadBytes)
 		if err == nil || !strings.Contains(err.Error(), "must not carry a format fragment") {
 			t.Errorf("err = %v", err)
 		}
 	})
 
 	t.Run("unknown blob fails", func(t *testing.T) {
-		_, err := adapter.fetchFileURL(context.Background(), paramTypeFile, "tm-blob://ffffffff")
+		_, err := adapter.fetchFileURL(context.Background(), paramTypeFile, "tm-blob://ffffffff", maxUploadBytes)
 		if err == nil || !strings.Contains(err.Error(), "not found or expired") {
 			t.Errorf("err = %v", err)
 		}

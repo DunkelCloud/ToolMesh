@@ -399,12 +399,26 @@ func (a *RESTAdapter) Execute(ctx context.Context, toolName string, params map[s
 
 	// Check if it's a composite tool
 	if comp, ok := a.spec.Backend.Composites[toolName]; ok {
+		if err := dadl.ValidateParams(toolName, comp.Params, params); err != nil {
+			return a.paramErrorResult(ctx, toolName, err), nil
+		}
 		return a.executeComposite(ctx, toolName, &comp, params)
 	}
 
 	tool, ok := a.spec.Backend.Tools[toolName]
 	if !ok {
 		return nil, fmt.Errorf("tool %q not found in REST backend %q", toolName, a.spec.Backend.Name)
+	}
+
+	// Validate the call against the declared parameters (DADL spec §6.1)
+	// before anything else touches them. Request building only ever reads
+	// declared parameters, so without this an undeclared argument is dropped
+	// and a missing required one is simply absent — the call goes out meaning
+	// something other than what the caller wrote, and the response looks
+	// authentic. Failing here costs one round trip; not failing costs a
+	// misleading answer.
+	if err := dadl.ValidateParams(toolName, tool.Params, params); err != nil {
+		return a.paramErrorResult(ctx, toolName, err), nil
 	}
 
 	// Materialize tm-blob:// handles in string parameters before any request
@@ -1284,6 +1298,20 @@ func (a *RESTAdapter) apiErrorResult(err error) *ToolResult {
 	return result
 }
 
+// paramErrorResult builds the error ToolResult for a call rejected by
+// parameter validation, logging it at warn level. The rejection carries the
+// §8.2 metadata of a 400 — dadl.ParamError unwraps to an invalid_input
+// APIError — so a composite that catches it branches on e.code exactly as it
+// would for a 400 the API itself returned, and no backend request is made.
+func (a *RESTAdapter) paramErrorResult(ctx context.Context, toolName string, err error) *ToolResult {
+	a.logger.WarnContext(ctx, "tool call rejected: parameters do not match the DADL declaration",
+		"backend", a.spec.Backend.Name,
+		"tool", toolName,
+		"error", err,
+	)
+	return a.apiErrorResult(err)
+}
+
 // apiErrorResultNote builds the error ToolResult like apiErrorResult, with
 // an explanatory note appended to the text form (e.g. why an automatic
 // retry was suppressed).
@@ -1706,6 +1734,12 @@ func (a *RESTAdapter) transformResponse(tool *dadl.ToolDef, body []byte) ([]byte
 }
 
 // buildInputSchema generates a JSON Schema from the tool's ParamDef map.
+//
+// The schema closes with additionalProperties: false because the runtime
+// rejects an undeclared argument (see dadl.ValidateParams). Advertising an
+// open object while enforcing a closed one is the discrepancy that lets a
+// caller believe an extra argument was accepted; a client that checks the
+// schema now catches the mistake before the call is even sent.
 func buildInputSchema(tool dadl.ToolDef) map[string]any {
 	properties := make(map[string]any)
 	var required []string
@@ -1730,8 +1764,9 @@ func buildInputSchema(tool dadl.ToolDef) map[string]any {
 	}
 
 	schema := map[string]any{
-		schemaKeyType:       schemaTypeObject,
-		schemaKeyProperties: properties,
+		schemaKeyType:                 schemaTypeObject,
+		schemaKeyProperties:           properties,
+		schemaKeyAdditionalProperties: false,
 	}
 	if len(required) > 0 {
 		schema[schemaKeyRequired] = required
@@ -1880,8 +1915,9 @@ func buildCompositeInputSchema(comp dadl.CompositeDef) map[string]any {
 	}
 
 	schema := map[string]any{
-		schemaKeyType:       schemaTypeObject,
-		schemaKeyProperties: properties,
+		schemaKeyType:                 schemaTypeObject,
+		schemaKeyProperties:           properties,
+		schemaKeyAdditionalProperties: false,
 	}
 	if len(required) > 0 {
 		schema[schemaKeyRequired] = required

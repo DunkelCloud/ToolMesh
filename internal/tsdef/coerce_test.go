@@ -17,6 +17,7 @@ package tsdef
 import (
 	"log/slog"
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -99,21 +100,24 @@ func TestCoerce_SingleToArray(t *testing.T) {
 	}
 }
 
-func TestCoerce_StripExtraFields(t *testing.T) {
+// TestCoerce_RejectsExtraFields covers an argument the definition does not
+// declare. Coercion rebuilds the parameter map from the declared set, so such
+// an argument can never reach the tool — the call has to fail rather than run
+// with the argument quietly discarded.
+func TestCoerce_RejectsExtraFields(t *testing.T) {
 	c := NewCoercer([]ToolDef{{
 		Name:   testToolName,
 		Params: []ParamDef{{Name: "a", Type: ParamType{Kind: kindString}, Required: true}},
 	}}, testLogger())
 
-	result, err := c.Coerce(testToolName, map[string]any{"a": "ok", "unknown": "strip me"})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	_, err := c.Coerce(testToolName, map[string]any{"a": "ok", "unknown": "drop me"})
+	if err == nil {
+		t.Fatal("err = nil, want the undeclared parameter rejected")
 	}
-	if _, exists := result["unknown"]; exists {
-		t.Error("unknown field should be stripped")
-	}
-	if result["a"] != "ok" {
-		t.Error("known field should be preserved")
+	for _, want := range []string{`unknown parameter(s) "unknown"`, `declared parameters: "a"`} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("err = %q, want substring %q", err, want)
+		}
 	}
 }
 

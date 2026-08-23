@@ -113,4 +113,17 @@ const (
 	testValWeb            = "web"
 	testIPGoogleDNS       = "8.8.8.8"
 	testIPHost1           = "10.0.0.1"
+
+	// Fixtures for the §6.1 parameter-validation tests. testParamRange is the
+	// misspelling that motivated the check; the rest are the declared names it
+	// is measured against, plus the assertions repeated across cases.
+	testToolSearchMessages     = "search_messages"
+	testCompositeSearchCompact = "search_messages_compact"
+	testParamQuery             = "query"
+	testParamTimeRange         = "time_range"
+	testParamLimit             = "limit"
+	testParamRange             = "range"
+	testQueryFirewall          = "firewall"
+	testWantUnknownRange       = `unknown parameter "range"`
+	testWantMissingTimeRange   = `missing required parameter "time_range"`
 )

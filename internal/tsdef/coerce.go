@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -60,6 +61,13 @@ func (c *Coercer) AddDef(def ToolDef) {
 
 // Coerce applies type coercion to the given parameters based on the tool definition.
 // If no definition exists for the tool, params are returned unchanged.
+//
+// An argument the definition does not declare is an error, not something to
+// drop. Coercion rebuilds the parameter map from the declared set, so an
+// undeclared argument never reaches the tool: dropping it and logging on the
+// server means the caller is told the call succeeded while the thing it asked
+// for was discarded — the failure mode that a caller cannot distinguish from
+// a genuine result.
 func (c *Coercer) Coerce(toolName string, params map[string]any) (map[string]any, error) {
 	def, ok := c.defs[toolName]
 	if !ok {
@@ -87,18 +95,39 @@ func (c *Coercer) Coerce(toolName string, params map[string]any) (map[string]any
 		result[p.Name] = coerced
 	}
 
-	// Strip unknown fields with a warning
-	for k, v := range params {
+	// Reject undeclared arguments rather than dropping them.
+	var unknown []string
+	for k := range params {
 		if !knownParams[k] {
-			c.logger.Warn("stripping unknown parameter",
-				"tool", toolName,
-				"param", k,
-				"value", v,
-			)
+			unknown = append(unknown, k)
 		}
+	}
+	if len(unknown) > 0 {
+		sort.Strings(unknown)
+		declared := make([]string, 0, len(def.Params))
+		for _, p := range def.Params {
+			declared = append(declared, p.Name)
+		}
+		sort.Strings(declared)
+		c.logger.Warn("tool call rejected: undeclared parameters",
+			"tool", toolName,
+			"params", unknown,
+		)
+		return nil, fmt.Errorf("unknown parameter(s) %s for tool %q; declared parameters: %s",
+			strings.Join(quoteAll(unknown), ", "), toolName, strings.Join(quoteAll(declared), ", "))
 	}
 
 	return result, nil
+}
+
+// quoteAll wraps each name in double quotes so a parameter list reads
+// unambiguously even when a name is empty or carries surrounding whitespace.
+func quoteAll(names []string) []string {
+	out := make([]string, 0, len(names))
+	for _, n := range names {
+		out = append(out, strconv.Quote(n))
+	}
+	return out
 }
 
 func coerceValue(val any, p ParamDef) (any, error) {

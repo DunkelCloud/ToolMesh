@@ -33,6 +33,42 @@ for the full narrative and details.
   rather than being ignored, which on a site root would look exactly like the
   page working as intended.
 
+### Fixed
+
+- A tool call is now checked against the tool's declared parameters (DADL spec
+  §6.1) before the request is built, and rejected when they disagree. Both
+  faults it catches used to pass unannounced: request building only ever reads
+  the *declared* parameters, so an argument the tool does not declare was
+  dropped on the floor, and a missing required one was simply absent from the
+  request. The call still went out — meaning something other than what the
+  caller wrote — and the reply looked like a genuine answer. A caller that
+  guessed `range` for a parameter actually named `time_range` could not
+  distinguish the result from an API that held no data for the window, which is
+  exactly how one such call cost an afternoon of misdirected incident analysis.
+  The rejection names the offending argument, the declared parameter it most
+  resembles, and the full declared set with types and locations, so a caller
+  that guessed recovers in one round trip instead of guessing again. It carries
+  the §8.2 metadata of a 400 (`invalid_input`), so composite JavaScript and Code
+  Mode branch on `e.code` / `e.http_status` just as they do for a 400 the API
+  itself returned, and no backend request is made. Composites are checked on
+  the same terms — both the call into the composite and every `api.*` child
+  call it makes, the path where the missing-required gap was first noticed.
+  A declared `default:` still satisfies `required` on its own, and an explicit
+  `null` on an `in: body` parameter remains a value ("clear this field") rather
+  than an omission. Tools sourced from upstream MCP servers are unaffected —
+  their arguments are forwarded verbatim and validated at the far end.
+- The input schema advertised for a DADL tool or composite now carries
+  `additionalProperties: false`. Advertising an open object while the runtime
+  rejects undeclared arguments is the discrepancy that let a caller believe an
+  extra argument had been accepted; a client that checks the schema now catches
+  the mistake before the call is sent, and one that ignores it behaves as
+  before.
+- The TypeScript-definition coercer no longer strips an undeclared argument
+  with only a server-side log line. It rebuilds the parameter map from the
+  declared set, so a stripped argument could never have reached the tool; the
+  call now fails with the declared parameter list instead of succeeding
+  without the thing that was asked for.
+
 ## [0.4.0] - 2026-08-05
 
 DADL v0.2 Core Runtime: the seven runtime features of the finalized

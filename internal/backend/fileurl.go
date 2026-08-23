@@ -32,9 +32,15 @@ import (
 	"github.com/DunkelCloud/ToolMesh/internal/dadl"
 )
 
-// maxFileFetchBytes caps the size of a single file_url input fetch. It matches
-// the streaming-response limit so uploads and downloads share one ceiling.
-const maxFileFetchBytes = maxStreamingBytes
+// maxUploadBytes is the runtime ceiling for anything this process sends as a
+// request body. It matches the streaming-response limit so uploads and
+// downloads share one ceiling.
+//
+// A tool's `max_body_size` (DADL spec §6) narrows this per tool but can never
+// widen it: the ceiling bounds what this process is built to buffer or stream,
+// and a DADL — which may come from a public registry — must not be able to
+// raise it. See RESTAdapter.effectiveMaxBodySize.
+const maxUploadBytes = maxStreamingBytes
 
 // fetchedFile is the result of resolving a file_url parameter: a readable
 // byte stream plus the metadata needed to build the backend request.
@@ -73,7 +79,7 @@ func singleFileURLParam(tool *dadl.ToolDef) (string, dadl.ParamDef) {
 // mode — e.g. Tika's PUT /tika with content_type: application/octet-stream).
 // The returned content type is the tool's declared content_type, falling back
 // to the fetched file's type. Size is -1 when the length is unknown.
-func (a *RESTAdapter) buildRawFileBody(ctx context.Context, tool *dadl.ToolDef, params map[string]any) (body io.Reader, contentType string, size int64, err error) {
+func (a *RESTAdapter) buildRawFileBody(ctx context.Context, tool *dadl.ToolDef, params map[string]any, maxBody int64) (body io.Reader, contentType string, size int64, err error) {
 	name, def := singleFileURLParam(tool)
 	val, ok := params[name]
 	if !ok || val == nil {
@@ -87,7 +93,7 @@ func (a *RESTAdapter) buildRawFileBody(ctx context.Context, tool *dadl.ToolDef, 
 		return nil, "", -1, fmt.Errorf("file parameter %q: expected URL string, got %T", name, val)
 	}
 
-	fetched, err := a.fetchFileURL(ctx, name, rawURL)
+	fetched, err := a.fetchFileURL(ctx, name, rawURL, maxBody)
 	if err != nil {
 		return nil, "", -1, err
 	}
@@ -102,8 +108,8 @@ func (a *RESTAdapter) buildRawFileBody(ctx context.Context, tool *dadl.ToolDef, 
 // writeFileURLPart fetches a file_url parameter and writes it as a
 // multipart/form-data file part (DADL spec §6.2.1, multipart mode — e.g.
 // DeepL's POST /v2/document).
-func (a *RESTAdapter) writeFileURLPart(ctx context.Context, writer *multipart.Writer, name, rawURL string) error {
-	fetched, err := a.fetchFileURL(ctx, name, rawURL)
+func (a *RESTAdapter) writeFileURLPart(ctx context.Context, writer *multipart.Writer, name, rawURL string, maxBody int64) error {
+	fetched, err := a.fetchFileURL(ctx, name, rawURL, maxBody)
 	if err != nil {
 		return err
 	}
@@ -126,9 +132,9 @@ func (a *RESTAdapter) writeFileURLPart(ctx context.Context, writer *multipart.Wr
 // Supported schemes (DADL spec §6.2.1): http(s) for any web location, tm-blob
 // for the embedded file broker (read directly, no network), and file for
 // same-host paths inside the allowed upload directory.
-func (a *RESTAdapter) fetchFileURL(ctx context.Context, paramName, rawURL string) (*fetchedFile, error) {
+func (a *RESTAdapter) fetchFileURL(ctx context.Context, paramName, rawURL string, maxBody int64) (*fetchedFile, error) {
 	if blob.IsHandle(rawURL) {
-		return a.openBlobHandle(paramName, rawURL)
+		return a.openBlobHandle(paramName, rawURL, maxBody)
 	}
 	u, err := url.Parse(rawURL)
 	if err != nil {
@@ -136,9 +142,9 @@ func (a *RESTAdapter) fetchFileURL(ctx context.Context, paramName, rawURL string
 	}
 	switch u.Scheme {
 	case urlSchemeHTTP, "https":
-		return a.fetchHTTPFile(ctx, paramName, rawURL)
+		return a.fetchHTTPFile(ctx, paramName, rawURL, maxBody)
 	case "file":
-		return a.openLocalFileURL(paramName, u)
+		return a.openLocalFileURL(paramName, u, maxBody)
 	default:
 		return nil, fmt.Errorf("file parameter %q: unsupported URL scheme %q (use http, https, tm-blob, or file)", paramName, u.Scheme)
 	}
@@ -150,7 +156,7 @@ func (a *RESTAdapter) fetchFileURL(ctx context.Context, paramName, rawURL string
 // credentials, or relaxed TLS settings, its address-class policy is governed by
 // AllowPrivateFileURL (default deny), and an optional per-backend host
 // allowlist further restricts which destinations are reachable.
-func (a *RESTAdapter) fetchHTTPFile(ctx context.Context, paramName, rawURL string) (*fetchedFile, error) {
+func (a *RESTAdapter) fetchHTTPFile(ctx context.Context, paramName, rawURL string, maxBody int64) (*fetchedFile, error) {
 	if err := a.checkFileURLHostAllowed(paramName, rawURL); err != nil {
 		return nil, err
 	}
@@ -172,9 +178,9 @@ func (a *RESTAdapter) fetchHTTPFile(ctx context.Context, paramName, rawURL strin
 		_ = resp.Body.Close()
 		return nil, fmt.Errorf("file parameter %q: fetch %s returned HTTP %d", paramName, rawURL, resp.StatusCode)
 	}
-	if resp.ContentLength > maxFileFetchBytes {
+	if resp.ContentLength > maxBody {
 		_ = resp.Body.Close()
-		return nil, fmt.Errorf("file parameter %q: file is %d bytes, exceeding the %d byte limit", paramName, resp.ContentLength, maxFileFetchBytes)
+		return nil, fmt.Errorf("file parameter %q: file is %s, exceeding the %s limit for this tool", paramName, dadl.FormatByteSize(resp.ContentLength), dadl.FormatByteSize(maxBody))
 	}
 
 	contentType := resp.Header.Get("Content-Type")
@@ -183,7 +189,7 @@ func (a *RESTAdapter) fetchHTTPFile(ctx context.Context, paramName, rawURL strin
 	}
 
 	return &fetchedFile{
-		Body:        &cappedReadCloser{src: resp.Body, remaining: maxFileFetchBytes, max: maxFileFetchBytes},
+		Body:        &cappedReadCloser{src: resp.Body, remaining: maxBody, max: maxBody},
 		ContentType: contentType,
 		Filename:    fetchedFilename(resp, rawURL),
 		Size:        resp.ContentLength,
@@ -212,7 +218,7 @@ func (a *RESTAdapter) checkFileURLHostAllowed(paramName, rawURL string) error {
 // openLocalFileURL opens a file:// URL. Like the legacy local "file" parameter
 // type, the path must reside inside the allowed upload directory — file URLs
 // must not turn into an arbitrary filesystem read primitive.
-func (a *RESTAdapter) openLocalFileURL(paramName string, u *url.URL) (*fetchedFile, error) {
+func (a *RESTAdapter) openLocalFileURL(paramName string, u *url.URL, maxBody int64) (*fetchedFile, error) {
 	if u.Host != "" && u.Host != hostnameLocalhost {
 		return nil, fmt.Errorf("file parameter %q: remote file URL host %q not supported", paramName, u.Host)
 	}
@@ -238,9 +244,9 @@ func (a *RESTAdapter) openLocalFileURL(paramName string, u *url.URL) (*fetchedFi
 		_ = f.Close()
 		return nil, fmt.Errorf("file parameter %q: stat %s: %w", paramName, cleanPath, err)
 	}
-	if fi.Size() > maxFileFetchBytes {
+	if fi.Size() > maxBody {
 		_ = f.Close()
-		return nil, fmt.Errorf("file parameter %q: file is %d bytes, exceeding the %d byte limit", paramName, fi.Size(), maxFileFetchBytes)
+		return nil, fmt.Errorf("file parameter %q: file is %s, exceeding the %s limit for this tool", paramName, dadl.FormatByteSize(fi.Size()), dadl.FormatByteSize(maxBody))
 	}
 
 	contentType := mime.TypeByExtension(filepath.Ext(cleanPath))
@@ -316,7 +322,7 @@ func (c *cappedReadCloser) Read(p []byte) (int, error) {
 		var probe [1]byte
 		n, err := c.src.Read(probe[:])
 		if n > 0 {
-			return 0, fmt.Errorf("file exceeds the %d byte limit", c.max)
+			return 0, fmt.Errorf("file exceeds the %s limit for this tool", dadl.FormatByteSize(c.max))
 		}
 		if err != nil {
 			return 0, err

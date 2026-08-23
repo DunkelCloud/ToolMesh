@@ -388,7 +388,7 @@ func TestFileURLInput_Errors(t *testing.T) {
 	defer notFoundSrv.Close()
 
 	tooLargeSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Length", fmt.Sprintf("%d", int64(maxFileFetchBytes)+1))
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", int64(maxUploadBytes)+1))
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer tooLargeSrv.Close()
@@ -424,7 +424,7 @@ func TestFileURLInput_Errors(t *testing.T) {
 		{
 			name:    "content-length over limit",
 			params:  map[string]any{paramTypeFile: tooLargeSrv.URL + "/huge.bin"},
-			wantErr: "exceeding",
+			wantErr: testWantExceeding,
 		},
 	}
 

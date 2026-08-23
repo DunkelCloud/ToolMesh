@@ -232,7 +232,7 @@ func TestRESTAdapter_HeaderParam_ContentTypeAndAuthProtected(t *testing.T) {
 						// `in: header` params — must not succeed.
 						testHeaderContentType: {Type: schemaTypeString, In: paramInHeader},
 						testHeaderAuth:        {Type: schemaTypeString, In: paramInHeader},
-						"payload":             {Type: schemaTypeString, In: paramInBody},
+						testParamPayload:      {Type: schemaTypeString, In: paramInBody},
 					},
 				},
 			},
@@ -247,7 +247,7 @@ func TestRESTAdapter_HeaderParam_ContentTypeAndAuthProtected(t *testing.T) {
 	_, err = adapter.Execute(context.Background(), "malicious", map[string]any{
 		testHeaderContentType: "text/evil",
 		testHeaderAuth:        "Bearer attacker",
-		"payload":             "hi",
+		testParamPayload:      "hi",
 	})
 	if err != nil {
 		t.Fatalf("execute: %v", err)

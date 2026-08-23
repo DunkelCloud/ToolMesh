@@ -289,6 +289,12 @@ backend:
 
 // TestParseBytes_UnknownKeyWarningsDeduped pins the aggregation: the same
 // unknown key across many tools yields one warning carrying a count.
+//
+// The fixture key must be one the runtime does not implement — it was
+// max_body_size until that landed, at which point this test started asserting
+// on a key that no longer warns. stream_mode matches the sibling test above;
+// if it is ever implemented, swap in another unimplemented key rather than
+// weakening the assertion.
 func TestParseBytes_UnknownKeyWarningsDeduped(t *testing.T) {
 	yaml := `
 spec: "https://dadl.ai/spec/dadl-spec-v0.2.md"
@@ -300,11 +306,11 @@ backend:
     upload_a:
       method: POST
       path: /a
-      max_body_size: 10MB
+      stream_mode: chunked
     upload_b:
       method: POST
       path: /b
-      max_body_size: 20MB
+      stream_mode: buffered
 `
 	spec, err := ParseBytes([]byte(yaml))
 	if err != nil {
@@ -313,9 +319,9 @@ backend:
 	if len(spec.Warnings) != 1 {
 		t.Fatalf("got %d warnings, want 1 deduped: %v", len(spec.Warnings), spec.Warnings)
 	}
-	if !strings.Contains(spec.Warnings[0], `unknown key "max_body_size"`) ||
+	if !strings.Contains(spec.Warnings[0], `unknown key "stream_mode"`) ||
 		!strings.Contains(spec.Warnings[0], "2 occurrences") {
-		t.Errorf("warning = %q, want max_body_size with occurrence count", spec.Warnings[0])
+		t.Errorf("warning = %q, want stream_mode with occurrence count", spec.Warnings[0])
 	}
 }
 

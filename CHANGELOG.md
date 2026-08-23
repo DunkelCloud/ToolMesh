@@ -13,6 +13,30 @@ for the full narrative and details.
 
 ### Added
 
+- `max_body_size` (DADL spec §6) is now enforced. The key has been in the spec
+  and in the canonical JSON Schema since v0.2 and 42 tools across the shipped
+  DADL corpus declare one, but the runtime never read it: every load warned
+  `unknown key "max_body_size" … ignored` and every upload ran against the
+  global ceiling instead. A tool declaring `5MB` was not capped at 5MB, and one
+  declaring `100MB` was not granted 100MB either.
+  The declared size now bounds the request body on every path that carries
+  one — a fetched `file_url`, a `tm-blob://` handle, a local `file` parameter,
+  a multipart body (each part as it is read *and* the assembled whole, since
+  parts individually under the limit can exceed it together), and plain JSON or
+  form-encoded bodies. A source that declares an oversized `Content-Length` is
+  refused before the fetch runs; one that under-reports it is cut off mid-stream
+  rather than truncated silently.
+  Sizes are written as `50MB`, `128 KiB`, `1.5GB`, or a bare byte count, with
+  `KB`/`MB`/`GB` read as 1024-based so a declared `100MB` lands exactly on the
+  runtime's 100 MiB ceiling instead of 4.8% under it. A value that cannot be
+  parsed fails the backend at load rather than being ignored — every available
+  fallback is a *wider* cap than the author wrote, so a typo would quietly lift
+  the limit it was meant to impose. A value above the runtime ceiling is
+  clamped to it and the clamp is logged: a DADL, which may come from a public
+  registry, narrows what this process will buffer but never widens it.
+  This also closes a gap in the legacy `file` parameter, which buffered a local
+  file into the multipart writer with no size check of its own.
+
 - A browser that opens the MCP endpoint now gets a page explaining what the
   endpoint is, with the URL to copy into a connector and links to the setup
   docs, instead of the bare `Method not allowed` that reads like a broken

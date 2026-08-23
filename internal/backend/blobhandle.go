@@ -181,7 +181,7 @@ func (a *RESTAdapter) materializeBlobHandle(handle string) (string, error) {
 // openBlobHandle resolves a bare tm-blob:// handle in a file_url parameter by
 // reading the embedded blob store directly — no HTTP fetch, no network
 // reachability requirement (DADL spec §6.2.1).
-func (a *RESTAdapter) openBlobHandle(paramName, rawURL string) (*fetchedFile, error) {
+func (a *RESTAdapter) openBlobHandle(paramName, rawURL string, maxBody int64) (*fetchedFile, error) {
 	if a.blobStore == nil {
 		return nil, fmt.Errorf("file parameter %q: %s requires the built-in file broker, which is not configured on this server", paramName, rawURL)
 	}
@@ -196,9 +196,9 @@ func (a *RESTAdapter) openBlobHandle(paramName, rawURL string) (*fetchedFile, er
 	if err != nil {
 		return nil, fmt.Errorf("file parameter %q: %w", paramName, err)
 	}
-	if info.Size > maxFileFetchBytes {
+	if info.Size > maxBody {
 		_ = rc.Close()
-		return nil, fmt.Errorf("file parameter %q: blob is %d bytes, exceeding the %d byte limit", paramName, info.Size, maxFileFetchBytes)
+		return nil, fmt.Errorf("file parameter %q: blob is %s, exceeding the %s limit for this tool", paramName, dadl.FormatByteSize(info.Size), dadl.FormatByteSize(maxBody))
 	}
 	return &fetchedFile{
 		Body:        rc,

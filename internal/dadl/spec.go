@@ -131,6 +131,11 @@ type ToolDef struct {
 	// NestBodyKeys overrides DefaultsConfig.NestBodyKeys for this tool. nil
 	// inherits the backend default; a non-nil value forces nesting on or off.
 	NestBodyKeys *bool `yaml:"nest_body_keys"`
+	// MaxBodySize caps this tool's request body (spec §6), written as a size
+	// string: "50MB", "128 KiB", or a bare byte count. Empty means the
+	// runtime's own ceiling applies. See [ParseByteSize] for the grammar and
+	// RESTAdapter for how the declared value combines with that ceiling.
+	MaxBodySize string `yaml:"max_body_size"`
 	// DependsOn is informational (spec §6): tools that should be called
 	// first, surfaced as a JSDoc hint. Not enforced by the runtime.
 	DependsOn []string `yaml:"depends_on"`

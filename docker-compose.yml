@@ -105,6 +105,7 @@ services:
 
   keydb:
     image: eqalpha/keydb:alpine
+    restart: unless-stopped
     # No ports exposed — only accessible from within the Docker network.
     command: keydb-server --appendonly yes
     volumes:

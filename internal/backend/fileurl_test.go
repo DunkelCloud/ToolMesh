@@ -417,11 +417,6 @@ func TestFileURLInput_Errors(t *testing.T) {
 			wantErr: "HTTP 404",
 		},
 		{
-			name:    "missing required file param",
-			params:  map[string]any{},
-			wantErr: "missing required file parameter",
-		},
-		{
 			name:    "non-string value",
 			params:  map[string]any{paramTypeFile: 12345},
 			wantErr: "expected URL string",
@@ -441,6 +436,22 @@ func TestFileURLInput_Errors(t *testing.T) {
 			}
 		})
 	}
+
+	// An omitted required file_url param is rejected by parameter validation
+	// before the fetch pipeline is reached, so it surfaces as an invalid_input
+	// tool result rather than the transport error the cases above produce.
+	t.Run("missing required file param", func(t *testing.T) {
+		result, err := adapter.Execute(context.Background(), testToolExtractText, map[string]any{})
+		if err != nil {
+			t.Fatalf("execute: %v", err)
+		}
+		if !result.IsError {
+			t.Fatalf("result.IsError = false, want a rejected call")
+		}
+		if got := resultText(t, result); !strings.Contains(got, `missing required parameter "file"`) {
+			t.Errorf("content = %q, want the missing-required-parameter complaint", got)
+		}
+	})
 }
 
 // TestCappedReadCloser verifies the over-limit error and the exact-limit EOF.

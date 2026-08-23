@@ -70,4 +70,21 @@ const (
 	// Fixtures shared across redact/transform tests.
 	testRedactPathSecret = "$[*].secret"
 	testJSONTinyObject   = `{"a":1}`
+
+	// Parameter-name fixtures for the §6.1 validation tests. testParamRange is
+	// the misspelling that motivated the check; the rest are the declared names
+	// it is measured against.
+	testParamQuery     = "query"
+	testParamTimeRange = "time_range"
+	testParamLimit     = "limit"
+	testParamRange     = "range"
+	testParamNote      = "note"
+	testParamStreams   = "streams"
+
+	// Parameter location literal; the package has production constants for
+	// path/body/header but none for query.
+	testParamInQuery = "query"
+
+	// Short fixture string for the edit-distance table.
+	testStringABC = "abc"
 )

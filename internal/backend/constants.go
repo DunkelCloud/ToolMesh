@@ -30,6 +30,9 @@ const (
 	schemaKeyProperties  = "properties"
 	schemaKeyDescription = "description"
 	schemaKeyMessage     = "message"
+	// schemaKeyAdditionalProperties closes a generated input schema, matching
+	// the runtime's rejection of undeclared arguments.
+	schemaKeyAdditionalProperties = "additionalProperties"
 
 	// MCP text-content fields.
 	contentTypeText = "text"

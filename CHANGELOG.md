@@ -36,7 +36,27 @@ for the full narrative and details.
   registry, narrows what this process will buffer but never widens it.
   This also closes a gap in the legacy `file` parameter, which buffered a local
   file into the multipart writer with no size check of its own.
-
+- `lint-dadl` is now a gate rather than a composite scanner. It read every
+  file's §15.3 findings and threw them away, and it skipped any file without
+  composite code entirely — so an invented or misspelled key reached production
+  as a startup log line and nothing ever failed over it. Five such keys were
+  sitting in a live DADL directory when this landed
+  (`next_link_header`, `total`, `current_page`, `total_pages`).
+  It now reports parse failures, unimplemented keys, and composite violations
+  for every file, and splits the §15.3 class in two using the canonical JSON
+  Schema: a key the spec does **not** define is an error — invented, and
+  nothing will ever honor it — while a key the spec **does** define is a
+  warning, because the file is right and this build is behind. The two look
+  identical in a runtime warning and call for opposite fixes; `max_body_size`
+  spent months in the second bucket. `-warn` downgrades the whole class for a
+  file targeting a newer spec version, and `-schema` overrides the schema path
+  (without one, every unimplemented key stays an error — the fail-closed
+  reading). Paths may now be directories, so it can be pointed at the DADL
+  directory a deployment actually loads:
+  `make lint-dadl DADL_DIR=/path/to/deployed/dadl`.
+  CI runs it over this repository's own DADL files, which nothing checked
+  before — registry CI covers only what is published to the registry, so a
+  file living anywhere else had no gate at all.
 - A browser that opens the MCP endpoint now gets a page explaining what the
   endpoint is, with the URL to copy into a connector and links to the setup
   docs, instead of the bare `Method not allowed` that reads like a broken

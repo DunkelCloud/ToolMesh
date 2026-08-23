@@ -55,6 +55,15 @@ jobs:
       - name: Test
         run: go test -v ./...
 
+      # The DADL files shipped in this repository were never checked by CI.
+      # Registry CI covers only what is published to the registry, so a file
+      # living anywhere else — here, or in a deployment's DADL directory —
+      # had no gate at all.
+      - name: Lint DADL files
+        run: |
+          CGO_ENABLED=0 go build -o lint-dadl ./cmd/lint-dadl
+          ./lint-dadl dadl
+
       - name: Build
         run: |
           CGO_ENABLED=0 go build -o toolmesh ./cmd/toolmesh

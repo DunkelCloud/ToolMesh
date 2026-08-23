@@ -45,8 +45,14 @@ lint-go: ## Run golangci-lint with the project config (matches CI)
 
 lint: vet fmt lint-go ## Run all linters (matches CI)
 
-lint-dadl: build ## Scan DADL composites for security violations
-	$(BIN_DIR)/lint-dadl dadl/*.dadl
+DADL_DIR ?= dadl
+
+lint-dadl: build ## Check DADL files (structure, unimplemented keys, composite security)
+	$(BIN_DIR)/lint-dadl $(DADL_DIR)
+
+# Point this at the DADL directory a deployment actually loads, which is the
+# one nothing else checks — registry CI only sees what is published to it:
+#   make lint-dadl DADL_DIR=/path/to/deployed/dadl
 
 clean: ## Remove build artifacts
 	rm -rf $(BIN_DIR) coverage.out coverage.html

@@ -220,10 +220,27 @@ func unknownKeyWarnings(data []byte) []string {
 			location = fmt.Sprintf("%d occurrences, first at line %s", e.count, e.firstLine)
 		}
 		warnings = append(warnings, fmt.Sprintf(
-			"unknown key %q in %s (%s): not implemented by this ToolMesh version, ignored (DADL spec 15.3)",
-			e.field, e.context, location))
+			"%s%q in %s (%s): not implemented by this ToolMesh version, ignored (DADL spec 15.3)",
+			unknownKeyWarningPrefix, e.field, e.context, location))
 	}
 	return warnings
+}
+
+// unknownKeyWarningPrefix opens every §15.3 unknown-key warning. It is a
+// constant so [IsUnknownKeyWarning] and the message above cannot drift apart.
+const unknownKeyWarningPrefix = "unknown key "
+
+// IsUnknownKeyWarning reports whether a [Spec.Warnings] entry is a §15.3
+// unknown-key finding rather than one of the other notes parsing can leave
+// (currently: a requires.toolmesh range that a non-semver build could not
+// check).
+//
+// The two classes call for opposite handling and the caller has to tell them
+// apart. §15.3 gives runtimes and publish-time validators different duties for
+// the same file — a runtime MUST warn and ignore, a linter MUST reject — so a
+// tool acting in the linter role needs to know which findings that rule covers.
+func IsUnknownKeyWarning(warning string) bool {
+	return strings.HasPrefix(warning, unknownKeyWarningPrefix)
 }
 
 // validAuthTypes lists the supported authentication types.

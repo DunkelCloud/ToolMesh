@@ -11,6 +11,22 @@ for the full narrative and details.
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-09-24
+
+**Behavior change:** two checks that 0.4.0 did not perform now reject calls it
+let through. A tool call whose arguments disagree with the tool's DADL
+declaration — an argument the tool does not declare, or a missing required
+parameter — is refused with `[invalid_input] HTTP 400` before any request is
+built; 0.4.0 dropped the undeclared argument and sent the call anyway. A
+request body larger than the tool's declared `max_body_size` is refused; 0.4.0
+ignored the key and applied only the global 100 MiB ceiling. A DADL whose
+`max_body_size` cannot be parsed now fails the backend at load instead of being
+ignored. No configuration change is needed: a call that was doing what its
+caller asked is unaffected, and the shipped DADL corpus was checked before
+either change landed. Operators running their own DADLs or composites should
+expect a call that used to succeed with a silently dropped argument to fail
+now; the error names the argument and the declared parameter set.
+
 ### Added
 
 - `max_body_size` (DADL spec §6) is now enforced. The key has been in the spec
@@ -112,6 +128,10 @@ for the full narrative and details.
   declared set, so a stripped argument could never have reached the tool; the
   call now fails with the declared parameter list instead of succeeding
   without the thing that was asked for.
+- `docker-compose.yml` now sets `restart: unless-stopped` on `keydb`. It was
+  the only service in the stack still on Docker's default policy (`no`), and
+  `toolmesh` depends on a healthy KeyDB via `depends_on`, so after a KeyDB
+  crash or a Docker daemon restart the whole stack stayed down.
 
 ## [0.4.0] - 2026-08-05
 

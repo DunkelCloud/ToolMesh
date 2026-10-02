@@ -108,8 +108,7 @@ now; the error names the argument and the declared parameter set.
   The rejection names the offending argument, the declared parameter it most
   resembles, and the full declared set with types and locations, so a caller
   that guessed recovers in one round trip instead of guessing again. It carries
-  the §8.2 metadata of a 400 (`invalid_input`), so composite JavaScript and Code
-  Mode branch on `e.code` / `e.http_status` just as they do for a 400 the API
+  the §8.2 metadata of a 400 (`invalid_input`), the same as a 400 the API
   itself returned, and no backend request is made. Composites are checked on
   the same terms — both the call into the composite and every `api.*` child
   call it makes, the path where the missing-required gap was first noticed.
@@ -117,6 +116,50 @@ now; the error names the argument and the declared parameter set.
   `null` on an `in: body` parameter remains a value ("clear this field") rather
   than an omission. Tools sourced from upstream MCP servers are unaffected —
   their arguments are forwarded verbatim and validated at the far end.
+
+  *Corrected after release (2026-10-02):* this entry originally said that
+  composite JavaScript and Code Mode both branch on `e.code` / `e.http_status`.
+  Only composites do. The two sandboxes report a failed call differently, for
+  this rejection and for an error the API returned alike. Neither behavior
+  changed in 0.4.1.
+
+  In a composite, a failed `api.*` call throws, and the error carries `code`,
+  `http_status`, `api_message`, and `provider_code` when the API supplied one:
+
+  ```javascript
+  // composite code
+  try {
+    return await api.search_messages({ range: "1h" }); // declared: time_range
+  } catch (e) {
+    if (e.code === "invalid_input") return { rejected: e.http_status }; // 400
+    throw e;
+  }
+  ```
+
+  In `execute_code`, a failed `toolmesh.*` call does not throw. The failure is
+  the value the call resolves to, so a `catch` never sees it and a script that
+  does not inspect that value carries on with it. A failed DADL tool resolves
+  to the string `"Error: …"`, a call that could not be dispatched to
+  `{ error, tool }`, and one the TypeScript-definition coercer rejected to
+  `undefined`. None of them carries the §8.2 fields; those travel in the
+  `execute_code` response, where the failed call's entry keeps its full
+  `result` with `isError: true` and `metadata.error_code` /
+  `metadata.statusCode`:
+
+  ```javascript
+  // execute_code
+  const r = await toolmesh.logs_search_messages({ range: "1h" });
+  if (typeof r === "string" && r.startsWith("Error: ")) {
+    return { failed: r }; // 'Error: tool "search_messages": unknown parameter "range" …'
+  }
+  if (r && r.error) return { failed: r.error }; // dispatch failure
+  return r.messages.length;
+  ```
+
+  The `Error: ` prefix is what the REST adapter writes, not a contract: an
+  authorization denial or a gate rejection resolves to plain text without it.
+  What covers every case is the failed call's entry in the response —
+  `result.isError`, or `error` for a call that produced no result.
 - The input schema advertised for a DADL tool or composite now carries
   `additionalProperties: false`. Advertising an open object while the runtime
   rejects undeclared arguments is the discrepancy that let a caller believe an

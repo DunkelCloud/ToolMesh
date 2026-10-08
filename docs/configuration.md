@@ -18,6 +18,46 @@ All configuration is done via environment variables. Copy `.env.example` to `.en
 | `TOOLMESH_ROOT_REDIRECT` | *(empty)* | Absolute `http(s)` URL that `GET /` redirects to (302). Unset, the site root serves the built-in page explaining that this host is an MCP endpoint. Only `/` is redirected — `/mcp` always serves the page, since a visitor there needs the URL to copy. An invalid value fails startup. |
 | `TOOLMESH_DEV` | `false` | Local-development posture. Reports the startup security-posture summary at `INFO` instead of `WARN`. Relaxes no setting on its own — it only changes the log level of that summary. |
 
+## Login Throttling
+
+The password login at `/authorize` limits failed attempts. Each limit counts failures within `TOOLMESH_LOGIN_FAILURE_WINDOW`. Once a limit is reached, further attempts it covers are answered with `429` and a `Retry-After` header, without the password being checked, until the window that began with the first counted failure has passed. Later attempts do not extend it.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `TOOLMESH_LOGIN_MAX_FAILURES_PER_USER_IP` | `5` | Failed logins for one account from one client address. This is the limit that stops a single source from guessing at an account; it locks that source out, not the account. |
+| `TOOLMESH_LOGIN_MAX_FAILURES_PER_USER` | `20` | Failed logins for one account from all addresses together. Bounds guessing that is spread over many addresses. When it is reached, the account cannot log in from anywhere until the window ends. |
+| `TOOLMESH_LOGIN_MAX_FAILURES_PER_IP` | `50` | Failed logins from one client address across all accounts. Bounds one source trying many usernames. |
+| `TOOLMESH_LOGIN_FAILURE_WINDOW` | `900` | Length of the counting window in seconds (1 to 2592000, i.e. 30 days). |
+
+Set a limit to `0` to switch it off; the startup security-posture summary reports every limit that is off. Unlike most numeric settings, these four are parsed strictly: a value that is not an integer or is out of range stops the server at startup instead of falling back to the default.
+
+- **What counts.** A wrong password, for a known and an unknown username alike. An unknown name is counted and locked out exactly like a real one, and costs the same password-hash comparison, so neither the lockout nor the response time shows which accounts exist. (The timing guarantee assumes all hashes in `users.yaml` use the same bcrypt cost; ToolMesh logs a warning at startup if they do not.) Requests that are turned away before the password is looked at — unknown client, unregistered `redirect_uri` — are logged but do not count.
+- **Success.** A successful login clears the account-wide counter and the counter for that account from that address, and gives the address back the one slot the attempt had taken. It does not erase failures the same address ran up before, and a lockout of the same account from a different address runs until its window ends.
+- **Single-password mode.** With `TOOLMESH_AUTH_PASSWORD` there is one account, and the username typed into the form is not part of the credential. Every attempt counts against that account, whatever name was entered.
+- **Scope of a lockout.** Only new password logins are refused. Access and refresh tokens that were already issued keep working, and so do API keys.
+- **Shared passwords.** If one password is deliberately given to many people — a public demo login, say — the per-account ceiling lets anyone lock all of them out: 20 failed attempts spread over a few addresses refuse every new login for that account until the window ends. For such a deployment set `TOOLMESH_LOGIN_MAX_FAILURES_PER_USER=0` and keep the two per-address limits. The startup security-posture summary then lists that limit as switched off, which is expected here.
+- **Where the counters live.** In Redis when it is connected, so the limits hold across replicas and survive a restart. Otherwise in process memory: per process, and reset by a restart. The startup log line `login throttling configured` shows which applies. If Redis fails while ToolMesh is running, a login that cannot reach it logs the warning `login throttle: Redis unavailable, falling back to process-local counters` and is counted in process memory rather than let through unlimited. A counter that was charged there stays there until its window ends, also after Redis is back, so what was counted during the outage keeps counting. The process-local table holds at most 50,000 counters. When it is full it drops expired counters first, then counters that have not reached their limit, and only if that is not enough, others; it logs `login throttle: process-local counter table is full, dropped live counters` at most once a minute.
+- **Lifting a lockout early.** Delete the counters, e.g. `redis-cli --scan --pattern 'auth:{login}:failures:*' | xargs redis-cli del` (with the shipped Compose file, run `keydb-cli` inside the `keydb` service). Restart ToolMesh instead if it counts in process memory, or if the failures were counted there during a Redis outage.
+- **Client address.** The per-address limits depend on the client address ToolMesh sees: the right-most public address in `X-Forwarded-For`, otherwise the peer address of the connection. Private, loopback and link-local entries in the header are skipped. IPv6 addresses are counted per `/64`. The `remote` field of the request log shows the address ToolMesh uses. For the per-address limits to mean what they say:
+  - The proxy closest to ToolMesh must put the real client address last in `X-Forwarded-For`, and the ToolMesh port must not be reachable around the proxy — a client that connects directly can set the header itself.
+  - If clients reach the proxy from private addresses (a LAN or VPN), the proxy must replace `X-Forwarded-For` with the peer address instead of appending to what the client sent. With an appending proxy such a client can choose the address it is counted under, because its own private address is skipped and the entry before it is used. With a replacing proxy those clients are all counted under the proxy's address.
+  - Where the client address is not available — every request appears to come from the same address — all clients share the per-address counters. Raise or switch off the two per-address limits there and rely on the per-account ceiling. This does not combine with a shared password (above), which needs the per-address limits instead.
+
+### Failed logins in the log
+
+Every failed password login is logged at `WARN` with the message `login failed` and three fields: `username` (as submitted, truncated to 128 bytes), `remote` (the client address) and `reason`. The password is never logged. The username is logged as typed, so a password entered into the username field by mistake will appear there.
+
+| `reason` | Meaning |
+|----------|---------|
+| `invalid_credentials` | Wrong password or unknown username. |
+| `throttled_user_ip`, `throttled_user`, `throttled_ip` | Refused by the limit named above; the password was not checked. |
+| `unknown_client`, `invalid_redirect_uri` | The OAuth client or its redirect URI is not registered; the password was not checked. |
+| `password_login_disabled` | Neither `TOOLMESH_AUTH_PASSWORD` nor `users.yaml` is configured, so there is no password to log in with. Token requests at `/token` are refused for the same reason and logged as `token grant refused`; access tokens issued earlier are not honored. |
+
+A bearer credential that is rejected on an authenticated endpoint (`/mcp`, `/files/upload`, `DELETE /blobs/…`) is logged as `bearer authentication failed` with `method`, `remote` and `reason`; the credential itself is never logged. `unknown_credential` is logged at `WARN`. `expired_token` and `unknown_token` — a value that has the form of an access token issued by this server, which is what an expired token looks like once it has been removed from the store — are the routine case and logged at `INFO`.
+
+Failed logins are also counted in `toolmesh_logins_total{result="failure"}`; see [metrics.md](metrics.md).
+
 ## Audit
 
 | Variable | Default | Description |

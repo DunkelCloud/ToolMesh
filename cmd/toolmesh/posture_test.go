@@ -34,10 +34,14 @@ const (
 // secure state, so the only relaxation in a test is the one the test introduces.
 func hardenedConfig() *config.Config {
 	return &config.Config{
-		OpenFGAMode:        config.OpenFGAModeRestrict,
-		CORSAllowedOrigins: []string{"https://app.example.com"},
-		DebugTools:         false,
-		DevMode:            false,
+		OpenFGAMode:               config.OpenFGAModeRestrict,
+		CORSAllowedOrigins:        []string{"https://app.example.com"},
+		DebugTools:                false,
+		DevMode:                   false,
+		LoginMaxFailuresPerUserIP: 5,
+		LoginMaxFailuresPerUser:   20,
+		LoginMaxFailuresPerIP:     50,
+		LoginFailureWindow:        900,
 	}
 }
 
@@ -64,6 +68,14 @@ func TestLogSecurityPosture(t *testing.T) {
 			authConfigured: true,
 			wantLevel:      levelWARN,
 			wantContains:   []string{"SECURITY POSTURE", "authorization is BYPASSED", "OPENFGA_MODE=restrict"},
+		},
+		{
+			name:           "disabled login limit warns and names the variable",
+			mutate:         func(c *config.Config) { c.LoginMaxFailuresPerIP = 0 },
+			authConfigured: true,
+			wantLevel:      levelWARN,
+			wantContains:   []string{"failed-login throttling is switched off", "TOOLMESH_LOGIN_MAX_FAILURES_PER_IP"},
+			wantAbsent:     []string{"TOOLMESH_LOGIN_MAX_FAILURES_PER_USER"},
 		},
 		{
 			name:           "missing auth warns with remediation",

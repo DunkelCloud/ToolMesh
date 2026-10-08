@@ -163,6 +163,10 @@ For single-key setups, `TOOLMESH_API_KEY` still works as a fallback. The same `T
 
 Dynamic Client Registration is rate-limited to 5 registrations per hour per IP to prevent abuse.
 
+### Login Throttling
+
+Failed password logins are limited per account and per client address: by default 5 failures for one account from one address, 20 for one account from all addresses together, and 50 from one address across all accounts, each within 15 minutes. Beyond that the login answers `429` until the window has passed. Every failed login is logged at `WARN` and counted in `toolmesh_logins_total{result="failure"}`. Already issued tokens and API keys are not affected by a lockout. See [docs/configuration.md](docs/configuration.md#login-throttling) for the variables and the reverse-proxy requirement of the per-address limits.
+
 ## Authorization Mode
 
 `OPENFGA_MODE` controls whether OpenFGA authorization is enforced:
@@ -176,7 +180,7 @@ Start with `bypass` to get running quickly, then switch to `restrict` after boot
 
 ### Security posture at startup
 
-ToolMesh is secure-by-default: it ships with no individual default that relaxes a control silently. At boot it logs a single **security-posture summary** that lists every control still in a relaxed state (missing auth credential, authz bypass, open CORS, debug tools) together with how to harden it. In the default production posture these are logged at `WARN`; set `TOOLMESH_DEV=true` on a local-development machine to report the same facts once at `INFO` so the warnings don't become background noise. `TOOLMESH_DEV` changes only the log level of this summary — it never relaxes a setting on its own.
+ToolMesh is secure-by-default: it ships with no individual default that relaxes a control silently. At boot it logs a single **security-posture summary** that lists every control still in a relaxed state (missing auth credential, authz bypass, open CORS, debug tools, login limits switched off) together with how to harden it. In the default production posture these are logged at `WARN`; set `TOOLMESH_DEV=true` on a local-development machine to report the same facts once at `INFO` so the warnings don't become background noise. `TOOLMESH_DEV` changes only the log level of this summary — it never relaxes a setting on its own.
 
 ## Configuration
 

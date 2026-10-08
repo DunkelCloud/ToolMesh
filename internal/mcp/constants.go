@@ -51,6 +51,38 @@ const (
 	// Outcome / log field literals.
 	outcomeError = "error"
 	logKeyTool   = "tool"
+	logKeyRemote = "remote"
+	logKeyReason = "reason"
+
+	// maxLoggedValueLen bounds attacker-chosen values (such as a submitted
+	// username) before they are written to the log.
+	maxLoggedValueLen = 128
+
+	// generatedIDBytes is the amount of randomness in an identifier from
+	// generateID (client IDs, auth codes, access and refresh tokens).
+	generatedIDBytes = 32
+
+	// toolmesh_logins_total method labels recorded by the server.
+	loginMethodPassword     = "password" //nolint:gosec // metric label, not a credential
+	loginMethodOAuthCode    = "oauth_code"
+	loginMethodOAuthRefresh = "oauth_refresh"
+	loginMethodAPIKey       = "api_key"
+	loginMethodOAuthBearer  = "oauth_bearer" //nolint:gosec // metric label, not a credential
+
+	// Reasons reported in the log line of a failed authentication.
+	loginReasonInvalidCredentials    = "invalid_credentials" //nolint:gosec // log reason, not a credential
+	loginReasonThrottledPrefix       = "throttled_"          // + one of the auth.LoginScope constants
+	loginReasonPasswordLoginDisabled = "password_login_disabled"
+	loginReasonUnknownClient         = "unknown_client"
+	loginReasonInvalidRedirectURI    = "invalid_redirect_uri"
+	loginReasonUnknownCredential     = "unknown_credential"
+	loginReasonUnknownToken          = "unknown_token"
+	loginReasonExpiredToken          = "expired_token"
+
+	// Texts shown to the person at the login form or returned to the client.
+	msgInvalidCredentials     = "Invalid username or password."
+	descPasswordLoginDisabled = "password login is not configured on this server"
+	descUnknownClient         = "unknown client"
 
 	// OAuth 2.1 / authorization endpoint fields.
 	oauthClientID         = "client_id"
@@ -64,6 +96,7 @@ const (
 	oauthErrorDescription = "error_description"
 	oauthErrInvalidRedURI = "invalid_redirect_uri"
 	oauthErrServerError   = "server_error"
+	oauthErrAccessDenied  = "access_denied"
 	invalidGrantError     = "invalid_grant"
 	oauthErrInvalidReq    = "invalid_request"
 

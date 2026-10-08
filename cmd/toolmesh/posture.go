@@ -16,6 +16,7 @@ package main
 
 import (
 	"log/slog"
+	"strings"
 
 	"github.com/DunkelCloud/ToolMesh/internal/config"
 )
@@ -55,6 +56,12 @@ func logSecurityPosture(cfg *config.Config, authConfigured bool, logger *slog.Lo
 		relaxed = append(relaxed, relaxedControl{
 			summary:     "CORS reflects any origin — any website may call this instance from a browser",
 			remediation: "set TOOLMESH_CORS_ORIGINS to an explicit allowlist before exposing a browser-reachable deployment",
+		})
+	}
+	if off := cfg.LoginThrottleDisabled(); len(off) > 0 {
+		relaxed = append(relaxed, relaxedControl{
+			summary:     "failed-login throttling is switched off for: " + strings.Join(off, ", ") + " — password guessing at /authorize is not bounded in that dimension",
+			remediation: "unset the listed variables to restore the defaults, or set them to a positive limit",
 		})
 	}
 	if cfg.DebugTools {

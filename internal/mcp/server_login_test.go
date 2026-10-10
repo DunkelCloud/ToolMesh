@@ -17,6 +17,8 @@ package mcp
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -116,6 +118,12 @@ type loginTestServer struct {
 type loginTestOptions struct {
 	users   map[string]string // username -> password; nil means single-password mode
 	apiKeys []string          // plaintext keys for apikeys.yaml; nil means no file
+	// apiKeyDigests writes the keys as key_sha256 instead of as the bcrypt
+	// key_hash that files written for earlier versions have.
+	apiKeyDigests bool
+	// limiter bounds the bcrypt comparisons of users.yaml and apikeys.yaml;
+	// nil leaves them unbounded.
+	limiter *auth.CompareLimiter
 	// localThrottle leaves the process-local login throttle from NewServer in
 	// place, as on a deployment without Redis.
 	localThrottle bool
@@ -162,7 +170,7 @@ func newLoginTestServer(t *testing.T, cfg *config.Config, opts loginTestOptions)
 			t.Fatal(err)
 		}
 		var err error
-		if userStore, err = auth.NewUserStore(path); err != nil {
+		if userStore, err = auth.NewUserStore(path, opts.limiter); err != nil {
 			t.Fatalf("NewUserStore: %v", err)
 		}
 	}
@@ -170,18 +178,25 @@ func newLoginTestServer(t *testing.T, cfg *config.Config, opts loginTestOptions)
 	if opts.apiKeys != nil {
 		content := "keys:\n"
 		for i, key := range opts.apiKeys {
-			hash, err := bcrypt.GenerateFromPassword([]byte(key), bcrypt.MinCost)
-			if err != nil {
-				t.Fatal(err)
+			field, value := "key_hash", ""
+			if opts.apiKeyDigests {
+				sum := sha256.Sum256([]byte(key))
+				field, value = "key_sha256", hex.EncodeToString(sum[:])
+			} else {
+				hash, err := bcrypt.GenerateFromPassword([]byte(key), bcrypt.MinCost)
+				if err != nil {
+					t.Fatal(err)
+				}
+				value = string(hash)
 			}
-			content += fmt.Sprintf("  - key_hash: %q\n    user_id: key-user-%d\n    company_id: example\n    plan: pro\n    roles: [admin]\n", hash, i)
+			content += fmt.Sprintf("  - %s: %q\n    user_id: key-user-%d\n    company_id: example\n    plan: pro\n    roles: [admin]\n", field, value, i)
 		}
 		path := filepath.Join(dir, "apikeys.yaml")
 		if err := os.WriteFile(path, []byte(content), 0600); err != nil {
 			t.Fatal(err)
 		}
 		var err error
-		if apiKeys, err = auth.NewAPIKeyStore(path); err != nil {
+		if apiKeys, err = auth.NewAPIKeyStore(path, opts.limiter); err != nil {
 			t.Fatalf("NewAPIKeyStore: %v", err)
 		}
 	}
@@ -1011,7 +1026,9 @@ func (failingTokenStore) GetToken(context.Context, string) (*auth.TokenInfo, err
 }
 
 // When the token store itself fails, the credential was not judged: the
-// request is turned away, but that is a server error, not a failed login.
+// request is turned away, but that is a server error, not a failed login. It
+// is not answered 401 either, which would tell the client to throw its token
+// away.
 func TestAuthenticate_TokenStoreErrorIsNotALoginFailure(t *testing.T) {
 	cfg := loginTestConfig()
 	cfg.APIKey = testLoginAPIKey
@@ -1019,8 +1036,17 @@ func TestAuthenticate_TokenStoreErrorIsNotALoginFailure(t *testing.T) {
 	ts.srv.tokenStore = failingTokenStore{ts.srv.tokenStore}
 
 	w := ts.mcpCall("Bearer " + generateID())
-	if !strings.Contains(w.Body.String(), "Unauthorized") {
-		t.Errorf("request was not turned away: %s", w.Body.String())
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("status = %d, want 503", w.Code)
+	}
+	if got := w.Header().Get("Retry-After"); got != authUnavailableRetryAfter {
+		t.Errorf("Retry-After = %q, want %q", got, authUnavailableRetryAfter)
+	}
+	if got := w.Header().Get("WWW-Authenticate"); got != "" {
+		t.Errorf("WWW-Authenticate = %q on a 503, want none", got)
+	}
+	if !strings.Contains(w.Body.String(), msgAuthUnavailable) || strings.Contains(w.Body.String(), "Unauthorized") {
+		t.Errorf("body = %s, want %q", w.Body.String(), msgAuthUnavailable)
 	}
 	if apiKey, oauth := ts.bearerFailures(t); apiKey != 0 || oauth != 0 {
 		t.Errorf("failures: api_key=%v oauth_bearer=%v, want 0 and 0", apiKey, oauth)
@@ -1031,6 +1057,26 @@ func TestAuthenticate_TokenStoreErrorIsNotALoginFailure(t *testing.T) {
 	recs := ts.logs.lines(t, "token lookup failed")
 	if len(recs) != 1 || recs[0]["level"] != "ERROR" {
 		t.Errorf("want one ERROR line 'token lookup failed', got %v", recs)
+	}
+
+	// An API key is decided before the token store is asked, so it keeps
+	// working while the store is down.
+	if w := ts.mcpCall("Bearer " + testLoginAPIKey); w.Code != http.StatusOK {
+		t.Errorf("valid API key while the token store is down: status = %d, want 200", w.Code)
+	}
+	if n := len(ts.logs.lines(t, "token lookup failed")); n != 1 {
+		t.Errorf("the token store was asked about a valid API key (%d lookups failed, want still 1)", n)
+	}
+
+	// The other authenticated endpoints answer a store failure the same way.
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/files/upload", http.NoBody)
+	req.Header.Set("Authorization", "Bearer "+generateID())
+	rec := httptest.NewRecorder()
+	if ts.srv.requireAuth(rec, req) {
+		t.Error("requireAuth let a request through whose credential could not be checked")
+	}
+	if rec.Code != http.StatusServiceUnavailable || rec.Header().Get("Retry-After") != authUnavailableRetryAfter {
+		t.Errorf("requireAuth: status = %d, Retry-After = %q; want 503 and %q", rec.Code, rec.Header().Get("Retry-After"), authUnavailableRetryAfter)
 	}
 }
 

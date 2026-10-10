@@ -144,20 +144,33 @@ For single-user setups, `TOOLMESH_AUTH_PASSWORD` still works as a fallback. Conf
 
 ### API Keys (Programmatic Access)
 
-Define API keys in `config/apikeys.yaml` with bcrypt-hashed keys:
+Define API keys in `config/apikeys.yaml`. Each entry names its key by the SHA-256 of the key:
 
 ```yaml
 keys:
-  - key_hash: "$2a$10$..."
+  - key_sha256: "<SHA-256 of the key, 64 hex characters>"
     user_id: claude-code-user
     company_id: dunkelcloud
     plan: pro
     roles: [tool-executor]
 ```
 
+Generate a key and its `key_sha256`:
+
+```bash
+KEY="tm_$(openssl rand -hex 32)"
+printf '%s' "$KEY" | sha256sum | cut -d' ' -f1
+```
+
 Each key maps to a distinct user identity with its own plan and roles, which flow through to OpenFGA authorization.
 
+Entries with a bcrypt `key_hash`, as files written for earlier versions have them, keep working without any change. Until its key has been used once after startup, such an entry costs a bcrypt comparison for every bearer credential that nothing else recognizes; `key_sha256` is looked up directly and is meant for randomly generated keys. See [docs/configuration.md](docs/configuration.md#api-keys) for the details and for how the two forms differ.
+
 For single-key setups, `TOOLMESH_API_KEY` still works as a fallback. The same `TOOLMESH_AUTH_USER`, `TOOLMESH_AUTH_PLAN`, and `TOOLMESH_AUTH_ROLES` variables control the identity.
+
+### Unauthenticated Requests
+
+A request to `/mcp` without a valid credential is answered `401` with a `WWW-Authenticate: Bearer` challenge that carries `resource_metadata`, as the MCP authorization specification asks. MCP clients start the OAuth flow, or refresh an expired token, on that status. Such requests are logged at `INFO` and counted in `toolmesh_logins_total{method="anonymous"}`. See [docs/configuration.md](docs/configuration.md#unauthenticated-requests).
 
 ### DCR Rate Limiting
 
@@ -166,6 +179,8 @@ Dynamic Client Registration is rate-limited to 5 registrations per hour per IP t
 ### Login Throttling
 
 Failed password logins are limited per account and per client address: by default 5 failures for one account from one address, 20 for one account from all addresses together, and 50 from one address across all accounts, each within 15 minutes. Beyond that the login answers `429` until the window has passed. Every failed login is logged at `WARN` and counted in `toolmesh_logins_total{result="failure"}`. Already issued tokens and API keys are not affected by a lockout. See [docs/configuration.md](docs/configuration.md#login-throttling) for the variables and the reverse-proxy requirement of the per-address limits.
+
+The number of bcrypt comparisons that run at the same time is bounded for the whole process (`TOOLMESH_BCRYPT_MAX_CONCURRENT`, default: half of the available CPUs), so that password logins cannot take the CPU away from everything else. See [docs/configuration.md](docs/configuration.md#password-hash-comparisons).
 
 ## Authorization Mode
 

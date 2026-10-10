@@ -1,5 +1,18 @@
+# API keys. Each entry names its key in one of two ways:
+#
+#   key_sha256  SHA-256 of the key, 64 hex characters. Looked up directly, no
+#               bcrypt comparison. For randomly generated keys:
+#                 KEY="tm_$(openssl rand -hex 32)"
+#                 printf '%s' "$KEY" | sha256sum | cut -d' ' -f1
+#
+#   key_hash    bcrypt hash of the key, as in files written for earlier
+#               versions. Still works unchanged; costs one bcrypt comparison
+#               until the key has been used once after startup:
+#                 htpasswd -nbBC 10 "" "tk_live_..." | cut -d: -f2
+#
+# See docs/configuration.md ("API Keys").
 keys:
-  - key_hash: "$2a$10$..."  # generate with: htpasswd -nbBC 10 "" "tk_live_..." | cut -d: -f2
+  - key_sha256: "<SHA-256 of the key, 64 hex characters>"
     user_id: my-agent
     company_id: my-company
     plan: pro

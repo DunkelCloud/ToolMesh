@@ -336,6 +336,10 @@ func TestServer_MCP_Unauthorized(t *testing.T) {
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
 
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusUnauthorized)
+	}
+
 	var resp map[string]any
 	json.NewDecoder(w.Body).Decode(&resp)
 

@@ -151,7 +151,10 @@ func TestMCP_Notification_Returns202(t *testing.T) {
 func TestAuthenticate_Anonymous(t *testing.T) {
 	srv, _ := newTestServer(t, &config.Config{})
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
-	uc := srv.authenticate(req)
+	uc, err := srv.authenticate(req)
+	if err != nil {
+		t.Fatalf("authenticate: %v", err)
+	}
 	if uc.Authenticated {
 		t.Error("expected Authenticated=false for anonymous")
 	}
@@ -164,14 +167,20 @@ func TestAuthenticate_APIKey_Legacy(t *testing.T) {
 	srv, _ := newTestServer(t, &config.Config{APIKey: "my-secret"})
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
 	req.Header.Set("Authorization", "Bearer my-secret")
-	uc := srv.authenticate(req)
+	uc, err := srv.authenticate(req)
+	if err != nil {
+		t.Fatalf("authenticate: %v", err)
+	}
 	if !uc.Authenticated {
 		t.Error("expected Authenticated=true for matching API key")
 	}
 
 	req2 := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
 	req2.Header.Set("Authorization", "Bearer wrong")
-	uc2 := srv.authenticate(req2)
+	uc2, err := srv.authenticate(req2)
+	if err != nil {
+		t.Fatalf("authenticate: %v", err)
+	}
 	if uc2.Authenticated {
 		t.Error("expected Authenticated=false for wrong API key")
 	}

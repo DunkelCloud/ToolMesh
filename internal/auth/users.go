@@ -15,6 +15,7 @@
 package auth
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"fmt"
@@ -51,10 +52,14 @@ type UserStore struct {
 	// compare is bcrypt.CompareHashAndPassword; a field so tests can observe
 	// which hash a login attempt was checked against.
 	compare func(hashedPassword, password []byte) error
+
+	limiter *CompareLimiter
 }
 
-// NewUserStore loads users from a YAML file. Returns nil if the file doesn't exist.
-func NewUserStore(path string) (*UserStore, error) {
+// NewUserStore loads users from a YAML file. Returns nil if the file doesn't
+// exist. limiter bounds the bcrypt comparisons of login attempts, for known
+// and unknown usernames alike; nil leaves them unbounded.
+func NewUserStore(path string, limiter *CompareLimiter) (*UserStore, error) {
 	data, err := os.ReadFile(path) //nolint:gosec // path from trusted config
 	if os.IsNotExist(err) {
 		return nil, nil
@@ -77,6 +82,7 @@ func NewUserStore(path string) (*UserStore, error) {
 		users:     make(map[string]*UserEntry, len(cfg.Users)),
 		dummyHash: dummyHash,
 		compare:   bcrypt.CompareHashAndPassword,
+		limiter:   limiter,
 	}
 	for i := range cfg.Users {
 		store.users[cfg.Users[i].Username] = &cfg.Users[i]
@@ -146,17 +152,25 @@ func newDummyHash(cost int) ([]byte, error) {
 // It runs exactly one bcrypt comparison whether or not the username exists. An
 // entry whose password_hash cannot be used is treated like an unknown user,
 // since comparing against it would return without doing any work.
-func (s *UserStore) Authenticate(username, password string) *UserEntry {
+//
+// It returns (nil, nil) for a wrong password or an unknown username, and an
+// error if the comparison could not be run (see CompareLimiter.Do). In that
+// case the password was not checked, and the attempt is not a failed login.
+func (s *UserStore) Authenticate(ctx context.Context, username, password string) (*UserEntry, error) {
 	u, known := s.users[username]
 	usable := known && usableHash(u.PasswordHash)
 	hash := s.dummyHash
 	if usable {
 		hash = []byte(u.PasswordHash)
 	}
-	if err := s.compare(hash, []byte(password)); err != nil || !usable {
-		return nil
+	var mismatch error
+	if err := s.limiter.Do(ctx, func() { mismatch = s.compare(hash, []byte(password)) }); err != nil {
+		return nil, err
 	}
-	return u
+	if mismatch != nil || !usable {
+		return nil, nil
+	}
+	return u, nil
 }
 
 // bcryptSalt decodes the salt part of a bcrypt hash, which uses its own
@@ -176,53 +190,4 @@ func usableHash(hash string) bool {
 	}
 	_, err := bcryptSalt.DecodeString(hash[saltStart : saltStart+saltLen])
 	return err == nil
-}
-
-// APIKeyEntry represents an API key from apikeys.yaml.
-type APIKeyEntry struct {
-	KeyHash   string   `yaml:"key_hash"`
-	UserID    string   `yaml:"user_id"`
-	CompanyID string   `yaml:"company_id"`
-	Plan      string   `yaml:"plan"`
-	Roles     []string `yaml:"roles"`
-	CallerID  string   `yaml:"caller_id"`
-}
-
-// APIKeysConfig is the top-level structure of apikeys.yaml.
-type APIKeysConfig struct {
-	Keys []APIKeyEntry `yaml:"keys"`
-}
-
-// APIKeyStore manages API key authentication from apikeys.yaml.
-type APIKeyStore struct {
-	keys []APIKeyEntry
-}
-
-// NewAPIKeyStore loads API keys from a YAML file. Returns nil if the file doesn't exist.
-func NewAPIKeyStore(path string) (*APIKeyStore, error) {
-	data, err := os.ReadFile(path) //nolint:gosec // path from trusted config
-	if os.IsNotExist(err) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("read apikeys config: %w", err)
-	}
-
-	var cfg APIKeysConfig
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		return nil, fmt.Errorf("parse apikeys config: %w", err)
-	}
-
-	return &APIKeyStore{keys: cfg.Keys}, nil
-}
-
-// Match finds the API key entry that matches the given plaintext key.
-// Iterates over all keys and compares with bcrypt.
-func (s *APIKeyStore) Match(key string) *APIKeyEntry {
-	for i := range s.keys {
-		if err := bcrypt.CompareHashAndPassword([]byte(s.keys[i].KeyHash), []byte(key)); err == nil {
-			return &s.keys[i]
-		}
-	}
-	return nil
 }

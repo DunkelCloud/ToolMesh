@@ -325,14 +325,16 @@ func TestMCP_AnonymousRequestIsLoggedAndCounted(t *testing.T) {
 	if got := anonymous(); got != 3 {
 		t.Errorf("anonymous failures = %v after an upload without a credential, want 3", got)
 	}
+	// Only rejections are counted under this method.
 	if got := ts.loginCount(t, loginMethodAnonymous, "success"); got != 0 {
-		t.Errorf("anonymous successes = %v on a server that requires authentication, want 0", got)
+		t.Errorf("anonymous successes = %v, want 0", got)
 	}
 }
 
-// Where no authentication is configured, requests are served anonymously. That
-// is counted too, as what it is.
-func TestMCP_OpenServerCountsAnonymousRequestsAsServed(t *testing.T) {
+// The count is of requests that were turned away. A server without any
+// authentication configured turns nobody away, so it counts and logs nothing
+// here, whatever the request carries.
+func TestMCP_ServerWithoutAuthenticationCountsNoAnonymousFailure(t *testing.T) {
 	cfg := loginTestConfig()
 	cfg.AuthPassword = ""
 	ts := newLoginTestServer(t, cfg, loginTestOptions{})
@@ -343,18 +345,17 @@ func TestMCP_OpenServerCountsAnonymousRequestsAsServed(t *testing.T) {
 			t.Errorf("authorization %q: status = %d, WWW-Authenticate = %q; want 200 and no challenge", authorization, w.Code, w.Header().Get(testHeaderChallenge))
 		}
 	}
-	if got := ts.loginCount(t, loginMethodAnonymous, "success"); got != 2 {
-		t.Errorf("anonymous successes = %v, want 2", got)
-	}
-	if got := ts.loginCount(t, loginMethodAnonymous, "failure"); got != 0 {
-		t.Errorf("anonymous failures = %v, want 0", got)
+	for _, result := range []string{"success", "failure"} {
+		if got := ts.loginCount(t, loginMethodAnonymous, result); got != 0 {
+			t.Errorf("anonymous %s = %v, want 0", result, got)
+		}
 	}
 	if n := len(ts.logs.lines(t, testMsgMCPRejected)); n != 0 {
 		t.Errorf("%d rejection lines on a server that turns nobody away", n)
 	}
 }
 
-// What S-04 is about: a request must not be able to make the server run
+// A request must not be able to make the server run
 // bcrypt unless a comparison is the only way left to tell. With every
 // comparison slot taken, nothing that needs bcrypt can be answered, so
 // whatever is answered here was decided without it.

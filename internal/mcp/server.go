@@ -660,7 +660,6 @@ func (s *Server) authenticate(r *http.Request) (*userctx.UserContext, error) {
 
 	// No auth configured — allow anonymous (L-4: Authenticated=false for anonymous).
 	if !s.authRequired() {
-		s.metrics.RecordLogin(loginMethodAnonymous, "success")
 		return &userctx.UserContext{
 			UserID:        userAnonymous,
 			CompanyID:     userDefault,

@@ -78,8 +78,7 @@ What counts as a `failure`:
 - `anonymous` — a request without a bearer credential that was turned away
   with `401`. This is what an MCP client sends before it has a token, so a
   small number accompanies every new connection; it is also what a scanner
-  sends. `success` is counted only on a server that has no authentication
-  configured at all, for every request it serves that way.
+  sends. This method is recorded with `result="failure"` only.
 
 A request whose credential could not be checked — the token store failed, or
 no [password hash comparison](configuration.md#password-hash-comparisons)

@@ -485,10 +485,18 @@ func TestServer_OAuthFlow(t *testing.T) {
 func TestServer_Authorize_WrongPassword(t *testing.T) {
 	_, mux, _ := newTestServerWithRedis(t, &config.Config{AuthPassword: "correct"})
 
+	regReq := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/register", strings.NewReader(testRegisterBodyExampleCB))
+	regReq.Header.Set("Content-Type", "application/json")
+	regW := httptest.NewRecorder()
+	mux.ServeHTTP(regW, regReq)
+	var regResp map[string]any
+	json.NewDecoder(regW.Body).Decode(&regResp)
+	clientID := regResp[oauthClientID].(string)
+
 	form := url.Values{
 		testFormPassword:   {"wrong"},
-		oauthClientID:      {"c1"},
-		oauthRedirectURI:   {"https://example.com/callback"},
+		oauthClientID:      {clientID},
+		oauthRedirectURI:   {"https://example.com/cb"},
 		oauthState:         {"s1"},
 		oauthCodeChallenge: {"dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"},
 	}
@@ -497,9 +505,9 @@ func TestServer_Authorize_WrongPassword(t *testing.T) {
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
 
-	// Should re-render login form (200 with HTML), not redirect
-	if w.Code == http.StatusFound {
-		t.Error("should not redirect with wrong password")
+	// Should re-render the login form with 401, not redirect
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusUnauthorized)
 	}
 	if !strings.Contains(w.Body.String(), "ToolMesh") {
 		t.Error("expected login form HTML in response")
@@ -507,7 +515,7 @@ func TestServer_Authorize_WrongPassword(t *testing.T) {
 }
 
 func TestServer_Token_InvalidGrant(t *testing.T) {
-	_, mux, _ := newTestServerWithRedis(t, &config.Config{})
+	_, mux, _ := newTestServerWithRedis(t, &config.Config{AuthPassword: "pw"})
 
 	form := url.Values{
 		oauthGrantType: {oauthGrantAuthCode},

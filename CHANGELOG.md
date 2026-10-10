@@ -11,6 +11,49 @@ for the full narrative and details.
 
 ## [Unreleased]
 
+**Behavior change:** the password login at `/authorize` answers differently in
+four cases. A wrong password re-renders the login form with `401` instead of
+`200`. A login refused by the new failed-login limits gets `429` with
+`Retry-After`. A request naming an unregistered client or redirect URI is
+rejected with `400` before the password is looked at; it used to get the login
+form back when the password was wrong. And where no password is configured
+(neither `TOOLMESH_AUTH_PASSWORD` nor `users.yaml`), `/authorize` answers `403`
+(`access_denied`) instead of showing a login form. A reverse proxy in front of
+ToolMesh should pass `401`, `403` and `429` bodies on `/authorize` through
+unchanged. In
+`toolmesh_logins_total`, the `failure` series for `oauth_bearer` and `api_key`
+never moved before and now count rejected bearer credentials — expect a small
+baseline from clients presenting an access token that has just expired — and
+there is a new `method="password"`.
+
+### Security
+
+- Failed password logins are now limited: per account from one client address
+  (default 5), per account across all addresses (20), and per client address
+  across all accounts (50), each within 15 minutes
+  (`TOOLMESH_LOGIN_MAX_FAILURES_PER_USER_IP`, `…_PER_USER`, `…_PER_IP`,
+  `TOOLMESH_LOGIN_FAILURE_WINDOW`). Until now the login could be tried without
+  bound. Counters are kept in Redis when it is connected and in process memory
+  otherwise; a Redis error falls back to process memory with a warning instead
+  of lifting the limits. A limit set to `0` is reported in the startup
+  security-posture summary. See `docs/configuration.md`, "Login Throttling".
+- The OAuth client and its redirect URI are validated before the password, so
+  the password check is no longer reachable without a registered client.
+- An unknown username now costs the same bcrypt comparison as a wrong password
+  and is locked out the same way, so neither response time nor lockout shows
+  which usernames exist.
+- Every failed login is logged at `WARN` (`login failed`, with the submitted
+  username, the client address and a reason; never the password) and counted
+  in `toolmesh_logins_total{method="password",result="failure"}`. A rejected
+  bearer credential is logged and counted once, as an `oauth_bearer` or an
+  `api_key` failure.
+- Password login is refused when no password is configured (neither
+  `TOOLMESH_AUTH_PASSWORD` nor `users.yaml`). On such a deployment
+  authorization codes are not exchanged and access and refresh tokens are not
+  honored either, including ones still in the token store from an earlier
+  configuration. The single-password comparison no longer depends on the
+  length of the configured password.
+
 ## [0.4.1] - 2026-09-24
 
 **Behavior change:** two checks that 0.4.0 did not perform now reject calls it

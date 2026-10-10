@@ -67,7 +67,7 @@ func New(opts Options) *Registry {
 	logins := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: metricsNamespace,
 		Name:      "logins_total",
-		Help:      "Authentication events. method=oauth_code|oauth_refresh|oauth_bearer|api_key, result=success|failure.",
+		Help:      "Authentication events. method=password|oauth_code|oauth_refresh|oauth_bearer|api_key, result=success|failure.",
 	}, []string{"method", "result"})
 
 	toolCalls := prometheus.NewCounterVec(prometheus.CounterOpts{
@@ -89,7 +89,7 @@ func New(opts Options) *Registry {
 	// returns informative output (HELP/TYPE plus zero counters) before the
 	// first authentication event. The set of (method, result) values is
 	// closed and small enough that this does not bloat cardinality.
-	for _, method := range []string{"oauth_code", "oauth_refresh", "oauth_bearer", "api_key"} {
+	for _, method := range []string{"password", "oauth_code", "oauth_refresh", "oauth_bearer", "api_key"} {
 		for _, result := range []string{"success", "failure"} {
 			logins.WithLabelValues(method, result)
 		}
@@ -105,8 +105,8 @@ func New(opts Options) *Registry {
 }
 
 // RecordLogin increments the logins counter for the given method and result.
-// Callers should pass one of: "oauth_code", "oauth_refresh", "oauth_bearer",
-// "api_key" for method, and "success" or "failure" for result.
+// Callers should pass one of: "password", "oauth_code", "oauth_refresh",
+// "oauth_bearer", "api_key" for method, and "success" or "failure" for result.
 //
 // Safe to call on a nil receiver.
 func (r *Registry) RecordLogin(method, result string) {

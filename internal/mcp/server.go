@@ -30,6 +30,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -40,6 +41,7 @@ import (
 	"github.com/DunkelCloud/ToolMesh/internal/metrics"
 	"github.com/DunkelCloud/ToolMesh/internal/userctx"
 	"github.com/DunkelCloud/ToolMesh/internal/version"
+	"github.com/redis/go-redis/v9"
 )
 
 // Server is the ToolMesh MCP server that handles Streamable HTTP transport,
@@ -52,6 +54,7 @@ type Server struct {
 	userStore     *auth.UserStore
 	apiKeys       *auth.APIKeyStore
 	rateLimiter   *auth.DCRRateLimiter
+	loginThrottle *auth.LoginThrottle
 	callerClasses *config.CallerClasses
 	metrics       *metrics.Registry
 	blobStore     *blob.Store
@@ -80,8 +83,25 @@ func NewServer(handler *Handler, cfg *config.Config, logger *slog.Logger, tokenS
 		userStore:     userStore,
 		apiKeys:       apiKeys,
 		rateLimiter:   rateLimiter,
+		loginThrottle: auth.NewLoginThrottle(loginThrottleConfig(cfg), nil, logger),
 		callerClasses: callerClasses,
 		metrics:       m,
+	}
+}
+
+// UseRedisLoginThrottle moves the failed-login counters from process memory,
+// where NewServer keeps them, to Redis, so the limits hold across replicas and
+// restarts. Call it before the server starts handling requests.
+func (s *Server) UseRedisLoginThrottle(rdb *redis.Client) {
+	s.loginThrottle = auth.NewLoginThrottle(loginThrottleConfig(s.cfg), rdb, s.logger)
+}
+
+func loginThrottleConfig(cfg *config.Config) auth.LoginThrottleConfig {
+	return auth.LoginThrottleConfig{
+		MaxFailuresPerUserIP: cfg.LoginMaxFailuresPerUserIP,
+		MaxFailuresPerUser:   cfg.LoginMaxFailuresPerUser,
+		MaxFailuresPerIP:     cfg.LoginMaxFailuresPerIP,
+		Window:               time.Duration(cfg.LoginFailureWindow) * time.Second,
 	}
 }
 
@@ -520,14 +540,19 @@ func toolResultToMCP(result *backend.ToolResult) map[string]any {
 func (s *Server) authenticate(r *http.Request) *userctx.UserContext {
 	bearer := extractBearer(r)
 
+	// Which methods the bearer was checked against, so that a credential no
+	// method accepts is counted as a failure of one that could have.
+	var checkedAPIKey, checkedOAuth, expiredToken, storeFailed bool
+
 	// 1. API-Key Check (from apikeys.yaml — bcrypt hashed)
 	if bearer != "" && s.apiKeys != nil {
+		checkedAPIKey = true
 		if entry := s.apiKeys.Match(bearer); entry != nil {
 			callerID := entry.CallerID
 			if callerID == "" {
 				callerID = entry.UserID
 			}
-			s.metrics.RecordLogin("api_key", "success")
+			s.metrics.RecordLogin(loginMethodAPIKey, "success")
 			return &userctx.UserContext{
 				UserID:        entry.UserID,
 				CompanyID:     entry.CompanyID,
@@ -543,8 +568,9 @@ func (s *Server) authenticate(r *http.Request) *userctx.UserContext {
 
 	// 2. Legacy single API key (env var fallback)
 	if s.cfg.APIKey != "" && bearer != "" && s.apiKeys == nil {
+		checkedAPIKey = true
 		if subtle.ConstantTimeCompare([]byte(bearer), []byte(s.cfg.APIKey)) == 1 {
-			s.metrics.RecordLogin("api_key", "success")
+			s.metrics.RecordLogin(loginMethodAPIKey, "success")
 			return &userctx.UserContext{
 				UserID:        s.cfg.AuthUser,
 				CompanyID:     userDefault,
@@ -557,15 +583,19 @@ func (s *Server) authenticate(r *http.Request) *userctx.UserContext {
 		}
 	}
 
-	// 3. OAuth Bearer Token (from Redis)
-	if bearer != "" && s.tokenStore != nil {
+	// 3. OAuth Bearer Token (from Redis). Access tokens come out of the
+	// password login and are honored only where there is one: a token still in
+	// the store from a time when the configuration was different is not a
+	// credential anymore.
+	if bearer != "" && s.tokenStore != nil && s.passwordLoginConfigured() {
 		ti, err := s.tokenStore.GetToken(r.Context(), bearer)
-		if err == nil && time.Now().Before(ti.ExpiresAt) {
+		switch {
+		case err == nil && time.Now().Before(ti.ExpiresAt):
 			callerID := ti.CallerID
 			if callerID == "" {
 				callerID = ti.ClientID
 			}
-			s.metrics.RecordLogin("oauth_bearer", "success")
+			s.metrics.RecordLogin(loginMethodOAuthBearer, "success")
 			return &userctx.UserContext{
 				UserID:        ti.UserID,
 				CompanyID:     ti.CompanyID,
@@ -576,6 +606,16 @@ func (s *Server) authenticate(r *http.Request) *userctx.UserContext {
 				CallerName:    ti.CallerName,
 				CallerClass:   s.callerClasses.Resolve(callerID),
 			}
+		case err == nil:
+			checkedOAuth = true
+			expiredToken = true
+		case errors.Is(err, auth.ErrNotFound):
+			checkedOAuth = true
+		default:
+			// The store failed, not the credential: logged, but not counted
+			// as a login failure.
+			storeFailed = true
+			s.logger.ErrorContext(r.Context(), "token lookup failed", outcomeError, err)
 		}
 	}
 
@@ -592,12 +632,103 @@ func (s *Server) authenticate(r *http.Request) *userctx.UserContext {
 		}
 	}
 
+	// A credential was presented and nothing accepted it. A request without
+	// one is anonymous, not a failed login.
+	if bearer != "" && !storeFailed {
+		s.bearerRejected(r, bearer, checkedAPIKey, checkedOAuth, expiredToken)
+	}
+
 	return &userctx.UserContext{
 		UserID:        userAnonymous,
 		Authenticated: false,
 		CallerID:      userAnonymous,
 		CallerClass:   "untrusted",
 	}
+}
+
+// bearerRejected records a bearer credential that no method accepted: one
+// failure on the login counter and one log line. The credential itself is
+// never logged.
+//
+// A rejected credential does not say which method the caller meant, so it is
+// attributed by what it looks like. A token that was found but has expired,
+// or a value with the shape of an access token issued here, counts as a
+// failed oauth_bearer — an expired token that the store has already dropped
+// looks exactly like that, which makes this the routine case and an INFO
+// line. Anything else counts as a failed api_key and is logged at WARN. If
+// only one of the two methods comes into question — no API key is configured,
+// or access tokens are not honored because there is no password login — the
+// failure goes to that one.
+func (s *Server) bearerRejected(r *http.Request, bearer string, checkedAPIKey, checkedOAuth, expiredToken bool) {
+	tokenShaped := expiredToken || isIssuedTokenShape(bearer)
+
+	var method string
+	switch {
+	case checkedOAuth && (tokenShaped || !checkedAPIKey):
+		method = loginMethodOAuthBearer
+	case checkedAPIKey:
+		method = loginMethodAPIKey
+	default:
+		return // no method was in a position to accept it
+	}
+	s.metrics.RecordLogin(method, "failure")
+
+	level, reason := slog.LevelWarn, loginReasonUnknownCredential
+	switch {
+	case expiredToken:
+		level, reason = slog.LevelInfo, loginReasonExpiredToken
+	case tokenShaped && checkedOAuth:
+		level, reason = slog.LevelInfo, loginReasonUnknownToken
+	}
+	s.logger.Log(r.Context(), level, "bearer authentication failed",
+		"method", method, logKeyRemote, clientIP(r), logKeyReason, reason)
+}
+
+// isIssuedTokenShape reports whether v has the form generateID gives the
+// access tokens issued here: 32 random bytes in lowercase hex.
+func isIssuedTokenShape(v string) bool {
+	if len(v) != 2*generatedIDBytes {
+		return false
+	}
+	for i := 0; i < len(v); i++ {
+		if c := v[i]; (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+// loginFailed records a failed password login at /authorize: one WARN line
+// and one failure on the login counter. The password is not a parameter, so
+// it cannot end up in the log.
+func (s *Server) loginFailed(r *http.Request, username, reason string) {
+	s.metrics.RecordLogin(loginMethodPassword, "failure")
+	s.loginRejected(r, username, reason)
+}
+
+// loginRejected logs a password login that was turned away. On its own it is
+// for requests rejected before any credential was looked at, which are not
+// login failures in the metric's sense.
+func (s *Server) loginRejected(r *http.Request, username, reason string) {
+	s.logger.WarnContext(r.Context(), "login failed",
+		"username", truncateForLog(username), logKeyRemote, clientIP(r), logKeyReason, reason)
+}
+
+// tokenGrantRefused records a token request on a server that has no password
+// login, where no grant can be valid: one WARN line and one failure for the
+// grant's method.
+func (s *Server) tokenGrantRefused(r *http.Request, method string) {
+	s.metrics.RecordLogin(method, "failure")
+	s.logger.WarnContext(r.Context(), "token grant refused",
+		"method", method, logKeyRemote, clientIP(r), logKeyReason, loginReasonPasswordLoginDisabled)
+}
+
+// truncateForLog bounds an attacker-chosen value before it is logged.
+func truncateForLog(v string) string {
+	if len(v) <= maxLoggedValueLen {
+		return v
+	}
+	return strings.ToValidUTF8(v[:maxLoggedValueLen], "") + "…"
 }
 
 func extractBearer(r *http.Request) string {
@@ -744,7 +875,41 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// passwordLoginConfigured reports whether a password login can succeed at all:
+// either users.yaml is loaded or a single password is set. Without one — an
+// API-key-only deployment, say — the authorization endpoint has nothing to
+// check a password against and must refuse instead of comparing with an empty
+// value. The same goes for what follows from a login: authorization codes are
+// not exchanged, and access and refresh tokens are not honored.
+func (s *Server) passwordLoginConfigured() bool {
+	return s.userStore != nil || s.cfg.AuthPassword != ""
+}
+
+// validateClientRedirect checks that clientID is a registered client and
+// redirectURI is one of its redirect URIs. It returns the reason for a
+// rejection, or "" when the pair is valid.
+func (s *Server) validateClientRedirect(ctx context.Context, clientID, redirectURI string) string {
+	if s.tokenStore == nil {
+		return ""
+	}
+	client, err := s.tokenStore.GetClient(ctx, clientID)
+	if err != nil {
+		return loginReasonUnknownClient
+	}
+	for _, uri := range client.RedirectURIs {
+		if uri == redirectURI {
+			return ""
+		}
+	}
+	return loginReasonInvalidRedirectURI
+}
+
 func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
 	if r.Method == http.MethodGet {
 		clientID := r.URL.Query().Get(oauthClientID)
 		redirectURI := r.URL.Query().Get(oauthRedirectURI)
@@ -764,128 +929,177 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Validate redirect_uri against registered client before rendering login form
-		if s.tokenStore != nil {
-			client, err := s.tokenStore.GetClient(r.Context(), clientID)
-			if err != nil {
-				writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: oauthErrInvalidReq, oauthErrorDescription: "unknown client"})
-				return
-			}
-			uriValid := false
-			for _, uri := range client.RedirectURIs {
-				if uri == redirectURI {
-					uriValid = true
-					break
-				}
-			}
-			if !uriValid {
-				writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: oauthErrInvalidRedURI})
-				return
-			}
+		switch s.validateClientRedirect(r.Context(), clientID, redirectURI) {
+		case loginReasonUnknownClient:
+			writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: oauthErrInvalidReq, oauthErrorDescription: descUnknownClient})
+			return
+		case loginReasonInvalidRedirectURI:
+			writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: oauthErrInvalidRedURI})
+			return
 		}
-
-		s.renderLoginForm(w, clientID, redirectURI, state, codeChallenge, scope)
-		return
-	}
-
-	if r.Method == http.MethodPost {
-		r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1 MB limit
-		if err := r.ParseForm(); err != nil {
-			http.Error(w, "Bad request", http.StatusBadRequest)
+		if !s.passwordLoginConfigured() {
+			writeJSON(w, http.StatusForbidden, map[string]string{outcomeError: oauthErrAccessDenied, oauthErrorDescription: descPasswordLoginDisabled})
 			return
 		}
 
-		username := r.FormValue("username")
-		password := r.FormValue("password")
-		clientID := r.FormValue(oauthClientID)
-		redirectURI := r.FormValue(oauthRedirectURI)
-		state := r.FormValue(oauthState)
-		codeChallenge := r.FormValue(oauthCodeChallenge)
-		scope := r.FormValue(oauthScope)
-
-		// PKCE is mandatory (OAuth 2.1)
-		if codeChallenge == "" {
-			writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: oauthErrInvalidReq, oauthErrorDescription: "code_challenge is required (PKCE)"})
-			return
-		}
-
-		// Authenticate user
-		var userID, companyID, plan string
-		var roles []string
-
-		if s.userStore != nil {
-			// Multi-user mode (users.yaml)
-			user := s.userStore.Authenticate(username, password)
-			if user == nil {
-				s.renderLoginForm(w, clientID, redirectURI, state, codeChallenge, scope)
-				return
-			}
-			userID = user.Username
-			companyID = user.Company
-			plan = user.Plan
-			roles = user.Roles
-		} else {
-			// Legacy single-password mode
-			if subtle.ConstantTimeCompare([]byte(password), []byte(s.cfg.AuthPassword)) != 1 {
-				s.renderLoginForm(w, clientID, redirectURI, state, codeChallenge, scope)
-				return
-			}
-			userID = s.cfg.AuthUser
-			companyID = "default"
-			plan = s.cfg.AuthPlan
-			roles = s.cfg.AuthRolesList()
-		}
-
-		// Validate redirect_uri against registered client
-		if s.tokenStore != nil {
-			client, err := s.tokenStore.GetClient(r.Context(), clientID)
-			if err != nil {
-				writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: oauthErrInvalidRedURI, oauthErrorDescription: "unknown client"})
-				return
-			}
-			uriValid := false
-			for _, uri := range client.RedirectURIs {
-				if uri == redirectURI {
-					uriValid = true
-					break
-				}
-			}
-			if !uriValid {
-				writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: oauthErrInvalidRedURI})
-				return
-			}
-		}
-
-		code := generateID()
-		ac := &auth.AuthCode{
-			Code:          code,
-			ClientID:      clientID,
-			RedirectURI:   redirectURI,
-			CodeChallenge: codeChallenge,
-			Scope:         scope,
-			UserID:        userID,
-			CompanyID:     companyID,
-			Plan:          plan,
-			Roles:         roles,
-			ExpiresAt:     time.Now().Add(5 * time.Minute),
-		}
-
-		if s.tokenStore != nil {
-			if err := s.tokenStore.SaveAuthCode(r.Context(), ac); err != nil {
-				s.logger.ErrorContext(r.Context(), "failed to save auth code", outcomeError, err)
-				http.Error(w, "Internal server error", http.StatusInternalServerError)
-				return
-			}
-		}
-
-		sep := "?"
-		if strings.Contains(redirectURI, "?") {
-			sep = "&"
-		}
-		http.Redirect(w, r, fmt.Sprintf("%s%scode=%s&state=%s", redirectURI, sep, url.QueryEscape(code), url.QueryEscape(state)), http.StatusFound)
+		s.renderLoginForm(w, http.StatusOK, loginForm{ClientID: clientID, RedirectURI: redirectURI, State: state, CodeChallenge: codeChallenge, Scope: scope})
 		return
 	}
 
-	http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1 MB limit
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "Bad request", http.StatusBadRequest)
+		return
+	}
+
+	username := r.FormValue("username")
+	password := r.FormValue("password")
+	form := loginForm{
+		ClientID:      r.FormValue(oauthClientID),
+		RedirectURI:   r.FormValue(oauthRedirectURI),
+		State:         r.FormValue(oauthState),
+		CodeChallenge: r.FormValue(oauthCodeChallenge),
+		Scope:         r.FormValue(oauthScope),
+	}
+
+	// PKCE is mandatory (OAuth 2.1)
+	if form.CodeChallenge == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: oauthErrInvalidReq, oauthErrorDescription: "code_challenge is required (PKCE)"})
+		return
+	}
+
+	// Whatever the outcome, the answer to a credential submission is not for
+	// caches.
+	w.Header().Set("Cache-Control", "no-store")
+
+	// The checks below turn the request away before any credential is looked
+	// at, so they are logged but are not login failures. The client and its
+	// redirect_uri come first: the password check is not reachable without a
+	// registered client.
+	switch reason := s.validateClientRedirect(r.Context(), form.ClientID, form.RedirectURI); reason {
+	case loginReasonUnknownClient:
+		s.loginRejected(r, username, reason)
+		writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: oauthErrInvalidRedURI, oauthErrorDescription: descUnknownClient})
+		return
+	case loginReasonInvalidRedirectURI:
+		s.loginRejected(r, username, reason)
+		writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: oauthErrInvalidRedURI})
+		return
+	}
+	if !s.passwordLoginConfigured() {
+		s.loginRejected(r, username, loginReasonPasswordLoginDisabled)
+		writeJSON(w, http.StatusForbidden, map[string]string{outcomeError: oauthErrAccessDenied, oauthErrorDescription: descPasswordLoginDisabled})
+		return
+	}
+
+	// Reserve a slot against the failed-login limits before verifying the
+	// password. In single-password mode the submitted username is not part of
+	// the credential, so every attempt counts against the one configured
+	// account — typing a different name must not start a fresh count.
+	account := username
+	if s.userStore == nil {
+		account = s.cfg.AuthUser
+	}
+	attempt := s.loginThrottle.Acquire(r.Context(), account, clientIP(r))
+	if !attempt.Allowed {
+		s.loginFailed(r, username, loginReasonThrottledPrefix+attempt.Scope)
+		wait := retryAfterSeconds(attempt.RetryAfter)
+		w.Header().Set("Retry-After", strconv.Itoa(wait))
+		form.Error = fmt.Sprintf("Too many failed login attempts. Try again in %s.", humanWait(wait))
+		s.renderLoginForm(w, http.StatusTooManyRequests, form)
+		return
+	}
+
+	// Authenticate user
+	var userID, companyID, plan string
+	var roles []string
+
+	if s.userStore != nil {
+		// Multi-user mode (users.yaml)
+		user := s.userStore.Authenticate(username, password)
+		if user == nil {
+			s.loginFailed(r, username, loginReasonInvalidCredentials)
+			form.Error = msgInvalidCredentials
+			s.renderLoginForm(w, http.StatusUnauthorized, form)
+			return
+		}
+		userID = user.Username
+		companyID = user.Company
+		plan = user.Plan
+		roles = user.Roles
+	} else {
+		// Legacy single-password mode
+		if !secretsEqual(password, s.cfg.AuthPassword) {
+			s.loginFailed(r, username, loginReasonInvalidCredentials)
+			form.Error = msgInvalidCredentials
+			s.renderLoginForm(w, http.StatusUnauthorized, form)
+			return
+		}
+		userID = s.cfg.AuthUser
+		companyID = "default"
+		plan = s.cfg.AuthPlan
+		roles = s.cfg.AuthRolesList()
+	}
+
+	// The password was right, whatever happens to the auth code below.
+	s.loginThrottle.Success(r.Context(), attempt)
+
+	code := generateID()
+	ac := &auth.AuthCode{
+		Code:          code,
+		ClientID:      form.ClientID,
+		RedirectURI:   form.RedirectURI,
+		CodeChallenge: form.CodeChallenge,
+		Scope:         form.Scope,
+		UserID:        userID,
+		CompanyID:     companyID,
+		Plan:          plan,
+		Roles:         roles,
+		ExpiresAt:     time.Now().Add(5 * time.Minute),
+	}
+
+	if s.tokenStore != nil {
+		if err := s.tokenStore.SaveAuthCode(r.Context(), ac); err != nil {
+			s.logger.ErrorContext(r.Context(), "failed to save auth code", outcomeError, err)
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
+			return
+		}
+	}
+	s.metrics.RecordLogin(loginMethodPassword, "success")
+
+	sep := "?"
+	if strings.Contains(form.RedirectURI, "?") {
+		sep = "&"
+	}
+	http.Redirect(w, r, fmt.Sprintf("%s%scode=%s&state=%s", form.RedirectURI, sep, url.QueryEscape(code), url.QueryEscape(form.State)), http.StatusFound)
+}
+
+// secretsEqual compares a submitted secret with the configured one in constant
+// time. Both are hashed first so that the comparison does not stop early on a
+// length difference and reveal how long the configured secret is. An empty
+// configured secret matches nothing.
+func secretsEqual(submitted, configured string) bool {
+	if configured == "" {
+		return false
+	}
+	a, b := sha256.Sum256([]byte(submitted)), sha256.Sum256([]byte(configured))
+	return subtle.ConstantTimeCompare(a[:], b[:]) == 1
+}
+
+// humanWait phrases a lockout's remaining seconds for the login form.
+func humanWait(seconds int) string {
+	minutes := (seconds + 59) / 60
+	if minutes <= 1 {
+		return "a minute"
+	}
+	return fmt.Sprintf("%d minutes", minutes)
+}
+
+// retryAfterSeconds rounds a lockout's remaining time up to whole seconds for
+// the Retry-After header, so a client that honors it never retries early.
+func retryAfterSeconds(d time.Duration) int {
+	secs := int((d + time.Second - 1) / time.Second)
+	return max(secs, 1)
 }
 
 func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
@@ -923,16 +1137,21 @@ func (s *Server) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Req
 		writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: invalidGrantError})
 		return
 	}
+	if !s.passwordLoginConfigured() {
+		s.tokenGrantRefused(r, loginMethodOAuthCode)
+		writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: invalidGrantError})
+		return
+	}
 
 	ac, err := s.tokenStore.ConsumeAuthCode(ctx, code)
 	if err != nil {
-		s.metrics.RecordLogin("oauth_code", "failure")
+		s.metrics.RecordLogin(loginMethodOAuthCode, "failure")
 		writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: invalidGrantError})
 		return
 	}
 
 	if time.Now().After(ac.ExpiresAt) {
-		s.metrics.RecordLogin("oauth_code", "failure")
+		s.metrics.RecordLogin(loginMethodOAuthCode, "failure")
 		writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: invalidGrantError})
 		return
 	}
@@ -941,7 +1160,7 @@ func (s *Server) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Req
 	if clientID == "" || clientID != ac.ClientID {
 		s.logger.WarnContext(ctx, "client_id mismatch in auth code grant",
 			"expected", ac.ClientID, "got", clientID)
-		s.metrics.RecordLogin("oauth_code", "failure")
+		s.metrics.RecordLogin(loginMethodOAuthCode, "failure")
 		writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: invalidGrantError})
 		return
 	}
@@ -949,7 +1168,7 @@ func (s *Server) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Req
 	// PKCE S256 verification — always required (OAuth 2.1).
 	// Use a single generic error for all PKCE failures (L-3).
 	if ac.CodeChallenge == "" || codeVerifier == "" {
-		s.metrics.RecordLogin("oauth_code", "failure")
+		s.metrics.RecordLogin(loginMethodOAuthCode, "failure")
 		writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: invalidGrantError, oauthErrorDescription: "PKCE verification failed"})
 		return
 	}
@@ -957,7 +1176,7 @@ func (s *Server) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Req
 		h := sha256.Sum256([]byte(codeVerifier))
 		computed := base64.RawURLEncoding.EncodeToString(h[:])
 		if subtle.ConstantTimeCompare([]byte(computed), []byte(ac.CodeChallenge)) != 1 {
-			s.metrics.RecordLogin("oauth_code", "failure")
+			s.metrics.RecordLogin(loginMethodOAuthCode, "failure")
 			writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: invalidGrantError, oauthErrorDescription: "PKCE verification failed"})
 			return
 		}
@@ -1002,7 +1221,7 @@ func (s *Server) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	s.metrics.RecordLogin("oauth_code", "success")
+	s.metrics.RecordLogin(loginMethodOAuthCode, "success")
 	writeJSON(w, http.StatusOK, map[string]any{
 		"access_token":    accessToken,
 		"token_type":      authSchemeBearer,
@@ -1021,10 +1240,15 @@ func (s *Server) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request)
 		writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: invalidGrantError})
 		return
 	}
+	if !s.passwordLoginConfigured() {
+		s.tokenGrantRefused(r, loginMethodOAuthRefresh)
+		writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: invalidGrantError})
+		return
+	}
 
 	oldTI, err := s.tokenStore.ConsumeRefreshToken(ctx, refreshToken)
 	if err != nil {
-		s.metrics.RecordLogin("oauth_refresh", "failure")
+		s.metrics.RecordLogin(loginMethodOAuthRefresh, "failure")
 		writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: invalidGrantError})
 		return
 	}
@@ -1033,7 +1257,7 @@ func (s *Server) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request)
 	if clientID == "" || clientID != oldTI.ClientID {
 		s.logger.WarnContext(ctx, "client_id mismatch in refresh token grant",
 			"expected", oldTI.ClientID, "got", clientID)
-		s.metrics.RecordLogin("oauth_refresh", "failure")
+		s.metrics.RecordLogin(loginMethodOAuthRefresh, "failure")
 		writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: invalidGrantError})
 		return
 	}
@@ -1071,7 +1295,7 @@ func (s *Server) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	s.metrics.RecordLogin("oauth_refresh", "success")
+	s.metrics.RecordLogin(loginMethodOAuthRefresh, "success")
 	writeJSON(w, http.StatusOK, map[string]any{
 		"access_token":    newAccessToken,
 		"token_type":      authSchemeBearer,
@@ -1091,11 +1315,13 @@ var loginTmpl = template.Must(template.New("login").Parse(`<!DOCTYPE html>
 <style>body{font-family:system-ui;max-width:400px;margin:80px auto;padding:20px}
 input{width:100%;padding:8px;margin:8px 0;box-sizing:border-box}
 button{width:100%;padding:10px;background:#2563eb;color:white;border:none;border-radius:4px;cursor:pointer}
-button:hover{background:#1d4ed8}</style></head>
+button:hover{background:#1d4ed8}
+.error{color:#b91c1c}</style></head>
 <body>
 <h2>ToolMesh</h2>
 <p>Enter your credentials to authorize access.</p>
-<form method="POST" action="/authorize">
+{{if .Error}}<p class="error" role="alert">{{.Error}}</p>
+{{end}}<form method="POST" action="/authorize">
 <input type="hidden" name="client_id" value="{{.ClientID}}">
 <input type="hidden" name="redirect_uri" value="{{.RedirectURI}}">
 <input type="hidden" name="state" value="{{.State}}">
@@ -1108,15 +1334,26 @@ button:hover{background:#1d4ed8}</style></head>
 </body>
 </html>`))
 
-func (s *Server) renderLoginForm(w http.ResponseWriter, clientID, redirectURI, state, codeChallenge, scope string) {
+// loginForm is the data the login page is rendered from: the OAuth request it
+// carries along in hidden fields, and an optional message about why the
+// previous attempt was turned away.
+type loginForm struct {
+	ClientID      string
+	RedirectURI   string
+	State         string
+	CodeChallenge string
+	Scope         string
+	Error         string
+}
+
+// renderLoginForm writes the login page with the given status. A 401 goes out
+// without a WWW-Authenticate challenge on purpose: there is no scheme that
+// describes an HTML form, and "Basic" would make the browser put its own
+// password dialog in front of the page.
+func (s *Server) renderLoginForm(w http.ResponseWriter, status int, form loginForm) {
 	w.Header().Set("Content-Type", "text/html")
-	if err := loginTmpl.Execute(w, map[string]string{
-		"ClientID":      clientID,
-		"RedirectURI":   redirectURI,
-		"State":         state,
-		"CodeChallenge": codeChallenge,
-		"Scope":         scope,
-	}); err != nil {
+	w.WriteHeader(status)
+	if err := loginTmpl.Execute(w, form); err != nil {
 		s.logger.Error("failed to render login form", outcomeError, err)
 	}
 }
@@ -1168,7 +1405,7 @@ func writeJSON(w http.ResponseWriter, status int, data any) {
 }
 
 func generateID() string {
-	b := make([]byte, 32)
+	b := make([]byte, generatedIDBytes)
 	if _, err := rand.Read(b); err != nil {
 		panic("crypto/rand failed: " + err.Error())
 	}

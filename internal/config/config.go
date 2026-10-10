@@ -29,6 +29,10 @@ const (
 	schemeHTTPS = "https"
 )
 
+// maxLoginFailureWindow caps TOOLMESH_LOGIN_FAILURE_WINDOW at 30 days. A
+// lockout that long is almost certainly a value given in the wrong unit.
+const maxLoginFailureWindow = 30 * 24 * 60 * 60
+
 // OpenFGA authorization modes for OpenFGAMode / OPENFGA_MODE.
 const (
 	// OpenFGAModeBypass allows every authenticated call without an authz check.
@@ -112,6 +116,14 @@ type Config struct {
 	AuthUser  string // TOOLMESH_AUTH_USER, default "owner"
 	AuthPlan  string // TOOLMESH_AUTH_PLAN, default "pro"
 	AuthRoles string // TOOLMESH_AUTH_ROLES, default "admin" (comma-separated)
+
+	// Failed-login throttling for the password login at /authorize. Each limit
+	// counts failed attempts within LoginFailureWindow (seconds); 0 disables
+	// that limit.
+	LoginMaxFailuresPerUserIP int // TOOLMESH_LOGIN_MAX_FAILURES_PER_USER_IP, default 5: one account from one address
+	LoginMaxFailuresPerUser   int // TOOLMESH_LOGIN_MAX_FAILURES_PER_USER, default 20: one account from all addresses
+	LoginMaxFailuresPerIP     int // TOOLMESH_LOGIN_MAX_FAILURES_PER_IP, default 50: one address across all accounts
+	LoginFailureWindow        int // TOOLMESH_LOGIN_FAILURE_WINDOW, default 900
 
 	// Persistent state directory
 	DataDir string
@@ -209,6 +221,10 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("invalid AUDIT_STORE: %q (must be \"log\" or \"sqlite\")", cfg.AuditStore)
 	}
 
+	if err := cfg.loadLoginThrottle(); err != nil {
+		return nil, err
+	}
+
 	// Fail fast on a typo here: the value only ever surfaces as a Location
 	// header on the site root, where a silently-ignored setting would look
 	// exactly like the landing page working as intended.
@@ -223,6 +239,59 @@ func Load() (*Config, error) {
 	}
 
 	return cfg, nil
+}
+
+// loadLoginThrottle reads the failed-login limits. Unlike most integer
+// settings these are parsed strictly: a typo must stop the server rather than
+// quietly put a default in place of the limit the operator meant to set.
+func (c *Config) loadLoginThrottle() error {
+	limits := []struct {
+		key      string
+		fallback int
+		dst      *int
+	}{
+		{"TOOLMESH_LOGIN_MAX_FAILURES_PER_USER_IP", 5, &c.LoginMaxFailuresPerUserIP},
+		{"TOOLMESH_LOGIN_MAX_FAILURES_PER_USER", 20, &c.LoginMaxFailuresPerUser},
+		{"TOOLMESH_LOGIN_MAX_FAILURES_PER_IP", 50, &c.LoginMaxFailuresPerIP},
+	}
+	enabled := false
+	for _, l := range limits {
+		n, err := envIntStrict(l.key, l.fallback)
+		if err != nil {
+			return err
+		}
+		if n < 0 {
+			return fmt.Errorf("invalid %s: %d (must be 0 to disable the limit, or a positive number)", l.key, n)
+		}
+		*l.dst = n
+		enabled = enabled || n > 0
+	}
+
+	window, err := envIntStrict("TOOLMESH_LOGIN_FAILURE_WINDOW", 900)
+	if err != nil {
+		return err
+	}
+	if enabled && (window <= 0 || window > maxLoginFailureWindow) {
+		return fmt.Errorf("invalid TOOLMESH_LOGIN_FAILURE_WINDOW: %d (must be between 1 and %d seconds)", window, maxLoginFailureWindow)
+	}
+	c.LoginFailureWindow = window
+	return nil
+}
+
+// LoginThrottleDisabled lists the failed-login limits that are switched off,
+// by the name of the variable that controls each.
+func (c *Config) LoginThrottleDisabled() []string {
+	var off []string
+	if c.LoginMaxFailuresPerUserIP == 0 {
+		off = append(off, "TOOLMESH_LOGIN_MAX_FAILURES_PER_USER_IP")
+	}
+	if c.LoginMaxFailuresPerUser == 0 {
+		off = append(off, "TOOLMESH_LOGIN_MAX_FAILURES_PER_USER")
+	}
+	if c.LoginMaxFailuresPerIP == 0 {
+		off = append(off, "TOOLMESH_LOGIN_MAX_FAILURES_PER_IP")
+	}
+	return off
 }
 
 // AuthRolesList returns the simple-mode auth roles as a string slice.
@@ -267,6 +336,20 @@ func envInt(key string, fallback int) int {
 		return n
 	}
 	return fallback
+}
+
+// envIntStrict is envInt for settings where a silently applied default would
+// be worse than a refused start: a value that is not an integer is an error.
+func envIntStrict(key string, fallback int) (int, error) {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback, nil
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(v))
+	if err != nil {
+		return 0, fmt.Errorf("invalid %s: %q is not an integer", key, v)
+	}
+	return n, nil
 }
 
 func envBool(key string, fallback bool) bool {

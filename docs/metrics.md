@@ -34,18 +34,48 @@ Authentication / token-issuance events.
 
 | Label    | Values                                                            |
 | -------- | ----------------------------------------------------------------- |
-| `method` | `oauth_code`, `oauth_refresh`, `oauth_bearer`, `api_key`          |
+| `method` | `password`, `oauth_code`, `oauth_refresh`, `oauth_bearer`, `api_key` |
 | `result` | `success`, `failure`                                              |
 
+- `password` — Password login at `/authorize` (username and password, or the
+  single password).
 - `oauth_code` — Authorization-code-to-token exchange at `/token`.
-- `oauth_refresh` — Refresh-token grant at `/token`.
+- `oauth_refresh` — Refresh-token grant at `/token`. Both grants also fail,
+  and are counted, when the server has no password login configured.
 - `oauth_bearer` — Validation of a bearer access token on each MCP request.
 - `api_key` — API-key match (per-request, both file-based and legacy env-var auth).
 
 `oauth_bearer` and `api_key` are recorded **per request**, so they double as
 authenticated-request-rate metrics. Server-internal errors (failure to persist
-a token, etc.) are logged but not counted as login failures — only failures
-that originate from the credential are counted.
+a token, etc.) are logged but not counted as login failures.
+
+What counts as a `failure`:
+
+- `password` — every login attempt that was refused: a wrong password or
+  unknown username, and an attempt turned away by the
+  [failed-login limits](configuration.md#login-throttling) without the password
+  being checked. Requests rejected before the login is attempted (unknown OAuth
+  client, unregistered redirect URI) are logged but not counted.
+- `oauth_bearer` and `api_key` — a request that presented a bearer credential
+  which nothing accepted. Each such request is counted **once**. A rejected
+  credential does not say which method the caller meant, so it is attributed by
+  its form: an expired token, or a value that has the form of an access token
+  issued by this server, counts as `oauth_bearer`; anything else counts as
+  `api_key`. If only one of the two methods comes into question, every
+  rejected bearer counts for that one: `oauth_bearer` when no API key is
+  configured, `api_key` when there is no password login and therefore no
+  access tokens are honored. A request without a bearer credential is not
+  counted.
+
+  Access tokens are 64 lowercase hex characters. An API key generated in the
+  same form (`openssl rand -hex 32`, for example) cannot be told from one when
+  it is rejected, so on a deployment that offers both password login and API
+  keys a wrong key of that form is counted as `oauth_bearer`.
+
+Access tokens expire after an hour, so a deployment with OAuth clients has a
+small steady rate of `oauth_bearer` failures from clients presenting a token
+that has just expired. Alert on a rate well above that baseline rather than on
+any non-zero value.
 
 ### `toolmesh_tool_calls_total` (counter)
 
@@ -88,6 +118,12 @@ sum by (method) (rate(toolmesh_logins_total[5m]))
 # Failed login ratio
 sum(rate(toolmesh_logins_total{result="failure"}[5m]))
   / sum(rate(toolmesh_logins_total[5m]))
+
+# Failed password logins in the last 15 minutes (guessing, or the limits engaging)
+increase(toolmesh_logins_total{method="password",result="failure"}[15m])
+
+# Rejected API keys in the last 15 minutes
+increase(toolmesh_logins_total{method="api_key",result="failure"}[15m])
 
 # Tool-call error+denied rate per backend
 sum by (backend) (rate(toolmesh_tool_calls_total{result=~"error|denied"}[5m]))

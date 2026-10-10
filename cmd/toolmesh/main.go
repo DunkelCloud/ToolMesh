@@ -326,6 +326,7 @@ func main() {
 
 	var tokenStore auth.TokenStore = fileStore
 	var rateLimiter *auth.DCRRateLimiter
+	var redisClient *redis.Client // nil unless Redis is connected
 
 	if cfg.RedisURL != "" && cfg.RedisURL != "none" {
 		redisOpts, err := redis.ParseURL(cfg.RedisURL)
@@ -342,6 +343,7 @@ func main() {
 				redisStore := auth.NewRedisTokenStore(rdb)
 				tokenStore = auth.NewHybridTokenStore(redisStore, fileStore)
 				rateLimiter = auth.NewDCRRateLimiter(rdb)
+				redisClient = rdb
 				fileStore.WarmUp(ctx, redisStore)
 			}
 		}
@@ -355,6 +357,13 @@ func main() {
 	}
 	if userStore != nil {
 		logger.Info("loaded users config", "path", cfg.UsersConfigPath)
+		unusable, costs := userStore.HashProblems()
+		if len(unusable) > 0 {
+			logger.Warn("users config: password_hash is not a usable bcrypt hash, these users cannot log in", "users", unusable)
+		}
+		if len(costs) > 0 {
+			logger.Warn("users config: password hashes use different bcrypt costs, so response time can tell some configured users from unknown ones; re-hash all passwords at one cost", "costs", costs)
+		}
 	}
 
 	apiKeyStore, err := auth.NewAPIKeyStore(cfg.APIKeysConfigPath)
@@ -381,6 +390,21 @@ func main() {
 	mcpHandler.SetBlobStore(blobStore, blob.DefaultUploadLimits())
 	mcpServer := mcp.NewServer(mcpHandler, cfg, logger, tokenStore, userStore, apiKeyStore, rateLimiter, callerClasses, metricsReg)
 	mcpServer.SetBlobStore(blobStore, blob.DefaultUploadLimits())
+
+	// Failed-login limits for the password login. NewServer counts in process
+	// memory; with Redis the counters are shared, so the limits hold across
+	// replicas and survive a restart.
+	loginCounters := "process-local"
+	if redisClient != nil {
+		mcpServer.UseRedisLoginThrottle(redisClient)
+		loginCounters = "redis"
+	}
+	logger.Info("login throttling configured",
+		"counters", loginCounters,
+		"maxFailuresPerUserIP", cfg.LoginMaxFailuresPerUserIP,
+		"maxFailuresPerUser", cfg.LoginMaxFailuresPerUser,
+		"maxFailuresPerIP", cfg.LoginMaxFailuresPerIP,
+		"windowSeconds", cfg.LoginFailureWindow)
 
 	httpMux := http.NewServeMux()
 	// SetupRoutes registers /blobs/ (GET/HEAD capability-based, DELETE
@@ -445,8 +469,8 @@ func main() {
 	}()
 
 	// Consolidated security-posture summary: one place that reports every
-	// relaxed control (auth, authz, CORS, metrics exposure, debug tools) with a
-	// remediation hint. Logged at WARN in the production posture, or at INFO
+	// relaxed control (auth, authz, CORS, metrics exposure, debug tools, login
+	// throttling) with a remediation hint. Logged at WARN in the production posture, or at INFO
 	// when TOOLMESH_DEV=true. authConfigured mirrors how the auth middleware
 	// decides whether to enforce credentials.
 	authConfigured := cfg.AuthPassword != "" || cfg.APIKey != "" || userStore != nil || apiKeyStore != nil

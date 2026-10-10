@@ -232,7 +232,7 @@ func TestTokenGrant_ClientIDMismatch(t *testing.T) {
 }
 
 func TestRefreshTokenGrant_MissingClientID(t *testing.T) {
-	_, mux, _ := newTestServerWithRedis(t, &config.Config{})
+	_, mux, _ := newTestServerWithRedis(t, &config.Config{AuthPassword: "pw"})
 
 	form := url.Values{
 		oauthGrantType:    {oauthRefreshToken},

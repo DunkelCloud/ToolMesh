@@ -54,6 +54,12 @@ const (
 	logKeyRemote = "remote"
 	logKeyReason = "reason"
 
+	// logKeyCredential says what an unauthorized request carried: nothing,
+	// or a bearer credential that was rejected.
+	logKeyCredential   = "credential"
+	credentialNone     = "none"
+	credentialRejected = "rejected"
+
 	// maxLoggedValueLen bounds attacker-chosen values (such as a submitted
 	// username) before they are written to the log.
 	maxLoggedValueLen = 128
@@ -68,6 +74,7 @@ const (
 	loginMethodOAuthRefresh = "oauth_refresh"
 	loginMethodAPIKey       = "api_key"
 	loginMethodOAuthBearer  = "oauth_bearer" //nolint:gosec // metric label, not a credential
+	loginMethodAnonymous    = "anonymous"
 
 	// Reasons reported in the log line of a failed authentication.
 	loginReasonInvalidCredentials    = "invalid_credentials" //nolint:gosec // log reason, not a credential
@@ -81,6 +88,7 @@ const (
 
 	// Texts shown to the person at the login form or returned to the client.
 	msgInvalidCredentials     = "Invalid username or password."
+	msgLoginBusy              = "The server is busy. Try again in a moment."
 	descPasswordLoginDisabled = "password login is not configured on this server"
 	descUnknownClient         = "unknown client"
 
@@ -108,6 +116,16 @@ const (
 
 	// Authorization scheme literal.
 	authSchemeBearer = "Bearer"
+
+	// Paths that are also named in responses: the MCP endpoint and the
+	// well-known prefix of the protected resource metadata (RFC 9728).
+	pathMCP               = "/mcp"
+	pathProtectedResource = "/.well-known/oauth-protected-resource"
+
+	// Answer to a request whose credential could not be checked right now,
+	// and the Retry-After that goes with it, in seconds.
+	msgAuthUnavailable        = "Authentication temporarily unavailable"
+	authUnavailableRetryAfter = "1"
 
 	// Anonymous user identifier and other common MCP literals.
 	userAnonymous  = "anonymous"

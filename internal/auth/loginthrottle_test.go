@@ -248,6 +248,35 @@ func TestLoginThrottle_SuccessClearsUserAndRefundsIP(t *testing.T) {
 	}
 }
 
+// An attempt whose password could not be checked is handed back with Cancel.
+// It must leave no trace: neither a charge, however often that happens, nor
+// the clean slate a successful login gives the account.
+func TestLoginThrottle_CancelRefundsWithoutClearing(t *testing.T) {
+	for _, be := range throttleBackends(t) {
+		t.Run(be.name, func(t *testing.T) {
+			th := be.new(t, LoginThrottleConfig{MaxFailuresPerUserIP: 2, MaxFailuresPerUser: 3, MaxFailuresPerIP: 4, Window: time.Minute})
+			ctx := context.Background()
+
+			fail(th, testLoginAccount, testLoginIP, 1)
+
+			// Far more canceled attempts than any of the limits allows.
+			for i := range 10 {
+				attempt := th.Acquire(ctx, testLoginAccount, testLoginIP)
+				if !attempt.Allowed {
+					t.Fatalf("attempt %d was refused: canceled attempts were charged", i+1)
+				}
+				th.Cancel(ctx, attempt)
+			}
+
+			// The failure from before still counts: one more reaches the
+			// limit of two for this account from this address.
+			if got := fail(th, testLoginAccount, testLoginIP, 3); got != 1 {
+				t.Errorf("after the canceled attempts: %d attempts allowed, want 1 (Cancel must not clear earlier failures)", got)
+			}
+		})
+	}
+}
+
 func TestLoginThrottle_DisabledLimits(t *testing.T) {
 	for _, be := range throttleBackends(t) {
 		t.Run(be.name, func(t *testing.T) {
@@ -1098,6 +1127,14 @@ func (m *loginModel) acquire(counters []loginCounter, now time.Time) bool {
 	return true
 }
 
+func (m *loginModel) cancel(counters []loginCounter) {
+	for _, c := range counters {
+		if m.count[c.key]--; m.count[c.key] <= 0 {
+			delete(m.count, c.key)
+		}
+	}
+}
+
 func (m *loginModel) success(counters []loginCounter) {
 	for _, c := range counters {
 		if c.scope != LoginScopeIP {
@@ -1110,7 +1147,7 @@ func (m *loginModel) success(counters []loginCounter) {
 	}
 }
 
-// Random sequences of failed and successful logins for a few accounts and
+// Random sequences of failed, successful and canceled logins for a few accounts and
 // addresses, with Redis going away and coming back and time passing in
 // between, must be decided exactly as the naive model decides them. The walk
 // stops checking once a release could not reach Redis: from then on Redis may
@@ -1140,18 +1177,24 @@ func TestLoginThrottle_RandomWalkMatchesModel(t *testing.T) {
 			switch r := rng.IntN(20); {
 			case r < 12: // a login attempt, mostly a failed one
 				account, ip := accounts[rng.IntN(len(accounts))], addresses[rng.IntN(len(addresses))]
-				succeeds := rng.IntN(5) == 0
+				outcome := rng.IntN(6)
+				succeeds, canceled := outcome == 0, outcome == 1
 				counters := th.counters(account, ip)
 
 				want := model.acquire(counters, now)
 				attempt := th.Acquire(ctx, account, ip)
-				trace = append(trace, fmt.Sprintf("t=%ds %s@%s success=%v -> allowed=%v", now.Unix()-1_700_000_000, account, ip, succeeds, attempt.Allowed))
+				trace = append(trace, fmt.Sprintf("t=%ds %s@%s success=%v canceled=%v -> allowed=%v", now.Unix()-1_700_000_000, account, ip, succeeds, canceled, attempt.Allowed))
 				if attempt.Allowed != want {
 					t.Fatalf("seed %d: throttle allowed=%v, model allowed=%v\n%s", seed, attempt.Allowed, want, strings.Join(trace, "\n"))
 				}
-				if attempt.Allowed && succeeds {
-					th.Success(ctx, attempt)
-					model.success(counters)
+				if attempt.Allowed && (succeeds || canceled) {
+					if succeeds {
+						th.Success(ctx, attempt)
+						model.success(counters)
+					} else {
+						th.Cancel(ctx, attempt)
+						model.cancel(counters)
+					}
 					if strings.Contains(logs.String(), "could not release") {
 						break walk
 					}

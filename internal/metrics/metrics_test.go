@@ -106,7 +106,7 @@ func TestEmptyScrape_LoginsPreinitialized_NoPromhttpSelfMetrics(t *testing.T) {
 	r := metrics.New(metrics.Options{LabelTool: true})
 	body := scrapeMetrics(t, r)
 
-	for _, method := range []string{"password", testLoginMethodOAuthCode, "oauth_refresh", "oauth_bearer", "api_key"} {
+	for _, method := range []string{"password", testLoginMethodOAuthCode, "oauth_refresh", "oauth_bearer", "api_key", "anonymous"} {
 		for _, result := range []string{testLoginResultSuccess, testLoginResultFailure} {
 			want := `toolmesh_logins_total{method="` + method + `",result="` + result + `"} 0`
 			mustContain(t, body, want)

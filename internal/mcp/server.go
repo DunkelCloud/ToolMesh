@@ -107,9 +107,10 @@ func loginThrottleConfig(cfg *config.Config) auth.LoginThrottleConfig {
 
 // SetupRoutes registers all HTTP routes on the given mux.
 func (s *Server) SetupRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("/mcp", s.cors(s.handleMCP))
+	mux.HandleFunc(pathMCP, s.cors(s.handleMCP))
 	mux.HandleFunc("/.well-known/oauth-authorization-server", s.cors(s.handleOAuthMetadata))
-	mux.HandleFunc("/.well-known/oauth-protected-resource", s.cors(s.handleProtectedResource))
+	mux.HandleFunc(pathProtectedResource, s.cors(s.handleProtectedResource))
+	mux.HandleFunc(pathProtectedResource+pathMCP, s.cors(s.handleProtectedResourceMCP))
 	mux.HandleFunc("/register", s.cors(s.handleRegister))
 	mux.HandleFunc("/authorize", s.cors(s.handleAuthorize))
 	mux.HandleFunc("/token", s.cors(s.handleToken))
@@ -146,13 +147,20 @@ func (s *Server) handleBlobs(w http.ResponseWriter, r *http.Request) {
 
 // requireAuth enforces MCP authentication when the server has any auth
 // configured. It returns true when the request may proceed and, on failure,
-// writes the 401 response itself. When no auth is configured the whole server
-// is open, so the call passes through unchanged.
+// writes the response itself: 401 for a missing or rejected credential, 503
+// when the credential could not be checked. When no auth is configured the
+// whole server is open, so the call passes through unchanged.
 func (s *Server) requireAuth(w http.ResponseWriter, r *http.Request) bool {
 	if !s.authRequired() {
 		return true
 	}
-	if user := s.authenticate(r); user != nil && user.Authenticated {
+	user, err := s.authenticate(r)
+	if err != nil {
+		w.Header().Set("Retry-After", authUnavailableRetryAfter)
+		http.Error(w, msgAuthUnavailable, http.StatusServiceUnavailable)
+		return false
+	}
+	if user.Authenticated {
 		return true
 	}
 	w.Header().Set("WWW-Authenticate", `Bearer realm="toolmesh"`)
@@ -256,10 +264,22 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Authenticate
-	uc := s.authenticate(r)
+	uc, err := s.authenticate(r)
+	if err != nil {
+		// The credential was not judged, so this is not a 401: a client told
+		// that its token is invalid would throw the token away.
+		w.Header().Set("Retry-After", authUnavailableRetryAfter)
+		writeJSON(w, http.StatusServiceUnavailable, jsonRPCErrorEnvelope(nil, -32000, msgAuthUnavailable))
+		return
+	}
 	if !uc.Authenticated && s.authRequired() {
-		s.logger.DebugContext(ctx, "mcp request rejected: unauthorized", "remote", clientIP(r))
-		s.writeJSONRPCError(w, nil, -32001, "Unauthorized")
+		presented := extractBearer(r) != ""
+		credential := credentialNone
+		if presented {
+			credential = credentialRejected
+		}
+		s.logger.InfoContext(ctx, "mcp request rejected: unauthorized", logKeyRemote, clientIP(r), logKeyCredential, credential)
+		s.writeMCPUnauthorized(w, presented)
 		return
 	}
 
@@ -536,91 +556,111 @@ func toolResultToMCP(result *backend.ToolResult) map[string]any {
 	}
 }
 
-// authenticate extracts user context from the request.
-func (s *Server) authenticate(r *http.Request) *userctx.UserContext {
+// authenticate extracts user context from the request. It returns an error
+// when a bearer credential was presented that no method accepted and at least
+// one method could not look at it, because a part of the server was not
+// available. That is not a verdict on the credential: the request is answered
+// 503, not 401.
+//
+// A bearer credential is tried in order of cost. First what is decided in
+// memory: the index of the API keys, and the single API key from the
+// environment. Then the access tokens in the token store. Only what is still
+// unknown after that is compared with bcrypt, against the API key entries
+// that are not in the index yet. A valid access token therefore never costs a
+// bcrypt comparison, and neither does a value that is no credential at all
+// once every key has been seen (see auth.APIKeyStore).
+//
+// The index comes before the token store, although it is the API keys that
+// used to cost the most, so that a caller with an API key does not depend on
+// the token store being reachable.
+func (s *Server) authenticate(r *http.Request) (*userctx.UserContext, error) {
 	bearer := extractBearer(r)
 
 	// Which methods the bearer was checked against, so that a credential no
 	// method accepts is counted as a failure of one that could have.
-	var checkedAPIKey, checkedOAuth, expiredToken, storeFailed bool
+	var checkedAPIKey, checkedOAuth, expiredToken bool
+	// unchecked is set when a method could not look at the bearer at all.
+	var unchecked error
 
-	// 1. API-Key Check (from apikeys.yaml — bcrypt hashed)
-	if bearer != "" && s.apiKeys != nil {
-		checkedAPIKey = true
-		if entry := s.apiKeys.Match(bearer); entry != nil {
-			callerID := entry.CallerID
-			if callerID == "" {
-				callerID = entry.UserID
+	if bearer != "" {
+		// 1. API keys from apikeys.yaml that are in the index.
+		if s.apiKeys != nil {
+			checkedAPIKey = true
+			if entry := s.apiKeys.Find(bearer); entry != nil {
+				return s.apiKeyCaller(entry), nil
 			}
-			s.metrics.RecordLogin(loginMethodAPIKey, "success")
-			return &userctx.UserContext{
-				UserID:        entry.UserID,
-				CompanyID:     entry.CompanyID,
-				Roles:         entry.Roles,
-				Plan:          entry.Plan,
-				Authenticated: true,
-				CallerID:      callerID,
-				CallerName:    callerID, // API key CallerID is admin-configured, use as display name
-				CallerClass:   s.callerClasses.Resolve(callerID),
+		}
+
+		// 2. Single API key (env var), compared in constant time.
+		if s.cfg.APIKey != "" && s.apiKeys == nil {
+			checkedAPIKey = true
+			if secretsEqual(bearer, s.cfg.APIKey) {
+				s.metrics.RecordLogin(loginMethodAPIKey, "success")
+				return &userctx.UserContext{
+					UserID:        s.cfg.AuthUser,
+					CompanyID:     userDefault,
+					Roles:         s.cfg.AuthRolesList(),
+					Plan:          s.cfg.AuthPlan,
+					Authenticated: true,
+					CallerID:      s.cfg.AuthUser,
+					CallerClass:   s.callerClasses.Resolve(s.cfg.AuthUser),
+				}, nil
+			}
+		}
+
+		// 3. OAuth Bearer Token (from Redis). Access tokens come out of the
+		// password login and are honored only where there is one: a token
+		// still in the store from a time when the configuration was
+		// different is not a credential anymore.
+		if s.tokenStore != nil && s.passwordLoginConfigured() {
+			ti, err := s.tokenStore.GetToken(r.Context(), bearer)
+			switch {
+			case err == nil && time.Now().Before(ti.ExpiresAt):
+				callerID := ti.CallerID
+				if callerID == "" {
+					callerID = ti.ClientID
+				}
+				s.metrics.RecordLogin(loginMethodOAuthBearer, "success")
+				return &userctx.UserContext{
+					UserID:        ti.UserID,
+					CompanyID:     ti.CompanyID,
+					Roles:         ti.Roles,
+					Plan:          ti.Plan,
+					Authenticated: true,
+					CallerID:      callerID,
+					CallerName:    ti.CallerName,
+					CallerClass:   s.callerClasses.Resolve(callerID),
+				}, nil
+			case err == nil:
+				checkedOAuth = true
+				expiredToken = true
+			case errors.Is(err, auth.ErrNotFound):
+				checkedOAuth = true
+			default:
+				// The store failed, not the credential: logged, but not
+				// counted as a login failure.
+				unchecked = err
+				s.logger.ErrorContext(r.Context(), "token lookup failed", outcomeError, err)
+			}
+		}
+
+		// 4. API keys from apikeys.yaml that are not in the index yet. A
+		// value the token store knows as an expired token is not a key.
+		if s.apiKeys != nil && !expiredToken {
+			entry, err := s.apiKeys.Verify(r.Context(), bearer)
+			switch {
+			case err != nil:
+				unchecked = err
+				s.compareDeferred(r, loginMethodAPIKey, err)
+			case entry != nil:
+				return s.apiKeyCaller(entry), nil
 			}
 		}
 	}
 
-	// 2. Legacy single API key (env var fallback)
-	if s.cfg.APIKey != "" && bearer != "" && s.apiKeys == nil {
-		checkedAPIKey = true
-		if subtle.ConstantTimeCompare([]byte(bearer), []byte(s.cfg.APIKey)) == 1 {
-			s.metrics.RecordLogin(loginMethodAPIKey, "success")
-			return &userctx.UserContext{
-				UserID:        s.cfg.AuthUser,
-				CompanyID:     userDefault,
-				Roles:         s.cfg.AuthRolesList(),
-				Plan:          s.cfg.AuthPlan,
-				Authenticated: true,
-				CallerID:      s.cfg.AuthUser,
-				CallerClass:   s.callerClasses.Resolve(s.cfg.AuthUser),
-			}
-		}
-	}
-
-	// 3. OAuth Bearer Token (from Redis). Access tokens come out of the
-	// password login and are honored only where there is one: a token still in
-	// the store from a time when the configuration was different is not a
-	// credential anymore.
-	if bearer != "" && s.tokenStore != nil && s.passwordLoginConfigured() {
-		ti, err := s.tokenStore.GetToken(r.Context(), bearer)
-		switch {
-		case err == nil && time.Now().Before(ti.ExpiresAt):
-			callerID := ti.CallerID
-			if callerID == "" {
-				callerID = ti.ClientID
-			}
-			s.metrics.RecordLogin(loginMethodOAuthBearer, "success")
-			return &userctx.UserContext{
-				UserID:        ti.UserID,
-				CompanyID:     ti.CompanyID,
-				Roles:         ti.Roles,
-				Plan:          ti.Plan,
-				Authenticated: true,
-				CallerID:      callerID,
-				CallerName:    ti.CallerName,
-				CallerClass:   s.callerClasses.Resolve(callerID),
-			}
-		case err == nil:
-			checkedOAuth = true
-			expiredToken = true
-		case errors.Is(err, auth.ErrNotFound):
-			checkedOAuth = true
-		default:
-			// The store failed, not the credential: logged, but not counted
-			// as a login failure.
-			storeFailed = true
-			s.logger.ErrorContext(r.Context(), "token lookup failed", outcomeError, err)
-		}
-	}
-
-	// 4. No auth configured — allow anonymous (L-4: Authenticated=false for anonymous).
+	// No auth configured — allow anonymous (L-4: Authenticated=false for anonymous).
 	if !s.authRequired() {
+		s.metrics.RecordLogin(loginMethodAnonymous, "success")
 		return &userctx.UserContext{
 			UserID:        userAnonymous,
 			CompanyID:     userDefault,
@@ -629,12 +669,18 @@ func (s *Server) authenticate(r *http.Request) *userctx.UserContext {
 			Authenticated: false,
 			CallerID:      userAnonymous,
 			CallerClass:   "untrusted",
-		}
+		}, nil
 	}
 
-	// A credential was presented and nothing accepted it. A request without
-	// one is anonymous, not a failed login.
-	if bearer != "" && !storeFailed {
+	switch {
+	case bearer == "":
+		// No credential at all: not a failed login of any method, but a
+		// request that was turned away, and counted as that.
+		s.metrics.RecordLogin(loginMethodAnonymous, "failure")
+	case unchecked != nil:
+		return nil, fmt.Errorf("credential could not be checked: %w", unchecked)
+	default:
+		// A credential was presented and nothing accepted it.
 		s.bearerRejected(r, bearer, checkedAPIKey, checkedOAuth, expiredToken)
 	}
 
@@ -643,7 +689,53 @@ func (s *Server) authenticate(r *http.Request) *userctx.UserContext {
 		Authenticated: false,
 		CallerID:      userAnonymous,
 		CallerClass:   "untrusted",
+	}, nil
+}
+
+// apiKeyCaller counts an accepted API key from apikeys.yaml and returns the
+// caller it stands for.
+func (s *Server) apiKeyCaller(entry *auth.APIKeyEntry) *userctx.UserContext {
+	callerID := entry.CallerID
+	if callerID == "" {
+		callerID = entry.UserID
 	}
+	s.metrics.RecordLogin(loginMethodAPIKey, "success")
+	return &userctx.UserContext{
+		UserID:        entry.UserID,
+		CompanyID:     entry.CompanyID,
+		Roles:         entry.Roles,
+		Plan:          entry.Plan,
+		Authenticated: true,
+		CallerID:      callerID,
+		CallerName:    callerID, // API key CallerID is admin-configured, use as display name
+		CallerClass:   s.callerClasses.Resolve(callerID),
+	}
+}
+
+// compareDeferred logs a credential that was not checked because no bcrypt
+// comparison could be started for it (see auth.CompareLimiter). That is not a
+// failed login, so nothing is counted.
+func (s *Server) compareDeferred(r *http.Request, method string, err error) {
+	s.logger.WarnContext(r.Context(), "authentication deferred: no password hash comparison could be started",
+		"method", method, logKeyRemote, clientIP(r), outcomeError, err)
+}
+
+// writeMCPUnauthorized answers an MCP request without a valid credential: 401
+// with a Bearer challenge that names the protected resource metadata of this
+// endpoint. That is what the MCP authorization specification asks of a server
+// (RFC 9728, section 5.1) and what clients act on; they start or refresh an
+// authorization on the status code, not on the JSON-RPC error in the body,
+// which is kept as it was. presented says whether the request carried a
+// bearer credential: only then does the challenge name an error (RFC 6750,
+// section 3).
+func (s *Server) writeMCPUnauthorized(w http.ResponseWriter, presented bool) {
+	challenge := authSchemeBearer + ` realm="toolmesh"`
+	if presented {
+		challenge += `, error="invalid_token"`
+	}
+	challenge += `, resource_metadata="` + s.issuerBase() + pathProtectedResource + pathMCP + `"`
+	w.Header().Set("WWW-Authenticate", challenge)
+	writeJSON(w, http.StatusUnauthorized, jsonRPCErrorEnvelope(nil, -32001, "Unauthorized"))
 }
 
 // bearerRejected records a bearer credential that no method accepted: one
@@ -784,12 +876,29 @@ func (s *Server) handleOAuthMetadata(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) handleProtectedResource(w http.ResponseWriter, _ *http.Request) {
-	iss := strings.TrimRight(s.cfg.Issuer, "/") + "/"
+	s.writeProtectedResource(w, s.issuerBase()+"/")
+}
+
+// handleProtectedResourceMCP serves the protected resource metadata of the
+// MCP endpoint itself, at the well-known URI RFC 9728 derives for a resource
+// with a path. This is the document the 401 challenge of the endpoint points
+// to. Its resource is the URL of the endpoint, because a client compares that
+// value with the URL it connects to.
+func (s *Server) handleProtectedResourceMCP(w http.ResponseWriter, _ *http.Request) {
+	s.writeProtectedResource(w, s.issuerBase()+pathMCP)
+}
+
+func (s *Server) writeProtectedResource(w http.ResponseWriter, resource string) {
 	writeJSON(w, http.StatusOK, map[string]any{
-		"resource":                 iss,
-		"authorization_servers":    []string{iss},
+		"resource":                 resource,
+		"authorization_servers":    []string{s.issuerBase() + "/"},
 		"bearer_methods_supported": []string{"header"},
 	})
+}
+
+// issuerBase returns the public URL of this server without a trailing slash.
+func (s *Server) issuerBase() string {
+	return strings.TrimRight(s.cfg.Issuer, "/")
 }
 
 func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
@@ -1016,7 +1125,17 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 
 	if s.userStore != nil {
 		// Multi-user mode (users.yaml)
-		user := s.userStore.Authenticate(username, password)
+		user, err := s.userStore.Authenticate(r.Context(), username, password)
+		if err != nil {
+			// The password was not checked. The attempt is neither a failed
+			// login nor a successful one, so its slot goes back unused.
+			s.loginThrottle.Cancel(r.Context(), attempt)
+			s.compareDeferred(r, loginMethodPassword, err)
+			w.Header().Set("Retry-After", authUnavailableRetryAfter)
+			form.Error = msgLoginBusy
+			s.renderLoginForm(w, http.StatusServiceUnavailable, form)
+			return
+		}
 		if user == nil {
 			s.loginFailed(r, username, loginReasonInvalidCredentials)
 			form.Error = msgInvalidCredentials

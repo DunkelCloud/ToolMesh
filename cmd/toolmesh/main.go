@@ -349,8 +349,13 @@ func main() {
 		}
 	}
 
+	// One bound for every bcrypt comparison in the process: password logins
+	// and API keys that are only known by their bcrypt hash share it.
+	compareLimiter := auth.NewCompareLimiter(cfg.BcryptMaxConcurrent)
+	logger.Info("bcrypt comparisons bounded", "maxConcurrent", compareLimiter.Capacity())
+
 	// Load user identity configs
-	userStore, err := auth.NewUserStore(cfg.UsersConfigPath)
+	userStore, err := auth.NewUserStore(cfg.UsersConfigPath, compareLimiter)
 	if err != nil {
 		logger.Error("failed to load users config", "error", err)
 		os.Exit(1)
@@ -366,13 +371,21 @@ func main() {
 		}
 	}
 
-	apiKeyStore, err := auth.NewAPIKeyStore(cfg.APIKeysConfigPath)
+	apiKeyStore, err := auth.NewAPIKeyStore(cfg.APIKeysConfigPath, compareLimiter)
 	if err != nil {
 		logger.Error("failed to load apikeys config", "error", err)
 		os.Exit(1)
 	}
 	if apiKeyStore != nil {
-		logger.Info("loaded apikeys config", "path", cfg.APIKeysConfigPath)
+		keys := apiKeyStore.Summary()
+		logger.Info("loaded apikeys config", "path", cfg.APIKeysConfigPath, "sha256", keys.Indexed, "bcryptOnly", keys.BcryptOnly)
+		if len(keys.Unusable) > 0 {
+			logger.Warn("apikeys config: entries have neither a key_sha256 nor a usable bcrypt key_hash, no key matches them", "user_ids", keys.Unusable)
+		}
+		if keys.BcryptOnly > 0 {
+			logger.Warn("apikeys config: entries without key_sha256 are compared with bcrypt until their key has been used once since startup; an unknown bearer credential costs one comparison per such entry until then. Add key_sha256 to look them up without bcrypt",
+				"entries", keys.BcryptOnly)
+		}
 	}
 
 	callerClasses, err := config.LoadCallerClasses(cfg.CallerClassesConfigPath)

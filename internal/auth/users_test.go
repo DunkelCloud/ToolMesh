@@ -15,6 +15,7 @@
 package auth
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -26,6 +27,17 @@ import (
 
 // testUserBroken names a users.yaml entry whose password_hash is unusable.
 const testUserBroken = "broken"
+
+// authenticate checks a login against the store and fails the test if the
+// comparison could not be run.
+func authenticate(t *testing.T, store *UserStore, username, password string) *UserEntry {
+	t.Helper()
+	user, err := store.Authenticate(context.Background(), username, password)
+	if err != nil {
+		t.Fatalf("Authenticate(%q): %v", username, err)
+	}
+	return user
+}
 
 func TestUserStore_Authenticate(t *testing.T) {
 	adminHash, _ := bcrypt.GenerateFromPassword([]byte("admin-pw"), bcrypt.MinCost)
@@ -49,7 +61,7 @@ func TestUserStore_Authenticate(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	store, err := NewUserStore(path)
+	store, err := NewUserStore(path, nil)
 	if err != nil {
 		t.Fatalf("NewUserStore: %v", err)
 	}
@@ -58,7 +70,7 @@ func TestUserStore_Authenticate(t *testing.T) {
 	}
 
 	// Valid admin login
-	user := store.Authenticate(testUserAdmin, "admin-pw")
+	user := authenticate(t, store, testUserAdmin, "admin-pw")
 	if user == nil {
 		t.Fatal("expected admin to authenticate")
 	}
@@ -73,7 +85,7 @@ func TestUserStore_Authenticate(t *testing.T) {
 	}
 
 	// Valid demo login
-	user = store.Authenticate("demo", "demo-pw")
+	user = authenticate(t, store, "demo", "demo-pw")
 	if user == nil {
 		t.Fatal("expected demo to authenticate")
 	}
@@ -82,18 +94,18 @@ func TestUserStore_Authenticate(t *testing.T) {
 	}
 
 	// Wrong password
-	if store.Authenticate(testUserAdmin, "wrong") != nil {
+	if authenticate(t, store, testUserAdmin, "wrong") != nil {
 		t.Error("expected nil for wrong password")
 	}
 
 	// Unknown user
-	if store.Authenticate("unknown", "admin-pw") != nil {
+	if authenticate(t, store, "unknown", "admin-pw") != nil {
 		t.Error("expected nil for unknown user")
 	}
 }
 
 func TestUserStore_NonExistentFile(t *testing.T) {
-	store, err := NewUserStore("/nonexistent/path/users.yaml")
+	store, err := NewUserStore("/nonexistent/path/users.yaml", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -125,7 +137,7 @@ func TestAPIKeyStore_Match(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	store, err := NewAPIKeyStore(path)
+	store, err := NewAPIKeyStore(path, nil)
 	if err != nil {
 		t.Fatalf("NewAPIKeyStore: %v", err)
 	}
@@ -134,7 +146,7 @@ func TestAPIKeyStore_Match(t *testing.T) {
 	}
 
 	// Match first key
-	entry := store.Match("key-one")
+	entry := presentKey(t, store, "key-one")
 	if entry == nil {
 		t.Fatal("expected match for key-one")
 	}
@@ -152,7 +164,7 @@ func TestAPIKeyStore_Match(t *testing.T) {
 	}
 
 	// Match second key
-	entry = store.Match("key-two")
+	entry = presentKey(t, store, "key-two")
 	if entry == nil {
 		t.Fatal("expected match for key-two")
 	}
@@ -164,13 +176,13 @@ func TestAPIKeyStore_Match(t *testing.T) {
 	}
 
 	// No match
-	if store.Match("wrong-key") != nil {
+	if presentKey(t, store, "wrong-key") != nil {
 		t.Error("expected nil for wrong key")
 	}
 }
 
 func TestAPIKeyStore_NonExistentFile(t *testing.T) {
-	store, err := NewAPIKeyStore("/nonexistent/path/apikeys.yaml")
+	store, err := NewAPIKeyStore("/nonexistent/path/apikeys.yaml", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -203,7 +215,7 @@ func writeUsersFile(t *testing.T, costs map[string]int) string {
 // user, instead of returning before any hashing happens.
 func TestUserStore_UnknownUserRunsBcrypt(t *testing.T) {
 	const cost = bcrypt.MinCost + 1
-	store, err := NewUserStore(writeUsersFile(t, map[string]int{testUserAdmin: cost}))
+	store, err := NewUserStore(writeUsersFile(t, map[string]int{testUserAdmin: cost}), nil)
 	if err != nil {
 		t.Fatalf("NewUserStore: %v", err)
 	}
@@ -218,7 +230,7 @@ func TestUserStore_UnknownUserRunsBcrypt(t *testing.T) {
 		return bcrypt.CompareHashAndPassword(hash, password)
 	}
 
-	if store.Authenticate("nobody", "admin-pw") != nil {
+	if authenticate(t, store, "nobody", "admin-pw") != nil {
 		t.Error("unknown user must not authenticate")
 	}
 	if len(compared) != 1 || string(compared[0]) != string(store.dummyHash) {
@@ -226,7 +238,7 @@ func TestUserStore_UnknownUserRunsBcrypt(t *testing.T) {
 	}
 
 	compared = nil
-	if store.Authenticate(testUserAdmin, "wrong") != nil {
+	if authenticate(t, store, testUserAdmin, "wrong") != nil {
 		t.Error("wrong password must not authenticate")
 	}
 	if len(compared) != 1 || string(compared[0]) == string(store.dummyHash) {
@@ -234,7 +246,7 @@ func TestUserStore_UnknownUserRunsBcrypt(t *testing.T) {
 	}
 
 	compared = nil
-	if store.Authenticate(testUserAdmin, "admin-pw") == nil {
+	if authenticate(t, store, testUserAdmin, "admin-pw") == nil {
 		t.Error("correct password must authenticate")
 	}
 	if len(compared) != 1 {
@@ -246,13 +258,13 @@ func TestUserStore_UnknownUserRunsBcrypt(t *testing.T) {
 // turn into a credential: a comparison that succeeds for an unknown user must
 // still be rejected.
 func TestUserStore_DummyHashNeverMatches(t *testing.T) {
-	store, err := NewUserStore(writeUsersFile(t, map[string]int{testUserAdmin: bcrypt.MinCost}))
+	store, err := NewUserStore(writeUsersFile(t, map[string]int{testUserAdmin: bcrypt.MinCost}), nil)
 	if err != nil {
 		t.Fatalf("NewUserStore: %v", err)
 	}
 	store.compare = func(_, _ []byte) error { return nil }
 
-	if store.Authenticate("nobody", "anything") != nil {
+	if authenticate(t, store, "nobody", "anything") != nil {
 		t.Error("unknown user authenticated although only the dummy hash matched")
 	}
 }
@@ -300,7 +312,7 @@ func TestUserStore_UnusableHashRunsBcryptAgainstDummy(t *testing.T) {
 	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
 		t.Fatal(err)
 	}
-	store, err := NewUserStore(path)
+	store, err := NewUserStore(path, nil)
 	if err != nil {
 		t.Fatalf("NewUserStore: %v", err)
 	}
@@ -311,7 +323,7 @@ func TestUserStore_UnusableHashRunsBcryptAgainstDummy(t *testing.T) {
 			compared = append(compared, hash)
 			return nil // even a comparison that "succeeds" must not log the user in
 		}
-		if store.Authenticate(name, "anything") != nil {
+		if authenticate(t, store, name, "anything") != nil {
 			t.Errorf("%s: authenticated despite an unusable password hash", name)
 		}
 		if len(compared) != 1 || string(compared[0]) != string(store.dummyHash) {
@@ -337,7 +349,7 @@ func TestUserStore_HashProblems(t *testing.T) {
 		if err := os.WriteFile(path, []byte(content), 0600); err != nil {
 			t.Fatal(err)
 		}
-		store, err := NewUserStore(path)
+		store, err := NewUserStore(path, nil)
 		if err != nil {
 			t.Fatalf("NewUserStore: %v", err)
 		}
@@ -385,7 +397,7 @@ func TestUserStore_DamagedSaltIsUnusable(t *testing.T) {
 	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
 		t.Fatal(err)
 	}
-	store, err := NewUserStore(path)
+	store, err := NewUserStore(path, nil)
 	if err != nil {
 		t.Fatalf("NewUserStore: %v", err)
 	}
@@ -395,7 +407,7 @@ func TestUserStore_DamagedSaltIsUnusable(t *testing.T) {
 		compared = append(compared, hash)
 		return bcrypt.CompareHashAndPassword(hash, password)
 	}
-	if store.Authenticate(testUserBroken, "pw") != nil {
+	if authenticate(t, store, testUserBroken, "pw") != nil {
 		t.Error("authenticated against a hash that cannot be evaluated")
 	}
 	if len(compared) != 1 || string(compared[0]) != string(store.dummyHash) {

@@ -114,8 +114,8 @@ type loginCounter struct {
 // so only the local table knows the full count.
 //
 // A slot is reserved before the password is verified and handed back only on
-// success, so concurrent attempts cannot all slip past a check made before any
-// of them was recorded.
+// success, or when the password could not be checked at all, so concurrent
+// attempts cannot all slip past a check made before any of them was recorded.
 type LoginThrottle struct {
 	cfg          LoginThrottleConfig
 	rdb          *redis.Client
@@ -183,7 +183,8 @@ var loginAcquireScript = redis.NewScript(`
 	return {0, 0}
 `)
 
-// loginReleaseScript releases the counters in KEYS after a successful login.
+// loginReleaseScript releases the counters in KEYS after a successful login
+// or for an attempt that was canceled before the password was checked.
 // ARGV[i] says how: "clear" deletes the counter, anything else hands one slot
 // back without touching the expiry and never takes the counter below zero.
 //
@@ -238,18 +239,33 @@ func (t *LoginThrottle) Acquire(ctx context.Context, account, ip string) LoginAt
 // the same address ran up against others. A failed attempt needs no call: it
 // simply keeps its slot until the window expires.
 func (t *LoginThrottle) Success(ctx context.Context, attempt LoginAttempt) {
+	t.release(ctx, attempt, true)
+}
+
+// Cancel hands back the slot of an attempt whose password was never checked,
+// because the check could not be run. The attempt is neither a success nor a
+// failure: every counter gets back the one slot it had reserved, and nothing
+// is cleared.
+func (t *LoginThrottle) Cancel(ctx context.Context, attempt LoginAttempt) {
+	t.release(ctx, attempt, false)
+}
+
+// release hands back the slot an attempt had reserved. clearAccount says
+// whether the account's counters are cleared on top of that, as after a
+// successful login.
+func (t *LoginThrottle) release(ctx context.Context, attempt LoginAttempt, clearAccount bool) {
 	if !attempt.Allowed || len(attempt.counters) == 0 {
 		return
 	}
 
 	if t.rdb != nil {
-		if err := t.releaseRedis(ctx, attempt); err != nil {
+		if err := t.releaseRedis(ctx, attempt, clearAccount); err != nil {
 			// The counters stay higher than they should be, which errs on the
 			// side of throttling.
 			t.logger.WarnContext(ctx, "login throttle: could not release counters in Redis", "error", err)
 		}
 	}
-	t.local.release(attempt.counters, attempt.shared, t.now())
+	t.local.release(attempt.counters, attempt.shared, clearAccount, t.now())
 }
 
 // counters lists the enabled counters an attempt is charged to.
@@ -319,12 +335,12 @@ func (t *LoginThrottle) warnEvicted(ctx context.Context, evicted int) {
 	}
 }
 
-func (t *LoginThrottle) releaseRedis(ctx context.Context, attempt LoginAttempt) error {
+func (t *LoginThrottle) releaseRedis(ctx context.Context, attempt LoginAttempt, clearAccount bool) error {
 	keys := make([]string, 0, len(attempt.counters))
 	modes := make([]any, 0, len(attempt.counters))
 	for _, c := range attempt.counters {
 		switch {
-		case c.scope != LoginScopeIP:
+		case clearAccount && c.scope != LoginScopeIP:
 			keys = append(keys, c.key)
 			modes = append(modes, "clear")
 		case attempt.shared:
@@ -499,15 +515,16 @@ func (l *localLoginCounters) exhaust(c loginCounter, remaining time.Duration, no
 	return l.reportable(dropped, now)
 }
 
-// release mirrors Success on the Redis side: account counters are cleared and
-// the address gets its slot back. shared says whether that slot was one Redis
-// knows about.
-func (l *localLoginCounters) release(counters []loginCounter, shared bool, now time.Time) {
+// release mirrors Success and Cancel on the Redis side: with clearAccount the
+// account counters are cleared and the address gets its slot back, without it
+// every counter gets its slot back. shared says whether that slot was one
+// Redis knows about.
+func (l *localLoginCounters) release(counters []loginCounter, shared, clearAccount bool, now time.Time) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
 	for _, c := range counters {
-		if c.scope != LoginScopeIP {
+		if clearAccount && c.scope != LoginScopeIP {
 			delete(l.entries, c.key)
 			continue
 		}

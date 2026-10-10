@@ -26,6 +26,21 @@ never moved before and now count rejected bearer credentials — expect a small
 baseline from clients presenting an access token that has just expired — and
 there is a new `method="password"`.
 
+**Behavior change:** `/mcp` answers a request without a valid credential with
+`401` and a `WWW-Authenticate: Bearer` challenge instead of `200`; the
+JSON-RPC error in the body is unchanged. MCP clients (Claude Code, Claude
+Desktop and claude.ai connectors, `mcp-remote`, the MCP TypeScript SDK) act
+on that status to start the OAuth flow or to refresh an expired token; none
+of them relies on the `200`. A reverse proxy in front of ToolMesh must pass
+the `401` and the `WWW-Authenticate` header on `/mcp` through unchanged, and
+monitoring that treats every `4xx` on `/mcp` as an error will now see the
+requests that used to hide behind a `200`. A request whose credential could
+not be checked at that moment is answered `503` with `Retry-After` on `/mcp`,
+`/authorize`, `/files/upload` and `DELETE /blobs/…`. `toolmesh_logins_total`
+has a new `method="anonymous"`; a failure ratio computed over all methods
+now includes requests that carry no credential at all (see `docs/metrics.md`
+for a query that leaves them out).
+
 ### Security
 
 - Failed password logins are now limited: per account from one client address
@@ -53,6 +68,40 @@ there is a new `method="password"`.
   honored either, including ones still in the token store from an earlier
   configuration. The single-password comparison no longer depends on the
   length of the configured password.
+- A bearer credential is no longer compared with bcrypt against every entry
+  of `apikeys.yaml` before anything else is tried. Until now any request with
+  an `Authorization: Bearer` header, valid or not, cost one bcrypt comparison
+  per configured key, so a few dozen requests per second from anyone were
+  enough to keep every core busy, and every request with an access token paid
+  the same. API keys are now found through an index over SHA-256 digests, and
+  access tokens are looked up before any bcrypt comparison. An entry can name
+  its key as `key_sha256`, which is indexed when the file is loaded. Existing
+  files with only a bcrypt `key_hash` keep working unchanged: such an entry
+  joins the index the first time its key is used after startup, and until
+  then it is the only kind a comparison is still spent on. ToolMesh logs a
+  warning at startup while a file has such entries. See
+  `docs/configuration.md`, "API Keys".
+- The number of bcrypt comparisons running at the same time is bounded for
+  the whole process (`TOOLMESH_BCRYPT_MAX_CONCURRENT`, default: half of the
+  available CPUs, at least one). The bound covers password logins, including
+  the comparison an unknown username costs, and the remaining comparisons
+  for API keys. A request that cannot get a comparison in time is answered
+  `503` with `Retry-After`; it is not a failed login and does not count
+  against the failed-login limits.
+- `/mcp` answers `401` with `WWW-Authenticate: Bearer` and the
+  `resource_metadata` of the endpoint, as the MCP authorization specification
+  requires, and serves that metadata at
+  `/.well-known/oauth-protected-resource/mcp`. A rejected bearer credential
+  gets `error="invalid_token"`.
+- The single `TOOLMESH_API_KEY` is compared in constant time independent of
+  its length; the comparison used to return early when the lengths differed.
+- Requests to `/mcp` that are turned away are logged at `INFO` (`mcp request
+  rejected: unauthorized`, with the client address and whether a credential
+  was presented) instead of `DEBUG`, and requests without any credential are
+  counted in `toolmesh_logins_total{method="anonymous"}`.
+- A failure of the token store is answered `503` instead of being reported
+  to the client as an invalid credential, and an API key is accepted without
+  the token store being asked.
 
 ## [0.4.1] - 2026-09-24
 

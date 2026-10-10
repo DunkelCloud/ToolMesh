@@ -34,7 +34,7 @@ Authentication / token-issuance events.
 
 | Label    | Values                                                            |
 | -------- | ----------------------------------------------------------------- |
-| `method` | `password`, `oauth_code`, `oauth_refresh`, `oauth_bearer`, `api_key` |
+| `method` | `password`, `oauth_code`, `oauth_refresh`, `oauth_bearer`, `api_key`, `anonymous` |
 | `result` | `success`, `failure`                                              |
 
 - `password` — Password login at `/authorize` (username and password, or the
@@ -44,6 +44,9 @@ Authentication / token-issuance events.
   and are counted, when the server has no password login configured.
 - `oauth_bearer` — Validation of a bearer access token on each MCP request.
 - `api_key` — API-key match (per-request, both file-based and legacy env-var auth).
+- `anonymous` — A request without a bearer credential on an endpoint that
+  authenticates (`/mcp`, `/files/upload`, `DELETE /blobs/…`). It is not a login
+  of any method, so it has a label of its own.
 
 `oauth_bearer` and `api_key` are recorded **per request**, so they double as
 authenticated-request-rate metrics. Server-internal errors (failure to persist
@@ -65,12 +68,23 @@ What counts as a `failure`:
   rejected bearer counts for that one: `oauth_bearer` when no API key is
   configured, `api_key` when there is no password login and therefore no
   access tokens are honored. A request without a bearer credential is not
-  counted.
+  counted here, but as `anonymous`.
 
   Access tokens are 64 lowercase hex characters. An API key generated in the
   same form (`openssl rand -hex 32`, for example) cannot be told from one when
   it is rejected, so on a deployment that offers both password login and API
   keys a wrong key of that form is counted as `oauth_bearer`.
+
+- `anonymous` — a request without a bearer credential that was turned away
+  with `401`. This is what an MCP client sends before it has a token, so a
+  small number accompanies every new connection; it is also what a scanner
+  sends. `success` is counted only on a server that has no authentication
+  configured at all, for every request it serves that way.
+
+A request whose credential could not be checked — the token store failed, or
+no [password hash comparison](configuration.md#password-hash-comparisons)
+could be started — is answered `503` and counted nowhere: it is neither a
+success nor a failure.
 
 Access tokens expire after an hour, so a deployment with OAuth clients has a
 small steady rate of `oauth_bearer` failures from clients presenting a token
@@ -115,15 +129,18 @@ Buckets are tuned to typical REST-backend latencies:
 # Login attempts per second by method, last 5 minutes
 sum by (method) (rate(toolmesh_logins_total[5m]))
 
-# Failed login ratio
-sum(rate(toolmesh_logins_total{result="failure"}[5m]))
-  / sum(rate(toolmesh_logins_total[5m]))
+# Failed login ratio (requests without any credential are left out)
+sum(rate(toolmesh_logins_total{result="failure",method!="anonymous"}[5m]))
+  / sum(rate(toolmesh_logins_total{method!="anonymous"}[5m]))
 
 # Failed password logins in the last 15 minutes (guessing, or the limits engaging)
 increase(toolmesh_logins_total{method="password",result="failure"}[15m])
 
 # Rejected API keys in the last 15 minutes
 increase(toolmesh_logins_total{method="api_key",result="failure"}[15m])
+
+# Requests without any credential that were turned away, last 15 minutes
+increase(toolmesh_logins_total{method="anonymous",result="failure"}[15m])
 
 # Tool-call error+denied rate per backend
 sum by (backend) (rate(toolmesh_tool_calls_total{result=~"error|denied"}[5m]))

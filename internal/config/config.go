@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"runtime"
 	"strconv"
 	"strings"
 )
@@ -125,6 +126,12 @@ type Config struct {
 	LoginMaxFailuresPerIP     int // TOOLMESH_LOGIN_MAX_FAILURES_PER_IP, default 50: one address across all accounts
 	LoginFailureWindow        int // TOOLMESH_LOGIN_FAILURE_WINDOW, default 900
 
+	// BcryptMaxConcurrent is how many bcrypt comparisons may run at the same
+	// time across the whole process: password logins (for known and unknown
+	// usernames) and API keys that have only a bcrypt key_hash.
+	// TOOLMESH_BCRYPT_MAX_CONCURRENT, default DefaultBcryptMaxConcurrent().
+	BcryptMaxConcurrent int
+
 	// Persistent state directory
 	DataDir string
 
@@ -224,6 +231,9 @@ func Load() (*Config, error) {
 	if err := cfg.loadLoginThrottle(); err != nil {
 		return nil, err
 	}
+	if err := cfg.loadBcryptLimit(); err != nil {
+		return nil, err
+	}
 
 	// Fail fast on a typo here: the value only ever surfaces as a Location
 	// header on the site root, where a silently-ignored setting would look
@@ -275,6 +285,32 @@ func (c *Config) loadLoginThrottle() error {
 		return fmt.Errorf("invalid TOOLMESH_LOGIN_FAILURE_WINDOW: %d (must be between 1 and %d seconds)", window, maxLoginFailureWindow)
 	}
 	c.LoginFailureWindow = window
+	return nil
+}
+
+// DefaultBcryptMaxConcurrent is the default for TOOLMESH_BCRYPT_MAX_CONCURRENT:
+// half of the CPUs the process may use, and at least one. A bcrypt comparison
+// keeps one core busy for its whole duration, so this leaves at least half of
+// the cores to everything that needs no hashing, however many logins arrive
+// at once.
+func DefaultBcryptMaxConcurrent() int {
+	return max(1, runtime.GOMAXPROCS(0)/2)
+}
+
+// loadBcryptLimit reads TOOLMESH_BCRYPT_MAX_CONCURRENT. Like the failed-login
+// limits it is parsed strictly, so a typo stops the server instead of putting
+// the default in place of the bound the operator meant to set. There is no
+// value that switches the bound off: zero would refuse every password login.
+func (c *Config) loadBcryptLimit() error {
+	const key = "TOOLMESH_BCRYPT_MAX_CONCURRENT"
+	n, err := envIntStrict(key, DefaultBcryptMaxConcurrent())
+	if err != nil {
+		return err
+	}
+	if n < 1 {
+		return fmt.Errorf("invalid %s: %d (must be a positive number)", key, n)
+	}
+	c.BcryptMaxConcurrent = n
 	return nil
 }
 

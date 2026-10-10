@@ -158,13 +158,13 @@ keys:
 Generate a key and its `key_sha256`:
 
 ```bash
-KEY=$(openssl rand -hex 32)
+KEY="tm_$(openssl rand -hex 32)"
 printf '%s' "$KEY" | sha256sum | cut -d' ' -f1
 ```
 
 Each key maps to a distinct user identity with its own plan and roles, which flow through to OpenFGA authorization.
 
-Entries with a bcrypt `key_hash`, as files written for earlier versions have them, keep working without any change. Such an entry costs a bcrypt comparison until its key has been used once after startup; `key_sha256` is looked up directly and is meant for randomly generated keys. See [docs/configuration.md](docs/configuration.md#api-keys) for the details and for how the two forms differ.
+Entries with a bcrypt `key_hash`, as files written for earlier versions have them, keep working without any change. Until its key has been used once after startup, such an entry costs a bcrypt comparison for every bearer credential that nothing else recognizes; `key_sha256` is looked up directly and is meant for randomly generated keys. See [docs/configuration.md](docs/configuration.md#api-keys) for the details and for how the two forms differ.
 
 For single-key setups, `TOOLMESH_API_KEY` still works as a fallback. The same `TOOLMESH_AUTH_USER`, `TOOLMESH_AUTH_PLAN`, and `TOOLMESH_AUTH_ROLES` variables control the identity.
 

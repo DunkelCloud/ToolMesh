@@ -266,6 +266,34 @@ func TestMCP_ChallengeLeadsToMetadataOfTheEndpoint(t *testing.T) {
 	}
 }
 
+// A client that runs in a browser can read a response header only if the
+// server exposes it, so an allowed origin has to be shown the challenge.
+func TestMCP_ChallengeIsExposedToAllowedOrigins(t *testing.T) {
+	cfg := loginTestConfig()
+	cfg.CORSAllowedOrigins = []string{testOriginClaudeAI}
+	ts := newLoginTestServer(t, cfg, loginTestOptions{})
+
+	call := func(origin string) *httptest.ResponseRecorder {
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, pathMCP, strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"ping"}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Origin", origin)
+		w := httptest.NewRecorder()
+		ts.mux.ServeHTTP(w, req)
+		return w
+	}
+
+	w := call(testOriginClaudeAI)
+	if w.Code != http.StatusUnauthorized || w.Header().Get(testHeaderChallenge) == "" {
+		t.Fatalf("status = %d, WWW-Authenticate = %q; want 401 with a challenge", w.Code, w.Header().Get(testHeaderChallenge))
+	}
+	if got := w.Header().Get("Access-Control-Expose-Headers"); got != testHeaderChallenge {
+		t.Errorf("Access-Control-Expose-Headers = %q for an allowed origin, want %s", got, testHeaderChallenge)
+	}
+	if got := call("https://evil.example").Header().Get("Access-Control-Expose-Headers"); got != "" {
+		t.Errorf("Access-Control-Expose-Headers = %q for an origin that is not allowed, want none", got)
+	}
+}
+
 // A request without any credential is visible: one INFO line and one count,
 // under a method of its own so that it is not mistaken for a failed login.
 func TestMCP_AnonymousRequestIsLoggedAndCounted(t *testing.T) {

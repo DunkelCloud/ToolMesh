@@ -25,6 +25,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	"golang.org/x/crypto/bcrypt"
 	"gopkg.in/yaml.v3"
@@ -64,6 +65,14 @@ type APIKeySummary struct {
 	Unusable []string
 }
 
+// apiKeyScanConcurrency is how many requests at a time may be compared with
+// bcrypt against the entries that are not in the index yet. A bearer
+// credential costs nothing to send, so the requests that need such a
+// comparison get a queue of their own and at most this many of the
+// comparison slots. Whatever arrives on the bearer path, it cannot fill the
+// queue the password login waits in.
+const apiKeyScanConcurrency = 1
+
 // indexKey addresses an entry in the in-memory index of an APIKeyStore.
 type indexKey [sha256.Size]byte
 
@@ -79,11 +88,18 @@ type indexKey [sha256.Size]byte
 // loaded, because the hash does not reveal the key. It joins the index the
 // first time its key is presented and verified with bcrypt; from then on it
 // is found like the others. Until then it is one of the unseen entries, the
-// only ones a bcrypt comparison is still spent on.
+// only ones a bcrypt comparison is still spent on. An entry whose key is
+// never presented stays unseen: a key nobody uses, or a second entry for a
+// key that an earlier entry already matches.
 type APIKeyStore struct {
 	keys    []APIKeyEntry
 	summary APIKeySummary
+
+	// limiter is the bound on bcrypt comparisons that the whole process
+	// shares. scans admits apiKeyScanConcurrency requests at a time to it and
+	// is where the others wait; it exists only together with limiter.
 	limiter *CompareLimiter
+	scans   *CompareLimiter
 
 	// compare is bcrypt.CompareHashAndPassword; a field so tests can observe
 	// how many comparisons a lookup costs.
@@ -123,6 +139,9 @@ func NewAPIKeyStore(path string, limiter *CompareLimiter) (*APIKeyStore, error) 
 		limiter: limiter,
 		compare: bcrypt.CompareHashAndPassword,
 		index:   make(map[indexKey]int, len(cfg.Keys)),
+	}
+	if limiter != nil {
+		store.scans = NewCompareLimiter(apiKeyScanConcurrency)
 	}
 	if _, err := rand.Read(store.secret[:]); err != nil {
 		return nil, fmt.Errorf("prepare apikeys index: %w", err)
@@ -174,20 +193,49 @@ func (s *APIKeyStore) Find(key string) *APIKeyEntry {
 // comparison is not repeated for that key. Once every such entry has been
 // seen, Verify compares nothing.
 //
-// It returns (nil, nil) if no entry matches, and an error if a comparison
+// It returns (nil, nil) if no entry matches, and an error if the comparisons
 // could not be run (see CompareLimiter.Do); in that case key was not checked
 // against every entry and the caller must not treat it as rejected.
 //
+// Requests are admitted to the comparisons one at a time, and the others wait
+// in a queue of their own (see apiKeyScanConcurrency). A request that is
+// admitted takes one slot of the shared limiter per comparison, and all its
+// waits for those slots together are held to what a single comparison may
+// wait.
+//
 // An entry is bound to the key that first matched it. That changes nothing
-// for keys shorter than 72 bytes, which bcrypt matches exactly. bcrypt ignores
-// everything beyond 72 bytes, so several longer values can match one hash;
-// of those only the first one presented is accepted from then on.
+// for keys shorter than 72 bytes, which bcrypt matches exactly. bcrypt reads
+// only the first 72 bytes, so several longer values can match one hash; of
+// those only the first one presented is accepted from then on.
 func (s *APIKeyStore) Verify(ctx context.Context, key string) (*APIKeyEntry, error) {
 	at := s.indexKeyOf(key)
+	if entry := s.lookup(at); entry != nil {
+		return entry, nil
+	}
+	if len(s.unseenEntries()) == 0 {
+		return nil, nil
+	}
+
+	var (
+		entry   *APIKeyEntry
+		scanErr error
+	)
+	if err := s.scans.Do(ctx, func() { entry, scanErr = s.scan(ctx, key, at) }); err != nil {
+		return nil, err
+	}
+	return entry, scanErr
+}
+
+// scan compares key against the unseen entries in file order.
+func (s *APIKeyStore) scan(ctx context.Context, key string, at indexKey) (*APIKeyEntry, error) {
+	var allowance time.Duration
+	if s.limiter != nil {
+		allowance = s.limiter.maxWait
+	}
 	unseen := s.unseenEntries()
 	for n := 0; ; n++ {
-		// The index is asked before every comparison: a concurrent request
-		// may have verified the same key in the meantime.
+		// The index is asked before every comparison: a request that was
+		// admitted earlier may have verified the same key in the meantime.
 		if entry := s.lookup(at); entry != nil {
 			return entry, nil
 		}
@@ -196,12 +244,13 @@ func (s *APIKeyStore) Verify(ctx context.Context, key string) (*APIKeyEntry, err
 		}
 		i := unseen[n]
 		var mismatch error
-		err := s.limiter.Do(ctx, func() {
+		waited, err := s.limiter.do(ctx, allowance, func() {
 			mismatch = s.compare([]byte(s.keys[i].KeyHash), []byte(key))
 		})
 		if err != nil {
 			return nil, err
 		}
+		allowance -= waited
 		if mismatch == nil {
 			return s.remember(i, at), nil
 		}

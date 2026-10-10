@@ -2,7 +2,7 @@
 #
 #   key_sha256  SHA-256 of the key, 64 hex characters. Looked up directly, no
 #               bcrypt comparison. For randomly generated keys:
-#                 KEY=$(openssl rand -hex 32)
+#                 KEY="tm_$(openssl rand -hex 32)"
 #                 printf '%s' "$KEY" | sha256sum | cut -d' ' -f1
 #
 #   key_hash    bcrypt hash of the key, as in files written for earlier

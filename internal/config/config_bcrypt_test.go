@@ -75,3 +75,29 @@ func TestLoad_BcryptMaxConcurrentRejectsInvalidValues(t *testing.T) {
 		})
 	}
 }
+
+func TestIssuerIsPlaceholder(t *testing.T) {
+	for issuer, want := range map[string]bool{
+		"https://toolmesh.io/":           true,
+		"https://toolmesh.io":            true,
+		"https://TOOLMESH.io/":           true,
+		"https://toolmesh.example.com/":  false,
+		"https://demo.toolmesh.io/":      false,
+		"http://localhost:8123/":         false,
+		"https://toolmesh.io/somewhere/": false,
+	} {
+		if got := (&Config{Issuer: issuer}).IssuerIsPlaceholder(); got != want {
+			t.Errorf("IssuerIsPlaceholder(%q) = %v, want %v", issuer, got, want)
+		}
+	}
+
+	// Unset, the variable falls back to the placeholder.
+	t.Setenv("TOOLMESH_ISSUER", "")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.IssuerIsPlaceholder() {
+		t.Errorf("default issuer %q is not recognized as the placeholder", cfg.Issuer)
+	}
+}

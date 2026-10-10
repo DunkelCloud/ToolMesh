@@ -18,6 +18,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -379,6 +380,187 @@ func TestAPIKeyStore_VerifyReportsBusyLimiter(t *testing.T) {
 	if entry, err := store.Verify(context.Background(), "key-a"); err != nil || entry == nil || entry.UserID != "a" {
 		t.Errorf("Verify after the slot was freed = %v, %v; want the entry", entry, err)
 	}
+}
+
+// waitFor polls until cond holds and fails the test if it does not in time.
+func waitFor(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	for deadline := time.Now().Add(5 * time.Second); !cond(); {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting until %s", what)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// Anyone can send bearer credentials, as many as they like. Those that have
+// to be compared must not be able to take the comparison slots away from the
+// password login, nor fill the queue it waits in: they are admitted one at a
+// time and wait in a queue of their own.
+func TestAPIKeyStore_ComparisonsForBearersDoNotCrowdOutOthers(t *testing.T) {
+	const flood = 40
+
+	for _, capacity := range []int{1, 2} {
+		t.Run(fmt.Sprintf("capacity %d", capacity), func(t *testing.T) {
+			limiter := NewCompareLimiter(capacity)
+			limiter.maxWait = time.Minute
+			store, err := NewAPIKeyStore(writeAPIKeysFile(t, bcryptKeyEntry(t, "never-used-key", "dormant", bcrypt.MinCost)), limiter)
+			if err != nil {
+				t.Fatalf("NewAPIKeyStore: %v", err)
+			}
+			store.scans.maxWait = time.Minute
+
+			// Every comparison for a bearer stops here until the test lets
+			// it go on, and the order of what ran is recorded.
+			var mu sync.Mutex
+			var order []string
+			var running, peak atomic.Int32
+			proceed := make(chan struct{})
+			started := make(chan struct{}, flood)
+			store.compare = func(hash, key []byte) error {
+				if n := running.Add(1); n > peak.Load() {
+					peak.Store(n)
+				}
+				mu.Lock()
+				order = append(order, "bearer")
+				mu.Unlock()
+				started <- struct{}{}
+				<-proceed
+				running.Add(-1)
+				return bcrypt.ErrMismatchedHashAndPassword
+			}
+
+			var wg sync.WaitGroup
+			for i := range flood {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					if entry, err := store.Verify(context.Background(), fmt.Sprintf("unknown-bearer-%d", i)); err != nil || entry != nil {
+						t.Errorf("Verify(unknown bearer %d) = %v, %v; want no match and no error", i, entry, err)
+					}
+				}()
+			}
+			<-started
+			waitFor(t, "the other bearers wait for their turn", func() bool { return store.scans.waiting.Load() == flood-1 })
+
+			if got := running.Load(); got != 1 {
+				t.Errorf("%d comparisons for bearers run at once, want 1", got)
+			}
+			if got := limiter.waiting.Load(); got != 0 {
+				t.Errorf("%d bearers wait in the queue of the shared limiter, want 0", got)
+			}
+
+			// A password login asks the shared limiter for a comparison.
+			login := make(chan error, 1)
+			go func() {
+				login <- limiter.Do(context.Background(), func() {
+					mu.Lock()
+					order = append(order, "login")
+					mu.Unlock()
+				})
+			}()
+			if capacity > 1 {
+				// A slot is free for it, whatever the bearers do.
+				select {
+				case err := <-login:
+					if err != nil {
+						t.Errorf("login with a slot free: %v", err)
+					}
+				case <-time.After(5 * time.Second):
+					t.Fatal("the login did not get the free slot")
+				}
+			} else {
+				// The only slot is held by one comparison for a bearer. The
+				// login waits for exactly that one and is served before the
+				// next bearer.
+				waitFor(t, "the login waits for the slot", func() bool { return limiter.waiting.Load() == 1 })
+				proceed <- struct{}{}
+				select {
+				case err := <-login:
+					if err != nil {
+						t.Errorf("login behind one comparison: %v", err)
+					}
+				case <-time.After(5 * time.Second):
+					t.Fatal("the login was not served after the comparison ahead of it")
+				}
+				mu.Lock()
+				got := strings.Join(order[:min(len(order), 2)], ",")
+				mu.Unlock()
+				if got != "bearer,login" {
+					t.Errorf("order = %s, want the login right after the one comparison it had to wait for", got)
+				}
+			}
+
+			close(proceed)
+			wg.Wait()
+			if got := peak.Load(); got != apiKeyScanConcurrency {
+				t.Errorf("at most %d comparisons for bearers ran at once, want %d", got, apiKeyScanConcurrency)
+			}
+		})
+	}
+}
+
+// A bearer that has to be compared against several entries waits for a slot
+// before each comparison. All those waits together are held to what a single
+// comparison may wait, so that the number of entries does not multiply the
+// time a request can be kept waiting.
+func TestAPIKeyStore_WaitsOfOneRequestShareOneAllowance(t *testing.T) {
+	const (
+		allowance  = 1000 * time.Millisecond
+		firstHold  = 600 * time.Millisecond // the first wait uses up at least this much of the allowance
+		secondHold = 700 * time.Millisecond // more than what is left of it, less than a fresh one
+	)
+	limiter := NewCompareLimiter(1)
+	limiter.maxWait = allowance
+	store, err := NewAPIKeyStore(writeAPIKeysFile(t,
+		bcryptKeyEntry(t, "key-a", "a", bcrypt.MinCost),
+		bcryptKeyEntry(t, "key-b", "b", bcrypt.MinCost),
+	), limiter)
+	if err != nil {
+		t.Fatalf("NewAPIKeyStore: %v", err)
+	}
+
+	// Someone else holds the slot while the request waits for its first
+	// comparison, and takes it again while that comparison runs.
+	release := holdSlot(t, limiter)
+	again := make(chan struct{})
+	var comparisons atomic.Int64
+	store.compare = func(_, _ []byte) error {
+		if comparisons.Add(1) == 1 {
+			go func() {
+				_ = limiter.Do(context.Background(), func() {
+					close(again)
+					time.Sleep(secondHold)
+				})
+			}()
+			for deadline := time.Now().Add(5 * time.Second); limiter.waiting.Load() != 1 && time.Now().Before(deadline); {
+				time.Sleep(time.Millisecond)
+			}
+		}
+		return bcrypt.ErrMismatchedHashAndPassword
+	}
+
+	result := make(chan error, 1)
+	go func() {
+		_, err := store.Verify(context.Background(), "not-a-key")
+		result <- err
+	}()
+	waitFor(t, "the request waits for its first comparison", func() bool { return limiter.waiting.Load() == 1 })
+	time.Sleep(firstHold)
+	release()
+
+	select {
+	case err := <-result:
+		if !errors.Is(err, ErrCompareBusy) {
+			t.Errorf("Verify = %v, want ErrCompareBusy once the allowance is used up", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Verify did not return")
+	}
+	if got := comparisons.Load(); got != 1 {
+		t.Errorf("%d comparisons ran, want 1: the second had no allowance left to wait for the slot", got)
+	}
+	<-again
 }
 
 // BenchmarkAPIKeyStore_UnknownBearer measures what it costs to reject a value

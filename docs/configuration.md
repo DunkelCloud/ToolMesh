@@ -14,7 +14,7 @@ All configuration is done via environment variables. Copy `.env.example` to `.en
 | `TOOLMESH_AUTH_USER` | `owner` | User identity in simple auth mode (password/single API key) |
 | `TOOLMESH_AUTH_PLAN` | `pro` | Plan in simple auth mode |
 | `TOOLMESH_AUTH_ROLES` | `admin` | Comma-separated roles in simple auth mode |
-| `TOOLMESH_ISSUER` | `https://toolmesh.io/` | OAuth issuer URL (must end with `/`) |
+| `TOOLMESH_ISSUER` | `https://toolmesh.io/` | OAuth issuer URL (must end with `/`). The default is a placeholder: set it to the public URL clients use, or the OAuth metadata and the [`401` challenge of `/mcp`](#unauthenticated-requests) name the wrong host. ToolMesh logs a warning at startup while it is unchanged. |
 | `TOOLMESH_ROOT_REDIRECT` | *(empty)* | Absolute `http(s)` URL that `GET /` redirects to (302). Unset, the site root serves the built-in page explaining that this host is an MCP endpoint. Only `/` is redirected — `/mcp` always serves the page, since a visitor there needs the URL to copy. An invalid value fails startup. |
 | `TOOLMESH_DEV` | `false` | Local-development posture. Reports the startup security-posture summary at `INFO` instead of `WARN`. Relaxes no setting on its own — it only changes the log level of that summary. |
 
@@ -66,7 +66,7 @@ Failed logins are also counted in `toolmesh_logins_total{result="failure"}`; see
 | Field | Value | How a presented key is found |
 |-------|-------|------------------------------|
 | `key_sha256` | SHA-256 of the key, 64 hex characters | Table lookup. No bcrypt comparison, from the first request on. |
-| `key_hash` | bcrypt hash of the key | One bcrypt comparison the first time the key is presented after startup, table lookup from then on. |
+| `key_hash` | bcrypt hash of the key | By bcrypt comparison the first time the key is presented after startup, table lookup from then on. |
 
 ```yaml
 keys:
@@ -81,15 +81,19 @@ keys:
 Generate a key and the value for `key_sha256`:
 
 ```bash
-KEY=$(openssl rand -hex 32)
+KEY="tm_$(openssl rand -hex 32)"
 printf '%s' "$KEY" | sha256sum | cut -d' ' -f1
 ```
 
+The prefix is not required. It keeps a key from looking like an access token, which is 64 hex characters: a wrong key that has that form is logged and counted as an unknown token instead of as a rejected API key (see [metrics.md](metrics.md)).
+
 - **Existing files keep working unchanged.** A file that has only `key_hash` entries needs no migration, and the keys themselves stay the same in either form.
 - **Use `key_sha256` for randomly generated keys only.** SHA-256 is fast, which is what makes the lookup cheap. For a random key of 128 bits or more that costs nothing: it cannot be guessed, however fast the hash. A key that a person chose, or a short one, could be guessed from a leaked `apikeys.yaml` far faster than through bcrypt. Keep such a key as `key_hash`, or better, replace it with a random one.
-- **What a `key_hash`-only entry still costs.** A bcrypt hash cannot be put into the lookup table when the file is loaded, because it does not reveal the key. Until the key of such an entry has been used once since startup, a bearer credential that nothing else recognizes is compared against the entry: one bcrypt comparison per entry that has not been seen. Entries whose key has been used, and entries with a `key_sha256`, are never compared again. At startup ToolMesh logs how many entries are in which form, with a warning if any have only a `key_hash`. To remove the cost, add `key_sha256` to the entry. `key_hash` may stay next to it; it is then not used, and the file still works with a version that does not know `key_sha256`.
+- **What a `key_hash`-only entry still costs.** A bcrypt hash cannot be put into the lookup table when the file is loaded, because it does not reveal the key. Until the key of such an entry has been used once since startup, the entry is *unseen*: a bearer credential that nothing else recognizes is compared against every unseen entry, in file order, one bcrypt comparison each. That applies to the first use of the key itself and to any value that is no credential at all. Entries whose key has been used, and entries with a `key_sha256`, are never compared again. An entry stays unseen for as long as its key is not presented: a key nobody uses, or a second entry for a key that an earlier entry already matches.
+- **How that cost is bounded.** Requests that need these comparisons are admitted one at a time and wait in a queue of their own, so they occupy at most one of the [comparison slots](#password-hash-comparisons) and cannot keep password logins from theirs. A request waits up to 5 seconds for its turn and, once admitted, up to 5 seconds in total for the slots of its comparisons. When more than 64 such requests are waiting, or the wait runs out, the request is answered `503` with `Retry-After`. Under a flood of made-up bearer credentials this is what the first use of a `key_hash`-only key can run into; keys that were used before, keys with a `key_sha256`, access tokens and password logins are not affected.
+- **Removing it.** Add `key_sha256` to the entry. `key_hash` may stay next to it; it is then not used, and the file still works with a version that does not know `key_sha256`. At startup ToolMesh logs how many entries are in which form, with a warning if any have only a `key_hash`.
 - **Validation at startup.** A `key_sha256` that is not 64 hex characters, or that two entries share, stops the server. An entry with neither a `key_sha256` nor a `key_hash` that bcrypt can work on matches no key; it is reported in a warning with its `user_id`.
-- **Keys longer than 72 bytes with `key_hash`.** bcrypt reads only the first 72 bytes of a key, so different values that agree in those bytes match the same hash. Such an entry accepts the first of them that is presented after startup and only that one from then on. Keys of up to 72 bytes are not affected. `key_sha256` covers the whole key.
+- **Keys of 72 bytes or more with `key_hash`.** bcrypt reads only the first 72 bytes of a key, so different values that agree in those bytes match the same hash. Such an entry accepts the first of them that is presented after startup and only that one from then on. Keys shorter than 72 bytes are not affected. `key_sha256` covers the whole key.
 
 Without an `apikeys.yaml`, the single key in `TOOLMESH_API_KEY` applies. It is compared in constant time, independent of its length.
 
@@ -107,6 +111,7 @@ If the request carried a bearer credential that was rejected, for example an exp
 
 - **Metadata.** `/.well-known/oauth-protected-resource/mcp` describes the MCP endpoint; its `resource` is `TOOLMESH_ISSUER` followed by `mcp`. Clients compare that value with the URL they connect to, so `TOOLMESH_ISSUER` has to be the public URL clients use. `/.well-known/oauth-protected-resource` is served as before.
 - **Reverse proxies** must pass the `401` status and the `WWW-Authenticate` header through unchanged.
+- **Browsers.** For origins in `TOOLMESH_CORS_ORIGINS` the `WWW-Authenticate` header is exposed (`Access-Control-Expose-Headers`), so that an MCP client running in a browser can read the challenge.
 - **`503` is not `401`.** A request whose credential could not be checked right now, because the token store failed or because no [password hash comparison](#password-hash-comparisons) could be started, is answered `503 Service Unavailable` with `Retry-After`. That says nothing about the credential; answering `401` would make a client discard a token that is still good.
 - **In the log.** Every request that `/mcp` turns away is logged at `INFO` as `mcp request rejected: unauthorized`, with `remote` (the client address) and `credential`: `none` for a request without a bearer credential, `rejected` for one whose credential was not accepted. The latter also has its `bearer authentication failed` line (see [above](#failed-logins-in-the-log)).
 - **In the metrics.** A request without a bearer credential is counted in `toolmesh_logins_total{method="anonymous"}`; see [metrics.md](metrics.md).
@@ -125,6 +130,8 @@ bcrypt is slow on purpose: one comparison keeps one CPU core busy for tens of mi
 - a bearer credential that has to be compared against `key_hash`-only API key entries (see [API Keys](#api-keys)).
 
 Access tokens, API keys with a `key_sha256`, `TOOLMESH_API_KEY` and `TOOLMESH_AUTH_PASSWORD` never need one. The limit keeps the first group from taking the CPU away from the second: however many logins or unknown credentials arrive at once, no more than this many cores are busy hashing.
+
+The two kinds do not compete on equal terms. A bearer credential costs nothing to send, so the requests that need a comparison for one are admitted one at a time and wait in a queue of their own (see [API Keys](#api-keys)): together they use at most one slot, and they cannot fill the queue a password login waits in. With a limit of `1`, a login waits for at most the one comparison that is running.
 
 A comparison that finds every slot taken waits up to 5 seconds for a free one. If none becomes free in that time, or 64 comparisons per slot are already waiting, the request is answered `503` with `Retry-After: 1` — on the login form with a note that the server is busy, on `/mcp` as a JSON-RPC error — and logged at `WARN` as `authentication deferred: no password hash comparison could be started`, with `method` and `remote`. The credential was not checked, so the request is not a failed login: it is not counted in `toolmesh_logins_total` and does not use up the [failed-login limits](#login-throttling).
 

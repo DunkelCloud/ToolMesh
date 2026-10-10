@@ -330,6 +330,19 @@ func (c *Config) LoginThrottleDisabled() []string {
 	return off
 }
 
+// placeholderIssuer is the TOOLMESH_ISSUER that .env.example ships and that
+// applies when the variable is not set. It is the address of the project's
+// website, not of any ToolMesh instance.
+const placeholderIssuer = "https://toolmesh.io"
+
+// IssuerIsPlaceholder reports whether TOOLMESH_ISSUER was left at the value
+// from .env.example. Everything that is built from the issuer then names a
+// host that is not this instance: the OAuth endpoints in the metadata, the
+// metadata URL in the 401 challenge of /mcp, and the URLs of the file broker.
+func (c *Config) IssuerIsPlaceholder() bool {
+	return strings.EqualFold(strings.TrimRight(c.Issuer, "/"), placeholderIssuer)
+}
+
 // AuthRolesList returns the simple-mode auth roles as a string slice.
 func (c *Config) AuthRolesList() []string {
 	return strings.Split(c.AuthRoles, ",")

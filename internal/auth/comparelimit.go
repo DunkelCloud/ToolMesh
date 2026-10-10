@@ -48,6 +48,9 @@ const (
 // bearer credential can ask for one, so without a bound the number of
 // concurrent requests decides how many cores are busy hashing.
 //
+// Waiters are served in the order they arrived, and a slot that is given back
+// goes to the longest waiter before anyone who arrives later can take it.
+//
 // A nil *CompareLimiter does not limit anything.
 type CompareLimiter struct {
 	slots      chan struct{}
@@ -79,42 +82,67 @@ func (l *CompareLimiter) Capacity() int {
 }
 
 // Do runs compare while holding one of the slots. If none becomes free in
-// time, compare is not run and the error is ErrCompareBusy; if ctx ends
-// first, the error wraps ctx.Err(). In both cases nothing was compared.
+// time, compare is not run and the error is ErrCompareBusy; if ctx has ended
+// or ends first, the error wraps ctx.Err(). In both cases nothing was
+// compared.
 func (l *CompareLimiter) Do(ctx context.Context, compare func()) error {
 	if l == nil {
 		compare()
 		return nil
 	}
-	if err := l.acquire(ctx); err != nil {
-		return err
+	_, err := l.do(ctx, l.maxWait, compare)
+	return err
+}
+
+// do is Do with the wait for a slot limited to wait instead of the limiter's
+// own maximum, and it reports how long the wait was. A caller that needs
+// several comparisons for one request uses it to keep the waits of all of
+// them within one allowance. With wait <= 0 it takes a slot only if one is
+// free right now.
+func (l *CompareLimiter) do(ctx context.Context, wait time.Duration, compare func()) (waited time.Duration, err error) {
+	if l == nil {
+		compare()
+		return 0, nil
+	}
+	if waited, err = l.acquire(ctx, wait); err != nil {
+		return waited, err
 	}
 	defer func() { <-l.slots }()
 	compare()
-	return nil
+	return waited, nil
 }
 
-func (l *CompareLimiter) acquire(ctx context.Context) error {
+func (l *CompareLimiter) acquire(ctx context.Context, wait time.Duration) (time.Duration, error) {
+	// A request nobody waits for anymore gets no comparison, even if a slot
+	// happens to be free.
+	if err := ctx.Err(); err != nil {
+		return 0, fmt.Errorf("password hash comparison not started: %w", err)
+	}
+
 	select {
 	case l.slots <- struct{}{}:
-		return nil
+		return 0, nil
 	default:
+	}
+	if wait <= 0 {
+		return 0, ErrCompareBusy
 	}
 
 	if l.waiting.Add(1) > l.maxWaiting {
 		l.waiting.Add(-1)
-		return ErrCompareBusy
+		return 0, ErrCompareBusy
 	}
 	defer l.waiting.Add(-1)
 
-	timer := time.NewTimer(l.maxWait)
+	start := time.Now()
+	timer := time.NewTimer(wait)
 	defer timer.Stop()
 	select {
 	case l.slots <- struct{}{}:
-		return nil
+		return time.Since(start), nil
 	case <-timer.C:
-		return ErrCompareBusy
+		return time.Since(start), ErrCompareBusy
 	case <-ctx.Done():
-		return fmt.Errorf("waiting for a password hash comparison slot: %w", ctx.Err())
+		return time.Since(start), fmt.Errorf("waiting for a password hash comparison slot: %w", ctx.Err())
 	}
 }

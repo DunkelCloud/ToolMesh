@@ -181,6 +181,87 @@ func TestCompareLimiter_QueueIsBounded(t *testing.T) {
 	}
 }
 
+// A request that has already ended gets no comparison, even with a slot free:
+// nobody is waiting for the answer.
+func TestCompareLimiter_EndedContextGetsNoComparison(t *testing.T) {
+	l := NewCompareLimiter(1)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := l.Do(ctx, func() { t.Error("the comparison ran for a request that had ended") })
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("err = %v, want context.Canceled", err)
+	}
+	// The slot is still free for the next caller.
+	if err := l.Do(context.Background(), func() {}); err != nil {
+		t.Errorf("Do after the refused one: %v", err)
+	}
+}
+
+// Without an allowance for waiting, a comparison takes a slot only if one is
+// free right now.
+func TestCompareLimiter_NoAllowanceMeansNoWaiting(t *testing.T) {
+	l := NewCompareLimiter(1)
+	l.maxWait = time.Minute
+
+	ran := false
+	if waited, err := l.do(context.Background(), 0, func() { ran = true }); err != nil || !ran || waited != 0 {
+		t.Errorf("free slot: waited = %v, err = %v, ran = %v; want the comparison to run at once", waited, err, ran)
+	}
+
+	holdSlot(t, l)
+	_, err := l.do(context.Background(), 0, func() { t.Error("the comparison ran without a slot") })
+	if !errors.Is(err, ErrCompareBusy) {
+		t.Errorf("taken slot: err = %v, want ErrCompareBusy", err)
+	}
+	if got := l.waiting.Load(); got != 0 {
+		t.Errorf("waiting = %d, want 0: a caller without allowance must not queue", got)
+	}
+}
+
+// A slot that is given back goes to whoever waits for it, not to a caller that
+// arrives afterwards. The store for API keys relies on this: it is what keeps
+// a stream of requests that take a slot one after the other from starving a
+// login that waits for the same slot.
+func TestCompareLimiter_WaiterIsServedBeforeLaterArrival(t *testing.T) {
+	l := NewCompareLimiter(1)
+	l.maxWait = time.Minute
+	release := holdSlot(t, l)
+
+	waiterRuns, waiterMayFinish := make(chan struct{}), make(chan struct{})
+	waiterDone := make(chan error, 1)
+	go func() {
+		waiterDone <- l.Do(context.Background(), func() {
+			close(waiterRuns)
+			<-waiterMayFinish
+		})
+	}()
+	for deadline := time.Now().Add(5 * time.Second); l.waiting.Load() != 1; {
+		if time.Now().After(deadline) {
+			t.Fatal("the waiter never started waiting")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	// The slot comes back. Whether or not the waiter has run yet, it is the
+	// waiter's now.
+	release()
+	_, err := l.do(context.Background(), 0, func() { t.Error("a later arrival took the slot the waiter was waiting for") })
+	if !errors.Is(err, ErrCompareBusy) {
+		t.Errorf("later arrival: err = %v, want ErrCompareBusy", err)
+	}
+
+	select {
+	case <-waiterRuns:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the waiter did not get the slot")
+	}
+	close(waiterMayFinish)
+	if err := <-waiterDone; err != nil {
+		t.Errorf("waiter: %v", err)
+	}
+}
+
 func TestCompareLimiter_ContextEndsTheWait(t *testing.T) {
 	l := NewCompareLimiter(1)
 	l.maxWait = time.Minute

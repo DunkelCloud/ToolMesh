@@ -488,6 +488,10 @@ func main() {
 	// decides whether to enforce credentials.
 	authConfigured := cfg.AuthPassword != "" || cfg.APIKey != "" || userStore != nil || apiKeyStore != nil
 	logSecurityPosture(cfg, authConfigured, logger)
+	if authConfigured && cfg.IssuerIsPlaceholder() {
+		logger.Warn("TOOLMESH_ISSUER is still the placeholder from .env.example: the OAuth metadata, the 401 challenge of /mcp and file-broker URLs name that host instead of this instance, so clients that are not given a credential up front cannot sign in. Set it to the public URL clients use",
+			"issuer", cfg.Issuer)
+	}
 
 	logger.Info("ToolMesh MCP server listening", "addr", srv.Addr)
 	if err := srv.ListenAndServe(); err != http.ErrServerClosed {

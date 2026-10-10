@@ -78,9 +78,11 @@ for a query that leaves them out).
   its key as `key_sha256`, which is indexed when the file is loaded. Existing
   files with only a bcrypt `key_hash` keep working unchanged: such an entry
   joins the index the first time its key is used after startup, and until
-  then it is the only kind a comparison is still spent on. ToolMesh logs a
-  warning at startup while a file has such entries. See
-  `docs/configuration.md`, "API Keys".
+  then it is the only kind a comparison is still spent on. Requests that
+  need such a comparison are admitted one at a time, so they use at most one
+  core and cannot keep password logins waiting. ToolMesh logs a warning at
+  startup while a file has such entries. See `docs/configuration.md`,
+  "API Keys".
 - The number of bcrypt comparisons running at the same time is bounded for
   the whole process (`TOOLMESH_BCRYPT_MAX_CONCURRENT`, default: half of the
   available CPUs, at least one). The bound covers password logins, including
@@ -92,7 +94,10 @@ for a query that leaves them out).
   `resource_metadata` of the endpoint, as the MCP authorization specification
   requires, and serves that metadata at
   `/.well-known/oauth-protected-resource/mcp`. A rejected bearer credential
-  gets `error="invalid_token"`.
+  gets `error="invalid_token"`. Origins in `TOOLMESH_CORS_ORIGINS` are
+  allowed to read the header. The challenge is built from `TOOLMESH_ISSUER`;
+  ToolMesh warns at startup while that is still the placeholder from
+  `.env.example`.
 - The single `TOOLMESH_API_KEY` is compared in constant time independent of
   its length; the comparison used to return early when the lengths differed.
 - Requests to `/mcp` that are turned away are logged at `INFO` (`mcp request

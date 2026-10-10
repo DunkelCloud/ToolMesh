@@ -49,7 +49,7 @@ ToolMesh follows a security-by-default design:
 - **Authorization:** Fine-grained access control via OpenFGA (plan -> tool mapping)
 - **Authentication required:** With no `TOOLMESH_AUTH_PASSWORD`/`TOOLMESH_API_KEY` (or `users.yaml`/`apikeys.yaml`), every request is rejected — the server is never open by default.
 - **Login throttling:** Failed password logins are limited per account and per client address, logged, and counted; an unknown username costs the same work and gets the same answer as a wrong password.
-- **Bounded password hashing:** The number of bcrypt comparisons running at once is limited for the whole process. A bearer credential is looked up, not compared with bcrypt against every API key, and an access token never costs a comparison.
+- **Bounded password hashing:** The number of bcrypt comparisons running at once is limited for the whole process. API keys are found by lookup and an access token never costs a comparison. Only API key entries that are configured as a bcrypt hash and have not been used since startup are still compared, one request at a time; configuring them with `key_sha256` removes that.
 - **Unauthenticated requests are answered `401`** with a `WWW-Authenticate` challenge on `/mcp`, logged, and counted.
 - **Safe defaults:** Logging defaults to `info` (no request payloads); the unauthenticated metrics port is bound to loopback by the Compose file; caller-supplied `file_url` fetches fail closed against private/internal addresses.
 

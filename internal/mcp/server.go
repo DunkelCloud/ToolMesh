@@ -196,6 +196,9 @@ func (s *Server) cors(next http.HandlerFunc) http.HandlerFunc {
 				w.Header().Set("Access-Control-Allow-Credentials", "true")
 				w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 				w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, Mcp-Protocol-Version")
+				// Without this a client running in a browser cannot read the
+				// challenge of a 401 and has to guess where the metadata is.
+				w.Header().Set("Access-Control-Expose-Headers", "WWW-Authenticate")
 				w.Header().Set("Access-Control-Max-Age", "86400")
 			}
 		}

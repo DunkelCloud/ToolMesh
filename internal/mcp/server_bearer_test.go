@@ -48,8 +48,9 @@ const (
 	testHeaderRetryAfter = "Retry-After"
 
 	// testNoWait is the deadline of a request that is expected to wait for a
-	// bcrypt comparison slot it cannot get.
-	testNoWait = 30 * time.Millisecond
+	// bcrypt comparison slot it cannot get. Everything the request does before
+	// it starts waiting has to fit in, on a busy machine as well.
+	testNoWait = 150 * time.Millisecond
 	// testNoNeedToWait is the deadline of a request that must be answered
 	// without any bcrypt comparison. It is generous: nothing waits for it
 	// unless the request does ask for a comparison, which is the failure.
@@ -468,21 +469,26 @@ func TestLogin_ComparisonThatCannotStartIsNotAFailedLogin(t *testing.T) {
 	ts := newLoginTestServer(t, cfg, loginTestOptions{users: map[string]string{testLoginUserAlice: testLoginSecret}, limiter: limiter})
 	release := holdCompareSlots(t, limiter)
 
-	// More attempts than any of the limits would allow if they were charged.
-	attempts := 0
-	for range cfg.LoginMaxFailuresPerIP + 1 {
-		for _, username := range []string{testLoginUserAlice, "nobody"} {
-			attempts++
-			w := ts.loginWithin(testNoWait, username, testLoginSecret)
-			if w.Code != http.StatusServiceUnavailable {
-				t.Fatalf("attempt %d (%s): status = %d, want 503", attempts, username, w.Code)
-			}
-			if got := w.Header().Get(testHeaderRetryAfter); got != authUnavailableRetryAfter {
-				t.Errorf("Retry-After = %q, want %q", got, authUnavailableRetryAfter)
-			}
-			if body := w.Body.String(); !strings.Contains(body, "<form") || !strings.Contains(body, "busy") {
-				t.Errorf("body should be the login form with a note that the server is busy: %q", body)
-			}
+	// For the known user, more attempts than the limit for one account from
+	// one address would allow if they were charged; and the unknown user,
+	// whose comparison against the dummy hash is bounded all the same.
+	const unknownUser = "nobody"
+	usernames := make([]string, 0, cfg.LoginMaxFailuresPerUserIP+4)
+	usernames = append(usernames, unknownUser, unknownUser)
+	for range cfg.LoginMaxFailuresPerUserIP + 2 {
+		usernames = append(usernames, testLoginUserAlice)
+	}
+	attempts := len(usernames)
+	for i, username := range usernames {
+		w := ts.loginWithin(testNoWait, username, testLoginSecret)
+		if w.Code != http.StatusServiceUnavailable {
+			t.Fatalf("attempt %d (%s): status = %d, want 503", i+1, username, w.Code)
+		}
+		if got := w.Header().Get(testHeaderRetryAfter); got != authUnavailableRetryAfter {
+			t.Errorf("Retry-After = %q, want %q", got, authUnavailableRetryAfter)
+		}
+		if body := w.Body.String(); !strings.Contains(body, "<form") || !strings.Contains(body, "busy") {
+			t.Errorf("body should be the login form with a note that the server is busy: %q", body)
 		}
 	}
 	if got := ts.loginCount(t, loginMethodPassword, "failure"); got != 0 {

@@ -75,6 +75,12 @@ writable; it is in the shipped `docker-compose.yml`, which no longer sets
   It is reported in the security-posture summary and recorded in the audit
   trail (status `authz_disabled`).
 
+### Changed
+
+- Building ToolMesh requires Go 1.26 (was 1.25, which no longer receives
+  security fixes); the Docker image is built with `golang:1.26-alpine`. The
+  embedded OpenFGA is v1.22.0.
+
 ### Deprecated
 
 - `OPENFGA_MODE`. Read only while `TOOLMESH_AUTHZ_MODE` is not set: `restrict`

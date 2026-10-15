@@ -269,7 +269,7 @@ or set `TOOLMESH_AUTHZ_PRESET`.
 - **Cost.** A check takes about 0.3 to 0.5 ms. A tool listing does not check
   every tool on its own: tools without grants of their own that share a
   backend and access classification are decided once, so filtering a listing
-  of 3,000 tools takes about 60 ms.
+  of 3,000 tools takes about 70 ms.
 
 ### External mode
 

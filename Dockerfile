@@ -1,7 +1,7 @@
 # Pin the builder to the native build platform. Without this, buildx runs the
 # whole stage under QEMU emulation for every non-native target platform. Go
 # cross-compiles on its own via GOARCH below, so emulation buys nothing.
-FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS builder
 
 ARG VERSION=dev
 ARG COMMIT=unknown

@@ -46,7 +46,7 @@ ToolMesh follows a security-by-default design:
 - **Output Gate:** Every tool result passes through the policy engine
 - **Credential Isolation:** Secrets are injected at runtime, never exposed in prompts
 - **Audit Trail:** Every tool execution is recorded via Temporal workflow history
-- **Authorization:** Fine-grained access control via OpenFGA (plan -> tool mapping)
+- **Authorization on by default:** Every tool call is checked by OpenFGA, built into ToolMesh (user, role, plan or company -> tool). Switching it off takes `TOOLMESH_AUTHZ_MODE=disabled`, which is reported at every start and recorded in the audit trail.
 - **Authentication required:** With no `TOOLMESH_AUTH_PASSWORD`/`TOOLMESH_API_KEY` (or `users.yaml`/`apikeys.yaml`), every request is rejected — the server is never open by default.
 - **Login throttling:** Failed password logins are limited per account and per client address, logged, and counted; an unknown username costs the same work and gets the same answer as a wrong password.
 - **Bounded password hashing:** The number of bcrypt comparisons running at once is limited for the whole process. API keys are found by lookup and an access token never costs a comparison. Only API key entries that are configured as a bcrypt hash and have not been used since startup are still compared, one request at a time; configuring them with `key_sha256` removes that.
@@ -57,7 +57,7 @@ ToolMesh follows a security-by-default design:
 
 No default silently relaxes a control. At boot ToolMesh logs a single
 **security-posture summary** listing every control still in a relaxed state
-(missing auth credential, authz bypass, open CORS, debug tools, login limits
+(missing auth credential, authorization disabled or open to everyone, open CORS, debug tools, login limits
 switched off) with a remediation hint. These are logged at `WARN` in the default production posture;
 set `TOOLMESH_DEV=true` on a development machine to report the same facts once at
 `INFO`. `TOOLMESH_DEV` changes only the log level of this summary — it never

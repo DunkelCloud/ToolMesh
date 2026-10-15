@@ -57,6 +57,11 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Whether an earlier run left state in the data directory, decided before
+	// anything below writes to it. The embedded authorization engine uses it
+	// to tell an upgraded installation from a fresh one.
+	priorState := authz.HasPriorState(cfg.DataDir)
+
 	// Setup logger
 	var logLevel slog.Level
 	switch cfg.LogLevel {
@@ -242,22 +247,18 @@ func main() {
 		logger.Info("backends hot-reloaded successfully")
 	})
 
-	// Initialize OpenFGA authorizer based on OPENFGA_MODE
-	var authorizer *authz.Authorizer
-	if cfg.OpenFGAMode == config.OpenFGAModeRestrict {
-		if cfg.OpenFGAStoreID == "" {
-			logger.Error("OPENFGA_MODE=restrict requires OPENFGA_STORE_ID to be set")
-			os.Exit(1)
-		}
-		authorizer, err = authz.NewAuthorizer(cfg.OpenFGAAPIURL, cfg.OpenFGAStoreID, logger)
-		if err != nil {
-			logger.Error("failed to create authorizer", "error", err)
-			os.Exit(1)
-		}
-		logger.Info("OpenFGA authorizer initialized", "mode", config.OpenFGAModeRestrict, "storeId", cfg.OpenFGAStoreID)
+	// Initialize authorization (TOOLMESH_AUTHZ_MODE). The disabled case
+	// (authorizer == nil) is reported by the consolidated security-posture
+	// summary emitted just before the server starts listening.
+	authzEngine, err := setupAuthz(ctx, cfg, priorState, logger)
+	if err != nil {
+		logger.Error("failed to initialize authorization", "mode", cfg.AuthzMode, "error", err)
+		os.Exit(1)
 	}
-	// The bypass case (authorizer == nil) is reported by the consolidated
-	// security-posture summary emitted just before the server starts listening.
+	defer authzEngine.close()
+	if authzEngine.embedded != nil {
+		go watchAuthzConfig(ctx, cfg, authzEngine.embedded, 5*time.Second, logger)
+	}
 
 	// Initialize gate pipeline via registry
 	gateNames := strings.Split(cfg.GateEvaluators, ",")
@@ -294,6 +295,9 @@ func main() {
 		os.Exit(1)
 	}
 	logger.Info("audit store initialized", "type", cfg.AuditStore)
+	if authzEngine.authorizer == nil {
+		recordAuthzDisabled(ctx, auditStore, cfg, logger)
+	}
 
 	// Initialize Prometheus metrics registry (nil when disabled — all record
 	// calls are no-ops on a nil receiver). Created before the executor so the
@@ -305,7 +309,7 @@ func main() {
 
 	// Initialize executor
 	execTimeout := time.Duration(cfg.ExecTimeout) * time.Second
-	exec := executor.New(authorizer, credStore, compositeBackend, gatePipeline, auditStore, execTimeout, logger, tc, metricsReg)
+	exec := executor.New(authzEngine.authorizer, credStore, compositeBackend, gatePipeline, auditStore, execTimeout, logger, tc, metricsReg)
 
 	// Authorize composite child api.* calls with the same authz + pre-gate as a
 	// direct tool call. Wired here because the guard (the executor) is built
@@ -487,7 +491,7 @@ func main() {
 	// when TOOLMESH_DEV=true. authConfigured mirrors how the auth middleware
 	// decides whether to enforce credentials.
 	authConfigured := cfg.AuthPassword != "" || cfg.APIKey != "" || userStore != nil || apiKeyStore != nil
-	logSecurityPosture(cfg, authConfigured, logger)
+	logSecurityPosture(cfg, authConfigured, authzEngine.openToEveryone(), logger)
 	if authConfigured && cfg.IssuerIsPlaceholder() {
 		logger.Warn("TOOLMESH_ISSUER is still the placeholder from .env.example: the OAuth metadata, the 401 challenge of /mcp and file-broker URLs name that host instead of this instance, so clients that are not given a credential up front cannot sign in. Set it to the public URL clients use",
 			"issuer", cfg.Issuer)

@@ -25,7 +25,6 @@ services:
       # Soft heap limit (~75% of mem_limit) so the Go GC throttles allocation
       # before the container hard limit triggers an OOM kill.
       - GOMEMLIMIT=${GOMEMLIMIT:-768MiB}
-      - OPENFGA_MODE=${OPENFGA_MODE:-bypass}
       - AUDIT_STORE=${AUDIT_STORE:-log}
       - TOOLMESH_DATA_DIR=/app/data
       - TOOLMESH_METRICS_ENABLED=${TOOLMESH_METRICS_ENABLED:-true}
@@ -50,14 +49,17 @@ services:
   #   ports:
   #     - "3001:3001"
 
-  # --- OpenFGA authorization (uncomment to enable OPENFGA_MODE=restrict) ---
-  # Required only when OPENFGA_MODE=restrict. In the default bypass mode
-  # these services are not needed.
+  # --- External OpenFGA server (TOOLMESH_AUTHZ_MODE=external) ---
+  # Not needed by default: authorization runs inside ToolMesh
+  # (TOOLMESH_AUTHZ_MODE=embedded, data in ./data/authz.db). Use these services
+  # only to run your own OpenFGA server, e.g. one shared with other
+  # applications.
   # To enable:
   #   1. Uncomment the OpenFGA services and the mysqldata volume below.
   #   2. docker compose up -d
   #   3. ./config/openfga/setup.sh
-  #   4. Copy OPENFGA_STORE_ID from the output into .env and set OPENFGA_MODE=restrict.
+  #   4. Copy OPENFGA_STORE_ID from the output into .env and set
+  #      TOOLMESH_AUTHZ_MODE=external and OPENFGA_API_URL=http://openfga:8080.
   #   5. docker compose down && docker compose up -d
   #
   # openfga-migrate:

@@ -144,12 +144,166 @@ The default is half of the CPUs the process may use (in a container with a CPU l
 | `AUDIT_STORE` | `log` | Audit store: `log` (structured slog output, write-only) or `sqlite` (append-only SQLite database, queryable) |
 | `AUDIT_RETENTION_DAYS` | `90` | Retention period in days for the sqlite store — entries older than this are automatically deleted |
 
-## OpenFGA
+## Authorization
+
+Every tool call is checked before it runs: a direct call, each `api.*` call
+inside a composite, and every tool listing (`tools/list`, `discover_tools`,
+`toolmesh.discover` in Code Mode), which shows only the tools the caller may
+execute. A denied call returns an error result and is audited with status
+`denied`.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `OPENFGA_API_URL` | `http://localhost:8080` | OpenFGA API endpoint. In Docker Compose use `http://openfga:8080` (set in `.env`). |
-| `OPENFGA_STORE_ID` | *(empty)* | OpenFGA store ID (set by `./config/openfga/setup.sh`) |
+| `TOOLMESH_AUTHZ_MODE` | `embedded` | `embedded`: ToolMesh runs the checks itself, on a database in the data directory. `external`: checks go to an OpenFGA server you operate. `disabled`: no checks (see [below](#disabling-authorization)). |
+| `TOOLMESH_AUTHZ_PRESET` | *(chosen at startup)* | Embedded mode: preset grants, `single-user`, `team` or `open` (see [Presets](#presets)). Ignored while the grants file exists. |
+| `TOOLMESH_AUTHZ_CONFIG` | `/app/config/authz.yaml` | Embedded mode: the grants file. When it exists, its grants replace the preset. |
+| `OPENFGA_API_URL` | `http://localhost:8080` | External mode: OpenFGA API endpoint. In Docker Compose use `http://openfga:8080`. |
+| `OPENFGA_STORE_ID` | *(empty)* | External mode: store ID, required. |
+| `OPENFGA_MODE` | *(empty)* | Deprecated. Read only while `TOOLMESH_AUTHZ_MODE` is not set: `restrict` selects `external`, `bypass` selects `embedded` and counts as an [upgrade](#upgrading-an-installation-that-ran-without-authorization). ToolMesh logs a warning while it is set. |
+
+### Embedded mode
+
+Nothing needs to be installed or set up. ToolMesh runs
+[OpenFGA](https://openfga.dev) inside its own process and keeps its data in
+`authz.db` in the data directory (`TOOLMESH_DATA_DIR`, default `/app/data`), next to a small
+marker file, `.authz-bootstrap`. On the first start it creates the store and
+the authorization model; a later version that changes the model writes the new
+one on its first start. The data directory must be writable and should be
+persistent, as it is in the shipped `docker-compose.yml`.
+
+Who may call which tool is decided by **grants**. A grant names a subject and
+what it may call. Subjects are the users, roles, plans and companies that
+ToolMesh already knows from authentication: `username`, `roles`, `plan` and
+`company` in `users.yaml`, `user_id`, `roles`, `plan` and `company_id` in
+`apikeys.yaml`, and `TOOLMESH_AUTH_USER`, `TOOLMESH_AUTH_ROLES` and
+`TOOLMESH_AUTH_PLAN` for the single password or API key. There is nothing to
+keep in sync: a user who is moved to another plan in `users.yaml` is checked
+against the grants of that plan with the next call.
+
+The grants come from the first of these that applies:
+
+1. the grants file (`TOOLMESH_AUTHZ_CONFIG`), when it exists;
+2. the preset named in `TOOLMESH_AUTHZ_PRESET`;
+3. the preset `open`, for an [upgraded installation](#upgrading-an-installation-that-ran-without-authorization);
+4. the preset `team` when `users.yaml` or `apikeys.yaml` exists, otherwise
+   `single-user`.
+
+The log line `authorization policy applied` shows the preset, where the grants
+came from (`file`, `env`, `upgrade`, `default`) and how many there are.
+
+#### Presets
+
+| Preset | Who may call what |
+|--------|-------------------|
+| `single-user` | The owner (`TOOLMESH_AUTH_USER`, default `owner`) and every caller with the role `admin`: every tool. Nobody else: nothing. |
+| `team` | As `single-user`, and plan `pro`: every tool; plan `free`: every tool whose DADL access classification is `read`. |
+| `open` | Every authenticated caller: every tool. Reported as a relaxed control in the security-posture summary. |
+
+With the defaults of the single password or API key (user `owner`, plan `pro`,
+role `admin`), every preset lets that caller use every tool, as before.
+
+#### Grants file
+
+Copy `config/authz.yaml.example` to `config/authz.yaml`:
+
+```yaml
+preset: single-user        # optional: start from a preset
+
+grants:
+  - plan: pro
+    backends: [github, deepl]
+  - plan: free
+    access: [read]
+  - role: support
+    tools: [zammad_list_tickets, zammad_get_ticket]
+  - company: acme
+    backends: [netbox]
+  - user: alice
+    all_tools: true
+
+denies:                    # optional: blocks that win over every grant
+  - user: alice
+    tools: [stripe_create_refund]
+  - role: contractor
+    backends: [stripe]
+```
+
+Each grant names exactly one subject (`user`, `role`, `plan`, `company`, or
+`everyone: true` for every authenticated caller) and at least one target:
+
+- `all_tools: true`: every tool, including tools of backends added later.
+- `backends`: every tool of these backends, by their name in `backends.yaml`
+  (`echo` for the built-in tools). A grant covers the backend a call is
+  actually routed to: with the backends `web` and `web_search`, a grant on
+  `web` does not cover `web_search_query`.
+- `tools`: single tools by their full name, `<backend>_<tool>`.
+- `access`: every tool whose DADL access classification is one of these
+  (`read`, `write`, `admin`, `dangerous`, or a custom value). Tools without a
+  classification, which includes most tools of MCP backends, are not covered.
+
+A **deny** has the same form as a grant and blocks what it names for its
+subject, whatever any grant or the preset allows: a deny always wins. Use it to
+take single tools or backends away from a subject that otherwise has all of
+them, for example `alice` above, who keeps every tool except
+`stripe_create_refund`. A denied tool is refused with an error, audited as
+`denied`, and no longer listed for that caller. Only the grants file has
+denies; presets have none.
+
+ToolMesh reads the file at startup and again within a few seconds of every
+change, including when it is created or removed. A file that does not parse,
+or a grant or deny that names no subject or no target, stops the server at
+startup; on a later change it is reported in the log and the rules stay as
+they were. Calls that start after a change has been applied are checked
+against the new rules. While a change is applied, no call is allowed that
+neither the old nor the new rules allow.
+
+#### Upgrading an installation that ran without authorization
+
+Up to version 0.4, authorization was off unless `OPENFGA_MODE=restrict` was
+set. So that an upgrade does not lock anybody out, ToolMesh treats the first
+start of the embedded engine as an upgrade when `TOOLMESH_AUTHZ_MODE` is not
+set and either `OPENFGA_MODE=bypass` is set or the data directory already holds
+state from an earlier run. It then records the preset `open`, logs a warning,
+and reports it in the security-posture summary on every start: every
+authenticated caller may still call every tool. The record stays until you set
+`TOOLMESH_AUTHZ_PRESET` or write a grants file.
+
+To have an upgraded installation start with the restrictive defaults instead,
+set `TOOLMESH_AUTHZ_MODE=embedded` before the first start of the new version,
+or set `TOOLMESH_AUTHZ_PRESET`.
+
+#### Operations
+
+- **Back up** `authz.db` and `.authz-bootstrap` with the rest of the data
+  directory. The grants are written from configuration at every start, so a
+  lost `authz.db` is created again without losing anything; the marker file
+  keeps the upgrade decision of the first start, so an existing data directory
+  is not taken for an upgrade a second time.
+- **One process per data directory.** Two ToolMesh instances must not share
+  one `authz.db`.
+- **Cost.** A check takes about 0.5 to 0.6 ms. A tool listing does not check
+  every tool on its own: tools without grants or denies of their own that
+  share a backend and access classification are decided once, so filtering a
+  listing of 3,000 tools takes about 115 ms.
+
+### External mode
+
+`TOOLMESH_AUTHZ_MODE=external` sends every check to an OpenFGA server you
+operate (`OPENFGA_API_URL`, `OPENFGA_STORE_ID`), for example one that several
+applications share. ToolMesh only reads from it: it writes neither a model
+nor a tuple, and presets and the grants file do not apply. Each check asks
+whether `user:<user ID>` has the relation `can_execute` on
+`tool:<backend>_<tool>`; the model and tuples are yours.
+`config/openfga/` holds an example model, tuples and a setup script.
+
+### Disabling authorization
+
+`TOOLMESH_AUTHZ_MODE=disabled` is the only way to switch the checks off.
+Every authenticated caller may then call every tool. Authentication still
+applies. ToolMesh reports it in the security-posture summary on every start
+and records an audit entry with the status `authz_disabled` (tool
+`toolmesh_authz`), so the audit trail shows from when on calls went
+unchecked.
 
 ## Redis
 
@@ -228,7 +382,7 @@ The `./data` directory is typically volume-mounted to the host, so the debug fil
 
 ## Docker Compose Databases
 
-These variables are used by `docker-compose.yml` and do not affect the ToolMesh binary itself.
+These variables are used by `docker-compose.yml` and do not affect the ToolMesh binary itself. The `OPENFGA_DB_*` and `MYSQL_*` variables matter only for the optional OpenFGA services of [external mode](#external-mode).
 
 | Variable | Default | Description |
 |----------|---------|-------------|

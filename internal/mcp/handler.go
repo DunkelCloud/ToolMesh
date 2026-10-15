@@ -287,7 +287,7 @@ func (h *Handler) handleDiscoverTools(ctx context.Context, params map[string]any
 	if h.executor != nil {
 		uc := userctx.FromContext(ctx)
 		if uc != nil {
-			filtered = h.executor.FilterAuthorizedTools(ctx, uc.UserID, filtered)
+			filtered = h.executor.FilterAuthorizedTools(ctx, uc, filtered)
 		}
 	}
 
@@ -622,7 +622,7 @@ func (h *Handler) promotedToolDefinitions(ctx context.Context) []ToolDefinition 
 				d.Name = p.Canonical
 				canonicalDescs[i] = d
 			}
-			allowed := h.executor.FilterAuthorizedTools(ctx, uc.UserID, canonicalDescs)
+			allowed := h.executor.FilterAuthorizedTools(ctx, uc, canonicalDescs)
 			allowedSet := make(map[string]struct{}, len(allowed))
 			for _, d := range allowed {
 				allowedSet[d.Name] = struct{}{}

@@ -55,7 +55,7 @@ const paramPassword = "password"
 
 // Executor orchestrates the full tool execution pipeline.
 type Executor struct {
-	authorizer *authz.Authorizer
+	authorizer authz.Authorizer
 	creds      credentials.CredentialStore
 	backend    backend.ToolBackend
 	gate       *gate.Pipeline
@@ -67,9 +67,10 @@ type Executor struct {
 }
 
 // New creates a new Executor with all required dependencies. The metrics
-// registry is optional; pass nil to disable Prometheus instrumentation.
+// registry is optional; pass nil to disable Prometheus instrumentation. A nil
+// authorizer disables authorization (TOOLMESH_AUTHZ_MODE=disabled).
 func New(
-	authorizer *authz.Authorizer,
+	authorizer authz.Authorizer,
 	creds credentials.CredentialStore,
 	be backend.ToolBackend,
 	gatePipeline *gate.Pipeline,
@@ -162,7 +163,7 @@ func (e *Executor) ExecuteTool(ctx context.Context, req ExecuteToolRequest) (*ba
 	// Step 1: AuthZ check via OpenFGA
 	if e.authorizer != nil {
 		e.logger.DebugContext(ctx, "authz check", "tool", req.ToolName, "user", uc.UserID)
-		allowed, err := e.authorizer.Check(ctx, uc.UserID, req.ToolName)
+		allowed, err := e.authorizer.Check(ctx, e.authzRequest(uc, req.ToolName, toolAccess))
 		if err != nil {
 			entry.DurationMs = time.Since(start).Milliseconds()
 			entry.Status = statusError
@@ -347,8 +348,9 @@ func (e *Executor) CheckChild(ctx context.Context, toolName string, params map[s
 		return fmt.Errorf("no user context for child tool %s", toolName)
 	}
 
+	toolAccess := e.lookupToolAccess(toolName)
 	if e.authorizer != nil {
-		allowed, err := e.authorizer.Check(ctx, uc.UserID, toolName)
+		allowed, err := e.authorizer.Check(ctx, e.authzRequest(uc, toolName, toolAccess))
 		if err != nil {
 			return fmt.Errorf("authz check failed for child tool %s: %w", toolName, err)
 		}
@@ -361,7 +363,7 @@ func (e *Executor) CheckChild(ctx context.Context, toolName string, params map[s
 		gctx := gate.GateContext{
 			User:       *uc,
 			Tool:       toolName,
-			ToolAccess: e.lookupToolAccess(toolName),
+			ToolAccess: toolAccess,
 			Params:     params,
 		}
 		if _, err := e.gate.EvaluatePre(gctx); err != nil {
@@ -467,24 +469,75 @@ func sanitizeParams(params map[string]any) map[string]any {
 	return sanitized
 }
 
-// FilterAuthorizedTools filters a list of tools to only those the user is authorized to execute.
-// If no authorizer is configured, all tools are returned.
-func (e *Executor) FilterAuthorizedTools(ctx context.Context, userID string, tools []backend.ToolDescriptor) []backend.ToolDescriptor {
+// FilterAuthorizedTools filters a list of tools to only those the caller is
+// authorized to execute. If no authorizer is configured, all tools are
+// returned. A tool whose check fails is left out.
+func (e *Executor) FilterAuthorizedTools(ctx context.Context, uc *userctx.UserContext, tools []backend.ToolDescriptor) []backend.ToolDescriptor {
 	if e.authorizer == nil {
 		return tools
 	}
-	authorized := make([]backend.ToolDescriptor, 0, len(tools))
-	for _, t := range tools {
-		allowed, err := e.authorizer.Check(ctx, userID, t.Name)
-		if err != nil {
-			e.logger.DebugContext(ctx, "authz check failed during discover_tools filter", "tool", t.Name, "error", err)
-			continue
+	if uc == nil {
+		return nil
+	}
+	reqs := make([]authz.Request, len(tools))
+	for i, t := range tools {
+		access := t.Access
+		if access == "" {
+			access = e.lookupToolAccess(t.Name)
 		}
-		if allowed {
+		reqs[i] = e.authzRequest(uc, t.Name, access)
+	}
+
+	allowed := make([]bool, len(tools))
+	if bc, ok := e.authorizer.(authz.BatchChecker); ok {
+		var err error
+		allowed, err = bc.CheckBatch(ctx, reqs)
+		if err != nil {
+			e.logger.DebugContext(ctx, "authz check failed during tool filter", "error", err)
+		}
+	} else {
+		for i, r := range reqs {
+			ok, err := e.authorizer.Check(ctx, r)
+			if err != nil {
+				e.logger.DebugContext(ctx, "authz check failed during tool filter", "tool", r.Tool, "error", err)
+				continue
+			}
+			allowed[i] = ok
+		}
+	}
+
+	authorized := make([]backend.ToolDescriptor, 0, len(tools))
+	for i, t := range tools {
+		if allowed[i] {
 			authorized = append(authorized, t)
 		}
 	}
 	return authorized
+}
+
+// backendResolver is implemented by the composite backend: it names the
+// backend a tool call is routed to.
+type backendResolver interface {
+	ResolveBackendName(toolName string) (string, bool)
+}
+
+// authzRequest describes a call for the authorizer. The backend comes from
+// the same routing the call takes; splitting the name at the first underscore
+// would attribute "web_search_query" to a backend "web". Without a resolver
+// the backend stays empty, so grants on a backend do not apply.
+func (e *Executor) authzRequest(uc *userctx.UserContext, toolName, toolAccess string) authz.Request {
+	req := authz.Request{
+		UserID:    uc.UserID,
+		CompanyID: uc.CompanyID,
+		Plan:      uc.Plan,
+		Roles:     uc.Roles,
+		Tool:      toolName,
+		Access:    toolAccess,
+	}
+	if r, ok := e.backend.(backendResolver); ok {
+		req.Backend, _ = r.ResolveBackendName(toolName)
+	}
+	return req
 }
 
 // splitToolPrefix extracts the backend prefix from a tool name like "backend_tool".

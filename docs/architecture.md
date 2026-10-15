@@ -24,13 +24,41 @@ Every tool execution is recorded as an audit entry. The audit store is pluggable
 
 ### 3. OpenFGA (Authorization)
 
-Fine-grained authorization using a relationship-based model:
+Fine-grained, relationship-based authorization, on by default. In the default
+`embedded` mode ToolMesh runs OpenFGA as a library inside its own process, on
+a SQLite datastore in the data directory (`authz.db`). It creates the store
+and the model on first start and writes the model again when a new version
+changes it. In `external` mode it checks against an OpenFGA server operated
+separately and never writes to it.
+
+The embedded model keeps only the rules from configuration in the store:
+**grants**, which user, role, plan, company or everyone may execute all tools,
+the tools of a backend, the tools of a DADL access class, or single tools, and
+**denies** of the same form, which win over every grant. Grants come from a
+preset or from `config/authz.yaml`, denies from that file; ToolMesh writes them
+at startup and whenever the file changes. Everything else is passed with each check as contextual tuples, so it
+cannot drift from where it is configured:
 
 ```
-user → subscribes to → plan → associated with → tool
+caller (from authentication)      tool (from routing and DADL)
+  user:<id> ─ member ─▶ company     tool:<name> ─ instance ─▶ instance:toolmesh
+           ─ subscriber ─▶ plan                ─ backend ──▶ backend:<name>
+           ─ assignee ─▶ role                  ─ access_class ▶ access_class:<class>
+
+tool#can_execute = (executor on the tool, its instance, its backend or its access class)
+                   but not blocked on any of them
 ```
 
-The authorization check happens before any tool execution (fail-closed). If OpenFGA denies the request, the pipeline stops immediately.
+The backend is the one the call is routed to (longest-prefix match), not the
+first part of the tool name. A tool listing is filtered with one check per
+group of tools that share a backend and access class and have no grants of
+their own, which gives the same result as checking every tool.
+
+The authorization check happens before any tool execution (fail-closed): an
+error in the check denies the call. If the check denies, the pipeline stops
+immediately and the call is audited as `denied`. `TOOLMESH_AUTHZ_MODE=disabled`
+is the only way to skip the check; it is reported at startup and recorded in
+the audit trail.
 
 ### 4. MCP Aggregation
 
@@ -96,7 +124,7 @@ toolmesh/
 │   ├── backend/        # ToolBackend interface + MCPAdapter
 │   ├── executor/       # ExecuteTool pipeline (AuthZ → Creds → Gate → Exec → Audit)
 │   ├── audit/          # Audit store interface + log/sqlite implementations
-│   ├── authz/          # OpenFGA authorization
+│   ├── authz/          # Authorization: embedded OpenFGA, external client, presets, grants
 │   ├── credentials/    # Credential store interface + EmbeddedStore
 │   ├── gate/           # Output Gate (goja policy engine)
 │   ├── userctx/        # UserContext propagation

@@ -2,7 +2,7 @@
 
 > The missing control layer between AI agents and enterprise systems. ToolMesh turns uncontrolled AI tool calls into a governed, auditable process — and connects any REST API or MCP server in minutes, not months.
 
-[![Go](https://img.shields.io/badge/Go-1.25+-00ADD8?style=flat&logo=go)](https://go.dev)
+[![Go](https://img.shields.io/badge/Go-1.26+-00ADD8?style=flat&logo=go)](https://go.dev)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![CI](https://github.com/DunkelCloud/ToolMesh/actions/workflows/ci.yml/badge.svg)](https://github.com/DunkelCloud/ToolMesh/actions/workflows/ci.yml)
 [![Go Report Card](https://goreportcard.com/badge/github.com/DunkelCloud/ToolMesh)](https://goreportcard.com/report/github.com/DunkelCloud/ToolMesh)
@@ -25,7 +25,7 @@ You don't write the YAML by hand. You ask an LLM. Claude, GPT, Gemini — any mo
 And unlike MCP gateways that just pass tool calls through, ToolMesh adds what production deployments actually need:
 
 - **Credential Security** — secrets injected at execution time, never in prompts or LLM client configs
-- **Authorization** — fine-grained user → plan → tool control (OpenFGA)
+- **Authorization** — on by default: who may call which tool, by user, role, plan or company (OpenFGA, built in)
 - **Input & Output Gating** — JS policies block confidential data and filter responses
 - **Audit Trail** — every tool call recorded with structured logging or queryable SQLite
 
@@ -36,7 +36,7 @@ And unlike MCP gateways that just pass tool calls through, ToolMesh adds what pr
 | **Any Backend** | 30 lines of DADL replace a whole MCP server. Also proxies existing MCP servers. | Go MCP SDK + DADL (.dadl files) |
 | **Code Mode** | 15 MCP servers at once? Without ToolMesh, impossible. Code Mode cuts 50,000+ tokens to ~1,000. | AST-parsed tool calls |
 | **Credential Store** | Secrets injected at execution time — never in prompts, never in LLM client configs | Per-request injection via Executor pipeline |
-| **OpenFGA** | Fine-grained authorization (user → plan → tool). Example: free users get read-only, pro gets everything. | OpenFGA |
+| **OpenFGA** | Fine-grained authorization, on by default with nothing to install (user → plan → tool). Example: free users get read-only, pro gets everything. | OpenFGA, embedded or external |
 | **Gate** | Block confidential data before execution, redact PII in responses | goja |
 | **Audit** | Every tool call recorded and queryable — answer "what did that agent do?" with SQL | slog / SQLite |
 
@@ -60,12 +60,12 @@ cp .env.example .env
 # Or set an API key for programmatic access:
 #   TOOLMESH_API_KEY=my-api-key
 
-# Optional: local overrides (build locally, enable OpenFGA, HTTPS proxy, ...)
+# Optional: local overrides (build locally, external OpenFGA, HTTPS proxy, ...)
 # cp docker-compose.override.yml.example docker-compose.override.yml
 # # then edit docker-compose.override.yml — picked up automatically by Docker Compose
 
-# Start (fine-grained authz is in bypass by default; the password/API key
-# above is still required — without it every request is rejected)
+# Start (authorization is on: the password/API key above gets every tool;
+# without a password or API key every request is rejected)
 docker compose up -d
 
 # Verify it's running (default port: 8123)
@@ -162,7 +162,7 @@ KEY="tm_$(openssl rand -hex 32)"
 printf '%s' "$KEY" | sha256sum | cut -d' ' -f1
 ```
 
-Each key maps to a distinct user identity with its own plan and roles, which flow through to OpenFGA authorization.
+Each key maps to a distinct user identity with its own plan and roles, which flow through to authorization.
 
 Entries with a bcrypt `key_hash`, as files written for earlier versions have them, keep working without any change. Until its key has been used once after startup, such an entry costs a bcrypt comparison for every bearer credential that nothing else recognizes; `key_sha256` is looked up directly and is meant for randomly generated keys. See [docs/configuration.md](docs/configuration.md#api-keys) for the details and for how the two forms differ.
 
@@ -182,20 +182,46 @@ Failed password logins are limited per account and per client address: by defaul
 
 The number of bcrypt comparisons that run at the same time is bounded for the whole process (`TOOLMESH_BCRYPT_MAX_CONCURRENT`, default: half of the available CPUs), so that password logins cannot take the CPU away from everything else. See [docs/configuration.md](docs/configuration.md#password-hash-comparisons).
 
-## Authorization Mode
+## Authorization
 
-`OPENFGA_MODE` controls whether OpenFGA authorization is enforced:
+Every tool call is checked, and tool listings show each caller only the tools it may call. Nothing has to be set up: ToolMesh runs [OpenFGA](https://openfga.dev) inside its own process and keeps its data in `data/authz.db`.
+
+`TOOLMESH_AUTHZ_MODE` selects the engine:
 
 | Mode | Behavior |
 |------|----------|
-| `bypass` (default) | All tool calls are allowed without authz checks |
-| `restrict` | OpenFGA enforces user → plan → tool authorization (requires `OPENFGA_STORE_ID`) |
+| `embedded` (default) | Checks run inside ToolMesh. Grants come from a preset or from `config/authz.yaml`. |
+| `external` | Checks go to an OpenFGA server you operate (`OPENFGA_API_URL`, `OPENFGA_STORE_ID`). ToolMesh never writes to it. |
+| `disabled` | No checks. Reported at every start and recorded in the audit trail. |
 
-Start with `bypass` to get running quickly, then switch to `restrict` after bootstrapping OpenFGA.
+Grants refer to the users, roles, plans and companies from `users.yaml`, `apikeys.yaml` or the single password/API key. Without a grants file a preset applies:
+
+| Preset | Who may call what |
+|--------|-------------------|
+| `single-user` | the owner (`TOOLMESH_AUTH_USER`) and role `admin`: every tool. Default without `users.yaml`/`apikeys.yaml`. |
+| `team` | as `single-user`, plus plan `pro`: every tool, plan `free`: every `read` tool. Default with `users.yaml` or `apikeys.yaml`. |
+| `open` | every authenticated caller: every tool |
+
+For finer control, copy `config/authz.yaml.example` to `config/authz.yaml`; grants can name all tools, backends, single tools or DADL access classes (`read`, `write`, ...), denies block any of these and win over every grant, and changes take effect within seconds:
+
+```yaml
+grants:
+  - plan: pro
+    backends: [github, deepl]
+  - plan: free
+    access: [read]
+  - role: support
+    tools: [zammad_list_tickets]
+denies:
+  - plan: pro
+    tools: [stripe_create_refund]
+```
+
+An installation upgraded from a version without authorization keeps every tool open to every authenticated caller (preset `open`) and says so at every start, until you pick a preset or write grants. `OPENFGA_MODE` is deprecated: `restrict` maps to `external`, `bypass` to `embedded`. See [docs/configuration.md](docs/configuration.md#authorization).
 
 ### Security posture at startup
 
-ToolMesh is secure-by-default: it ships with no individual default that relaxes a control silently. At boot it logs a single **security-posture summary** that lists every control still in a relaxed state (missing auth credential, authz bypass, open CORS, debug tools, login limits switched off) together with how to harden it. In the default production posture these are logged at `WARN`; set `TOOLMESH_DEV=true` on a local-development machine to report the same facts once at `INFO` so the warnings don't become background noise. `TOOLMESH_DEV` changes only the log level of this summary — it never relaxes a setting on its own.
+ToolMesh is secure-by-default: it ships with no individual default that relaxes a control silently. At boot it logs a single **security-posture summary** that lists every control still in a relaxed state (missing auth credential, authorization disabled or open to everyone, open CORS, debug tools, login limits switched off) together with how to harden it. In the default production posture these are logged at `WARN`; set `TOOLMESH_DEV=true` on a local-development machine to report the same facts once at `INFO` so the warnings don't become background noise. `TOOLMESH_DEV` changes only the log level of this summary — it never relaxes a setting on its own.
 
 ## Configuration
 

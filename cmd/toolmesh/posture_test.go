@@ -34,7 +34,7 @@ const (
 // secure state, so the only relaxation in a test is the one the test introduces.
 func hardenedConfig() *config.Config {
 	return &config.Config{
-		OpenFGAMode:               config.OpenFGAModeRestrict,
+		AuthzMode:                 config.AuthzModeEmbedded,
 		CORSAllowedOrigins:        []string{"https://app.example.com"},
 		DebugTools:                false,
 		DevMode:                   false,
@@ -50,6 +50,7 @@ func TestLogSecurityPosture(t *testing.T) {
 		name           string
 		mutate         func(*config.Config)
 		authConfigured bool
+		authzOpen      bool
 		wantLevel      string   // "" when no relaxed-control line is expected
 		wantContains   []string // substrings expected somewhere in the output
 		wantAbsent     []string // substrings that must NOT appear
@@ -63,11 +64,22 @@ func TestLogSecurityPosture(t *testing.T) {
 			wantAbsent:     []string{levelWARN, "relaxed control"},
 		},
 		{
-			name:           "authz bypass in production posture warns",
-			mutate:         func(c *config.Config) { c.OpenFGAMode = config.OpenFGAModeBypass },
+			name:           "authz disabled in production posture warns",
+			mutate:         func(c *config.Config) { c.AuthzMode = config.AuthzModeDisabled },
 			authConfigured: true,
+			authzOpen:      true,
 			wantLevel:      levelWARN,
-			wantContains:   []string{"SECURITY POSTURE", "authorization is BYPASSED", "OPENFGA_MODE=restrict"},
+			wantContains:   []string{"SECURITY POSTURE", "authorization is DISABLED", "unset TOOLMESH_AUTHZ_MODE"},
+			wantAbsent:     []string{"lets every authenticated caller"},
+		},
+		{
+			name:           "authz policy open to everyone warns",
+			mutate:         func(*config.Config) {},
+			authConfigured: true,
+			authzOpen:      true,
+			wantLevel:      levelWARN,
+			wantContains:   []string{"SECURITY POSTURE", "every authenticated caller invoke every tool", "TOOLMESH_AUTHZ_PRESET"},
+			wantAbsent:     []string{"DISABLED"},
 		},
 		{
 			name:           "disabled login limit warns and names the variable",
@@ -87,12 +99,13 @@ func TestLogSecurityPosture(t *testing.T) {
 		{
 			name: "dev mode reports the same facts at info, never warn",
 			mutate: func(c *config.Config) {
-				c.OpenFGAMode = config.OpenFGAModeBypass
+				c.AuthzMode = config.AuthzModeDisabled
 				c.DevMode = true
 			},
 			authConfigured: false,
+			authzOpen:      true,
 			wantLevel:      levelINFO,
-			wantContains:   []string{"TOOLMESH_DEV=true", "authorization is BYPASSED"},
+			wantContains:   []string{"TOOLMESH_DEV=true", "authorization is DISABLED"},
 			wantAbsent:     []string{"\"level\":\"" + levelWARN + "\""},
 		},
 	}
@@ -104,7 +117,7 @@ func TestLogSecurityPosture(t *testing.T) {
 
 			cfg := hardenedConfig()
 			tt.mutate(cfg)
-			logSecurityPosture(cfg, tt.authConfigured, logger)
+			logSecurityPosture(cfg, tt.authConfigured, tt.authzOpen, logger)
 
 			out := buf.String()
 			if tt.wantLevel != "" && !strings.Contains(out, "\"level\":\""+tt.wantLevel+"\"") {

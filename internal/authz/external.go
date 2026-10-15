@@ -12,26 +12,34 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package authz provides authorization via OpenFGA.
 package authz
 
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"strings"
 
 	"github.com/openfga/go-sdk/client"
 )
 
-// Authorizer checks whether users are allowed to execute tools.
-type Authorizer struct {
+// External checks against an OpenFGA server that is operated separately
+// (TOOLMESH_AUTHZ_MODE=external). The store may be shared with other
+// applications, so External only reads: it never writes a model or a tuple.
+// Its model is the operator's; every check asks whether user:<id> has
+// can_execute on tool:<name>.
+type External struct {
 	client *client.OpenFgaClient
 	logger *slog.Logger
 }
 
-// NewAuthorizer creates an Authorizer backed by OpenFGA.
-func NewAuthorizer(apiURL, storeID string, logger *slog.Logger) (*Authorizer, error) {
+// NewExternal creates an External authorizer for the given OpenFGA API URL
+// and store.
+func NewExternal(apiURL, storeID string, logger *slog.Logger) (*External, error) {
+	if logger == nil {
+		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+	}
 	cfg := &client.ClientConfiguration{
 		ApiUrl:  apiURL,
 		StoreId: storeID,
@@ -42,33 +50,34 @@ func NewAuthorizer(apiURL, storeID string, logger *slog.Logger) (*Authorizer, er
 		return nil, fmt.Errorf("create openfga client: %w", err)
 	}
 
-	return &Authorizer{
+	return &External{
 		client: fgaClient,
 		logger: logger,
 	}, nil
 }
 
-// Check verifies if the given user is allowed to execute the specified tool.
-// Returns true if authorized, false otherwise.
-func (a *Authorizer) Check(ctx context.Context, userID, toolName string) (bool, error) {
+// Check verifies if the caller in req is allowed to execute req.Tool.
+func (a *External) Check(ctx context.Context, req Request) (bool, error) {
 	// OpenFGA object IDs cannot contain colons; encode colons as "%3A" to avoid
-	// collisions between "backend:tool_name" and "backend_tool_name".
-	fgaToolID := strings.ReplaceAll(toolName, ":", "%3A")
+	// collisions between "backend:tool_name" and "backend_tool_name". Tuples in
+	// external stores are written by operators in this form, so it must not
+	// change.
+	fgaToolID := strings.ReplaceAll(req.Tool, ":", "%3A")
 	body := client.ClientCheckRequest{
-		User:     "user:" + userID,
-		Relation: "can_execute",
+		User:     "user:" + req.UserID,
+		Relation: relCanExecute,
 		Object:   "tool:" + fgaToolID,
 	}
 
 	resp, err := a.client.Check(ctx).Body(body).Execute()
 	if err != nil {
-		return false, fmt.Errorf("openfga check for user=%s tool=%s: %w", userID, toolName, err)
+		return false, fmt.Errorf("openfga check for user=%s tool=%s: %w", req.UserID, req.Tool, err)
 	}
 
 	allowed := resp.GetAllowed()
 	a.logger.DebugContext(ctx, "authz check",
-		"user", userID,
-		"tool", toolName,
+		"user", req.UserID,
+		"tool", req.Tool,
 		"allowed", allowed,
 	)
 
@@ -76,10 +85,13 @@ func (a *Authorizer) Check(ctx context.Context, userID, toolName string) (bool, 
 }
 
 // Healthy checks if the OpenFGA server is reachable.
-func (a *Authorizer) Healthy(ctx context.Context) error {
+func (a *External) Healthy(ctx context.Context) error {
 	_, err := a.client.ListStores(ctx).Execute()
 	if err != nil {
 		return fmt.Errorf("openfga health check: %w", err)
 	}
 	return nil
 }
+
+// Close releases nothing; the SDK client holds no resources that need it.
+func (a *External) Close() error { return nil }

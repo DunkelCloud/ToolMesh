@@ -6,7 +6,7 @@ Thank you for your interest in contributing to ToolMesh.
 
 ### Prerequisites
 
-- Go 1.25+
+- Go 1.26+
 - Docker and Docker Compose v2
 
 ### Getting Started

@@ -1,0 +1,54 @@
+# Who may call which tools (TOOLMESH_AUTHZ_MODE=embedded, the default).
+#
+# Without this file a preset applies (TOOLMESH_AUTHZ_PRESET, or one chosen at
+# startup; see docs/configuration.md, "Authorization"). With it, exactly the
+# grants and denies below apply. ToolMesh reads the file at startup and again
+# within a few seconds of every change; a file that does not parse is reported
+# in the log and leaves the rules in place.
+#
+# Copy to config/authz.yaml and adjust.
+
+# Optional: start from a preset and add the grants below to it.
+#   single-user  the owner (TOOLMESH_AUTH_USER) and role "admin": every tool
+#   team         single-user, plus plan "pro": every tool,
+#                plan "free": every tool classified as "read"
+#   open         every authenticated caller: every tool
+preset: single-user
+
+# Each grant names one subject and at least one target.
+#
+# Subjects (exactly one):
+#   user: <id>        the user ID from users.yaml (username), apikeys.yaml
+#                     (user_id) or TOOLMESH_AUTH_USER
+#   role: <name>      every caller with this role (roles: in users.yaml or
+#                     apikeys.yaml, TOOLMESH_AUTH_ROLES)
+#   plan: <name>      every caller on this plan (plan:, TOOLMESH_AUTH_PLAN)
+#   company: <id>     every caller of this company (company:, company_id:)
+#   everyone: true    every authenticated caller
+#
+# Targets (any combination):
+#   all_tools: true   every tool, including tools added later
+#   backends: [...]   every tool of these backends (the backend names from
+#                     backends.yaml; "echo" for the built-in tools)
+#   tools: [...]      single tools, by their full name (<backend>_<tool>)
+#   access: [...]     every tool whose DADL access classification is one of
+#                     these ("read", "write", "admin", "dangerous", ...)
+grants:
+  - plan: pro
+    backends: [github, deepl]
+
+  - plan: free
+    access: [read]
+
+  - role: support
+    tools: [zammad_list_tickets, zammad_get_ticket]
+
+  - company: acme
+    backends: [netbox]
+
+# Optional: denies have the same form as grants and win over every grant and
+# over the preset. A denied tool is refused, audited as denied and no longer
+# listed for that caller.
+denies:
+  - role: support
+    tools: [zammad_delete_ticket]

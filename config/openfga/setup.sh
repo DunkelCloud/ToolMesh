@@ -1,6 +1,7 @@
 #!/bin/sh
-# OpenFGA bootstrap for ToolMesh.
-# Run from the project root: ./config/openfga/setup.sh
+# OpenFGA bootstrap for an external OpenFGA server (TOOLMESH_AUTHZ_MODE=external).
+# Not needed by default: in embedded mode ToolMesh creates its store and model
+# itself. Run from the project root: ./config/openfga/setup.sh
 #
 # Creates a store, writes the authorization model, and loads tuples.
 # The resulting OPENFGA_STORE_ID must be copied into .env.
@@ -39,4 +40,6 @@ echo ""
 echo "Bootstrap complete!"
 echo ""
 echo "Add this to your .env:"
+echo "  TOOLMESH_AUTHZ_MODE=external"
+echo "  OPENFGA_API_URL=$FGA_URL"
 echo "  OPENFGA_STORE_ID=$STORE_ID"

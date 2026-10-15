@@ -498,7 +498,7 @@ func (r *CodeRunner) authorizedMatches(ctx context.Context, query string) []back
 		return descs
 	}
 
-	allowed := r.executor.FilterAuthorizedTools(ctx, uc.UserID, descs)
+	allowed := r.executor.FilterAuthorizedTools(ctx, uc, descs)
 	allowedSet := make(map[string]struct{}, len(allowed))
 	for _, d := range allowed {
 		allowedSet[d.Name] = struct{}{}
@@ -519,7 +519,7 @@ func (r *CodeRunner) isAuthorized(ctx context.Context, d backend.ToolDescriptor)
 	if r.executor == nil || uc == nil {
 		return true
 	}
-	return len(r.executor.FilterAuthorizedTools(ctx, uc.UserID, []backend.ToolDescriptor{d})) == 1
+	return len(r.executor.FilterAuthorizedTools(ctx, uc, []backend.ToolDescriptor{d})) == 1
 }
 
 // errorResult is the buildResult variant used in error paths: it surfaces

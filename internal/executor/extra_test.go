@@ -88,7 +88,7 @@ func TestResolveCredentials_NoneFound(t *testing.T) {
 func TestFilterAuthorizedTools_NoAuthorizer(t *testing.T) {
 	exec := New(nil, nil, &mockBackend{}, nil, nil, time.Second, newTestLogger(), nil, nil)
 	tools := []backend.ToolDescriptor{{Name: "a"}, {Name: "b"}}
-	got := exec.FilterAuthorizedTools(context.Background(), "u1", tools)
+	got := exec.FilterAuthorizedTools(context.Background(), &userctx.UserContext{UserID: "u1"}, tools)
 	if len(got) != 2 {
 		t.Errorf("expected passthrough when no authorizer, got %d", len(got))
 	}
@@ -111,13 +111,13 @@ func TestFilterAuthorizedTools_WithAuthorizer(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	authorizer, err := authz.NewAuthorizer(srv.URL, "01ARZ3NDEKTSV4RRFFQ69G5FAV", newTestLogger())
+	authorizer, err := authz.NewExternal(srv.URL, "01ARZ3NDEKTSV4RRFFQ69G5FAV", newTestLogger())
 	if err != nil {
-		t.Fatalf("NewAuthorizer: %v", err)
+		t.Fatalf("NewExternal: %v", err)
 	}
 	exec := New(authorizer, nil, &mockBackend{}, nil, nil, time.Second, newTestLogger(), nil, nil)
 	tools := []backend.ToolDescriptor{{Name: "a"}, {Name: "b"}}
-	got := exec.FilterAuthorizedTools(context.Background(), "u1", tools)
+	got := exec.FilterAuthorizedTools(context.Background(), &userctx.UserContext{UserID: "u1"}, tools)
 	if len(got) != 1 || got[0].Name != "a" {
 		t.Errorf("filtered = %v", got)
 	}

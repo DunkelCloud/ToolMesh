@@ -59,6 +59,14 @@ TOOLMESH_AUTH_PASSWORD=my-password
 
 Without either, all requests are rejected.
 
+## Authorization
+
+On by default, nothing to set up: the API key or password above may call
+every tool. To give other users, roles or plans access to selected backends
+or tools, copy `config/authz.yaml.example` to `config/authz.yaml`. ToolMesh
+applies changes to it within seconds. See
+[docs/configuration.md](docs/configuration.md#authorization).
+
 ## Add a Backend
 
 ToolMesh supports three backend types: REST via DADL, MCP over HTTP, and MCP over STDIO.
@@ -168,7 +176,7 @@ Auth -> AuthZ -> Credential Injection -> Execution -> Output Gate -> Audit
 ```
 
 - **Auth**: Validates the caller (API key or OAuth 2.1)
-- **AuthZ**: Checks permissions via OpenFGA (optional, default: bypass)
+- **AuthZ**: Checks permissions via OpenFGA, built in and on by default (presets or `config/authz.yaml`; `TOOLMESH_AUTHZ_MODE=external` for an own OpenFGA server)
 - **Credential Injection**: Injects secrets at runtime, invisible to the model
 - **Execution**: Calls the backend API
 - **Output Gate**: Applies JavaScript policies (PII filtering, device restrictions)

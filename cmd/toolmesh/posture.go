@@ -37,7 +37,10 @@ type relaxedControl struct {
 // control is logged at WARN with a remediation hint; with TOOLMESH_DEV=true the
 // same items are reported once at INFO as an expected local-development state so
 // they do not become background noise on a developer's machine.
-func logSecurityPosture(cfg *config.Config, authConfigured bool, logger *slog.Logger) {
+//
+// authzOpen reports that the authorization in effect lets every authenticated
+// caller invoke every tool.
+func logSecurityPosture(cfg *config.Config, authConfigured, authzOpen bool, logger *slog.Logger) {
 	var relaxed []relaxedControl
 
 	if !authConfigured {
@@ -46,10 +49,16 @@ func logSecurityPosture(cfg *config.Config, authConfigured bool, logger *slog.Lo
 			remediation: "set TOOLMESH_AUTH_PASSWORD or TOOLMESH_API_KEY (or configure config/users.yaml / config/apikeys.yaml)",
 		})
 	}
-	if cfg.OpenFGAMode != config.OpenFGAModeRestrict {
+	switch {
+	case cfg.AuthzMode == config.AuthzModeDisabled:
 		relaxed = append(relaxed, relaxedControl{
-			summary:     "authorization is BYPASSED — any authenticated caller may invoke every tool (authentication still applies; fine-grained access control does not)",
-			remediation: "set OPENFGA_MODE=restrict to enforce user→plan→tool checks",
+			summary:     "authorization is DISABLED (TOOLMESH_AUTHZ_MODE=disabled) — any authenticated caller may invoke every tool (authentication still applies; fine-grained access control does not)",
+			remediation: "unset TOOLMESH_AUTHZ_MODE to use the built-in authorization",
+		})
+	case authzOpen:
+		relaxed = append(relaxed, relaxedControl{
+			summary:     "authorization lets every authenticated caller invoke every tool (preset \"open\", or a grant of all_tools to everyone)",
+			remediation: "set TOOLMESH_AUTHZ_PRESET=single-user or team, or narrow the grants in the authz config file (TOOLMESH_AUTHZ_CONFIG)",
 		})
 	}
 	if len(cfg.CORSAllowedOrigins) == 0 {

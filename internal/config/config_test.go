@@ -48,6 +48,10 @@ func TestLoad_Defaults(t *testing.T) {
 		{"DebugBackends", cfg.DebugBackends, ""},
 		{"DebugFile", cfg.DebugFile, ""},
 		{"DevMode", cfg.DevMode, false},
+		{"AuthzMode", cfg.AuthzMode, AuthzModeEmbedded},
+		{"AuthzModeSource", cfg.AuthzModeSource, AuthzSourceDefault},
+		{"AuthzPreset", cfg.AuthzPreset, ""},
+		{"AuthzConfigPath", cfg.AuthzConfigPath, "/app/config/authz.yaml"},
 	}
 
 	for _, tt := range tests {

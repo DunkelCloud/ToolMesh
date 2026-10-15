@@ -25,7 +25,7 @@ import (
 )
 
 // mockFGA spins up an httptest server that mimics the minimal OpenFGA
-// endpoints used by Check() and Healthy(). The allow param decides what
+// endpoints used by External.Check() and External.Healthy(). The allow param decides what
 // the /check endpoint returns.
 func mockFGA(allow bool) *httptest.Server {
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -49,22 +49,22 @@ func mockFGA(allow bool) *httptest.Server {
 	}))
 }
 
-func newAuthzForTest(t *testing.T, srv *httptest.Server) *Authorizer {
+func newExternalForTest(t *testing.T, srv *httptest.Server) *External {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError}))
-	a, err := NewAuthorizer(srv.URL, "01ARZ3NDEKTSV4RRFFQ69G5FAV", logger)
+	a, err := NewExternal(srv.URL, "01ARZ3NDEKTSV4RRFFQ69G5FAV", logger)
 	if err != nil {
-		t.Fatalf("NewAuthorizer: %v", err)
+		t.Fatalf("NewExternal: %v", err)
 	}
 	return a
 }
 
-func TestAuthorizer_Check_Allowed(t *testing.T) {
+func TestExternal_Check_Allowed(t *testing.T) {
 	srv := mockFGA(true)
 	defer srv.Close()
 
-	a := newAuthzForTest(t, srv)
-	allowed, err := a.Check(context.Background(), "u1", "test:echo")
+	a := newExternalForTest(t, srv)
+	allowed, err := a.Check(context.Background(), Request{UserID: "u1", Tool: "test:echo"})
 	if err != nil {
 		t.Fatalf("Check: %v", err)
 	}
@@ -73,12 +73,12 @@ func TestAuthorizer_Check_Allowed(t *testing.T) {
 	}
 }
 
-func TestAuthorizer_Check_Denied(t *testing.T) {
+func TestExternal_Check_Denied(t *testing.T) {
 	srv := mockFGA(false)
 	defer srv.Close()
 
-	a := newAuthzForTest(t, srv)
-	allowed, err := a.Check(context.Background(), "u1", "test:echo")
+	a := newExternalForTest(t, srv)
+	allowed, err := a.Check(context.Background(), Request{UserID: "u1", Tool: "test:echo"})
 	if err != nil {
 		t.Fatalf("Check: %v", err)
 	}
@@ -87,11 +87,11 @@ func TestAuthorizer_Check_Denied(t *testing.T) {
 	}
 }
 
-func TestAuthorizer_Healthy(t *testing.T) {
+func TestExternal_Healthy(t *testing.T) {
 	srv := mockFGA(true)
 	defer srv.Close()
 
-	a := newAuthzForTest(t, srv)
+	a := newExternalForTest(t, srv)
 	if err := a.Healthy(context.Background()); err != nil {
 		t.Errorf("Healthy: %v", err)
 	}

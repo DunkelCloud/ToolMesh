@@ -41,6 +41,46 @@ has a new `method="anonymous"`; a failure ratio computed over all methods
 now includes requests that carry no credential at all (see `docs/metrics.md`
 for a query that leaves them out).
 
+**Behavior change:** authorization is on by default. ToolMesh runs OpenFGA
+inside its own process (`TOOLMESH_AUTHZ_MODE=embedded`, the new default),
+keeps its data in `authz.db` in the data directory and checks every tool call;
+no OpenFGA service is needed. On a fresh installation the owner
+(`TOOLMESH_AUTH_USER`) and the role `admin` may call every tool (preset
+`single-user`); when `users.yaml` or `apikeys.yaml` exists, plan `pro` may
+call every tool and plan `free` every tool classified `read` as well (preset
+`team`). Any other caller gets nothing until a grant names it, and tool
+listings show each caller only what it may call. With the defaults of the
+single password or API key (user `owner`, plan `pro`, role `admin`) nothing
+changes. An installation that ran without authorization, with
+`OPENFGA_MODE=bypass` or unset, is recognized on its first start and keeps
+every tool open to every authenticated caller (preset `open`), reported at
+every start until a preset or grants are chosen. `OPENFGA_MODE=restrict`
+keeps working as `TOOLMESH_AUTHZ_MODE=external`. The data directory must be
+writable; it is in the shipped `docker-compose.yml`, which no longer sets
+`OPENFGA_MODE`.
+
+### Added
+
+- Embedded authorization: OpenFGA as a library on a SQLite datastore, with
+  store and model created on first start and the model written again when a
+  new version changes it. Grants come from a preset (`TOOLMESH_AUTHZ_PRESET`:
+  `single-user`, `team`, `open`) or from `config/authz.yaml`
+  (`TOOLMESH_AUTHZ_CONFIG`, example in `config/authz.yaml.example`), which is
+  applied again within seconds of every change. A grant names a user, role,
+  plan, company or everyone and allows all tools, the tools of a backend, the
+  tools of a DADL access class, or single tools. Roles, plans and companies
+  stay where they are configured today (`users.yaml`, `apikeys.yaml`,
+  `TOOLMESH_AUTH_*`). See `docs/configuration.md`, "Authorization".
+- `TOOLMESH_AUTHZ_MODE=disabled` as the only way to switch authorization off.
+  It is reported in the security-posture summary and recorded in the audit
+  trail (status `authz_disabled`).
+
+### Deprecated
+
+- `OPENFGA_MODE`. Read only while `TOOLMESH_AUTHZ_MODE` is not set: `restrict`
+  selects `external`, `bypass` selects `embedded`. A warning is logged while
+  it is set.
+
 ### Security
 
 - Failed password logins are now limited: per account from one client address

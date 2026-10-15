@@ -34,6 +34,11 @@ const (
 	ModificationTargetResponseContent = "response.content"
 )
 
+// StatusAuthzDisabled is the status of the entry ToolMesh records at startup
+// when authorization is disabled (TOOLMESH_AUTHZ_MODE=disabled). The entry is
+// not a tool call: it marks from when on calls went unchecked.
+const StatusAuthzDisabled = "authz_disabled"
+
 // PolicyModification captures a single before/after snapshot proving that a
 // policy mutated the tool call. Recorded only when the bytes actually differ —
 // a no-op policy run produces no PolicyModification. Before and After are
@@ -65,7 +70,7 @@ type AuditEntry struct {
 	ToolAccess  string            `json:"tool_access,omitempty"`
 	Params      map[string]any    `json:"params,omitempty"`
 	DurationMs  int64             `json:"duration_ms"`
-	Status      string            `json:"status"` // "success" | "error" | "denied"
+	Status      string            `json:"status"` // "success" | "error" | "denied" | StatusAuthzDisabled
 	Error       string            `json:"error,omitempty"`
 	Backend     string            `json:"backend"`
 	IsComposite bool              `json:"is_composite,omitempty"`

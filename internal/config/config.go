@@ -34,12 +34,35 @@ const (
 // lockout that long is almost certainly a value given in the wrong unit.
 const maxLoginFailureWindow = 30 * 24 * 60 * 60
 
-// OpenFGA authorization modes for OpenFGAMode / OPENFGA_MODE.
+// Authorization modes for AuthzMode / TOOLMESH_AUTHZ_MODE.
 const (
-	// OpenFGAModeBypass allows every authenticated call without an authz check.
+	// AuthzModeEmbedded runs OpenFGA inside the ToolMesh process on a SQLite
+	// file in the data directory. The default.
+	AuthzModeEmbedded = "embedded"
+	// AuthzModeExternal checks against a separately operated OpenFGA server
+	// (OPENFGA_API_URL, OPENFGA_STORE_ID).
+	AuthzModeExternal = "external"
+	// AuthzModeDisabled lets every authenticated call through without an
+	// authorization check. It must be set explicitly.
+	AuthzModeDisabled = "disabled"
+)
+
+// Values of the deprecated OPENFGA_MODE, still accepted when
+// TOOLMESH_AUTHZ_MODE is not set.
+const (
+	// OpenFGAModeBypass was the old default without authorization checks. It
+	// now selects the embedded engine; an installation upgraded from it keeps
+	// its behavior through the "open" preset.
 	OpenFGAModeBypass = "bypass"
-	// OpenFGAModeRestrict enforces OpenFGA user→plan→tool authorization.
+	// OpenFGAModeRestrict selects the external engine.
 	OpenFGAModeRestrict = "restrict"
+)
+
+// Where AuthzMode was taken from (AuthzModeSource).
+const (
+	AuthzSourceEnv     = "TOOLMESH_AUTHZ_MODE"
+	AuthzSourceLegacy  = "OPENFGA_MODE"
+	AuthzSourceDefault = "default"
 )
 
 // Config holds all ToolMesh configuration values.
@@ -71,10 +94,24 @@ type Config struct {
 	// run. TOOLMESH_CODE_TIMEOUT, default 120.
 	CodeTimeout int
 
-	// OpenFGA
+	// Authorization. AuthzMode is "embedded" (default), "external" or
+	// "disabled" (TOOLMESH_AUTHZ_MODE; the deprecated OPENFGA_MODE maps onto
+	// it when it is not set). AuthzModeSource says which of the two set it,
+	// or AuthzSourceDefault.
+	AuthzMode       string
+	AuthzModeSource string
+	// LegacyOpenFGAMode is OPENFGA_MODE as set, empty when unset.
+	LegacyOpenFGAMode string
+	// AuthzPreset names the preset grants of the embedded engine
+	// (TOOLMESH_AUTHZ_PRESET); empty chooses one from the identity config.
+	AuthzPreset string
+	// AuthzConfigPath is the file with the grants of the embedded engine
+	// (TOOLMESH_AUTHZ_CONFIG). When it exists, it replaces the preset.
+	AuthzConfigPath string
+
+	// External OpenFGA server (AuthzMode "external").
 	OpenFGAAPIURL  string
 	OpenFGAStoreID string
-	OpenFGAMode    string // "bypass" (default) or "restrict"
 
 	// Redis
 	RedisURL string
@@ -180,7 +217,8 @@ func Load() (*Config, error) {
 		CodeTimeout:             envInt("TOOLMESH_CODE_TIMEOUT", 120),
 		OpenFGAAPIURL:           envStr("OPENFGA_API_URL", "http://localhost:8080"),
 		OpenFGAStoreID:          envStr("OPENFGA_STORE_ID", ""),
-		OpenFGAMode:             envStr("OPENFGA_MODE", OpenFGAModeBypass),
+		AuthzPreset:             envStr("TOOLMESH_AUTHZ_PRESET", ""),
+		AuthzConfigPath:         envStr("TOOLMESH_AUTHZ_CONFIG", "/app/config/authz.yaml"),
 		RedisURL:                envStr("REDIS_URL", "redis://localhost:6379/0"),
 		LogLevel:                envStr("LOG_LEVEL", "info"), // default "info"; set LOG_LEVEL=debug to trace requests (debug logs include full request URLs, which may contain query-string credentials)
 		LogFormat:               envStr("LOG_FORMAT", "json"),
@@ -220,8 +258,8 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("invalid TOOLMESH_TRANSPORT: %q (must be \"http\" or \"stdio\")", cfg.Transport)
 	}
 
-	if cfg.OpenFGAMode != OpenFGAModeBypass && cfg.OpenFGAMode != OpenFGAModeRestrict {
-		return nil, fmt.Errorf("invalid OPENFGA_MODE: %q (must be %q or %q)", cfg.OpenFGAMode, OpenFGAModeBypass, OpenFGAModeRestrict)
+	if err := cfg.loadAuthzMode(); err != nil {
+		return nil, err
 	}
 
 	if cfg.AuditStore != "log" && cfg.AuditStore != "sqlite" {
@@ -249,6 +287,39 @@ func Load() (*Config, error) {
 	}
 
 	return cfg, nil
+}
+
+// loadAuthzMode sets AuthzMode from TOOLMESH_AUTHZ_MODE, or from the
+// deprecated OPENFGA_MODE when that is not set: "restrict" meant an external
+// server, "bypass" meant no checks and now means the embedded engine.
+func (c *Config) loadAuthzMode() error {
+	c.LegacyOpenFGAMode = envStr("OPENFGA_MODE", "")
+	if c.LegacyOpenFGAMode != "" && c.LegacyOpenFGAMode != OpenFGAModeBypass && c.LegacyOpenFGAMode != OpenFGAModeRestrict {
+		return fmt.Errorf("invalid OPENFGA_MODE: %q (must be %q or %q; it is deprecated, use TOOLMESH_AUTHZ_MODE)", c.LegacyOpenFGAMode, OpenFGAModeBypass, OpenFGAModeRestrict)
+	}
+
+	c.AuthzMode = envStr("TOOLMESH_AUTHZ_MODE", "")
+	switch {
+	case c.AuthzMode != "":
+		c.AuthzModeSource = AuthzSourceEnv
+	case c.LegacyOpenFGAMode == OpenFGAModeRestrict:
+		c.AuthzMode, c.AuthzModeSource = AuthzModeExternal, AuthzSourceLegacy
+	case c.LegacyOpenFGAMode == OpenFGAModeBypass:
+		c.AuthzMode, c.AuthzModeSource = AuthzModeEmbedded, AuthzSourceLegacy
+	default:
+		c.AuthzMode, c.AuthzModeSource = AuthzModeEmbedded, AuthzSourceDefault
+	}
+
+	switch c.AuthzMode {
+	case AuthzModeEmbedded, AuthzModeDisabled:
+	case AuthzModeExternal:
+		if c.OpenFGAStoreID == "" {
+			return fmt.Errorf("TOOLMESH_AUTHZ_MODE=%s requires OPENFGA_STORE_ID", AuthzModeExternal)
+		}
+	default:
+		return fmt.Errorf("invalid TOOLMESH_AUTHZ_MODE: %q (must be %q, %q or %q)", c.AuthzMode, AuthzModeEmbedded, AuthzModeExternal, AuthzModeDisabled)
+	}
+	return nil
 }
 
 // loadLoginThrottle reads the failed-login limits. Unlike most integer

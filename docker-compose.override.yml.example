@@ -16,9 +16,10 @@ services:
   #     context: .
   #     dockerfile: Dockerfile
 
-  # --- OpenFGA authorization (OPENFGA_MODE=restrict) ---
-  # Uncomment all three services when you want fine-grained authorization.
-  # See the OpenFGA section in .env for the full enable procedure.
+  # --- External OpenFGA server (TOOLMESH_AUTHZ_MODE=external) ---
+  # Authorization runs inside ToolMesh by default. Uncomment all three services
+  # only to run your own OpenFGA server; see the Authorization section in .env
+  # and docs/configuration.md ("External mode").
   #
   # openfga-migrate:
   #   image: openfga/openfga:latest

@@ -14,19 +14,21 @@
 
 package authz
 
-import (
-	"testing"
+// Names shared by the tests of this package.
+const (
+	testOwner              = "owner"
+	testBob                = "bob"
+	testCarol              = "carol"
+	testAcme               = "acme"
+	testGitHub             = "github"
+	testNetbox             = "netbox"
+	testEcho               = "echo"
+	testDeepL              = "deepl"
+	testDeepLTranslate     = "deepl_translate"
+	testRoleOps            = "ops"
+	testWrite              = "write"
+	testDangerous          = "dangerous"
+	testToolXY             = "x_y"
+	testGitHubCreateIssue  = "github_create_issue"
+	testNetboxDeleteDevice = "netbox_delete_device"
 )
-
-func TestNewAuthorizer_InvalidURL(t *testing.T) {
-	// NewAuthorizer should still succeed with an invalid URL (the error
-	// surfaces on first Check call, not at construction time).
-	a, err := NewAuthorizer("http://localhost:99999", "store-id", nil)
-	if err != nil {
-		// Some SDK versions may fail at construction, which is also acceptable
-		t.Skipf("SDK fails at construction with invalid URL: %v", err)
-	}
-	if a == nil {
-		t.Fatal("expected non-nil authorizer")
-	}
-}

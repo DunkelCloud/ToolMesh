@@ -1,0 +1,53 @@
+model
+  schema 1.1
+
+# Authorization model of the embedded engine (TOOLMESH_AUTHZ_MODE=embedded).
+#
+# The store holds only grants: which subject may execute what. Everything else
+# is passed with each check as contextual tuples, so it can never drift from the
+# configuration it comes from:
+#
+#   identity   user:<id> is member of company:<id>, subscriber of plan:<id> and
+#              assignee of role:<id>, as authentication established it
+#              (users.yaml, apikeys.yaml, TOOLMESH_AUTH_*)
+#   structure  tool:<name> belongs to instance:toolmesh, to backend:<name> (the
+#              backend the call is routed to) and to access_class:<class> (the
+#              DADL access classification)
+#
+# ToolMesh writes this model on first start and again whenever it changes.
+# Tuples written for an earlier version must stay valid: add types and
+# relations, never rename or remove one.
+
+type user
+
+type company
+  relations
+    define member: [user]
+
+type role
+  relations
+    define assignee: [user]
+
+type plan
+  relations
+    define subscriber: [user, company#member]
+
+type instance
+  relations
+    define executor: [user, user:*, company#member, role#assignee, plan#subscriber]
+
+type backend
+  relations
+    define executor: [user, user:*, company#member, role#assignee, plan#subscriber]
+
+type access_class
+  relations
+    define executor: [user, user:*, company#member, role#assignee, plan#subscriber]
+
+type tool
+  relations
+    define instance: [instance]
+    define backend: [backend]
+    define access_class: [access_class]
+    define executor: [user, user:*, company#member, role#assignee, plan#subscriber]
+    define can_execute: executor or executor from instance or executor from backend or executor from access_class

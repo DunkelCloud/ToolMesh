@@ -36,7 +36,7 @@ func benchEngine(b *testing.B) *Embedded {
 		tools[i] = fmt.Sprintf("backend%d_tool%d", i%20, i)
 	}
 	grants = append(grants, Grant{Role: testRoleOps, Tools: tools}, Grant{Company: testAcme, Backends: []string{"backend1", "backend2"}})
-	if _, err := e.Apply(context.Background(), grants); err != nil {
+	if _, err := e.Apply(context.Background(), grants, nil); err != nil {
 		b.Fatalf("Apply: %v", err)
 	}
 	return e
@@ -101,7 +101,7 @@ func BenchmarkEmbeddedCheck_ParallelDuringApply(b *testing.B) {
 			if i%2 == 0 {
 				grants = append(grants, alt...)
 			}
-			if _, err := e.Apply(ctx, grants); err != nil && ctx.Err() == nil {
+			if _, err := e.Apply(ctx, grants, nil); err != nil && ctx.Err() == nil {
 				b.Errorf("Apply: %v", err)
 				return
 			}

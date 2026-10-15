@@ -38,14 +38,14 @@ const (
 // newEmbeddedExecutor builds an executor with the embedded engine and a
 // composite backend with the backends "web" and "web_search", whose names
 // share a prefix.
-func newEmbeddedExecutor(t *testing.T, grants []authz.Grant) (*Executor, *recordingAudit) {
+func newEmbeddedExecutor(t *testing.T, grants, denies []authz.Grant) (*Executor, *recordingAudit) {
 	t.Helper()
 	engine, err := authz.OpenEmbedded(context.Background(), authz.EmbeddedOptions{Path: filepath.Join(t.TempDir(), authz.DBFileName)})
 	if err != nil {
 		t.Fatalf("OpenEmbedded: %v", err)
 	}
 	t.Cleanup(func() { _ = engine.Close() })
-	if _, err := engine.Apply(context.Background(), grants); err != nil {
+	if _, err := engine.Apply(context.Background(), grants, denies); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
 	composite := backend.NewCompositeBackend(map[string]backend.ToolBackend{
@@ -64,7 +64,7 @@ func TestExecuteTool_EmbeddedAuthz(t *testing.T) {
 	exec, rec := newEmbeddedExecutor(t, []authz.Grant{
 		{Plan: testPlanPro, Backends: []string{"web"}},
 		{Role: "searcher", Backends: []string{"web_search"}},
-	})
+	}, nil)
 
 	tests := []struct {
 		name    string
@@ -101,7 +101,7 @@ func TestExecuteTool_EmbeddedAuthz(t *testing.T) {
 }
 
 func TestCheckChild_EmbeddedAuthz(t *testing.T) {
-	exec, _ := newEmbeddedExecutor(t, []authz.Grant{{User: "u1", Tools: []string{testToolWebFetch}}})
+	exec, _ := newEmbeddedExecutor(t, []authz.Grant{{User: "u1", Tools: []string{testToolWebFetch}}}, nil)
 	ctx := callerCtx(&userctx.UserContext{UserID: "u1"})
 	if err := exec.CheckChild(ctx, testToolWebFetch, nil); err != nil {
 		t.Errorf("granted child call rejected: %v", err)
@@ -116,7 +116,7 @@ func TestFilterAuthorizedTools_Embedded(t *testing.T) {
 	exec, _ := newEmbeddedExecutor(t, []authz.Grant{
 		{Plan: testPlanFree, Access: []string{testAccessRead}},
 		{User: "u1", Tools: []string{"web_search_delete"}},
-	})
+	}, nil)
 	tools := []backend.ToolDescriptor{
 		{Name: testToolWebFetch, Access: testAccessRead},
 		{Name: "web_post", Access: "write"},
@@ -140,3 +140,35 @@ func TestFilterAuthorizedTools_Embedded(t *testing.T) {
 
 // recordingAudit must satisfy the interface the executor writes to.
 var _ audit.AuditStore = (*recordingAudit)(nil)
+
+// A deny wins over the grant of all tools: the call is refused and audited
+// as denied, and the tool disappears from listings, while its neighbors stay.
+func TestExecuteTool_EmbeddedDeny(t *testing.T) {
+	exec, rec := newEmbeddedExecutor(t,
+		[]authz.Grant{{Plan: testPlanPro, AllTools: true}},
+		[]authz.Grant{{User: "u1", Tools: []string{testToolWebSearchQuery}}},
+	)
+	caller := &userctx.UserContext{UserID: "u1", Plan: testPlanPro}
+
+	res, err := exec.ExecuteTool(callerCtx(caller), ExecuteToolRequest{ToolName: testToolWebSearchQuery})
+	if err != nil {
+		t.Fatalf("ExecuteTool: %v", err)
+	}
+	if !res.IsError || rec.last.Status != statusDenied {
+		t.Errorf("denied tool: IsError=%v audit=%q, want an error result audited as denied", res.IsError, rec.last.Status)
+	}
+	res, err = exec.ExecuteTool(callerCtx(caller), ExecuteToolRequest{ToolName: testToolWebFetch})
+	if err != nil || res.IsError {
+		t.Errorf("neighbor tool: err=%v IsError=%v, want success", err, res != nil && res.IsError)
+	}
+	if err := exec.CheckChild(callerCtx(caller), testToolWebSearchQuery, nil); err == nil {
+		t.Error("denied tool allowed as a composite child call")
+	}
+
+	listed := exec.FilterAuthorizedTools(context.Background(), caller, []backend.ToolDescriptor{
+		{Name: testToolWebFetch}, {Name: testToolWebSearchQuery},
+	})
+	if len(listed) != 1 || listed[0].Name != testToolWebFetch {
+		t.Errorf("listing = %v, want only %s", listed, testToolWebFetch)
+	}
+}

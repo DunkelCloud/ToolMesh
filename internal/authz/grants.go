@@ -63,17 +63,19 @@ const (
 	SourceDefault = "default"
 )
 
-// Grant gives one subject permission to execute a set of tools. Exactly one
-// subject field and at least one target field must be set.
+// Grant names one subject and a set of tools. In a list of grants it allows
+// the subject to execute them; in a list of denies it blocks them, whatever
+// any grant says. Exactly one subject field and at least one target field
+// must be set.
 type Grant struct {
-	// Subject: who is granted.
+	// Subject: who is granted or denied.
 	User     string `yaml:"user,omitempty"`
 	Role     string `yaml:"role,omitempty"`
 	Plan     string `yaml:"plan,omitempty"`
 	Company  string `yaml:"company,omitempty"`
 	Everyone bool   `yaml:"everyone,omitempty"` // every authenticated caller
 
-	// Targets: what the subject may execute.
+	// Targets: the tools concerned.
 	AllTools bool     `yaml:"all_tools,omitempty"`
 	Backends []string `yaml:"backends,omitempty"`
 	Tools    []string `yaml:"tools,omitempty"`
@@ -85,15 +87,20 @@ type File struct {
 	// Preset, when set, contributes its grants in addition to Grants.
 	Preset string  `yaml:"preset,omitempty"`
 	Grants []Grant `yaml:"grants"`
+	// Denies block tools for a subject even when a grant or the preset
+	// allows them.
+	Denies []Grant `yaml:"denies,omitempty"`
 }
 
-// Policy is the set of grants in effect and where it comes from.
+// Policy is the set of grants and denies in effect and where it comes from.
 type Policy struct {
 	// Preset the grants are based on; empty when a config file names none.
 	Preset string
 	// Source is one of the Source* constants.
 	Source string
 	Grants []Grant
+	// Denies win over Grants. Only a config file names denies.
+	Denies []Grant
 }
 
 // PolicyInput holds everything ResolvePolicy chooses from.
@@ -146,7 +153,7 @@ func PresetGrants(name, owner string) ([]Grant, error) {
 
 // ResolvePolicy picks the grants in effect. The first of these that is set
 // wins: the config file, TOOLMESH_AUTHZ_PRESET, the preset recorded at an
-// upgrade, the default preset.
+// upgrade, the default preset. Denies come from the config file only.
 func ResolvePolicy(in PolicyInput) (Policy, error) {
 	if in.File != nil {
 		p := Policy{Preset: in.File.Preset, Source: SourceFile}
@@ -158,6 +165,7 @@ func ResolvePolicy(in PolicyInput) (Policy, error) {
 			p.Grants = append(p.Grants, base...)
 		}
 		p.Grants = append(p.Grants, in.File.Grants...)
+		p.Denies = in.File.Denies
 		return p, nil
 	}
 
@@ -211,6 +219,11 @@ func ParseFile(data []byte) (*File, error) {
 			return nil, fmt.Errorf("authz config: grant %d: %w", i+1, err)
 		}
 	}
+	for i, g := range f.Denies {
+		if err := g.Validate(); err != nil {
+			return nil, fmt.Errorf("authz config: deny %d: %w", i+1, err)
+		}
+	}
 	return &f, nil
 }
 
@@ -255,12 +268,13 @@ func (g Grant) subject() string {
 	}
 }
 
-// tuples returns the store tuples that express the grant.
-func (g Grant) tuples() []tupleKey {
+// tuples returns the store tuples that express the grant: with relExecutor
+// for a grant, with relBlocked for a deny.
+func (g Grant) tuples(relation string) []tupleKey {
 	user := g.subject()
 	var out []tupleKey
 	add := func(object string) {
-		out = append(out, tupleKey{User: user, Relation: relExecutor, Object: object})
+		out = append(out, tupleKey{User: user, Relation: relation, Object: object})
 	}
 	if g.AllTools {
 		add(objInstance)

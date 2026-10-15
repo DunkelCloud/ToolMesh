@@ -149,3 +149,25 @@ func TestExampleFileParses(t *testing.T) {
 		t.Errorf("example parsed to %+v, want a preset and grants", f)
 	}
 }
+
+func TestParseFile_Denies(t *testing.T) {
+	f, err := ParseFile([]byte("preset: team\ndenies:\n  - user: ad\n    tools: [echo_time]\n  - everyone: true\n    backends: [stripe]\n"))
+	if err != nil {
+		t.Fatalf("ParseFile: %v", err)
+	}
+	p, err := ResolvePolicy(PolicyInput{File: f, Owner: testOwner})
+	if err != nil {
+		t.Fatalf("ResolvePolicy: %v", err)
+	}
+	if len(p.Denies) != 2 || p.Denies[0].User != "ad" || p.Denies[1].Backends[0] != testStripe || len(p.Grants) != 4 {
+		t.Errorf("policy = %+v", p)
+	}
+
+	if _, err := ParseFile([]byte("denies:\n  - user: ad\n")); err == nil || !strings.Contains(err.Error(), "deny 1") {
+		t.Errorf("deny without target: err = %v", err)
+	}
+	p, err = ResolvePolicy(PolicyInput{EnvPreset: PresetTeam, Owner: testOwner})
+	if err != nil || len(p.Denies) != 0 {
+		t.Errorf("preset policy has denies: %+v, %v", p.Denies, err)
+	}
+}

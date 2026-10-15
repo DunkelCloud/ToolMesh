@@ -68,9 +68,11 @@ writable; it is in the shipped `docker-compose.yml`, which no longer sets
   (`TOOLMESH_AUTHZ_CONFIG`, example in `config/authz.yaml.example`), which is
   applied again within seconds of every change. A grant names a user, role,
   plan, company or everyone and allows all tools, the tools of a backend, the
-  tools of a DADL access class, or single tools. Roles, plans and companies
-  stay where they are configured today (`users.yaml`, `apikeys.yaml`,
-  `TOOLMESH_AUTH_*`). See `docs/configuration.md`, "Authorization".
+  tools of a DADL access class, or single tools. Denies in the same file
+  block any of these for a subject and win over every grant. Roles, plans
+  and companies stay where they are configured today (`users.yaml`,
+  `apikeys.yaml`, `TOOLMESH_AUTH_*`). See `docs/configuration.md`,
+  "Authorization".
 - `TOOLMESH_AUTHZ_MODE=disabled` as the only way to switch authorization off.
   It is reported in the security-posture summary and recorded in the audit
   trail (status `authz_disabled`).

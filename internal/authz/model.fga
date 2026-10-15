@@ -3,9 +3,10 @@ model
 
 # Authorization model of the embedded engine (TOOLMESH_AUTHZ_MODE=embedded).
 #
-# The store holds only grants: which subject may execute what. Everything else
-# is passed with each check as contextual tuples, so it can never drift from the
-# configuration it comes from:
+# The store holds only the rules from configuration: grants (executor), which
+# subject may execute what, and denies (blocked), which subject may not. A deny
+# always wins over a grant. Everything else is passed with each check as
+# contextual tuples, so it can never drift from the configuration it comes from:
 #
 #   identity   user:<id> is member of company:<id>, subscriber of plan:<id> and
 #              assignee of role:<id>, as authentication established it
@@ -35,14 +36,17 @@ type plan
 type instance
   relations
     define executor: [user, user:*, company#member, role#assignee, plan#subscriber]
+    define blocked: [user, user:*, company#member, role#assignee, plan#subscriber]
 
 type backend
   relations
     define executor: [user, user:*, company#member, role#assignee, plan#subscriber]
+    define blocked: [user, user:*, company#member, role#assignee, plan#subscriber]
 
 type access_class
   relations
     define executor: [user, user:*, company#member, role#assignee, plan#subscriber]
+    define blocked: [user, user:*, company#member, role#assignee, plan#subscriber]
 
 type tool
   relations
@@ -50,4 +54,5 @@ type tool
     define backend: [backend]
     define access_class: [access_class]
     define executor: [user, user:*, company#member, role#assignee, plan#subscriber]
-    define can_execute: executor or executor from instance or executor from backend or executor from access_class
+    define blocked: [user, user:*, company#member, role#assignee, plan#subscriber] or blocked from instance or blocked from backend or blocked from access_class
+    define can_execute: (executor or executor from instance or executor from backend or executor from access_class) but not blocked

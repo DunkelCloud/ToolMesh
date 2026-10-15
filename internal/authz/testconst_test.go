@@ -31,4 +31,11 @@ const (
 	testToolXY             = "x_y"
 	testGitHubCreateIssue  = "github_create_issue"
 	testNetboxDeleteDevice = "netbox_delete_device"
+	testEchoTime           = "echo_time"
+	testEchoEcho           = "echo_echo"
+	testGitHubListRepos    = "github_list_repos"
+	testGitHubDeleteRepo   = "github_delete_repo"
+	testRoleContractor     = "contractor"
+	testRoleIntern         = "intern"
+	testStripe             = "stripe"
 )

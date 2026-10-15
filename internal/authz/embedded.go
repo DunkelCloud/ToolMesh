@@ -62,6 +62,7 @@ const (
 	objInstance = "instance:toolmesh"
 
 	relExecutor    = "executor"
+	relBlocked     = "blocked"
 	relInstance    = "instance"
 	relBackend     = "backend"
 	relAccessClass = "access_class"
@@ -139,10 +140,10 @@ type Embedded struct {
 	// installation, empty otherwise.
 	upgradePreset string
 
-	// toolGrants holds the tool objects that may have stored grants of their
-	// own. Every other tool is decided by its backend and access class alone,
-	// which lets CheckBatch answer many tools with one check. It must always
-	// be a superset of the tools that do have stored grants.
+	// toolGrants holds the tool objects that may have stored grants or denies
+	// of their own. Every other tool is decided by its backend and access
+	// class alone, which lets CheckBatch answer many tools with one check. It
+	// must always be a superset of the tools that do have stored rules.
 	toolGrants atomic.Pointer[map[string]bool]
 
 	applyMu   sync.Mutex
@@ -497,29 +498,35 @@ func (e *Embedded) Close() error {
 
 // ApplyResult summarizes what Apply changed.
 type ApplyResult struct {
-	// Tuples is the number of stored tuples the grants amount to.
+	// Tuples is the number of stored tuples the grants and denies amount to.
 	Tuples  int
 	Written int
 	Deleted int
 }
 
-// Apply makes the stored grants equal to grants: it writes the tuples that
-// are missing and deletes those no grant asks for. Deletes go first, so a
-// change never grants more in between than before or after it. Checks
-// started after Apply returns see the new grants.
-func (e *Embedded) Apply(ctx context.Context, grants []Grant) (ApplyResult, error) {
+// Apply makes the stored rules equal to grants and denies: it writes the
+// tuples that are missing and deletes those no rule asks for. The steps are
+// ordered so that no state in between allows more than both the old and the
+// new rules: new denies first, then removed grants, then new grants, removed
+// denies last. Checks started after Apply returns see the new rules.
+func (e *Embedded) Apply(ctx context.Context, grants, denies []Grant) (ApplyResult, error) {
 	e.applyMu.Lock()
 	defer e.applyMu.Unlock()
 	// Also after a partial failure: whatever was written must take effect.
 	defer e.cache.invalidate()
 
 	desired := map[tupleKey]bool{}
-	for i, g := range grants {
-		if err := g.Validate(); err != nil {
-			return ApplyResult{}, fmt.Errorf("grant %d: %w", i+1, err)
-		}
-		for _, t := range g.tuples() {
-			desired[t] = true
+	for _, set := range []struct {
+		kind, relation string
+		rules          []Grant
+	}{{"grant", relExecutor, grants}, {"deny", relBlocked, denies}} {
+		for i, g := range set.rules {
+			if err := g.Validate(); err != nil {
+				return ApplyResult{}, fmt.Errorf("%s %d: %w", set.kind, i+1, err)
+			}
+			for _, t := range g.tuples(set.relation) {
+				desired[t] = true
+			}
 		}
 	}
 
@@ -547,15 +554,48 @@ func (e *Embedded) Apply(ctx context.Context, grants []Grant) (ApplyResult, erro
 	maps.Copy(union, desired)
 	e.setToolGrants(union)
 
+	isDeny := func(t tupleKey) bool { return t.Relation == relBlocked }
+	isGrant := func(t tupleKey) bool { return !isDeny(t) }
+
 	res := ApplyResult{Tuples: len(desired)}
-	for chunk := range slices.Chunk(deletes, writeChunk) {
-		n, err := e.deleteTuples(ctx, chunk)
-		res.Deleted += n
+	for _, step := range []struct {
+		write bool
+		pick  func(tupleKey) bool
+	}{{true, isDeny}, {false, isGrant}, {true, isGrant}, {false, isDeny}} {
+		var n int
+		var err error
+		if step.write {
+			n, err = e.writeTuples(ctx, filterTuples(writes, step.pick))
+			res.Written += n
+		} else {
+			n, err = e.deleteAll(ctx, filterTuples(deletes, step.pick))
+			res.Deleted += n
+		}
 		if err != nil {
 			return res, err
 		}
 	}
-	for chunk := range slices.Chunk(writes, writeChunk) {
+	// Exact again, including tuples deleteTuples had to leave behind.
+	if after, err := e.readTuples(ctx); err == nil {
+		e.setToolGrants(after)
+	}
+	return res, nil
+}
+
+func filterTuples(ts []tupleKey, keep func(tupleKey) bool) []tupleKey {
+	var out []tupleKey
+	for _, t := range ts {
+		if keep(t) {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+// writeTuples writes ts in chunks of at most writeChunk tuples.
+func (e *Embedded) writeTuples(ctx context.Context, ts []tupleKey) (int, error) {
+	written := 0
+	for chunk := range slices.Chunk(ts, writeChunk) {
 		keys := make([]*openfgav1.TupleKey, 0, len(chunk))
 		for _, t := range chunk {
 			keys = append(keys, &openfgav1.TupleKey{User: t.User, Relation: t.Relation, Object: t.Object})
@@ -565,15 +605,24 @@ func (e *Embedded) Apply(ctx context.Context, grants []Grant) (ApplyResult, erro
 			AuthorizationModelId: e.modelID,
 			Writes:               &openfgav1.WriteRequestWrites{TupleKeys: keys},
 		}); err != nil {
-			return res, fmt.Errorf("write authz grants: %w", err)
+			return written, fmt.Errorf("write authz rules: %w", err)
 		}
-		res.Written += len(chunk)
+		written += len(chunk)
 	}
-	// Exact again, including grants deleteTuples had to leave behind.
-	if after, err := e.readTuples(ctx); err == nil {
-		e.setToolGrants(after)
+	return written, nil
+}
+
+// deleteAll deletes ts in chunks of at most writeChunk tuples.
+func (e *Embedded) deleteAll(ctx context.Context, ts []tupleKey) (int, error) {
+	deleted := 0
+	for chunk := range slices.Chunk(ts, writeChunk) {
+		n, err := e.deleteTuples(ctx, chunk)
+		deleted += n
+		if err != nil {
+			return deleted, err
+		}
 	}
-	return res, nil
+	return deleted, nil
 }
 
 func (e *Embedded) setToolGrants(stored map[tupleKey]bool) {

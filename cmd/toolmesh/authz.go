@@ -131,13 +131,13 @@ func applyAuthzPolicy(ctx context.Context, cfg *config.Config, emb *authz.Embedd
 	if err != nil {
 		return authz.Policy{}, err
 	}
-	res, err := emb.Apply(ctx, policy.Grants)
+	res, err := emb.Apply(ctx, policy.Grants, policy.Denies)
 	if err != nil {
-		return authz.Policy{}, fmt.Errorf("apply authorization grants: %w", err)
+		return authz.Policy{}, fmt.Errorf("apply authorization rules: %w", err)
 	}
 
 	attrs := []any{"preset", policy.Preset, "source", policy.Source, "grants", len(policy.Grants),
-		"tuples", res.Tuples, "written", res.Written, "deleted", res.Deleted}
+		"denies", len(policy.Denies), "tuples", res.Tuples, "written", res.Written, "deleted", res.Deleted}
 	if policy.Source == authz.SourceFile {
 		attrs = append(attrs, "file", cfg.AuthzConfigPath)
 	}

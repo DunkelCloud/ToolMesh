@@ -202,7 +202,7 @@ Grants refer to the users, roles, plans and companies from `users.yaml`, `apikey
 | `team` | as `single-user`, plus plan `pro`: every tool, plan `free`: every `read` tool. Default with `users.yaml` or `apikeys.yaml`. |
 | `open` | every authenticated caller: every tool |
 
-For finer control, copy `config/authz.yaml.example` to `config/authz.yaml`; grants can name all tools, backends, single tools or DADL access classes (`read`, `write`, ...) and take effect within seconds of a change:
+For finer control, copy `config/authz.yaml.example` to `config/authz.yaml`; grants can name all tools, backends, single tools or DADL access classes (`read`, `write`, ...), denies block any of these and win over every grant, and changes take effect within seconds:
 
 ```yaml
 grants:
@@ -212,6 +212,9 @@ grants:
     access: [read]
   - role: support
     tools: [zammad_list_tickets]
+denies:
+  - plan: pro
+    tools: [stripe_create_refund]
 ```
 
 An installation upgraded from a version without authorization keeps every tool open to every authenticated caller (preset `open`) and says so at every start, until you pick a preset or write grants. `OPENFGA_MODE` is deprecated: `restrict` maps to `external`, `bypass` to `embedded`. See [docs/configuration.md](docs/configuration.md#authorization).

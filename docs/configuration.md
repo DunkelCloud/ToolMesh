@@ -220,6 +220,12 @@ grants:
     backends: [netbox]
   - user: alice
     all_tools: true
+
+denies:                    # optional: blocks that win over every grant
+  - user: alice
+    tools: [stripe_create_refund]
+  - role: contractor
+    backends: [stripe]
 ```
 
 Each grant names exactly one subject (`user`, `role`, `plan`, `company`, or
@@ -235,12 +241,21 @@ Each grant names exactly one subject (`user`, `role`, `plan`, `company`, or
   (`read`, `write`, `admin`, `dangerous`, or a custom value). Tools without a
   classification, which includes most tools of MCP backends, are not covered.
 
+A **deny** has the same form as a grant and blocks what it names for its
+subject, whatever any grant or the preset allows: a deny always wins. Use it to
+take single tools or backends away from a subject that otherwise has all of
+them, for example `alice` above, who keeps every tool except
+`stripe_create_refund`. A denied tool is refused with an error, audited as
+`denied`, and no longer listed for that caller. Only the grants file has
+denies; presets have none.
+
 ToolMesh reads the file at startup and again within a few seconds of every
 change, including when it is created or removed. A file that does not parse,
-or a grant that names no subject or no target, stops the server at startup;
-on a later change it is reported in the log and the grants stay as they
-were. Calls that start after a change has been applied are checked against
-the new grants.
+or a grant or deny that names no subject or no target, stops the server at
+startup; on a later change it is reported in the log and the rules stay as
+they were. Calls that start after a change has been applied are checked
+against the new rules. While a change is applied, no call is allowed that
+neither the old nor the new rules allow.
 
 #### Upgrading an installation that ran without authorization
 
@@ -266,10 +281,10 @@ or set `TOOLMESH_AUTHZ_PRESET`.
   is not taken for an upgrade a second time.
 - **One process per data directory.** Two ToolMesh instances must not share
   one `authz.db`.
-- **Cost.** A check takes about 0.3 to 0.5 ms. A tool listing does not check
-  every tool on its own: tools without grants of their own that share a
-  backend and access classification are decided once, so filtering a listing
-  of 3,000 tools takes about 70 ms.
+- **Cost.** A check takes about 0.5 to 0.6 ms. A tool listing does not check
+  every tool on its own: tools without grants or denies of their own that
+  share a backend and access classification are decided once, so filtering a
+  listing of 3,000 tools takes about 115 ms.
 
 ### External mode
 

@@ -41,12 +41,14 @@ func authzTestConfig(t *testing.T) *config.Config {
 		AuthzConfigPath:   filepath.Join(dir, "authz.yaml"),
 		UsersConfigPath:   filepath.Join(dir, "users.yaml"),
 		APIKeysConfigPath: filepath.Join(dir, "apikeys.yaml"),
-		AuthUser:          "owner",
+		AuthUser:          testOwner,
 	}
 }
 
 // The backend and tool the grants in these tests name.
 const (
+	testOwner         = "owner"
+	testPlanPro       = "pro"
 	testBackendGitHub = "github"
 	testToolGitHubX   = "github_x"
 )
@@ -155,10 +157,10 @@ func TestSetupAuthz_FileReplacesPreset(t *testing.T) {
 	if !strings.Contains(logs.String(), "TOOLMESH_AUTHZ_PRESET is ignored") {
 		t.Errorf("no notice that the env preset is ignored:\n%s", logs.String())
 	}
-	if !allowed(t, s, authz.Request{UserID: "u", Plan: "pro", Tool: testToolGitHubX, Backend: testBackendGitHub}) {
+	if !allowed(t, s, authz.Request{UserID: "u", Plan: testPlanPro, Tool: testToolGitHubX, Backend: testBackendGitHub}) {
 		t.Error("file grant not applied")
 	}
-	if allowed(t, s, authz.Request{UserID: "owner", Roles: []string{"admin"}, Tool: testToolGitHubX, Backend: testBackendGitHub}) {
+	if allowed(t, s, authz.Request{UserID: testOwner, Roles: []string{"admin"}, Tool: testToolGitHubX, Backend: testBackendGitHub}) {
 		t.Error("preset grant applied although the file names no preset")
 	}
 }
@@ -204,7 +206,7 @@ func TestWatchAuthzConfig_AppliesCreateChangeDelete(t *testing.T) {
 	defer cancel()
 	go watchAuthzConfig(ctx, cfg, s.embedded, 10*time.Millisecond, quietLogger())
 
-	bob := authz.Request{UserID: "bob", Plan: "pro", Tool: testToolGitHubX, Backend: testBackendGitHub}
+	bob := authz.Request{UserID: "bob", Plan: testPlanPro, Tool: testToolGitHubX, Backend: testBackendGitHub}
 	eventually := func(want bool, what string) {
 		t.Helper()
 		deadline := time.Now().Add(5 * time.Second)
@@ -261,3 +263,33 @@ func (c *capturingAudit) Query(context.Context, audit.AuditFilter) ([]audit.Audi
 }
 
 func (c *capturingAudit) Healthy(context.Context) error { return nil }
+
+// A deny in the config file blocks a tool the preset grants, and lifting it
+// on a later change restores the tool without a restart.
+func TestWatchAuthzConfig_Denies(t *testing.T) {
+	cfg := authzTestConfig(t)
+	writeFile(t, cfg.AuthzConfigPath, "preset: team\ndenies:\n  - user: owner\n    tools: [github_x]\n")
+	s := mustSetup(t, cfg, false)
+	if len(s.policy.Denies) != 1 {
+		t.Fatalf("policy denies = %v, want 1", s.policy.Denies)
+	}
+
+	owner := authz.Request{UserID: testOwner, Plan: testPlanPro, Roles: []string{"admin"}, Tool: testToolGitHubX, Backend: testBackendGitHub}
+	neighbor := owner
+	neighbor.Tool = "github_y"
+	if allowed(t, s, owner) || !allowed(t, s, neighbor) {
+		t.Fatalf("with deny: github_x=%v github_y=%v, want false/true", allowed(t, s, owner), allowed(t, s, neighbor))
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go watchAuthzConfig(ctx, cfg, s.embedded, 10*time.Millisecond, quietLogger())
+	writeFile(t, cfg.AuthzConfigPath, "preset: team\n")
+	deadline := time.Now().Add(5 * time.Second)
+	for !allowed(t, s, owner) {
+		if time.Now().After(deadline) {
+			t.Fatal("deny still in effect after it was removed from the file")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}

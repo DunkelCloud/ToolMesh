@@ -18,6 +18,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -37,7 +38,7 @@ func applyPreset(t *testing.T, e *Embedded, preset string) {
 	if err != nil {
 		t.Fatalf("PresetGrants: %v", err)
 	}
-	if _, err := e.Apply(context.Background(), grants); err != nil {
+	if _, err := e.Apply(context.Background(), grants, nil); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
 }
@@ -60,7 +61,7 @@ func TestEmbedded_Presets(t *testing.T) {
 	free := Request{UserID: testCarol, Plan: PlanFree}
 	nobody := Request{UserID: "dave"}
 
-	readTool := Request{Tool: "github_list_repos", Backend: testGitHub, Access: AccessRead}
+	readTool := Request{Tool: testGitHubListRepos, Backend: testGitHub, Access: AccessRead}
 	writeTool := Request{Tool: testGitHubCreateIssue, Backend: testGitHub, Access: testWrite}
 
 	call := func(who, what Request) Request {
@@ -118,7 +119,7 @@ grants:
 	if err != nil {
 		t.Fatalf("ParseFile: %v", err)
 	}
-	if _, err := e.Apply(context.Background(), f.Grants); err != nil {
+	if _, err := e.Apply(context.Background(), f.Grants, nil); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
 
@@ -134,9 +135,9 @@ grants:
 		{"company grant is per tool", Request{UserID: "x", CompanyID: testAcme, Tool: "deepl_usage", Backend: testDeepL}, false},
 		{"user grant by access class", Request{UserID: "erin@example.com", Tool: "netbox_list", Backend: testNetbox, Access: AccessRead}, true},
 		{"user grant by access class, other class", Request{UserID: "erin@example.com", Tool: "netbox_delete", Backend: testNetbox, Access: testDangerous}, false},
-		{"everyone grant", Request{UserID: "anyone", Tool: "echo_echo", Backend: testEcho}, true},
+		{"everyone grant", Request{UserID: "anyone", Tool: testEchoEcho, Backend: testEcho}, true},
 		{"nothing granted", Request{UserID: "anyone", Tool: "echo_add", Backend: testEcho}, false},
-		{"no user", Request{Tool: "echo_echo", Backend: testEcho}, false},
+		{"no user", Request{Tool: testEchoEcho, Backend: testEcho}, false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -151,7 +152,7 @@ func TestEmbedded_ApplyReconciles(t *testing.T) {
 	e := openTestEngine(t, filepath.Join(t.TempDir(), DBFileName), false)
 	ctx := context.Background()
 
-	res, err := e.Apply(ctx, []Grant{{Plan: PlanPro, AllTools: true}, {Role: testRoleOps, Backends: []string{"a", "b"}}})
+	res, err := e.Apply(ctx, []Grant{{Plan: PlanPro, AllTools: true}, {Role: testRoleOps, Backends: []string{"a", "b"}}}, nil)
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
@@ -159,7 +160,7 @@ func TestEmbedded_ApplyReconciles(t *testing.T) {
 		t.Errorf("first Apply = %+v, want 3 written", res)
 	}
 
-	res, err = e.Apply(ctx, []Grant{{Role: testRoleOps, Backends: []string{"b", "c"}}})
+	res, err = e.Apply(ctx, []Grant{{Role: testRoleOps, Backends: []string{"b", "c"}}}, nil)
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
@@ -174,7 +175,7 @@ func TestEmbedded_ApplyReconciles(t *testing.T) {
 		t.Error("new role grant does not allow")
 	}
 
-	res, err = e.Apply(ctx, []Grant{{Role: testRoleOps, Backends: []string{"b", "c"}}})
+	res, err = e.Apply(ctx, []Grant{{Role: testRoleOps, Backends: []string{"b", "c"}}}, nil)
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
@@ -191,14 +192,14 @@ func TestEmbedded_ManyGrantsChunked(t *testing.T) {
 	for i := range tools {
 		tools[i] = "t_" + string(rune('a'+i%26)) + string(rune('a'+i/26))
 	}
-	res, err := e.Apply(ctx, []Grant{{User: "u", Tools: tools}})
+	res, err := e.Apply(ctx, []Grant{{User: "u", Tools: tools}}, nil)
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
 	if res.Written != 250 {
 		t.Errorf("Written = %d, want 250", res.Written)
 	}
-	res, err = e.Apply(ctx, nil)
+	res, err = e.Apply(ctx, nil, nil)
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
@@ -215,7 +216,7 @@ func TestEmbedded_ReopenKeepsStoreModelAndGrants(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenEmbedded: %v", err)
 	}
-	if _, err := first.Apply(ctx, []Grant{{User: "u", AllTools: true}}); err != nil {
+	if _, err := first.Apply(ctx, []Grant{{User: "u", AllTools: true}}, nil); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
 	storeID, modelID := first.StoreID(), first.ModelID()
@@ -258,7 +259,7 @@ func TestEmbedded_ModelChangeWritesNewModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenEmbedded: %v", err)
 	}
-	if _, err := first.Apply(ctx, []Grant{{Role: RoleAdmin, AllTools: true}}); err != nil {
+	if _, err := first.Apply(ctx, []Grant{{Role: RoleAdmin, AllTools: true}}, nil); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
 	oldModel := first.ModelID()
@@ -323,7 +324,7 @@ func TestEscapeID(t *testing.T) {
 
 func TestEmbedded_WildcardUserIsNotEveryone(t *testing.T) {
 	e := openTestEngine(t, filepath.Join(t.TempDir(), DBFileName), false)
-	if _, err := e.Apply(context.Background(), []Grant{{User: "*", AllTools: true}}); err != nil {
+	if _, err := e.Apply(context.Background(), []Grant{{User: "*", AllTools: true}}, nil); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
 	if mustCheck(t, e, Request{UserID: "someone", Tool: testToolXY}) {
@@ -344,11 +345,11 @@ func TestEmbedded_CheckBatchMatchesCheck(t *testing.T) {
 	grants := []Grant{
 		{Plan: PlanPro, Backends: []string{testGitHub}},
 		{Plan: PlanFree, Access: []string{AccessRead}},
-		{Role: testRoleOps, Tools: []string{testNetboxDeleteDevice, "github_delete_repo"}},
+		{Role: testRoleOps, Tools: []string{testNetboxDeleteDevice, testGitHubDeleteRepo}},
 		{User: "erin", Tools: []string{testDeepLTranslate}},
 		{Company: testAcme, Backends: []string{testNetbox}},
 	}
-	if _, err := e.Apply(ctx, grants); err != nil {
+	if _, err := e.Apply(ctx, grants, nil); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
 
@@ -361,8 +362,8 @@ func TestEmbedded_CheckBatchMatchesCheck(t *testing.T) {
 		{UserID: ""},
 	}
 	tools := []Request{
-		{Tool: "github_list_repos", Backend: testGitHub, Access: AccessRead},
-		{Tool: "github_delete_repo", Backend: testGitHub, Access: testDangerous},
+		{Tool: testGitHubListRepos, Backend: testGitHub, Access: AccessRead},
+		{Tool: testGitHubDeleteRepo, Backend: testGitHub, Access: testDangerous},
 		{Tool: testGitHubCreateIssue, Backend: testGitHub, Access: testWrite},
 		{Tool: testNetboxDeleteDevice, Backend: testNetbox, Access: testDangerous},
 		{Tool: "netbox_list_devices", Backend: testNetbox, Access: AccessRead},
@@ -392,7 +393,7 @@ func TestEmbedded_CheckBatchMatchesCheck(t *testing.T) {
 	}
 
 	// Revoking a tool-level grant must reach CheckBatch as well.
-	if _, err := e.Apply(ctx, grants[:2]); err != nil {
+	if _, err := e.Apply(ctx, grants[:2], nil); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
 	got, err = e.CheckBatch(ctx, []Request{{UserID: "dan", Roles: []string{testRoleOps}, Tool: testNetboxDeleteDevice, Backend: testNetbox, Access: testDangerous}})
@@ -478,5 +479,129 @@ func TestEmbedded_ConnectionPragmas(t *testing.T) {
 		if got != tc.want {
 			t.Errorf("PRAGMA %s = %q, want %q", tc.pragma, got, tc.want)
 		}
+	}
+}
+
+// Denies win over every grant, at every level a deny can name.
+func TestEmbedded_DeniesWinOverGrants(t *testing.T) {
+	e := openTestEngine(t, filepath.Join(t.TempDir(), DBFileName), false)
+	grants, err := PresetGrants(PresetTeam, testOwner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	denies := []Grant{
+		{User: "ad", Tools: []string{testEchoTime}},
+		{Role: testRoleContractor, Backends: []string{"stripe"}},
+		{Role: testRoleIntern, Access: []string{testDangerous}},
+		{Company: testAcme, AllTools: true},
+		{Everyone: true, Tools: []string{testNetboxDeleteDevice}},
+	}
+	if _, err := e.Apply(context.Background(), grants, denies); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	ad := Request{UserID: "ad", Plan: PlanPro, Roles: []string{RoleAdmin}}
+	tests := []struct {
+		name string
+		who  Request
+		tool Request
+		want bool
+	}{
+		{"deny on a single tool", ad, Request{Tool: testEchoTime, Backend: testEcho}, false},
+		{"other tool of the same backend", ad, Request{Tool: testEchoEcho, Backend: testEcho}, true},
+		{"deny is per user", Request{UserID: testBob, Plan: PlanPro}, Request{Tool: testEchoTime, Backend: testEcho}, true},
+		{"deny on a backend", Request{UserID: "c", Plan: PlanPro, Roles: []string{testRoleContractor}}, Request{Tool: "stripe_list_charges", Backend: "stripe", Access: AccessRead}, false},
+		{"backend deny leaves other backends", Request{UserID: "c", Plan: PlanPro, Roles: []string{testRoleContractor}}, Request{Tool: "github_x", Backend: testGitHub, Access: AccessRead}, true},
+		{"deny on an access class", Request{UserID: "i", Plan: PlanPro, Roles: []string{testRoleIntern}}, Request{Tool: "netbox_delete_x", Backend: testNetbox, Access: testDangerous}, false},
+		{"access deny leaves other classes", Request{UserID: "i", Plan: PlanPro, Roles: []string{testRoleIntern}}, Request{Tool: "netbox_create_x", Backend: testNetbox, Access: testWrite}, true},
+		{"deny of all tools for a company", Request{UserID: "m", CompanyID: testAcme, Plan: PlanPro, Roles: []string{RoleAdmin}}, Request{Tool: testEchoEcho, Backend: testEcho}, false},
+		{"deny for everyone beats admin", ad, Request{Tool: testNetboxDeleteDevice, Backend: testNetbox, Access: testDangerous}, false},
+		{"deny for everyone beats owner", Request{UserID: testOwner}, Request{Tool: testNetboxDeleteDevice, Backend: testNetbox, Access: testDangerous}, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			r := tc.who
+			r.Tool, r.Backend, r.Access = tc.tool.Tool, tc.tool.Backend, tc.tool.Access
+			if got := mustCheck(t, e, r); got != tc.want {
+				t.Errorf("allowed=%v, want %v", got, tc.want)
+			}
+			batch, err := e.CheckBatch(context.Background(), []Request{r})
+			if err != nil {
+				t.Fatalf("CheckBatch: %v", err)
+			}
+			if batch[0] != tc.want {
+				t.Errorf("CheckBatch allowed=%v, want %v", batch[0], tc.want)
+			}
+		})
+	}
+}
+
+// A tool listing with denies on single tools and on backends must give the
+// same answers in a batch as one check per tool.
+func TestEmbedded_CheckBatchMatchesCheckWithDenies(t *testing.T) {
+	e := openTestEngine(t, filepath.Join(t.TempDir(), DBFileName), false)
+	ctx := context.Background()
+	if _, err := e.Apply(ctx,
+		[]Grant{{Plan: PlanPro, AllTools: true}, {Plan: PlanFree, Access: []string{AccessRead}}},
+		[]Grant{{Plan: PlanPro, Tools: []string{testGitHubDeleteRepo}}, {Plan: PlanFree, Backends: []string{testNetbox}}},
+	); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	reqs := make([]Request, 0, 10)
+	for _, who := range []Request{{UserID: "p", Plan: PlanPro}, {UserID: "f", Plan: PlanFree}} {
+		for _, tl := range []Request{
+			{Tool: testGitHubDeleteRepo, Backend: testGitHub, Access: testDangerous},
+			{Tool: "github_delete_branch", Backend: testGitHub, Access: testDangerous},
+			{Tool: testGitHubListRepos, Backend: testGitHub, Access: AccessRead},
+			{Tool: "netbox_list_devices", Backend: testNetbox, Access: AccessRead},
+			{Tool: "netbox_list_sites", Backend: testNetbox, Access: AccessRead},
+		} {
+			r := who
+			r.Tool, r.Backend, r.Access = tl.Tool, tl.Backend, tl.Access
+			reqs = append(reqs, r)
+		}
+	}
+	got, err := e.CheckBatch(ctx, reqs)
+	if err != nil {
+		t.Fatalf("CheckBatch: %v", err)
+	}
+	for i, r := range reqs {
+		if want := mustCheck(t, e, r); got[i] != want {
+			t.Errorf("plan=%s tool=%s: CheckBatch=%v, Check=%v", r.Plan, r.Tool, got[i], want)
+		}
+	}
+	if got[0] || !got[1] || got[8] {
+		t.Errorf("unexpected decisions %v", got)
+	}
+}
+
+func TestEmbedded_LiftingADenyRestoresAccess(t *testing.T) {
+	e := openTestEngine(t, filepath.Join(t.TempDir(), DBFileName), false)
+	ctx := context.Background()
+	grants := []Grant{{User: "ad", AllTools: true}}
+	req := Request{UserID: "ad", Tool: testEchoTime, Backend: testEcho}
+
+	res, err := e.Apply(ctx, grants, []Grant{{User: "ad", Tools: []string{testEchoTime}}})
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if res.Written != 2 || res.Tuples != 2 {
+		t.Errorf("Apply with deny = %+v, want 2 tuples written", res)
+	}
+	if mustCheck(t, e, req) {
+		t.Fatal("denied tool allowed")
+	}
+	res, err = e.Apply(ctx, grants, nil)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if res.Deleted != 1 || res.Written != 0 {
+		t.Errorf("Apply without deny = %+v, want 1 deleted", res)
+	}
+	if !mustCheck(t, e, req) {
+		t.Error("tool still denied after the deny was lifted")
+	}
+	if _, err := e.Apply(ctx, grants, []Grant{{User: "ad"}}); err == nil || !strings.Contains(err.Error(), "deny 1") {
+		t.Errorf("invalid deny: err = %v", err)
 	}
 }

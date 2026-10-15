@@ -2,9 +2,9 @@
 #
 # Without this file a preset applies (TOOLMESH_AUTHZ_PRESET, or one chosen at
 # startup; see docs/configuration.md, "Authorization"). With it, exactly the
-# grants below apply. ToolMesh reads the file at startup and again within a few
-# seconds of every change; a file that does not parse is reported in the log
-# and leaves the grants in place.
+# grants and denies below apply. ToolMesh reads the file at startup and again
+# within a few seconds of every change; a file that does not parse is reported
+# in the log and leaves the rules in place.
 #
 # Copy to config/authz.yaml and adjust.
 
@@ -45,3 +45,10 @@ grants:
 
   - company: acme
     backends: [netbox]
+
+# Optional: denies have the same form as grants and win over every grant and
+# over the preset. A denied tool is refused, audited as denied and no longer
+# listed for that caller.
+denies:
+  - role: support
+    tools: [zammad_delete_ticket]

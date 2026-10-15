@@ -31,11 +31,12 @@ and the model on first start and writes the model again when a new version
 changes it. In `external` mode it checks against an OpenFGA server operated
 separately and never writes to it.
 
-The embedded model keeps only **grants** in the store: which user, role, plan,
-company or everyone may execute all tools, the tools of a backend, the tools
-of a DADL access class, or single tools. Grants come from a preset or from
-`config/authz.yaml`; ToolMesh writes them at startup and whenever the file
-changes. Everything else is passed with each check as contextual tuples, so it
+The embedded model keeps only the rules from configuration in the store:
+**grants**, which user, role, plan, company or everyone may execute all tools,
+the tools of a backend, the tools of a DADL access class, or single tools, and
+**denies** of the same form, which win over every grant. Grants come from a
+preset or from `config/authz.yaml`, denies from that file; ToolMesh writes them
+at startup and whenever the file changes. Everything else is passed with each check as contextual tuples, so it
 cannot drift from where it is configured:
 
 ```
@@ -44,7 +45,8 @@ caller (from authentication)      tool (from routing and DADL)
            ─ subscriber ─▶ plan                ─ backend ──▶ backend:<name>
            ─ assignee ─▶ role                  ─ access_class ▶ access_class:<class>
 
-tool#can_execute = executor on the tool, its instance, its backend or its access class
+tool#can_execute = (executor on the tool, its instance, its backend or its access class)
+                   but not blocked on any of them
 ```
 
 The backend is the one the call is routed to (longest-prefix match), not the

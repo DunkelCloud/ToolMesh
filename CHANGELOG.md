@@ -59,6 +59,20 @@ keeps working as `TOOLMESH_AUTHZ_MODE=external`. The data directory must be
 writable; it is in the shipped `docker-compose.yml`, which no longer sets
 `OPENFGA_MODE`.
 
+**Behavior change:** telemetry reports carry a site ID, a persistent
+identifier of the installation. It is a random UUIDv7, which includes the time
+it was created; ToolMesh creates it on the first start with telemetry enabled
+and keeps it as `site_id` in `toolmesh.json` in the data directory. Nothing in
+it is derived from the host, the configuration or the operator, but it links
+the reports of one installation over time: the statistics now count
+installations rather than source IP addresses, and they are no longer
+anonymous in the strict sense. With `DO_NOT_SEND_ANONYMOUS_STATISTICS=yes` no
+site ID is created and nothing is sent; an ID created earlier stays in the
+file until it is removed. To discard it, stop ToolMesh and remove `site_id`
+from `toolmesh.json`; the next start with telemetry enabled creates a new one.
+Without a persistent data directory every start reports a new site ID. See
+[Telemetry](https://www.toolmesh.io/en/configuration/#telemetry).
+
 ### Added
 
 - Embedded authorization: OpenFGA as a library on a SQLite datastore, with

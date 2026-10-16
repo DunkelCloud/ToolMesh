@@ -28,6 +28,7 @@ import (
 	"github.com/DunkelCloud/ToolMesh/internal/backend"
 	"github.com/DunkelCloud/ToolMesh/internal/blob"
 	"github.com/DunkelCloud/ToolMesh/internal/executor"
+	"github.com/DunkelCloud/ToolMesh/internal/grants"
 	"github.com/DunkelCloud/ToolMesh/internal/metrics"
 	"github.com/DunkelCloud/ToolMesh/internal/toolindex"
 	"github.com/DunkelCloud/ToolMesh/internal/tsdef"
@@ -57,6 +58,10 @@ type Handler struct {
 	logger        *slog.Logger
 	debugTools    bool          // when true, expose debug_echo and debug_generate
 	hints         *hintNotifier // first-use backend hint delivery; nil = disabled
+
+	// grants handles request_grant and the grants shown by
+	// tell_me_my_rights; nil when kits cannot be granted.
+	grants *grants.Service
 
 	// File broker plumbing for the upload_file built-in (nil = tool hidden).
 	blobStore         *blob.Store
@@ -116,6 +121,8 @@ func (h *Handler) isBuiltinTool(name string) bool {
 		return true
 	case toolUploadFile:
 		return h.blobStore != nil
+	case toolRequestGrant:
+		return h.grants != nil
 	case toolDebugEcho, toolDebugGenerate:
 		return h.debugTools
 	}
@@ -165,6 +172,10 @@ func (h *Handler) HandleToolCall(ctx context.Context, toolName string, params ma
 		return h.handleExecuteCode(ctx, params), nil
 	case toolTellMeMyRights:
 		return h.handleTellMeMyRights(ctx, params), nil
+	case toolRequestGrant:
+		// handleRequestGrant reports that kits cannot be granted itself when
+		// there is no grant service; the tool is only advertised with one.
+		return h.handleRequestGrant(ctx, params), nil
 	case toolUploadFile:
 		// handleUploadFile reports a clear "not configured" error itself when
 		// no blob store is set; the tool is only advertised when one is.
@@ -599,6 +610,9 @@ func (h *Handler) BuildToolList(ctx context.Context) ([]ToolDefinition, error) {
 	// discover_tools too — listing them at the MCP root is purely a
 	// convenience for high-frequency tools where the discovery round-trip
 	// would waste context.
+	if h.offersRequestGrant() {
+		tools = append(tools, requestGrantToolDefinition())
+	}
 	if h.blobStore != nil {
 		tools = append(tools, uploadFileToolDefinition())
 	}

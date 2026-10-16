@@ -138,11 +138,16 @@ func applyAuthzPolicy(ctx context.Context, cfg *config.Config, emb *authz.Embedd
 	}
 
 	attrs := []any{"preset", policy.Preset, "source", policy.Source, "grants", len(policy.Grants),
-		"denies", len(policy.Denies), "kits", len(policy.Kits), "tuples", res.Tuples, "written", res.Written, "deleted", res.Deleted}
+		"denies", len(policy.Denies), "kits", len(policy.Kits), "approvers", len(policy.Approvers),
+		"tuples", res.Tuples, "written", res.Written, "deleted", res.Deleted}
 	if policy.Source == authz.SourceFile {
 		attrs = append(attrs, "file", cfg.AuthzConfigPath)
 	}
 	logger.Info("authorization policy applied", attrs...)
+	if len(policy.Kits) > 0 && len(policy.Approvers) == 0 {
+		logger.Warn("the authz config file defines kits but no approvers, so no kit can be granted; add approvers to it",
+			"file", cfg.AuthzConfigPath, "kits", len(policy.Kits))
+	}
 	if policy.Source == authz.SourceUpgrade {
 		logger.Warn("authorization keeps every tool open to every authenticated caller, as before the upgrade: this installation ran without authorization checks. Choose who may call what with TOOLMESH_AUTHZ_PRESET=single-user or team, or with grants in the authz config file",
 			"preset", policy.Preset, "file", cfg.AuthzConfigPath)

@@ -149,6 +149,8 @@ type Embedded struct {
 	toolGrants atomic.Pointer[map[string]bool]
 	// kits holds the kits of the policy applied last, sorted by name.
 	kits atomic.Pointer[[]Kit]
+	// approvers holds the approvers of the policy applied last.
+	approvers atomic.Pointer[[]Approver]
 
 	applyMu   sync.Mutex
 	closeOnce sync.Once
@@ -226,6 +228,7 @@ func OpenEmbedded(ctx context.Context, opts EmbeddedOptions) (*Embedded, error) 
 
 	e := &Embedded{srv: srv, db: db, cache: cache, logger: logger}
 	e.kits.Store(&[]Kit{})
+	e.approvers.Store(&[]Approver{})
 	if err := e.bootstrap(ctx, opts.Upgrade, filepath.Join(filepath.Dir(opts.Path), MarkerFileName)); err != nil {
 		srv.Close() // closes the datastore and with it db
 		return nil, err
@@ -525,10 +528,23 @@ type ApplyResult struct {
 // slice is shared and must not be modified.
 func (e *Embedded) Kits() []Kit { return *e.kits.Load() }
 
+// Approvers returns the approvers of the policy applied last. The slice is
+// shared and must not be modified.
+func (e *Embedded) Approvers() []Approver { return *e.approvers.Load() }
+
 // ApplyPolicy makes the stored rules equal to the policy's grants, denies and
-// kits, as Apply does.
+// kits, as Apply does, and takes over its approvers.
 func (e *Embedded) ApplyPolicy(ctx context.Context, p Policy) (ApplyResult, error) {
-	return e.apply(ctx, p.Grants, p.Denies, p.Kits)
+	if err := validateApprovers(p.Approvers); err != nil {
+		return ApplyResult{}, err
+	}
+	res, err := e.apply(ctx, p.Grants, p.Denies, p.Kits)
+	if err != nil {
+		return res, err
+	}
+	approvers := normalizeApprovers(p.Approvers)
+	e.approvers.Store(&approvers)
+	return res, nil
 }
 
 // Apply makes the stored rules equal to grants and denies, without kits: it

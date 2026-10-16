@@ -56,6 +56,14 @@ type KitCatalog interface {
 	Kits() []Kit
 }
 
+// ApproverRegistry is implemented by authorizers that know who may approve
+// requests for kits. Only the embedded engine does.
+type ApproverRegistry interface {
+	// Approvers returns the approvers in effect. The slice is shared and must
+	// not be modified.
+	Approvers() []Approver
+}
+
 // Request is one authorization question: may this caller execute this tool?
 type Request struct {
 	// Caller, as authentication established it.

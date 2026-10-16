@@ -58,6 +58,39 @@ func TestRequest_Invalid(t *testing.T) {
 	}
 }
 
+func TestRequest_AuditsWhatWasAsked(t *testing.T) {
+	env := newTestEnv(t)
+	ctx := context.Background()
+
+	// A right-to-left override, built at run time so that the source holds
+	// no bidirectional control character.
+	rlo := string(rune(0x202E))
+	const asked = "90m"
+	res, err := env.svc.Request(ctx, caller(testCaller), RequestInput{Kit: testKitNetDiag, Reason: "Debug" + rlo + " the\toutage,\n ticket 4711", TTL: " " + asked + " "})
+	if err != nil {
+		t.Fatalf("Request: %v", err)
+	}
+	md := env.audit.last(t).Metadata
+	want := map[string]string{"grant_id": res.Grant.ID, keyKit: testKitNetDiag, "reason": "Debug the outage, ticket 4711", "ttl": asked, "ttl_requested": asked}
+	for k, v := range want {
+		if md[k] != v {
+			t.Errorf("metadata[%s] = %q, want %q (all: %v)", k, md[k], v, md)
+		}
+	}
+
+	// A request that fails is recorded with what it named, bounded.
+	if _, err := env.svc.Request(ctx, caller(testCaller), RequestInput{Kit: strings.Repeat("k", 200), Reason: testReason}); err == nil {
+		t.Fatal("request for an unknown kit succeeded")
+	}
+	e := env.audit.last(t)
+	if e.Status != statusError || len(e.Metadata["kit"]) != maxAuditArgLen || e.Metadata["reason"] != testReason {
+		t.Errorf("failed request audit = %s %v, want the kit cut to %d characters and the reason", e.Status, e.Metadata, maxAuditArgLen)
+	}
+	if _, ok := e.Metadata["ttl_requested"]; ok {
+		t.Errorf("metadata has ttl_requested although none was asked for: %v", e.Metadata)
+	}
+}
+
 func TestRequest_NoApprovers(t *testing.T) {
 	env := newTestEnv(t)
 	env.cat.approvers = nil

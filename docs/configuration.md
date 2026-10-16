@@ -144,6 +144,13 @@ The default is half of the CPUs the process may use (in a container with a CPU l
 | `AUDIT_STORE` | `log` | Audit store: `log` (structured slog output, write-only) or `sqlite` (append-only SQLite database, queryable) |
 | `AUDIT_RETENTION_DAYS` | `90` | Retention period in days for the sqlite store — entries older than this are automatically deleted |
 
+Both stores keep an entry's metadata; the `log` store writes it as a
+`metadata` object in the `audit` line. It carries what the fixed fields
+cannot: for kit grants the approver, the grant id and the kit, and for a
+request the reason and the duration asked for (`ttl_requested`); for a call
+the kits the caller held (`held_kits`), and for a denial the kits that would
+have allowed it (`remedy_kits`).
+
 ## Authorization
 
 Every tool call is checked before it runs: a direct call, each `api.*` call

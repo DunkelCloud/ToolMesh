@@ -50,6 +50,9 @@ const (
 	// MaxCallerNameLen bounds the caller name stored with a request, in
 	// characters. An OAuth client chooses its own name.
 	MaxCallerNameLen = 128
+	// maxAuditArgLen bounds the kit and duration of a request as the audit
+	// records them, in characters: a request that fails may name anything.
+	maxAuditArgLen = 64
 )
 
 // Names under which the grant lifecycle is recorded in the audit trail.
@@ -60,6 +63,8 @@ const (
 	auditDeny        = "grant_deny"
 	auditRevoke      = "grant_revoke"
 	auditBackend     = "toolmesh"
+	// keyKit names the kit in audit metadata and log lines.
+	keyKit = "kit"
 )
 
 // Audit statuses of grant actions.
@@ -196,7 +201,14 @@ func (s *Service) Request(ctx context.Context, uc *userctx.UserContext, in Reque
 	if uc != nil {
 		entry.UserID, entry.CompanyID, entry.CallerID, entry.CallerName, entry.CallerClass = uc.UserID, uc.CompanyID, uc.CallerID, uc.CallerName, uc.CallerClass
 	}
-	entry.Params = map[string]any{"kit": in.Kit, "reason": in.Reason, "ttl": in.TTL}
+	entry.Params = map[string]any{keyKit: in.Kit, "reason": in.Reason, "ttl": in.TTL}
+	// The log audit store writes metadata, not params: what was asked for
+	// goes there too, cleaned and bounded, also when the request failed.
+	if _, ok := entry.Metadata[keyKit]; !ok {
+		setIfAny(entry.Metadata, keyKit, truncateRunes(cleanText(in.Kit), maxAuditArgLen))
+	}
+	setIfAny(entry.Metadata, "reason", truncateRunes(cleanText(in.Reason), MaxReasonLen))
+	setIfAny(entry.Metadata, "ttl_requested", truncateRunes(cleanText(in.TTL), maxAuditArgLen))
 	if res.Existing {
 		entry.Metadata["existing"] = "true"
 	}
@@ -271,7 +283,7 @@ func (s *Service) request(ctx context.Context, uc *userctx.UserContext, in Reque
 		return res, nil
 	}
 	res.Grant = g
-	s.logger.InfoContext(ctx, "kit requested", "id", id, "kit", kit.Name, "user", uc.UserID, "caller", uc.CallerID, "ttl", FormatTTL(ttl))
+	s.logger.InfoContext(ctx, "kit requested", "id", id, keyKit, kit.Name, "user", uc.UserID, "caller", uc.CallerID, "ttl", FormatTTL(ttl))
 	return res, nil
 }
 
@@ -319,6 +331,13 @@ func truncateRunes(s string, n int) string {
 		return s
 	}
 	return string([]rune(s)[:n])
+}
+
+// setIfAny sets md[key] to value unless value is empty.
+func setIfAny(md map[string]string, key, value string) {
+	if value != "" {
+		md[key] = value
+	}
 }
 
 // cleanReason cleans the reason with cleanText and checks that it is there
@@ -394,7 +413,7 @@ func (s *Service) approve(ctx context.Context, approver, id string, ttl time.Dur
 			}
 		}
 	}
-	s.logger.InfoContext(ctx, "kit granted", "id", id, "kit", g.Kit, "user", g.UserID, "caller", g.CallerID, "approver", approver, "expires", g.ExpiresAt)
+	s.logger.InfoContext(ctx, "kit granted", "id", id, keyKit, g.Kit, "user", g.UserID, "caller", g.CallerID, "approver", approver, "expires", g.ExpiresAt)
 	return g, nil
 }
 
@@ -425,7 +444,7 @@ func (s *Service) end(ctx context.Context, action, state, approver, id string) (
 	entry.Metadata["approver"] = approver
 	s.record(ctx, entry, err)
 	if err == nil {
-		s.logger.InfoContext(ctx, action, "id", id, "kit", g.Kit, "user", g.UserID, "caller", g.CallerID, "approver", approver)
+		s.logger.InfoContext(ctx, action, "id", id, keyKit, g.Kit, "user", g.UserID, "caller", g.CallerID, "approver", approver)
 	}
 	return g, err
 }
@@ -513,7 +532,7 @@ func (s *Service) HeldKits(ctx context.Context, userID, binding string) []string
 func (s *Service) entry(action string, start time.Time, g Grant) audit.AuditEntry {
 	md := map[string]string{"grant_id": g.ID}
 	if g.Kit != "" {
-		md["kit"] = g.Kit
+		md[keyKit] = g.Kit
 	}
 	if g.TTL > 0 {
 		md["ttl"] = FormatTTL(g.TTL)

@@ -102,6 +102,13 @@ writable; it is in the shipped `docker-compose.yml`, which no longer sets
 
 ### Changed
 
+- The `log` audit store (`AUDIT_STORE=log`, the default) writes an entry's
+  metadata as a `metadata` object in the audit line, as the `sqlite` store
+  already stored it. For kit grants it holds the approver, the grant id and
+  the kit, and for a request the reason and the duration asked for; calls
+  record the kits they held (`held_kits`), denials the kits that would have
+  allowed them (`remedy_kits`). A log pipeline that maps the audit fields
+  sees this one new field.
 - Building ToolMesh requires Go 1.26 (was 1.25, which no longer receives
   security fixes); the Docker image is built with `golang:1.26-alpine`. The
   embedded OpenFGA is v1.22.0.

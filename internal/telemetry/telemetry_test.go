@@ -23,9 +23,13 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 func quietLogger() *slog.Logger {
@@ -192,6 +196,9 @@ func TestSend_PayloadFormat(t *testing.T) {
 	}
 	if r.Version != "0.1.0" {
 		t.Errorf("version = %q, want 0.1.0", r.Version)
+	}
+	if r.SiteID == "" || r.SiteID != c.siteID {
+		t.Errorf("site_id = %q, want the collector's site ID %q", r.SiteID, c.siteID)
 	}
 
 	// Counters should be reset after successful send.
@@ -515,5 +522,247 @@ func TestSend_EmitsHeartbeatForIdleBackends(t *testing.T) {
 	}
 	if received[0].Version != "v1" {
 		t.Errorf("heartbeat version = %q, want %q", received[0].Version, "v1")
+	}
+}
+
+// readState reads and decodes the state file in dir.
+func readState(t *testing.T, dir string) stateData {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(dir, stateFile)) //nolint:gosec // test path from t.TempDir()
+	if err != nil {
+		t.Fatalf("read state file: %v", err)
+	}
+	var state stateData
+	if err := json.Unmarshal(data, &state); err != nil {
+		t.Fatalf("invalid state JSON: %v", err)
+	}
+	if state.Telemetry == nil {
+		t.Fatal("telemetry key missing from state")
+	}
+	return state
+}
+
+// siteIDTime returns the creation time a UUIDv7 site ID carries.
+func siteIDTime(t *testing.T, siteID string) time.Time {
+	t.Helper()
+	id, err := uuid.Parse(siteID)
+	if err != nil {
+		t.Fatalf("site ID %q does not parse: %v", siteID, err)
+	}
+	if id.Version() != 7 {
+		t.Fatalf("site ID %q has version %d, want 7", siteID, id.Version())
+	}
+	sec, nsec := id.Time().UnixTime()
+	return time.Unix(sec, nsec)
+}
+
+// reportSink is a telemetry endpoint that keeps the payload of the last report.
+type reportSink struct {
+	srv  *httptest.Server
+	mu   sync.Mutex
+	last []report
+}
+
+func newReportSink(t *testing.T) *reportSink {
+	t.Helper()
+	s := &reportSink{}
+	s.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var reports []report
+		if err := json.Unmarshal(body, &reports); err != nil {
+			t.Errorf("invalid JSON payload: %v", err)
+		}
+		s.mu.Lock()
+		s.last = reports
+		s.mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(s.srv.Close)
+	return s
+}
+
+// startAndReport runs one lifetime of an installation: start on dataDir,
+// send one report to the sink, shut down. It returns the site ID of that
+// lifetime and the site ID the report carried.
+func (s *reportSink) startAndReport(t *testing.T, dataDir string) (collectorID, reportedID string) {
+	t.Helper()
+	c := New(dataDir, "v1", quietLogger())
+	c.SetEndpoint(s.srv.URL)
+	c.RegisterBackend("api", "hashA")
+	c.RecordCall("api", true)
+	c.send(t.Context())
+	c.persistState() // what Run does on shutdown
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.last) != 1 {
+		t.Fatalf("expected 1 report entry, got %d", len(s.last))
+	}
+	return c.siteID, s.last[0].SiteID
+}
+
+func TestSiteID_CreatedOnFirstStartAndPersisted(t *testing.T) {
+	dir := t.TempDir()
+
+	before := time.Now().Truncate(time.Millisecond)
+	c := New(dir, "v1", quietLogger())
+	after := time.Now()
+
+	if !validSiteID(c.siteID) {
+		t.Fatalf("site ID %q is not a canonical UUIDv7", c.siteID)
+	}
+	if created := siteIDTime(t, c.siteID); created.Before(before) || created.After(after) {
+		t.Errorf("site ID time = %v, want between %v and %v", created, before, after)
+	}
+
+	// Persisted at once, before any report or shutdown, so that a crash does
+	// not lose it.
+	if got := readState(t, dir).Telemetry.SiteID; got != c.siteID {
+		t.Errorf("persisted site ID = %q, want %q", got, c.siteID)
+	}
+}
+
+// TestSiteID_SurvivesRestartWithDataVolume restarts an installation on the
+// same data directory, as a container restart with a data volume does.
+func TestSiteID_SurvivesRestartWithDataVolume(t *testing.T) {
+	sink := newReportSink(t)
+	dir := t.TempDir()
+
+	first, firstReported := sink.startAndReport(t, dir)
+	second, secondReported := sink.startAndReport(t, dir)
+
+	if first != second {
+		t.Errorf("site ID changed across restart: %q -> %q", first, second)
+	}
+	if firstReported != first || secondReported != first {
+		t.Errorf("reported site IDs = %q, %q, want %q both times", firstReported, secondReported, first)
+	}
+}
+
+// TestSiteID_NewPerStartWithoutDataVolume starts every lifetime on an empty
+// data directory, as a container without a data volume does: each start
+// reports a new site ID carrying the time of that start.
+func TestSiteID_NewPerStartWithoutDataVolume(t *testing.T) {
+	sink := newReportSink(t)
+
+	seen := map[string]bool{}
+	for i := range 3 {
+		before := time.Now().Truncate(time.Millisecond)
+		id, reported := sink.startAndReport(t, t.TempDir())
+		after := time.Now()
+
+		if reported != id {
+			t.Errorf("start %d: reported site ID %q, want %q", i, reported, id)
+		}
+		if seen[id] {
+			t.Errorf("start %d: site ID %q repeated without a data volume", i, id)
+		}
+		seen[id] = true
+		if created := siteIDTime(t, id); created.Before(before) || created.After(after) {
+			t.Errorf("start %d: site ID time = %v, want between %v and %v", i, created, before, after)
+		}
+	}
+}
+
+// TestSiteID_NotCreatedWhenOptedOut ensures that an opted-out installation
+// neither creates nor persists a site ID.
+func TestSiteID_NotCreatedWhenOptedOut(t *testing.T) {
+	t.Setenv("DO_NOT_SEND_ANONYMOUS_STATISTICS", "yes")
+	dir := t.TempDir()
+
+	c := New(dir, "v1", quietLogger())
+	c.RegisterBackend("api", "hashA")
+
+	if c.siteID != "" {
+		t.Errorf("site ID = %q, want none when opted out", c.siteID)
+	}
+	if _, err := os.Stat(filepath.Join(dir, stateFile)); !os.IsNotExist(err) {
+		t.Errorf("start wrote the state file although opted out (stat error: %v)", err)
+	}
+
+	c.mu.Lock()
+	payload := c.buildPayload()
+	c.mu.Unlock()
+	if len(payload) != 1 || payload[0].SiteID != "" {
+		t.Errorf("payload = %+v, want one entry without site ID", payload)
+	}
+
+	c.persistState() // what Run does on shutdown
+	if got := readState(t, dir).Telemetry.SiteID; got != "" {
+		t.Errorf("persisted site ID = %q, want none when opted out", got)
+	}
+}
+
+// TestSiteID_OptOutKeepsExistingID ensures that opting out later leaves an
+// existing site ID in the state file; removing it is up to the operator.
+func TestSiteID_OptOutKeepsExistingID(t *testing.T) {
+	dir := t.TempDir()
+	existing := New(dir, "v1", quietLogger()).siteID
+
+	t.Setenv("DO_NOT_SEND_ANONYMOUS_STATISTICS", "yes")
+	c := New(dir, "v1", quietLogger())
+	c.persistState()
+
+	if got := readState(t, dir).Telemetry.SiteID; got != existing {
+		t.Errorf("persisted site ID = %q, want the existing %q", got, existing)
+	}
+}
+
+func TestSiteID_InvalidStoredIDIsReplaced(t *testing.T) {
+	v7, err := uuid.NewV7()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := map[string]string{
+		"garbage":       "not-a-uuid",
+		"version 4":     uuid.NewString(),
+		"no hyphens":    strings.ReplaceAll(v7.String(), "-", ""),
+		"urn prefix":    "urn:uuid:" + v7.String(),
+		"nil uuid":      uuid.Nil.String(),
+		"trailing junk": v7.String() + "x",
+	}
+	for name, stored := range tests {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			state := `{"telemetry":{"site_id":` + strconv.Quote(stored) + `}}`
+			if err := os.WriteFile(filepath.Join(dir, stateFile), []byte(state), 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			c := New(dir, "v1", quietLogger())
+			if c.siteID == stored || !validSiteID(c.siteID) {
+				t.Errorf("site ID = %q, want a new UUIDv7 instead of %q", c.siteID, stored)
+			}
+			if got := readState(t, dir).Telemetry.SiteID; got != c.siteID {
+				t.Errorf("persisted site ID = %q, want %q", got, c.siteID)
+			}
+		})
+	}
+}
+
+// TestSiteID_UpgradeKeepsExistingState starts on a state file written by a
+// version without site IDs: the new ID joins the existing counters and
+// last_sent instead of replacing them.
+func TestSiteID_UpgradeKeepsExistingState(t *testing.T) {
+	dir := t.TempDir()
+	old := `{"telemetry":{"last_sent":"2026-10-01T08:00:00Z","counters":{"hashA":{"call_count":3,"error_count":1}}}}`
+	if err := os.WriteFile(filepath.Join(dir, stateFile), []byte(old), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	c := New(dir, "v1", quietLogger())
+	if !validSiteID(c.siteID) {
+		t.Fatalf("site ID %q is not a canonical UUIDv7", c.siteID)
+	}
+
+	state := readState(t, dir).Telemetry
+	if state.SiteID != c.siteID {
+		t.Errorf("persisted site ID = %q, want %q", state.SiteID, c.siteID)
+	}
+	if state.LastSent != "2026-10-01T08:00:00Z" {
+		t.Errorf("persisted last_sent = %q, want the old value", state.LastSent)
+	}
+	if cp := state.Counters["hashA"]; cp == nil || cp.CallCount != 3 || cp.ErrorCount != 1 {
+		t.Errorf("persisted counters = %+v, want {3, 1}", cp)
 	}
 }

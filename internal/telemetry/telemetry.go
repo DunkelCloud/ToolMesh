@@ -12,9 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package telemetry implements anonymous, opt-out usage telemetry for ToolMesh.
+// Package telemetry implements opt-out usage telemetry for ToolMesh.
 // It collects aggregated DADL usage statistics (call counts, error counts per
 // content-hashed DADL file) and reports them to a central endpoint every 24 hours.
+// Every report carries the installation's site ID: a random UUIDv7 created on
+// the first start with telemetry enabled and kept in the state file, so that
+// reports can be counted per installation instead of per source IP.
 package telemetry
 
 import (
@@ -29,6 +32,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 const (
@@ -50,12 +55,14 @@ type stateData struct {
 }
 
 type telemetryState struct {
+	SiteID   string                  `json:"site_id,omitempty"`
 	LastSent string                  `json:"last_sent,omitempty"`
 	Counters map[string]*counterPair `json:"counters,omitempty"`
 }
 
 // report is a single entry in the telemetry payload.
 type report struct {
+	SiteID         string `json:"site_id,omitempty"`
 	DADLHash       string `json:"dadl_hash"`
 	CallCount      int    `json:"call_count"`
 	ErrorCount     int    `json:"error_count"`
@@ -69,6 +76,7 @@ type Collector struct {
 	counters map[string]*counterPair // dadlHash → counts
 	backends map[string]string       // backendName → dadlHash
 	lastSent time.Time               // last successful send (from state file)
+	siteID   string                  // random UUIDv7 of this installation (from state file)
 
 	mcpServerCount int
 
@@ -81,7 +89,9 @@ type Collector struct {
 }
 
 // New creates a Collector. If DO_NOT_SEND_ANONYMOUS_STATISTICS=yes, sending
-// is disabled but counters are still accumulated (persisted for re-enablement).
+// is disabled but counters are still accumulated (persisted for re-enablement)
+// and no site ID is created. Otherwise New makes sure the installation has a
+// site ID and persists a newly created one right away.
 func New(dataDir, version string, logger *slog.Logger) *Collector {
 	disabled := strings.EqualFold(os.Getenv("DO_NOT_SEND_ANONYMOUS_STATISTICS"), "yes")
 
@@ -109,7 +119,41 @@ func New(dataDir, version string, logger *slog.Logger) *Collector {
 	}
 
 	c.loadState()
+	if !disabled {
+		c.ensureSiteID()
+	}
 	return c
+}
+
+// ensureSiteID creates and persists a site ID if the state file did not
+// provide a valid one. Without a writable data directory the ID lives only as
+// long as the process, so every start reports as a new installation.
+func (c *Collector) ensureSiteID() {
+	c.mu.Lock()
+	if c.siteID != "" {
+		c.mu.Unlock()
+		return
+	}
+	id, err := uuid.NewV7()
+	if err != nil {
+		c.mu.Unlock()
+		c.logger.Warn("telemetry: failed to create site ID, reports go without one", "error", err)
+		return
+	}
+	c.siteID = id.String()
+	c.mu.Unlock()
+
+	c.persistState()
+	c.logger.Info("telemetry: created site ID",
+		"siteID", id.String(),
+		"stateFile", filepath.Join(c.dataDir, stateFile),
+	)
+}
+
+// validSiteID reports whether s is a UUIDv7 in canonical form.
+func validSiteID(s string) bool {
+	id, err := uuid.Parse(s)
+	return err == nil && len(s) == 36 && id.Version() == 7 && id.Variant() == uuid.RFC4122
 }
 
 // SetMCPServerCount records the number of configured MCP server backends.
@@ -276,6 +320,7 @@ func (c *Collector) buildPayload() []report {
 			errors = cp.ErrorCount
 		}
 		reports = append(reports, report{
+			SiteID:         c.siteID,
 			DADLHash:       hash,
 			CallCount:      calls,
 			ErrorCount:     errors,
@@ -326,6 +371,14 @@ func (c *Collector) loadState() {
 		}
 	}
 
+	if id := state.Telemetry.SiteID; id != "" {
+		if validSiteID(id) {
+			c.siteID = strings.ToLower(id)
+		} else {
+			c.logger.Warn("telemetry: ignoring invalid site ID in state file", "siteID", id)
+		}
+	}
+
 	for hash, cp := range state.Telemetry.Counters {
 		c.counters[hash] = &counterPair{
 			CallCount:  cp.CallCount,
@@ -334,6 +387,7 @@ func (c *Collector) loadState() {
 	}
 
 	c.logger.Debug("telemetry: state loaded",
+		"siteID", c.siteID,
 		"lastSent", c.lastSent,
 		"counters", len(c.counters),
 	)
@@ -347,6 +401,7 @@ func (c *Collector) persistState() {
 	c.mu.Lock()
 	state := stateData{
 		Telemetry: &telemetryState{
+			SiteID:   c.siteID,
 			Counters: make(map[string]*counterPair, len(c.counters)),
 		},
 	}

@@ -16,6 +16,8 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -24,6 +26,7 @@ import (
 	"time"
 
 	"github.com/DunkelCloud/ToolMesh/internal/audit"
+	"github.com/DunkelCloud/ToolMesh/internal/auth"
 	"github.com/DunkelCloud/ToolMesh/internal/authz"
 	"github.com/DunkelCloud/ToolMesh/internal/config"
 	"github.com/google/uuid"
@@ -132,6 +135,9 @@ func applyAuthzPolicy(ctx context.Context, cfg *config.Config, emb *authz.Embedd
 	if err != nil {
 		return authz.Policy{}, err
 	}
+	if err := checkApproverKeys(cfg, policy.Approvers); err != nil {
+		return authz.Policy{}, fmt.Errorf("authz config: %w", err)
+	}
 	res, err := emb.ApplyPolicy(ctx, policy)
 	if err != nil {
 		return authz.Policy{}, fmt.Errorf("apply authorization rules: %w", err)
@@ -153,6 +159,36 @@ func applyAuthzPolicy(ctx context.Context, cfg *config.Config, emb *authz.Embedd
 			"preset", policy.Preset, "file", cfg.AuthzConfigPath)
 	}
 	return policy, nil
+}
+
+// Variables of the credentials checkApproverKeys compares approver keys with.
+const (
+	envAPIKey       = "TOOLMESH_API_KEY"       //nolint:gosec // the variable's name, not a credential
+	envAuthPassword = "TOOLMESH_AUTH_PASSWORD" //nolint:gosec // the variable's name, not a credential
+)
+
+// checkApproverKeys refuses an approver whose key is also a credential MCP
+// callers connect with: TOOLMESH_API_KEY, TOOLMESH_AUTH_PASSWORD or a key
+// with a key_sha256 in apikeys.yaml. Keys known only by a bcrypt key_hash
+// cannot be compared.
+func checkApproverKeys(cfg *config.Config, approvers []authz.Approver) error {
+	if len(approvers) == 0 {
+		return nil
+	}
+	reserved, err := auth.KeySHA256Sums(cfg.APIKeysConfigPath)
+	if err != nil {
+		return fmt.Errorf("compare the approver keys with the API keys: %w", err)
+	}
+	if reserved == nil {
+		reserved = map[string]string{}
+	}
+	for name, secret := range map[string]string{envAPIKey: cfg.APIKey, envAuthPassword: cfg.AuthPassword} {
+		if secret != "" {
+			sum := sha256.Sum256([]byte(secret))
+			reserved[hex.EncodeToString(sum[:])] = name
+		}
+	}
+	return authz.CheckApproverKeys(approvers, reserved)
 }
 
 // defaultAuthzPreset picks the preset for an installation that names none:

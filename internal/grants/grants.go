@@ -50,11 +50,15 @@ type Grant struct {
 	Kit   string `json:"kit"`
 
 	// The caller the kit is for: the requesting user as the caller it
-	// connected as (an API key's caller_id or an OAuth client).
+	// connected as (an API key's caller_id or an OAuth client). CallerName
+	// is the caller's own, unverified, name for itself.
 	UserID     string `json:"user_id"`
 	CallerID   string `json:"caller_id"`
 	CallerName string `json:"caller_name,omitempty"`
 	CompanyID  string `json:"company_id,omitempty"`
+	// GrantKey, when set, binds the grant to one credential instead of to
+	// CallerID: an API key without caller_id ([userctx.UserContext.GrantKey]).
+	GrantKey string `json:"grant_key,omitempty"`
 
 	// Reason is the requester's own statement; nothing verifies it.
 	Reason string `json:"reason"`
@@ -69,21 +73,28 @@ type Grant struct {
 	ExpiresAt time.Time `json:"expires_at"`
 }
 
-// Subject identifies whom a grant is for.
+// Subject identifies whom a grant is for: the user, as the connection it is
+// bound to.
 type Subject struct {
-	UserID   string
-	CallerID string
+	UserID string
+	// Binding is the caller id, or the grant key of an API key without
+	// caller_id ([userctx.UserContext.GrantBinding]).
+	Binding string
 }
 
 // Subject returns whom the grant is for.
 func (g Grant) Subject() Subject {
-	return Subject{UserID: g.UserID, CallerID: g.CallerID}
+	binding := g.CallerID
+	if g.GrantKey != "" {
+		binding = g.GrantKey
+	}
+	return Subject{UserID: g.UserID, Binding: binding}
 }
 
 // key renders the subject as one string. Both parts are escaped, so the
 // separator is the only '|' and distinct subjects never share a key.
 func (s Subject) key() string {
-	return url.QueryEscape(s.UserID) + "|" + url.QueryEscape(s.CallerID)
+	return url.QueryEscape(s.UserID) + "|" + url.QueryEscape(s.Binding)
 }
 
 // idEncoding renders grant ids in lower case without padding.

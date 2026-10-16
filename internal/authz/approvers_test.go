@@ -84,3 +84,14 @@ func TestEmbedded_Approvers(t *testing.T) {
 		t.Errorf("Approvers after a rejected policy = %+v, want bob still", got)
 	}
 }
+
+func TestCheckApproverKeys(t *testing.T) {
+	approvers := []Approver{{Name: testBob, KeySHA256: testKeySumA}, {Name: testCarol, KeySHA256: testKeySumB}}
+	if err := CheckApproverKeys(approvers, map[string]string{"0000": "elsewhere"}); err != nil {
+		t.Errorf("distinct keys refused: %v", err)
+	}
+	err := CheckApproverKeys(approvers, map[string]string{strings.ToLower(testKeySumA): "TOOLMESH_API_KEY"})
+	if err == nil || !strings.Contains(err.Error(), testBob) || !strings.Contains(err.Error(), "TOOLMESH_API_KEY") {
+		t.Errorf("err = %v, want bob refused, naming where the key is used", err)
+	}
+}

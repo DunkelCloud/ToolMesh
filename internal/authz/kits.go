@@ -27,6 +27,9 @@ import (
 // scope; on its own it stands for every tool.
 const scopeAny = "*"
 
+// KitTTLLimit is the longest a kit without ttl_max is granted for.
+const KitTTLLimit = 24 * time.Hour
+
 // kitNamePattern restricts kit names to slugs, so that they read the same in
 // the config file, in tool output and in the audit trail.
 var kitNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
@@ -149,6 +152,9 @@ func (k Kit) Validate() error {
 	}
 	if k.TTLDefault > 0 && k.TTLMax > 0 && k.TTLDefault > k.TTLMax {
 		return fmt.Errorf("ttl_default %s exceeds ttl_max %s", k.TTLDefault, k.TTLMax)
+	}
+	if k.TTLMax == 0 && k.TTLDefault > KitTTLLimit {
+		return fmt.Errorf("ttl_default %s exceeds the %s a kit without ttl_max is granted for at most; set ttl_max", k.TTLDefault, KitTTLLimit)
 	}
 	return nil
 }

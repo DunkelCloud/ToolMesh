@@ -698,8 +698,12 @@ func (s *Server) authenticate(r *http.Request) (*userctx.UserContext, error) {
 // caller it stands for.
 func (s *Server) apiKeyCaller(entry *auth.APIKeyEntry) *userctx.UserContext {
 	callerID := entry.CallerID
+	var grantKey string
 	if callerID == "" {
 		callerID = entry.UserID
+		// Two keys of one user without caller_id share the caller id, so
+		// grants of kits are bound to the key instead.
+		grantKey = entry.GrantKey()
 	}
 	s.metrics.RecordLogin(loginMethodAPIKey, "success")
 	return &userctx.UserContext{
@@ -711,6 +715,7 @@ func (s *Server) apiKeyCaller(entry *auth.APIKeyEntry) *userctx.UserContext {
 		CallerID:      callerID,
 		CallerName:    callerID, // API key CallerID is admin-configured, use as display name
 		CallerClass:   s.callerClasses.Resolve(callerID),
+		GrantKey:      grantKey,
 	}
 }
 

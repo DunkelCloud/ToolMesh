@@ -215,7 +215,7 @@ func (h *Handler) callerGrants(ctx context.Context, uc *userctx.UserContext, ans
 	if !uc.Authenticated {
 		return
 	}
-	pending, active, err := h.grants.ForCaller(ctx, uc.UserID, uc.CallerID)
+	pending, active, err := h.grants.ForCaller(ctx, uc.UserID, uc.GrantBinding())
 	if err != nil {
 		h.logger.WarnContext(ctx, toolTellMeMyRights+": grant store failed", outcomeError, err)
 		return

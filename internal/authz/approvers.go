@@ -71,6 +71,18 @@ func validateApprovers(approvers []Approver) error {
 	return nil
 }
 
+// CheckApproverKeys refuses approvers whose key is a credential that callers
+// connect with. reserved maps the SHA-256 (64 hex characters, lower case) of
+// each such credential to a description of where it is configured.
+func CheckApproverKeys(approvers []Approver, reserved map[string]string) error {
+	for _, a := range approvers {
+		if where, ok := reserved[strings.ToLower(a.KeySHA256)]; ok {
+			return fmt.Errorf("approver %q: its key is also a credential callers connect with (%s); give the approver a key of its own", a.Name, where)
+		}
+	}
+	return nil
+}
+
 // normalizeApprovers returns the approvers with their key hashes in lower
 // case, as the lookup compares them.
 func normalizeApprovers(approvers []Approver) []Approver {

@@ -27,11 +27,21 @@ import (
 // for, or no longer: it expired or was taken.
 var ErrNotFound = errors.New("grant not found")
 
+// ErrLimit is returned by AddPending when the subject has as many pending
+// requests as allowed.
+var ErrLimit = errors.New("too many pending requests")
+
 // Store keeps pending requests and active grants until they expire. No
 // method returns what has expired.
 type Store interface {
 	// Put stores g under its id and state until g.ExpiresAt.
 	Put(ctx context.Context, g Grant) error
+	// AddPending stores the pending request g, unless its subject has a
+	// pending request for the same kit already, which it returns instead with
+	// found set, or has limit pending requests, which yields ErrLimit. The
+	// checks and the insert are one step: of concurrent calls, no more than
+	// limit requests and one per kit get in.
+	AddPending(ctx context.Context, g Grant, limit int) (existing Grant, found bool, err error)
 	// Get returns the grant with the id in the state.
 	Get(ctx context.Context, state, id string) (Grant, error)
 	// Take removes the grant with the id in the state and returns it. Of two
@@ -80,6 +90,29 @@ func (m *MemoryStore) Put(_ context.Context, g Grant) error {
 	defer m.mu.Unlock()
 	m.prune(g.State)[g.ID] = g
 	return nil
+}
+
+// AddPending stores the pending request g under the store's lock, so that
+// the checks and the insert are one step.
+func (m *MemoryStore) AddPending(_ context.Context, g Grant, limit int) (Grant, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	byID := m.prune(StatePending)
+	subject, count := g.Subject(), 0
+	for _, p := range byID {
+		if p.Subject() != subject {
+			continue
+		}
+		if p.Kit == g.Kit {
+			return p, true, nil
+		}
+		count++
+	}
+	if count >= limit {
+		return Grant{}, false, ErrLimit
+	}
+	byID[g.ID] = g
+	return Grant{}, false, nil
 }
 
 // Get returns the grant with the id in the state.

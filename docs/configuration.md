@@ -286,7 +286,8 @@ kits:
   classification on any backend. Quote scopes that start with `*`.
 - `tools`: single tools by their full name, `<backend>_<tool>`.
 - `ttl_default`, `ttl_max`: how long a grant of the kit lasts by default and
-  at most (`10m`, `4h`). Shown to callers.
+  at most (`10m`, `4h`). Shown to callers. A kit without `ttl_max` is granted
+  for at most 24 hours, so its `ttl_default` must not exceed that.
 
 Kit names are slugs: letters, digits, `.`, `_` and `-`, at most 64
 characters. In the authorization model a kit is a role. Its holders may
@@ -337,20 +338,34 @@ printf %s "$key" | sha256sum  # the key_sha256 for the grants file
 
 An approver key works only on the approver API below, and the credentials MCP
 callers connect with do not work there, so an agent cannot approve its own
-request. Do not give an agent an approver key, and do not use an MCP API key
-as one. Names are slugs or e-mail addresses; neither names nor keys may repeat.
-Changes to `approvers:` apply within seconds, like the rest of the file.
-Without approvers, `request_grant` tells callers that no kit can be granted,
-and ToolMesh logs a warning when the file defines kits.
+request. Do not give an agent an approver key. An approver whose key is also
+an MCP credential is refused: `TOOLMESH_API_KEY`, `TOOLMESH_AUTH_PASSWORD` or
+an entry of `apikeys.yaml` with a `key_sha256`. An `apikeys.yaml` entry with
+only a `key_hash` cannot be compared, so never reuse such a key either. Names
+are slugs or e-mail addresses; neither names nor keys may repeat. Without
+approvers, `request_grant` tells callers that no kit can be granted, and
+ToolMesh logs a warning when the file defines kits.
+
+Changes to `approvers:` apply within seconds, like the rest of the file. An
+edit that cannot be applied, because the file does not parse, an approver is
+refused or writing the rules fails, stops the server at startup; later, it is
+logged and the previous approvers stay in force, as grants and denies do.
+ToolMesh tries again only when the file changes again. After removing an
+approver key that may have leaked, check that the log shows the line
+`authorization policy applied` for that edit, with the new number of
+`approvers`; until then the old key still approves.
 
 **Asking.** `request_grant({kit, reason, ttl})`:
 
 - `kit`: the kit's name, as `tell_me_my_rights` names it.
 - `reason` (required, at most 500 characters): the task and, if there is one,
-  the ticket. Approvers see it marked as the requester's own statement.
+  the ticket. Approvers see it marked as the requester's own statement. Line
+  breaks become spaces; control and format characters (such as bidirectional
+  overrides and zero-width characters) are removed.
 - `ttl` (optional, such as `30m` or `4h`): how long the caller needs the kit.
   Without it the kit's `ttl_default` applies, or one hour; no more than its
-  `ttl_max` is granted, or 24 hours when it sets none.
+  `ttl_max` is granted, or 24 hours when it sets none. The maximum counts as
+  it is when the request is approved.
 
 The answer is a request id of ten characters, which the caller hands to the
 person it works for. A request waits 30 minutes for a decision, then lapses.
@@ -358,7 +373,9 @@ Asking again for a kit that is still pending returns the pending request; a
 caller may have at most five requests pending at a time.
 
 **Who holds a grant.** The requesting user, as the caller it connected as:
-the `caller_id` of an API key, or the OAuth client. The grant survives a token
+the `caller_id` of an API key, or the OAuth client. An API key without
+`caller_id` binds the grant to that key itself (shown as `grant_key`), so two
+such keys of one user do not share grants. The grant survives a token
 refresh; other connections of the same user do not hold it. A grant gives the
 kit as it is defined at the time of each call: a kit removed from the file
 allows nothing any more, and a changed kit applies with its new content.
@@ -380,7 +397,9 @@ curl -s -X POST -H "Authorization: Bearer $APPROVER_KEY" https://toolmesh.exampl
 ```
 
 Each request and grant shows the kit's description, warning and scope from
-the grants file next to who asked, why, and for how long. Approving a kit the
+the grants file next to who asked, why, and for how long. Like the reason,
+`caller_name` is the requester's own statement: an OAuth client chooses its
+name itself. It is cleaned like the reason and cut to 128 characters. Approving a kit the
 caller already holds replaces that grant. A grant keeps its request id, so
 the same id revokes it.
 

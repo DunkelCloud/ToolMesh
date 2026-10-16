@@ -128,6 +128,9 @@ type failingStore struct{}
 var errStoreDown = errors.New("store down")
 
 func (failingStore) Put(context.Context, Grant) error { return errStoreDown }
+func (failingStore) AddPending(context.Context, Grant, int) (Grant, bool, error) {
+	return Grant{}, false, errStoreDown
+}
 func (failingStore) Get(context.Context, string, string) (Grant, error) {
 	return Grant{}, errStoreDown
 }

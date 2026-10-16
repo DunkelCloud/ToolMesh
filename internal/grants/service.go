@@ -40,13 +40,16 @@ const (
 	// request names no duration.
 	DefaultTTL = time.Hour
 	// MaxTTL is the longest a kit without ttl_max is granted for.
-	MaxTTL = 24 * time.Hour
+	MaxTTL = authz.KitTTLLimit
 	// RequestTTL is how long a request waits for an approver.
 	RequestTTL = 30 * time.Minute
 	// MaxPending is how many requests one caller may have waiting at a time.
 	MaxPending = 5
 	// MaxReasonLen bounds the reason of a request, in characters.
 	MaxReasonLen = 500
+	// MaxCallerNameLen bounds the caller name stored with a request, in
+	// characters. An OAuth client chooses its own name.
+	MaxCallerNameLen = 128
 )
 
 // Names under which the grant lifecycle is recorded in the audit trail.
@@ -226,9 +229,8 @@ func (s *Service) request(ctx context.Context, uc *userctx.UserContext, in Reque
 	}
 	ttl, capped := kitTTL(kit, asked)
 
-	subject := Subject{UserID: uc.UserID, CallerID: uc.CallerID}
 	res := RequestResult{Capped: capped}
-	active, err := s.store.ForSubject(ctx, StateActive, subject)
+	active, err := s.store.ForSubject(ctx, StateActive, Subject{UserID: uc.UserID, Binding: uc.GrantBinding()})
 	if err != nil {
 		return RequestResult{}, err
 	}
@@ -237,52 +239,49 @@ func (s *Service) request(ctx context.Context, uc *userctx.UserContext, in Reque
 			res.HeldUntil = g.ExpiresAt
 		}
 	}
-	pending, err := s.store.ForSubject(ctx, StatePending, subject)
-	if err != nil {
-		return RequestResult{}, err
-	}
-	for _, g := range pending {
-		if g.Kit == kit.Name {
-			res.Grant, res.Existing, res.Capped = g, true, false
-			return res, nil
-		}
-	}
-	if len(pending) >= MaxPending {
-		return RequestResult{}, invalidf("you have %d requests waiting for an approver, the most at a time; wait until they are decided or lapse (after %s)",
-			len(pending), FormatTTL(RequestTTL))
-	}
 
 	id, err := newID()
 	if err != nil {
 		return RequestResult{}, err
 	}
 	now := s.now()
-	res.Grant = Grant{
+	g := Grant{
 		ID:          id,
 		State:       StatePending,
 		Kit:         kit.Name,
 		UserID:      uc.UserID,
 		CallerID:    uc.CallerID,
-		CallerName:  uc.CallerName,
+		CallerName:  truncateRunes(cleanText(uc.CallerName), MaxCallerNameLen),
 		CompanyID:   uc.CompanyID,
+		GrantKey:    uc.GrantKey,
 		Reason:      reason,
 		TTL:         ttl,
 		RequestedAt: now,
 		ExpiresAt:   now.Add(RequestTTL),
 	}
-	if err := s.store.Put(ctx, res.Grant); err != nil {
+	existing, found, err := s.store.AddPending(ctx, g, MaxPending)
+	switch {
+	case errors.Is(err, ErrLimit):
+		return RequestResult{}, invalidf("you have %d requests waiting for an approver, the most at a time; wait until they are decided or lapse (after %s)",
+			MaxPending, FormatTTL(RequestTTL))
+	case err != nil:
 		return RequestResult{}, err
+	case found:
+		res.Grant, res.Existing, res.Capped = existing, true, false
+		return res, nil
 	}
+	res.Grant = g
 	s.logger.InfoContext(ctx, "kit requested", "id", id, "kit", kit.Name, "user", uc.UserID, "caller", uc.CallerID, "ttl", FormatTTL(ttl))
 	return res, nil
 }
 
 // kitTTL returns how long the kit is granted for when asked for d (zero: the
-// default), and whether d exceeded the maximum.
+// default), and whether d exceeded the maximum: the kit's ttl_max, or MaxTTL
+// for a kit without one.
 func kitTTL(k authz.Kit, d time.Duration) (time.Duration, bool) {
 	limit := k.TTLMax
 	if limit <= 0 {
-		limit = max(MaxTTL, k.TTLDefault)
+		limit = MaxTTL
 	}
 	if d <= 0 {
 		d = k.TTLDefault
@@ -297,19 +296,35 @@ func kitTTL(k authz.Kit, d time.Duration) (time.Duration, bool) {
 	return d, false
 }
 
-// cleanReason trims the reason and drops control characters, so that what
-// an approver reads is one plain line or paragraph.
-func cleanReason(r string) (string, error) {
-	r = strings.Map(func(c rune) rune {
+// cleanText turns text a caller chose into one plain line: line breaks and
+// tabs become spaces, runs of spaces one, and control and format characters
+// (bidirectional overrides and isolates, zero-width characters) are
+// dropped, so that what an approver reads is what it looks like.
+func cleanText(s string) string {
+	s = strings.Map(func(c rune) rune {
 		switch {
 		case c == '\n' || c == '\t':
 			return ' '
-		case unicode.IsControl(c) || c == utf8.RuneError:
+		case unicode.IsControl(c) || unicode.Is(unicode.Cf, c) || c == utf8.RuneError:
 			return -1
 		}
 		return c
-	}, r)
-	r = strings.Join(strings.Fields(r), " ")
+	}, s)
+	return strings.Join(strings.Fields(s), " ")
+}
+
+// truncateRunes cuts s to at most n characters.
+func truncateRunes(s string, n int) string {
+	if utf8.RuneCountInString(s) <= n {
+		return s
+	}
+	return string([]rune(s)[:n])
+}
+
+// cleanReason cleans the reason with cleanText and checks that it is there
+// and not too long.
+func cleanReason(r string) (string, error) {
+	r = cleanText(r)
 	switch {
 	case r == "":
 		return "", invalidf("give a reason: the task and, if there is one, the ticket; the approver reads it")
@@ -339,7 +354,8 @@ func (s *Service) approve(ctx context.Context, approver, id string, ttl time.Dur
 	if err != nil {
 		return Grant{}, notPending(id, err)
 	}
-	if _, ok := s.kit(req.Kit); !ok {
+	kit, ok := s.kit(req.Kit)
+	if !ok {
 		return req, invalidf("the kit %q of request %s is no longer defined", req.Kit, id)
 	}
 	switch {
@@ -350,6 +366,8 @@ func (s *Service) approve(ctx context.Context, approver, id string, ttl time.Dur
 	case ttl == 0:
 		ttl = req.TTL
 	}
+	// The kit's maximum may have been lowered since the request.
+	ttl, _ = kitTTL(kit, ttl)
 	req, err = s.store.Take(ctx, StatePending, id)
 	if err != nil {
 		return Grant{}, notPending(id, err)
@@ -443,30 +461,41 @@ func (s *Service) List(ctx context.Context) (pending, active []Grant, err error)
 	return pending, active, nil
 }
 
-// ForCaller returns the caller's pending requests and active grants. Grants
-// of kits that are no longer defined are left out, as they allow nothing.
-func (s *Service) ForCaller(ctx context.Context, userID, callerID string) (pending, active []Grant, err error) {
-	subject := Subject{UserID: userID, CallerID: callerID}
-	if pending, err = s.store.ForSubject(ctx, StatePending, subject); err != nil {
+// ForCaller returns the caller's pending requests and active grants. binding
+// is what grants are bound to besides the user
+// ([userctx.UserContext.GrantBinding]).
+func (s *Service) ForCaller(ctx context.Context, userID, binding string) (pending, active []Grant, err error) {
+	if pending, err = s.store.ForSubject(ctx, StatePending, Subject{UserID: userID, Binding: binding}); err != nil {
 		return nil, nil, err
 	}
-	if active, err = s.store.ForSubject(ctx, StateActive, subject); err != nil {
+	if active, err = s.activeFor(ctx, userID, binding); err != nil {
 		return nil, nil, err
 	}
-	active = slices.DeleteFunc(active, func(g Grant) bool {
-		_, ok := s.kit(g.Kit)
-		return !ok
-	})
 	return pending, active, nil
 }
 
-// HeldKits returns the kits the caller holds now. A store that fails
+// activeFor returns the caller's active grants. Grants of kits that are no
+// longer defined are left out, as they allow nothing.
+func (s *Service) activeFor(ctx context.Context, userID, binding string) ([]Grant, error) {
+	active, err := s.store.ForSubject(ctx, StateActive, Subject{UserID: userID, Binding: binding})
+	if err != nil {
+		return nil, err
+	}
+	return slices.DeleteFunc(active, func(g Grant) bool {
+		_, ok := s.kit(g.Kit)
+		return !ok
+	}), nil
+}
+
+// HeldKits returns the kits the caller holds now; it reads the active grants
+// only, as it runs at every check. binding is what grants are bound to
+// besides the user ([userctx.UserContext.GrantBinding]). A store that fails
 // contributes nothing: the caller then has its steady-state rights only.
-func (s *Service) HeldKits(ctx context.Context, userID, callerID string) []string {
+func (s *Service) HeldKits(ctx context.Context, userID, binding string) []string {
 	if userID == "" {
 		return nil
 	}
-	_, active, err := s.ForCaller(ctx, userID, callerID)
+	active, err := s.activeFor(ctx, userID, binding)
 	if err != nil {
 		s.logger.WarnContext(ctx, "grant store failed, checking without granted kits", "user", userID, "error", err)
 		return nil

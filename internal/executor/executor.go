@@ -70,9 +70,9 @@ type Executor struct {
 }
 
 // KitHolder tells which kits a caller holds at the moment: the user as the
-// caller it connected as.
+// connection it is bound to ([userctx.UserContext.GrantBinding]).
 type KitHolder interface {
-	HeldKits(ctx context.Context, userID, callerID string) []string
+	HeldKits(ctx context.Context, userID, binding string) []string
 }
 
 // SetKitHolder makes every check pass the kits the caller holds according to
@@ -85,7 +85,7 @@ func (e *Executor) heldKits(ctx context.Context, uc *userctx.UserContext) []stri
 	if e.kitHolder == nil || e.authorizer == nil || uc == nil || !uc.Authenticated {
 		return nil
 	}
-	return e.kitHolder.HeldKits(ctx, uc.UserID, uc.CallerID)
+	return e.kitHolder.HeldKits(ctx, uc.UserID, uc.GrantBinding())
 }
 
 // New creates a new Executor with all required dependencies. The metrics

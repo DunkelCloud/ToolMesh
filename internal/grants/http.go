@@ -37,7 +37,7 @@ const maxBodyBytes = 4096
 
 // viewNote tells an approver which parts of a request come from where.
 const viewNote = "The description, warning and scope come from the ToolMesh configuration. " +
-	"The reason is the requester's own statement; ToolMesh does not verify it."
+	"The reason and the caller_name are the requester's own statements; ToolMesh does not verify them."
 
 // grantView is a request or grant as the approver API shows it.
 type grantView struct {
@@ -52,6 +52,7 @@ type grantView struct {
 	CallerID    string    `json:"caller_id"`
 	CallerName  string    `json:"caller_name,omitempty"`
 	CompanyID   string    `json:"company_id,omitempty"`
+	GrantKey    string    `json:"grant_key,omitempty"`
 	Reason      string    `json:"reason"`
 	TTL         string    `json:"ttl"`
 	RequestedAt time.Time `json:"requested_at"`
@@ -201,6 +202,7 @@ func (s *Service) view(g Grant) grantView {
 		CallerID:    g.CallerID,
 		CallerName:  g.CallerName,
 		CompanyID:   g.CompanyID,
+		GrantKey:    g.GrantKey,
 		Reason:      g.Reason,
 		TTL:         FormatTTL(g.TTL),
 		RequestedAt: g.RequestedAt,

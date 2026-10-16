@@ -21,11 +21,12 @@ import (
 	"testing"
 )
 
-// Key hashes of the approver tests: SHA-256 values, not keys.
+// Key hashes of the approver tests: SHA-256 values, not keys. The secret
+// scan takes them for API keys, hence gitleaks:allow.
 const (
 	wantHexKey  = "64 hex characters"
-	testKeySumA = "9F86D081884C7D659A2FEAA0C55AD015A3BF4F1B2B0B822CD15D6C15B0F00A08"
-	testKeySumB = "60303ae22b998861bce3b28f33eec1be758a213c86c93c076dbe9f558c11c752"
+	testKeySumA = "9F86D081884C7D659A2FEAA0C55AD015A3BF4F1B2B0B822CD15D6C15B0F00A08" // gitleaks:allow
+	testKeySumB = "60303ae22b998861bce3b28f33eec1be758a213c86c93c076dbe9f558c11c752" // gitleaks:allow
 )
 
 func TestParseFile_Approvers(t *testing.T) {

@@ -327,6 +327,27 @@ func TestDenial_PointsToRightsTool(t *testing.T) {
 	}
 }
 
+func TestDiscoveryFooter_GrantRequired(t *testing.T) {
+	tests := []struct {
+		n    int
+		want string
+		not  string
+	}{
+		{0, "", "grant_required"},
+		{1, "1 of them is marked grant_required: you cannot call it yet; the named kit covers it, though a deny can still block a tool for you.", "are marked"},
+		{3, "3 of them are marked grant_required: you cannot call them yet; the named kit covers them, though a deny", "is marked"},
+	}
+	for _, tc := range tests {
+		got := discoveryFooter(5, 10, 5, detailNames, false, "", tc.n)
+		if !strings.Contains(got, tc.want) || strings.Contains(got, tc.not) {
+			t.Errorf("footer with %d grant_required = %q, want %q and not %q", tc.n, got, tc.want, tc.not)
+		}
+		if tc.n > 0 && !strings.Contains(got, toolTellMeMyRights) {
+			t.Errorf("footer with %d grant_required does not point to %s", tc.n, toolTellMeMyRights)
+		}
+	}
+}
+
 func TestSmallestBundle(t *testing.T) {
 	b := smallestBundle(map[string][]string{
 		"t1": {testKitWide, "a"},

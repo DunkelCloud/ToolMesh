@@ -457,8 +457,14 @@ func discoveryFooter(matched, total, shown int, detail string, auto bool, query 
 	}
 	fmt.Fprintf(&sb, " — detail: %s.\n", mode)
 	if grantRequired > 0 {
-		fmt.Fprintf(&sb, "// %d of them are marked grant_required: you cannot call them yet, the named kit covers them. "+
-			"Plan before you ask: %s({tools: [...]}) checks every tool your task needs at once.\n", grantRequired, toolTellMeMyRights)
+		// The marker comes from the kit definitions alone, so it must not
+		// promise more than they do: a deny can still block a covered tool.
+		verb, them := "are", "them"
+		if grantRequired == 1 {
+			verb, them = "is", "it"
+		}
+		fmt.Fprintf(&sb, "// %d of them %s marked grant_required: you cannot call %s yet; the named kit covers %s, though a deny can still block a tool for you. "+
+			"Plan before you ask: %s({tools: [...]}) checks every tool your task needs at once.\n", grantRequired, verb, them, them, toolTellMeMyRights)
 	}
 	sb.WriteString("// Refine: narrower pattern, query:\"<free text>\" for ranked results, detail:\"full\"|\"summary\"|\"names\"|\"overview\", limit:N.\n")
 	return sb.String()

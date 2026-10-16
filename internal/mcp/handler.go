@@ -37,10 +37,11 @@ import (
 // Built-in MCP meta-tool names. These do not pass through the executor and
 // are dispatched directly inside [Handler.HandleToolCall].
 const (
-	toolDiscoverTools = "discover_tools"
-	toolExecuteCode   = "execute_code"
-	toolDebugEcho     = "debug_echo"
-	toolDebugGenerate = "debug_generate"
+	toolDiscoverTools  = "discover_tools"
+	toolExecuteCode    = "execute_code"
+	toolTellMeMyRights = executor.RightsToolName
+	toolDebugEcho      = "debug_echo"
+	toolDebugGenerate  = "debug_generate"
 )
 
 // Handler processes incoming MCP tool calls and routes them through the executor.
@@ -111,7 +112,7 @@ func (h *Handler) SetCodeTimeout(d time.Duration) {
 // handler instead of through the executor.
 func (h *Handler) isBuiltinTool(name string) bool {
 	switch name {
-	case toolDiscoverTools, toolExecuteCode:
+	case toolDiscoverTools, toolExecuteCode, toolTellMeMyRights:
 		return true
 	case toolUploadFile:
 		return h.blobStore != nil
@@ -162,6 +163,8 @@ func (h *Handler) HandleToolCall(ctx context.Context, toolName string, params ma
 		return h.handleDiscoverTools(ctx, params)
 	case toolExecuteCode:
 		return h.handleExecuteCode(ctx, params), nil
+	case toolTellMeMyRights:
+		return h.handleTellMeMyRights(ctx, params), nil
 	case toolUploadFile:
 		// handleUploadFile reports a clear "not configured" error itself when
 		// no blob store is set; the tool is only advertised when one is.
@@ -236,7 +239,7 @@ func (h *Handler) attachBackendHint(ctx context.Context, toolName string, result
 
 func (h *Handler) handleDiscoverTools(ctx context.Context, params map[string]any) (*backend.ToolResult, error) {
 	// pattern is optional. An empty or missing pattern is treated as ".*"
-	// (return every authorized tool) — making the common "list everything"
+	// (return every visible tool) — making the common "list everything"
 	// case work without an explicit magic-string argument.
 	patternStr, _ := params[argNamePattern].(string)
 	if patternStr == "" {
@@ -283,11 +286,13 @@ func (h *Handler) handleDiscoverTools(ctx context.Context, params map[string]any
 		}
 	}
 
-	// Filter through authorization — only return tools the caller can execute
+	// Filter through authorization: return the tools the caller can execute
+	// and those a kit covers, marked grant_required.
+	var notes grantNotes
 	if h.executor != nil {
 		uc := userctx.FromContext(ctx)
 		if uc != nil {
-			filtered = h.executor.FilterAuthorizedTools(ctx, uc, filtered)
+			filtered, notes = visibleTools(ctx, h.executor, uc, filtered)
 		}
 	}
 
@@ -322,15 +327,15 @@ func (h *Handler) handleDiscoverTools(ctx context.Context, params map[string]any
 		if queryStr == "" && h.rawTS != "" && re.MatchString(h.rawTS) {
 			body = h.rawTS + "\n\n"
 		}
-		body += GenerateToolDefinitions(shown)
+		body += GenerateToolDefinitions(shown, notes)
 	case detailSummary:
-		body = GenerateToolSummaries(shown)
+		body = GenerateToolSummaries(shown, notes)
 	case detailNames:
-		body = GenerateToolNames(shown)
+		body = GenerateToolNames(shown, notes)
 	case detailOverview:
 		// Counts are computed over every match — cutting them to `limit`
 		// would defeat the purpose of an overview.
-		body = GenerateBackendOverview(filtered)
+		body = GenerateBackendOverview(filtered, notes)
 	}
 
 	// Fail-safe: no single discovery response may exceed the byte cap,
@@ -346,7 +351,13 @@ func (h *Handler) handleDiscoverTools(ctx context.Context, params map[string]any
 		truncated = true
 	}
 
-	definitions := body + discoveryFooter(matched, len(tools), len(shown), effectiveDetail, detail == detailAuto, queryStr)
+	grantRequired := 0
+	for _, t := range filtered {
+		if len(notes[t.Name]) > 0 {
+			grantRequired++
+		}
+	}
+	definitions := body + discoveryFooter(matched, len(tools), len(shown), effectiveDetail, detail == detailAuto, queryStr, grantRequired)
 
 	h.logger.InfoContext(ctx, "discover_tools",
 		argNamePattern, patternStr,
@@ -427,8 +438,9 @@ func rankByQuery(descs []backend.ToolDescriptor, query string) []backend.ToolDes
 
 // discoveryFooter renders the trailing status line appended to every
 // discover_tools response. Always present so the caller can tell how much
-// of the catalog it is looking at and how to refine.
-func discoveryFooter(matched, total, shown int, detail string, auto bool, query string) string {
+// of the catalog it is looking at and how to refine. grantRequired is the
+// number of matched tools the caller can only call with a kit.
+func discoveryFooter(matched, total, shown int, detail string, auto bool, query string, grantRequired int) string {
 	mode := detail
 	if auto {
 		mode += " (auto)"
@@ -444,6 +456,10 @@ func discoveryFooter(matched, total, shown int, detail string, auto bool, query 
 		}
 	}
 	fmt.Fprintf(&sb, " — detail: %s.\n", mode)
+	if grantRequired > 0 {
+		fmt.Fprintf(&sb, "// %d of them are marked grant_required: you cannot call them yet, the named kit covers them. "+
+			"Plan before you ask: %s({tools: [...]}) checks every tool your task needs at once.\n", grantRequired, toolTellMeMyRights)
+	}
 	sb.WriteString("// Refine: narrower pattern, query:\"<free text>\" for ranked results, detail:\"full\"|\"summary\"|\"names\"|\"overview\", limit:N.\n")
 	return sb.String()
 }
@@ -575,6 +591,7 @@ func (h *Handler) BuildToolList(ctx context.Context) ([]ToolDefinition, error) {
 				schemaKeyRequired: []string{argNameCode},
 			},
 		},
+		rightsToolDefinition(),
 	}
 
 	// Append backend-promoted tools (configured per-backend via the YAML

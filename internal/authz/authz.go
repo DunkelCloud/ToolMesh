@@ -48,6 +48,14 @@ type BatchChecker interface {
 	CheckBatch(ctx context.Context, reqs []Request) ([]bool, error)
 }
 
+// KitCatalog is implemented by authorizers that know kits: named bundles of
+// tools a caller can be granted as a whole. Only the embedded engine does.
+type KitCatalog interface {
+	// Kits returns the kits in effect, sorted by name. The slice is shared
+	// and must not be modified.
+	Kits() []Kit
+}
+
 // Request is one authorization question: may this caller execute this tool?
 type Request struct {
 	// Caller, as authentication established it.
@@ -55,6 +63,9 @@ type Request struct {
 	CompanyID string
 	Plan      string
 	Roles     []string
+	// Kits the caller holds at the time of the check. Only the embedded
+	// engine knows kits; External ignores them.
+	Kits []string
 
 	// Tool is the canonical "<backend>_<tool>" name.
 	Tool string

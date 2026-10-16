@@ -149,8 +149,10 @@ The default is half of the CPUs the process may use (in a container with a CPU l
 Every tool call is checked before it runs: a direct call, each `api.*` call
 inside a composite, and every tool listing (`tools/list`, `discover_tools`,
 `toolmesh.discover` in Code Mode), which shows only the tools the caller may
-execute. A denied call returns an error result and is audited with status
-`denied`.
+execute, and in discovery also those a [kit](#kits) covers. A denied call
+returns an error result and is audited with status `denied`. Callers can ask
+what they may do with the meta-tool
+[`tell_me_my_rights`](#asking-what-a-caller-may-do-tell_me_my_rights).
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -257,6 +259,58 @@ they were. Calls that start after a change has been applied are checked
 against the new rules. While a change is applied, no call is allowed that
 neither the old nor the new rules allow.
 
+#### Kits
+
+A **kit** is a named bundle of tools that a caller is granted as a whole and
+for a limited time, instead of tool by tool: for example everything a network
+diagnosis needs to read. Kits are defined in the grants file:
+
+```yaml
+kits:
+  net-diag-read:
+    description: "Network diagnosis (read-only)"
+    warning: "Production systems."
+    grants: [graylog:read, unifi:read, netbox:read, checkmk:read]
+    tools: [netbox_get_device]
+    ttl_default: 4h
+    ttl_max: 24h
+```
+
+- `description` (required): what the kit is for, in plain language. It is
+  what callers see, and what a person granting the kit reads.
+- `warning`: shown with the description.
+- `grants`: what the kit covers, as scopes. `"*"`: every tool. `<backend>`:
+  every tool of a backend. `<backend>:<access>`: the tools of a backend with
+  this DADL access classification. `"*:<access>"`: the tools with this
+  classification on any backend. Quote scopes that start with `*`.
+- `tools`: single tools by their full name, `<backend>_<tool>`.
+- `ttl_default`, `ttl_max`: how long a grant of the kit lasts by default and
+  at most (`10m`, `4h`). Shown to callers.
+
+Kit names are slugs: letters, digits, `.`, `_` and `-`, at most 64
+characters. In the authorization model a kit is a role. Its holders may
+execute what it covers, and holding it is passed with each check, so a kit
+ends without anything to clean up. A deny wins over a kit as over every grant.
+`<backend>:<access>` covers exactly the tools of that backend with that
+classification: holding a kit for `graylog:read` and one for `unifi:write`
+does not add up to `graylog:write`.
+
+This version does not grant kits to callers yet; a kit allows nothing by
+itself. The definitions already shape what callers are told:
+
+- Discovery (`discover_tools`, `toolmesh.discover`, `toolmesh.describe`) lists
+  the tools a kit covers along with those the caller may call, marked
+  `grant_required: kit <name>`. Kits therefore also decide which tools a
+  caller sees without being allowed to call them; a tool that no kit covers
+  stays hidden from a caller who may not call it.
+- A denied call names the kits that would allow it, and the audit entry of the
+  denial records them (`remedy_kits`).
+- [`tell_me_my_rights`](#asking-what-a-caller-may-do-tell_me_my_rights) gives
+  the kits per tool and the smallest set that covers a task.
+
+Kits apply in embedded mode only. An invalid kit is reported like an invalid
+grant.
+
 #### Upgrading an installation that ran without authorization
 
 Up to version 0.4, authorization was off unless `OPENFGA_MODE=restrict` was
@@ -304,6 +358,28 @@ applies. ToolMesh reports it in the security-posture summary on every start
 and records an audit entry with the status `authz_disabled` (tool
 `toolmesh_authz`), so the audit trail shows from when on calls went
 unchecked.
+
+### Asking what a caller may do: `tell_me_my_rights`
+
+Next to `discover_tools` and `execute_code`, ToolMesh lists the meta-tool
+`tell_me_my_rights`. It tells the caller what it may do and decides nothing:
+every call is checked again when it runs.
+
+- Without arguments: per backend, how many tools the caller may call, how
+  many a kit would add, and which kits.
+- `backend: "<name>"`: the verdict for each tool of that backend.
+- `tools: [...]`, the preflight (at most 500 tools): one verdict per tool,
+  `allowed`, `escalatable` with the kits that would allow it, or `denied`,
+  and the smallest set of kits found that covers every escalatable tool. An
+  agent that checks all tools of a task first can then ask once for what it
+  lacks, instead of collecting denials call by call.
+
+The answer shows only the tools the caller may call or get through a kit.
+For any other tool it says `denied`, without telling whether the tool exists.
+Every call is recorded in the audit trail (tool `tell_me_my_rights`, backend
+`toolmesh`): the answer is the first thing an agent that was taken over would
+look up. In external mode there are no kits, so the verdicts are `allowed` and
+`denied`; with authorization disabled, every tool is `allowed`.
 
 ## Redis
 

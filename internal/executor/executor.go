@@ -163,7 +163,8 @@ func (e *Executor) ExecuteTool(ctx context.Context, req ExecuteToolRequest) (*ba
 	// Step 1: AuthZ check via OpenFGA
 	if e.authorizer != nil {
 		e.logger.DebugContext(ctx, "authz check", "tool", req.ToolName, "user", uc.UserID)
-		allowed, err := e.authorizer.Check(ctx, e.authzRequest(uc, req.ToolName, toolAccess))
+		authzReq := e.authzRequest(uc, req.ToolName, toolAccess)
+		allowed, err := e.authorizer.Check(ctx, authzReq)
 		if err != nil {
 			entry.DurationMs = time.Since(start).Milliseconds()
 			entry.Status = statusError
@@ -172,18 +173,25 @@ func (e *Executor) ExecuteTool(ctx context.Context, req ExecuteToolRequest) (*ba
 			return nil, fmt.Errorf("authz check failed: %w", err)
 		}
 		if !allowed {
+			// Deny with remedy: name the kits that would allow the call, so
+			// that the caller asks once for a kit instead of tool by tool.
+			kits, remedy := e.denialRemedy(ctx, authzReq)
 			e.logger.WarnContext(ctx, "authorization denied",
 				"tool", req.ToolName,
 				"user", uc.UserID,
+				"kits", kits,
 			)
 			entry.DurationMs = time.Since(start).Milliseconds()
 			entry.Status = statusDenied
+			if len(kits) > 0 {
+				entry.Metadata = map[string]string{"remedy_kits": strings.Join(kits, ",")}
+			}
 			e.recordAudit(ctx, entry)
 			return &backend.ToolResult{
 				IsError: true,
 				Content: []any{map[string]any{
 					contentKeyType: contentKeyText,
-					contentKeyText: fmt.Sprintf("User %s is not authorized to execute tool %s", uc.UserID, req.ToolName),
+					contentKeyText: fmt.Sprintf("User %s is not authorized to execute tool %s.%s", uc.UserID, req.ToolName, remedy),
 				}},
 			}, nil
 		}
@@ -479,32 +487,7 @@ func (e *Executor) FilterAuthorizedTools(ctx context.Context, uc *userctx.UserCo
 	if uc == nil {
 		return nil
 	}
-	reqs := make([]authz.Request, len(tools))
-	for i, t := range tools {
-		access := t.Access
-		if access == "" {
-			access = e.lookupToolAccess(t.Name)
-		}
-		reqs[i] = e.authzRequest(uc, t.Name, access)
-	}
-
-	allowed := make([]bool, len(tools))
-	if bc, ok := e.authorizer.(authz.BatchChecker); ok {
-		var err error
-		allowed, err = bc.CheckBatch(ctx, reqs)
-		if err != nil {
-			e.logger.DebugContext(ctx, "authz check failed during tool filter", "error", err)
-		}
-	} else {
-		for i, r := range reqs {
-			ok, err := e.authorizer.Check(ctx, r)
-			if err != nil {
-				e.logger.DebugContext(ctx, "authz check failed during tool filter", "tool", r.Tool, "error", err)
-				continue
-			}
-			allowed[i] = ok
-		}
-	}
+	allowed := e.checkAll(ctx, e.authzRequests(uc, tools))
 
 	authorized := make([]backend.ToolDescriptor, 0, len(tools))
 	for i, t := range tools {

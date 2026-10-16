@@ -110,7 +110,8 @@ func setupAuthz(ctx context.Context, cfg *config.Config, priorState bool, logger
 }
 
 // applyAuthzPolicy resolves the grants (config file, TOOLMESH_AUTHZ_PRESET,
-// upgrade preset, default preset) and writes them to the embedded store. On
+// upgrade preset, default preset) and writes them, with the denies and kits
+// of the config file, to the embedded store. On
 // an error the grants in the store stay as they were.
 func applyAuthzPolicy(ctx context.Context, cfg *config.Config, emb *authz.Embedded, logger *slog.Logger) (authz.Policy, error) {
 	file, err := authz.LoadFile(cfg.AuthzConfigPath)
@@ -131,13 +132,13 @@ func applyAuthzPolicy(ctx context.Context, cfg *config.Config, emb *authz.Embedd
 	if err != nil {
 		return authz.Policy{}, err
 	}
-	res, err := emb.Apply(ctx, policy.Grants, policy.Denies)
+	res, err := emb.ApplyPolicy(ctx, policy)
 	if err != nil {
 		return authz.Policy{}, fmt.Errorf("apply authorization rules: %w", err)
 	}
 
 	attrs := []any{"preset", policy.Preset, "source", policy.Source, "grants", len(policy.Grants),
-		"denies", len(policy.Denies), "tuples", res.Tuples, "written", res.Written, "deleted", res.Deleted}
+		"denies", len(policy.Denies), "kits", len(policy.Kits), "tuples", res.Tuples, "written", res.Written, "deleted", res.Deleted}
 	if policy.Source == authz.SourceFile {
 		attrs = append(attrs, "file", cfg.AuthzConfigPath)
 	}

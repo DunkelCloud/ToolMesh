@@ -90,6 +90,9 @@ type File struct {
 	// Denies block tools for a subject even when a grant or the preset
 	// allows them.
 	Denies []Grant `yaml:"denies,omitempty"`
+	// Kits are named bundles of tools a caller can be granted as a whole,
+	// keyed by name.
+	Kits map[string]Kit `yaml:"kits,omitempty"`
 }
 
 // Policy is the set of grants and denies in effect and where it comes from.
@@ -101,6 +104,8 @@ type Policy struct {
 	Grants []Grant
 	// Denies win over Grants. Only a config file names denies.
 	Denies []Grant
+	// Kits, sorted by name. Only a config file defines kits.
+	Kits []Kit
 }
 
 // PolicyInput holds everything ResolvePolicy chooses from.
@@ -153,7 +158,8 @@ func PresetGrants(name, owner string) ([]Grant, error) {
 
 // ResolvePolicy picks the grants in effect. The first of these that is set
 // wins: the config file, TOOLMESH_AUTHZ_PRESET, the preset recorded at an
-// upgrade, the default preset. Denies come from the config file only.
+// upgrade, the default preset. Denies and kits come from the config file
+// only.
 func ResolvePolicy(in PolicyInput) (Policy, error) {
 	if in.File != nil {
 		p := Policy{Preset: in.File.Preset, Source: SourceFile}
@@ -166,6 +172,7 @@ func ResolvePolicy(in PolicyInput) (Policy, error) {
 		}
 		p.Grants = append(p.Grants, in.File.Grants...)
 		p.Denies = in.File.Denies
+		p.Kits = kitsFromFile(in.File.Kits)
 		return p, nil
 	}
 
@@ -223,6 +230,9 @@ func ParseFile(data []byte) (*File, error) {
 		if err := g.Validate(); err != nil {
 			return nil, fmt.Errorf("authz config: deny %d: %w", i+1, err)
 		}
+	}
+	if err := validateKits(kitsFromFile(f.Kits)); err != nil {
+		return nil, fmt.Errorf("authz config: %w", err)
 	}
 	return &f, nil
 }

@@ -584,15 +584,16 @@ func TestHandleToolCall_ResolvesPromotedAliasBeforeDispatch(t *testing.T) {
 }
 
 // TestBuildToolList_NoPromoterMeansNoPromotedTools verifies that backends not
-// implementing ToolPromoter add nothing — the default surface stays discover/exec.
+// implementing ToolPromoter add nothing — the default surface stays the
+// meta-tools discover_tools, execute_code and tell_me_my_rights.
 func TestBuildToolList_NoPromoterMeansNoPromotedTools(t *testing.T) {
 	h := NewHandler(nil, &mockTestBackend{}, nil, "", nil, newQuietMCPLogger(), false)
 	tools, err := h.BuildToolList(context.Background())
 	if err != nil {
 		t.Fatalf("BuildToolList: %v", err)
 	}
-	if len(tools) != 2 {
-		t.Errorf("expected 2 tools (discover_tools, execute_code), got %d: %v", len(tools), tools)
+	if len(tools) != 3 {
+		t.Errorf("expected 3 tools (discover_tools, execute_code, tell_me_my_rights), got %d: %v", len(tools), tools)
 	}
 }
 

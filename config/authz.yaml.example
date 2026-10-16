@@ -52,3 +52,25 @@ grants:
 denies:
   - role: support
     tools: [zammad_delete_ticket]
+
+# Optional: kits are named bundles of tools that a caller is granted as a
+# whole and for a limited time. This version does not grant kits yet; their
+# definitions already show in discovery (tools marked grant_required), in
+# denials and in tell_me_my_rights. A tool a kit covers is listed for every
+# caller, so define kits only for tools whose names may be seen.
+#
+#   description   required: what the kit is for, in plain language
+#   warning       optional: shown with the description
+#   grants        scopes: "*" every tool, <backend> every tool of a backend,
+#                 <backend>:<access> the tools of a backend with this access
+#                 classification, "*:<access>" those of any backend
+#   tools         single tools, by their full name (<backend>_<tool>)
+#   ttl_default   how long a grant of the kit lasts by default (e.g. 4h)
+#   ttl_max       and at most
+#
+# kits:
+#   net-diag-read:
+#     description: "Network diagnosis (read-only)"
+#     grants: [graylog:read, unifi:read, netbox:read, checkmk:read]
+#     ttl_default: 4h
+#     ttl_max: 24h

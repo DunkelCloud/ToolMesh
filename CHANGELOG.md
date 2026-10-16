@@ -76,6 +76,17 @@ writable; it is in the shipped `docker-compose.yml`, which no longer sets
 - `TOOLMESH_AUTHZ_MODE=disabled` as the only way to switch authorization off.
   It is reported in the security-posture summary and recorded in the audit
   trail (status `authz_disabled`).
+- Kits in `config/authz.yaml` (`kits:`): named bundles of tools a caller is
+  granted as a whole and for a limited time, with a description, an optional
+  warning, scopes such as `graylog:read`, single tools and a default and
+  maximum duration. This version does not grant kits yet; discovery lists the
+  tools a kit covers, marked `grant_required`, and a denied call names the
+  kits that would allow it (audit metadata `remedy_kits`). See
+  `docs/configuration.md`, "Kits".
+- Meta-tool `tell_me_my_rights`: what the caller may do, per backend, for one
+  backend, or as a preflight over the tools a task needs, with the smallest
+  set of kits that covers what is missing. Information only; every call is
+  audited. See `docs/configuration.md`, "Asking what a caller may do".
 
 ### Changed
 

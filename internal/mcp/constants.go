@@ -35,6 +35,9 @@ const (
 	// Common JSON object key shared by tool listings, serverInfo, and the
 	// in-sandbox discovery helpers.
 	jsonKeyName = "name"
+	// jsonKeyGrantRequired lists, in discovery results, the kits that cover
+	// a tool the caller cannot execute yet.
+	jsonKeyGrantRequired = "grant_required"
 
 	// MCP tool argument names referenced in built-in tool schemas.
 	argNamePattern        = "pattern"
@@ -44,6 +47,8 @@ const (
 	argNameCode           = "code"
 	argNameIncludeResults = "include_results"
 	argNamePayload        = "payload"
+	argNameTools          = "tools"
+	argNameBackend        = "backend"
 
 	// Common debug_generate pattern values.
 	debugPatternASCII = "ascii"

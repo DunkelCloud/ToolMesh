@@ -40,6 +40,7 @@ import (
 	"github.com/DunkelCloud/ToolMesh/internal/debuglog"
 	"github.com/DunkelCloud/ToolMesh/internal/executor"
 	"github.com/DunkelCloud/ToolMesh/internal/gate"
+	"github.com/DunkelCloud/ToolMesh/internal/grants"
 	"github.com/DunkelCloud/ToolMesh/internal/mcp"
 	"github.com/DunkelCloud/ToolMesh/internal/metrics"
 	"github.com/DunkelCloud/ToolMesh/internal/telemetry"
@@ -257,7 +258,7 @@ func main() {
 	}
 	defer authzEngine.close()
 	if authzEngine.embedded != nil {
-		go watchAuthzConfig(ctx, cfg, authzEngine.embedded, 5*time.Second, logger)
+		startAuthzConfigWatch(ctx, cfg, authzEngine.embedded, 5*time.Second, logger)
 	}
 
 	// Initialize gate pipeline via registry
@@ -408,6 +409,29 @@ func main() {
 	mcpServer := mcp.NewServer(mcpHandler, cfg, logger, tokenStore, userStore, apiKeyStore, rateLimiter, callerClasses, metricsReg)
 	mcpServer.SetBlobStore(blobStore, blob.DefaultUploadLimits())
 
+	// Kit grants (embedded authorization only, where kits exist): requests
+	// and grants live in Redis when it is connected, so that they survive a
+	// restart and are shared between instances, otherwise in process memory.
+	var grantService *grants.Service
+	if authzEngine.embedded != nil {
+		var grantStore grants.Store = grants.NewMemoryStore()
+		grantStoreName := "process-local"
+		if redisClient != nil {
+			grantStore = grants.NewRedisStore(redisClient)
+			grantStoreName = "redis"
+		}
+		grantService = grants.New(grants.Options{
+			Store:     grantStore,
+			Kits:      authzEngine.embedded,
+			Approvers: authzEngine.embedded,
+			Audit:     auditStore,
+			Logger:    logger,
+		})
+		exec.SetKitHolder(grantService)
+		mcpHandler.SetGrants(grantService)
+		logger.Info("kit grants configured", "store", grantStoreName, "api", grants.PathPrefix)
+	}
+
 	// Failed-login limits for the password login. NewServer counts in process
 	// memory; with Redis the counters are shared, so the limits hold across
 	// replicas and survive a restart.
@@ -427,6 +451,13 @@ func main() {
 	// SetupRoutes registers /blobs/ (GET/HEAD capability-based, DELETE
 	// authenticated) and /files/upload when a blob store is configured.
 	mcpServer.SetupRoutes(httpMux)
+	if grantService != nil {
+		// The approver API. It takes approver keys only, never the
+		// credentials MCP callers connect with.
+		approverAPI := grantService.Handler()
+		httpMux.Handle(grants.PathPrefix, approverAPI)
+		httpMux.Handle(grants.PathPrefix+"/", approverAPI)
+	}
 
 	// Wrap with middleware: panic recovery (outermost) → security headers → request logging.
 	httpHandler := mcp.PanicRecovery(logger)(mcp.SecurityHeaders(mcp.RequestLogging(logger)(httpMux)))

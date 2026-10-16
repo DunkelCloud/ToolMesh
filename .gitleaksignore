@@ -1,0 +1,8 @@
+# Findings of the secret scan (gitleaks) that are not secrets, one
+# fingerprint (commit:file:rule:line) per line. The lines in the current tree
+# carry a gitleaks:allow comment; these entries cover the commits that added
+# them before the comment.
+
+# SHA-256 values of test approver keys in internal/authz/approvers_test.go.
+5b68f89c2adb6de117ea772c144dbf2f19d0907d:internal/authz/approvers_test.go:generic-api-key:27
+5b68f89c2adb6de117ea772c144dbf2f19d0907d:internal/authz/approvers_test.go:generic-api-key:28

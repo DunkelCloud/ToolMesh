@@ -144,13 +144,23 @@ The default is half of the CPUs the process may use (in a container with a CPU l
 | `AUDIT_STORE` | `log` | Audit store: `log` (structured slog output, write-only) or `sqlite` (append-only SQLite database, queryable) |
 | `AUDIT_RETENTION_DAYS` | `90` | Retention period in days for the sqlite store — entries older than this are automatically deleted |
 
+Both stores keep an entry's metadata; the `log` store writes it as a
+`metadata` object in the `audit` line. It carries what the fixed fields
+cannot: for kit grants the approver, the grant id and the kit, and for a
+request the reason and the duration asked for (`ttl_requested`); for a call
+the kits the caller held (`held_kits`), and for a denial the kits that would
+have allowed it (`remedy_kits`).
+
 ## Authorization
 
 Every tool call is checked before it runs: a direct call, each `api.*` call
 inside a composite, and every tool listing (`tools/list`, `discover_tools`,
 `toolmesh.discover` in Code Mode), which shows only the tools the caller may
-execute. A denied call returns an error result and is audited with status
-`denied`.
+execute, and in discovery also those a [kit](#kits) covers. A denied call
+returns an error result and is audited with status `denied`. Callers can ask
+what they may do with the meta-tool
+[`tell_me_my_rights`](#asking-what-a-caller-may-do-tell_me_my_rights), and ask
+for a kit with [`request_grant`](#granting-kits).
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -257,6 +267,162 @@ they were. Calls that start after a change has been applied are checked
 against the new rules. While a change is applied, no call is allowed that
 neither the old nor the new rules allow.
 
+#### Kits
+
+A **kit** is a named bundle of tools that a caller is granted as a whole and
+for a limited time, instead of tool by tool: for example everything a network
+diagnosis needs to read. Kits are defined in the grants file:
+
+```yaml
+kits:
+  net-diag-read:
+    description: "Network diagnosis (read-only)"
+    warning: "Production systems."
+    grants: [graylog:read, unifi:read, netbox:read, checkmk:read]
+    tools: [netbox_get_device]
+    ttl_default: 4h
+    ttl_max: 24h
+```
+
+- `description` (required): what the kit is for, in plain language. It is
+  what callers see, and what a person granting the kit reads.
+- `warning`: shown with the description.
+- `grants`: what the kit covers, as scopes. `"*"`: every tool. `<backend>`:
+  every tool of a backend. `<backend>:<access>`: the tools of a backend with
+  this DADL access classification. `"*:<access>"`: the tools with this
+  classification on any backend. Quote scopes that start with `*`.
+- `tools`: single tools by their full name, `<backend>_<tool>`.
+- `ttl_default`, `ttl_max`: how long a grant of the kit lasts by default and
+  at most (`10m`, `4h`). Shown to callers. A kit without `ttl_max` is granted
+  for at most 24 hours, so its `ttl_default` must not exceed that.
+
+Kit names are slugs: letters, digits, `.`, `_` and `-`, at most 64
+characters. In the authorization model a kit is a role. Its holders may
+execute what it covers, and holding it is passed with each check, so a kit
+ends without anything to clean up. A deny wins over a kit as over every grant.
+`<backend>:<access>` covers exactly the tools of that backend with that
+classification: holding a kit for `graylog:read` and one for `unifi:write`
+does not add up to `graylog:write`.
+
+A kit allows nothing by itself: a caller holds it once an approver has
+approved its request, until the grant ends (see [Granting kits](#granting-kits)).
+The definitions also shape what callers are told:
+
+- Discovery (`discover_tools`, `toolmesh.discover`, `toolmesh.describe`) lists
+  the tools a kit covers along with those the caller may call, marked
+  `grant_required: kit <name>`. Kits therefore also decide which tools a
+  caller sees without being allowed to call them; a tool that no kit covers
+  stays hidden from a caller who may not call it.
+- A denied call names the kits that would allow it, and the audit entry of the
+  denial records them (`remedy_kits`).
+- [`tell_me_my_rights`](#asking-what-a-caller-may-do-tell_me_my_rights) gives
+  the kits per tool and the smallest set that covers a task.
+
+Kits apply in embedded mode only. An invalid kit is reported like an invalid
+grant.
+
+#### Granting kits
+
+A caller asks for a kit with the meta-tool `request_grant`, a person approves
+the request, and the caller holds the kit until the grant ends. The
+authorization engine stays the only place that decides: at every check, the
+kits the caller holds are passed with the check, like its roles. A grant
+therefore ends by itself, and revoking it takes effect with the next call.
+
+**Approvers** are listed in the grants file. Each has a name and the SHA-256
+of a key of its own:
+
+```yaml
+approvers:
+  - name: alice@example.com
+    key_sha256: "<SHA-256 of the key, 64 hex characters>"
+```
+
+```bash
+key=$(openssl rand -hex 32)   # the approver's key; hand it over securely
+printf %s "$key" | sha256sum  # the key_sha256 for the grants file
+```
+
+An approver key works only on the approver API below, and the credentials MCP
+callers connect with do not work there, so an agent cannot approve its own
+request. Do not give an agent an approver key. An approver whose key is also
+an MCP credential is refused: `TOOLMESH_API_KEY`, `TOOLMESH_AUTH_PASSWORD` or
+an entry of `apikeys.yaml` with a `key_sha256`. An `apikeys.yaml` entry with
+only a `key_hash` cannot be compared, so never reuse such a key either. Names
+are slugs or e-mail addresses; neither names nor keys may repeat. Without
+approvers, `request_grant` tells callers that no kit can be granted, and
+ToolMesh logs a warning when the file defines kits.
+
+Changes to `approvers:` apply within seconds, like the rest of the file. An
+edit that cannot be applied, because the file does not parse, an approver is
+refused or writing the rules fails, stops the server at startup; later, it is
+logged and the previous approvers stay in force, as grants and denies do.
+ToolMesh tries again only when the file changes again. After removing an
+approver key that may have leaked, check that the log shows the line
+`authorization policy applied` for that edit, with the new number of
+`approvers`; until then the old key still approves.
+
+**Asking.** `request_grant({kit, reason, ttl})`:
+
+- `kit`: the kit's name, as `tell_me_my_rights` names it.
+- `reason` (required, at most 500 characters): the task and, if there is one,
+  the ticket. Approvers see it marked as the requester's own statement. Line
+  breaks become spaces; control and format characters (such as bidirectional
+  overrides and zero-width characters) are removed.
+- `ttl` (optional, such as `30m` or `4h`): how long the caller needs the kit.
+  Without it the kit's `ttl_default` applies, or one hour; no more than its
+  `ttl_max` is granted, or 24 hours when it sets none. The maximum counts as
+  it is when the request is approved.
+
+The answer is a request id of ten characters, which the caller hands to the
+person it works for. A request waits 30 minutes for a decision, then lapses.
+Asking again for a kit that is still pending returns the pending request; a
+caller may have at most five requests pending at a time.
+
+**Who holds a grant.** The requesting user, as the caller it connected as:
+the `caller_id` of an API key, or the OAuth client. An API key without
+`caller_id` binds the grant to that key itself (shown as `grant_key`), so two
+such keys of one user do not share grants. The grant survives a token
+refresh; other connections of the same user do not hold it. A grant gives the
+kit as it is defined at the time of each call: a kit removed from the file
+allows nothing any more, and a changed kit applies with its new content.
+
+**Approver API.** On the ToolMesh port, with the approver key as bearer
+credential:
+
+| Request | Effect |
+|---------|--------|
+| `GET /grants` | Pending requests and active grants |
+| `GET /grants/<id>` | One request or grant |
+| `POST /grants/<id>/approve` | Grant the kit. Optional body `{"ttl": "1h"}` to grant it for less than requested, never for more |
+| `POST /grants/<id>/deny` | Reject a pending request |
+| `POST /grants/<id>/revoke` | End an active grant now |
+
+```bash
+curl -s -H "Authorization: Bearer $APPROVER_KEY" https://toolmesh.example.com/grants/k3m9x2p7qa
+curl -s -X POST -H "Authorization: Bearer $APPROVER_KEY" https://toolmesh.example.com/grants/k3m9x2p7qa/approve
+```
+
+Each request and grant shows the kit's description, warning and scope from
+the grants file next to who asked, why, and for how long. Like the reason,
+`caller_name` is the requester's own statement: an OAuth client chooses its
+name itself. It is cleaned like the reason and cut to 128 characters. Approving a kit the
+caller already holds replaces that grant. A grant keeps its request id, so
+the same id revokes it.
+
+**Where grants live.** In Redis when ToolMesh is connected to one
+([`REDIS_URL`](#redis)): requests and grants survive a restart and are shared
+between instances. Otherwise in process memory: a restart ends all requests
+and grants, and every caller is back to its steady-state rights. A store that
+fails is logged and contributes no kits.
+
+**Audit.** Every request, approval, denial and revocation is recorded, with
+backend `toolmesh` and the tool `request_grant`, `grant_approve`,
+`grant_deny` or `grant_revoke`. The entry carries the user and caller the
+grant is for, and in its metadata the grant id, kit, duration, expiry and, for
+the approver actions, the approver. A call made while the caller holds kits
+records them in its metadata (`held_kits`).
+
 #### Upgrading an installation that ran without authorization
 
 Up to version 0.4, authorization was off unless `OPENFGA_MODE=restrict` was
@@ -305,11 +471,37 @@ and records an audit entry with the status `authz_disabled` (tool
 `toolmesh_authz`), so the audit trail shows from when on calls went
 unchecked.
 
+### Asking what a caller may do: `tell_me_my_rights`
+
+Next to `discover_tools` and `execute_code`, ToolMesh lists the meta-tool
+`tell_me_my_rights`. It tells the caller what it may do and decides nothing:
+every call is checked again when it runs.
+
+- Without arguments: per backend, how many tools the caller may call, how
+  many a kit would add, and which kits.
+- `backend: "<name>"`: the verdict for each tool of that backend.
+- `tools: [...]`, the preflight (at most 500 tools): one verdict per tool,
+  `allowed`, `escalatable` with the kits that would allow it, or `denied`,
+  and the smallest set of kits found that covers every escalatable tool. An
+  agent that checks all tools of a task first can then ask once for what it
+  lacks, instead of collecting denials call by call.
+
+Every answer also lists the kits the caller holds (`grants`, with id, expiry
+and time remaining) and its pending requests (`requests`), and describes these
+kits with their warnings.
+
+The answer shows only the tools the caller may call or get through a kit.
+For any other tool it says `denied`, without telling whether the tool exists.
+Every call is recorded in the audit trail (tool `tell_me_my_rights`, backend
+`toolmesh`): the answer is the first thing an agent that was taken over would
+look up. In external mode there are no kits, so the verdicts are `allowed` and
+`denied`; with authorization disabled, every tool is `allowed`.
+
 ## Redis
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `REDIS_URL` | `redis://keydb:6379/0` | KeyDB/Redis connection URL (Docker Compose service name: `keydb`) |
+| `REDIS_URL` | `redis://keydb:6379/0` | KeyDB/Redis connection URL (Docker Compose service name: `keydb`). Also holds kit requests and grants (see [Granting kits](#granting-kits)) |
 
 ## Credential Store
 

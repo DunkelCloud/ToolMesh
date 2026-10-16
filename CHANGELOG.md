@@ -90,9 +90,39 @@ Without a persistent data directory every start reports a new site ID. See
 - `TOOLMESH_AUTHZ_MODE=disabled` as the only way to switch authorization off.
   It is reported in the security-posture summary and recorded in the audit
   trail (status `authz_disabled`).
+- Kits in `config/authz.yaml` (`kits:`): named bundles of tools a caller is
+  granted as a whole and for a limited time, with a description, an optional
+  warning, scopes such as `graylog:read`, single tools and a default and
+  maximum duration. Discovery lists the tools a kit covers, marked
+  `grant_required`, and a denied call names the kits that would allow it
+  (audit metadata `remedy_kits`). See `docs/configuration.md`, "Kits".
+- Granting kits: a caller asks with the meta-tool `request_grant` (kit,
+  reason, optional duration) and gets a short request id. Approvers listed in
+  `config/authz.yaml` (`approvers:`, name and SHA-256 of a key of their own)
+  approve, shorten, deny or revoke on the approver API `/grants`; MCP
+  credentials do not work there. A grant holds for the requesting user as the
+  caller it connected as, until it expires; every check passes the granted
+  kits to the authorization engine. Requests and grants live in Redis when it
+  is connected, otherwise in process memory. Every step is audited, and
+  `tell_me_my_rights` lists the caller's grants and pending requests. An
+  approver whose key is also an MCP credential (`TOOLMESH_API_KEY`,
+  `TOOLMESH_AUTH_PASSWORD`, a `key_sha256` in `apikeys.yaml`) is refused, and
+  a kit without `ttl_max` may not have a `ttl_default` above 24 hours. See
+  `docs/configuration.md`, "Granting kits".
+- Meta-tool `tell_me_my_rights`: what the caller may do, per backend, for one
+  backend, or as a preflight over the tools a task needs, with the smallest
+  set of kits that covers what is missing. Information only; every call is
+  audited. See `docs/configuration.md`, "Asking what a caller may do".
 
 ### Changed
 
+- The `log` audit store (`AUDIT_STORE=log`, the default) writes an entry's
+  metadata as a `metadata` object in the audit line, as the `sqlite` store
+  already stored it. For kit grants it holds the approver, the grant id and
+  the kit, and for a request the reason and the duration asked for; calls
+  record the kits they held (`held_kits`), denials the kits that would have
+  allowed them (`remedy_kits`). A log pipeline that maps the audit fields
+  sees this one new field.
 - Building ToolMesh requires Go 1.26 (was 1.25, which no longer receives
   security fixes); the Docker image is built with `golang:1.26-alpine`. The
   embedded OpenFGA is v1.22.0.

@@ -204,7 +204,7 @@ func TestWatchAuthzConfig_AppliesCreateChangeDelete(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go watchAuthzConfig(ctx, cfg, s.embedded, 10*time.Millisecond, quietLogger())
+	startAuthzConfigWatch(ctx, cfg, s.embedded, 10*time.Millisecond, quietLogger())
 
 	bob := authz.Request{UserID: "bob", Plan: testPlanPro, Tool: testToolGitHubX, Backend: testBackendGitHub}
 	eventually := func(want bool, what string) {
@@ -283,7 +283,7 @@ func TestWatchAuthzConfig_Denies(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go watchAuthzConfig(ctx, cfg, s.embedded, 10*time.Millisecond, quietLogger())
+	startAuthzConfigWatch(ctx, cfg, s.embedded, 10*time.Millisecond, quietLogger())
 	writeFile(t, cfg.AuthzConfigPath, "preset: team\n")
 	deadline := time.Now().Add(5 * time.Second)
 	for !allowed(t, s, owner) {

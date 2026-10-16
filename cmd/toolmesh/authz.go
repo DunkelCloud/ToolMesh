@@ -16,6 +16,8 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -24,6 +26,7 @@ import (
 	"time"
 
 	"github.com/DunkelCloud/ToolMesh/internal/audit"
+	"github.com/DunkelCloud/ToolMesh/internal/auth"
 	"github.com/DunkelCloud/ToolMesh/internal/authz"
 	"github.com/DunkelCloud/ToolMesh/internal/config"
 	"github.com/google/uuid"
@@ -110,7 +113,8 @@ func setupAuthz(ctx context.Context, cfg *config.Config, priorState bool, logger
 }
 
 // applyAuthzPolicy resolves the grants (config file, TOOLMESH_AUTHZ_PRESET,
-// upgrade preset, default preset) and writes them to the embedded store. On
+// upgrade preset, default preset) and writes them, with the denies and kits
+// of the config file, to the embedded store. On
 // an error the grants in the store stay as they were.
 func applyAuthzPolicy(ctx context.Context, cfg *config.Config, emb *authz.Embedded, logger *slog.Logger) (authz.Policy, error) {
 	file, err := authz.LoadFile(cfg.AuthzConfigPath)
@@ -131,22 +135,60 @@ func applyAuthzPolicy(ctx context.Context, cfg *config.Config, emb *authz.Embedd
 	if err != nil {
 		return authz.Policy{}, err
 	}
-	res, err := emb.Apply(ctx, policy.Grants, policy.Denies)
+	if err := checkApproverKeys(cfg, policy.Approvers); err != nil {
+		return authz.Policy{}, fmt.Errorf("authz config: %w", err)
+	}
+	res, err := emb.ApplyPolicy(ctx, policy)
 	if err != nil {
 		return authz.Policy{}, fmt.Errorf("apply authorization rules: %w", err)
 	}
 
 	attrs := []any{"preset", policy.Preset, "source", policy.Source, "grants", len(policy.Grants),
-		"denies", len(policy.Denies), "tuples", res.Tuples, "written", res.Written, "deleted", res.Deleted}
+		"denies", len(policy.Denies), "kits", len(policy.Kits), "approvers", len(policy.Approvers),
+		"tuples", res.Tuples, "written", res.Written, "deleted", res.Deleted}
 	if policy.Source == authz.SourceFile {
 		attrs = append(attrs, "file", cfg.AuthzConfigPath)
 	}
 	logger.Info("authorization policy applied", attrs...)
+	if len(policy.Kits) > 0 && len(policy.Approvers) == 0 {
+		logger.Warn("the authz config file defines kits but no approvers, so no kit can be granted; add approvers to it",
+			"file", cfg.AuthzConfigPath, "kits", len(policy.Kits))
+	}
 	if policy.Source == authz.SourceUpgrade {
 		logger.Warn("authorization keeps every tool open to every authenticated caller, as before the upgrade: this installation ran without authorization checks. Choose who may call what with TOOLMESH_AUTHZ_PRESET=single-user or team, or with grants in the authz config file",
 			"preset", policy.Preset, "file", cfg.AuthzConfigPath)
 	}
 	return policy, nil
+}
+
+// Variables of the credentials checkApproverKeys compares approver keys with.
+const (
+	envAPIKey       = "TOOLMESH_API_KEY"       //nolint:gosec // the variable's name, not a credential
+	envAuthPassword = "TOOLMESH_AUTH_PASSWORD" //nolint:gosec // the variable's name, not a credential
+)
+
+// checkApproverKeys refuses an approver whose key is also a credential MCP
+// callers connect with: TOOLMESH_API_KEY, TOOLMESH_AUTH_PASSWORD or a key
+// with a key_sha256 in apikeys.yaml. Keys known only by a bcrypt key_hash
+// cannot be compared.
+func checkApproverKeys(cfg *config.Config, approvers []authz.Approver) error {
+	if len(approvers) == 0 {
+		return nil
+	}
+	reserved, err := auth.KeySHA256Sums(cfg.APIKeysConfigPath)
+	if err != nil {
+		return fmt.Errorf("compare the approver keys with the API keys: %w", err)
+	}
+	if reserved == nil {
+		reserved = map[string]string{}
+	}
+	for name, secret := range map[string]string{envAPIKey: cfg.APIKey, envAuthPassword: cfg.AuthPassword} {
+		if secret != "" {
+			sum := sha256.Sum256([]byte(secret))
+			reserved[hex.EncodeToString(sum[:])] = name
+		}
+	}
+	return authz.CheckApproverKeys(approvers, reserved)
 }
 
 // defaultAuthzPreset picks the preset for an installation that names none:
@@ -161,10 +203,15 @@ func defaultAuthzPreset(cfg *config.Config) string {
 	return authz.PresetSingleUser
 }
 
-// watchAuthzConfig applies the authz config file again whenever it appears,
-// changes or disappears. Unlike watchBackendsConfig it also reacts to the
-// file being created or removed: either changes which grants apply.
-func watchAuthzConfig(ctx context.Context, cfg *config.Config, emb *authz.Embedded, interval time.Duration, logger *slog.Logger) {
+// startAuthzConfigWatch starts a goroutine that applies the authz config file
+// again whenever it appears, changes or disappears, polling every interval
+// until ctx ends. Unlike watchBackendsConfig it also reacts to the file being
+// created or removed: either changes which grants apply.
+//
+// The state to compare against is taken before startAuthzConfigWatch
+// returns, not inside the goroutine: otherwise an edit made right after the
+// call could become that starting state and never be applied.
+func startAuthzConfigWatch(ctx context.Context, cfg *config.Config, emb *authz.Embedded, interval time.Duration, logger *slog.Logger) {
 	// Size as well as time: two edits within the file system's timestamp
 	// resolution would otherwise look like one.
 	type fileStamp struct {
@@ -180,24 +227,26 @@ func watchAuthzConfig(ctx context.Context, cfg *config.Config, emb *authz.Embedd
 		return fileStamp{exists: true, mod: info.ModTime(), size: info.Size()}
 	}
 	last := stamp()
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			cur := stamp()
-			if cur.exists == last.exists && cur.mod.Equal(last.mod) && cur.size == last.size {
-				continue
-			}
-			last = cur
-			logger.Info("authz config changed, applying grants", "file", cfg.AuthzConfigPath, "exists", cur.exists)
-			if _, err := applyAuthzPolicy(ctx, cfg, emb, logger); err != nil && !errors.Is(err, context.Canceled) {
-				logger.Error("authz config reload failed, keeping the current grants", "file", cfg.AuthzConfigPath, "error", err)
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				cur := stamp()
+				if cur.exists == last.exists && cur.mod.Equal(last.mod) && cur.size == last.size {
+					continue
+				}
+				last = cur
+				logger.Info("authz config changed, applying grants", "file", cfg.AuthzConfigPath, "exists", cur.exists)
+				if _, err := applyAuthzPolicy(ctx, cfg, emb, logger); err != nil && !errors.Is(err, context.Canceled) {
+					logger.Error("authz config reload failed, keeping the current grants", "file", cfg.AuthzConfigPath, "error", err)
+				}
 			}
 		}
-	}
+	}()
 }
 
 // recordAuthzDisabled writes an audit entry stating that authorization is

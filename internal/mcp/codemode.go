@@ -96,14 +96,36 @@ func NewCodeModeParser(tools []backend.ToolDescriptor) *CodeModeParser {
 	return &CodeModeParser{nameMap: m}
 }
 
-// GenerateToolDefinitions creates TypeScript-like interface definitions for discover_tools.
-func GenerateToolDefinitions(tools []backend.ToolDescriptor) string {
+// grantNotes maps a canonical tool name to the kits that cover a tool the
+// caller cannot execute yet. Discovery marks such tools grant_required.
+type grantNotes map[string][]string
+
+// note returns the grant_required marker for a tool, or "" when the caller
+// may execute it.
+func (n grantNotes) note(tool string) string {
+	kits := n[tool]
+	switch len(kits) {
+	case 0:
+		return ""
+	case 1:
+		return "grant_required: kit " + kits[0]
+	default:
+		return "grant_required: kits " + strings.Join(kits, ", ")
+	}
+}
+
+// GenerateToolDefinitions creates TypeScript-like interface definitions for
+// discover_tools. Tools in notes are marked grant_required.
+func GenerateToolDefinitions(tools []backend.ToolDescriptor, notes grantNotes) string {
 	var sb strings.Builder
 	sb.WriteString("// Available ToolMesh tools\n")
 	sb.WriteString("declare namespace toolmesh {\n")
 
 	for _, tool := range tools {
 		fmt.Fprintf(&sb, "  /** %s */\n", tool.Description)
+		if note := notes.note(tool.Name); note != "" {
+			fmt.Fprintf(&sb, "  // %s\n", note)
+		}
 
 		// Generate parameter signature from input schema
 		params := schemaToTypeScript(tool.InputSchema)
@@ -116,33 +138,46 @@ func GenerateToolDefinitions(tools []backend.ToolDescriptor) string {
 
 // GenerateToolSummaries renders one line per tool: the JS-callable name and
 // the first sentence of its description. Roughly 70 bytes per tool versus
-// ~530 for a full declaration.
-func GenerateToolSummaries(tools []backend.ToolDescriptor) string {
+// ~530 for a full declaration. Tools in notes are marked grant_required.
+func GenerateToolSummaries(tools []backend.ToolDescriptor, notes grantNotes) string {
 	var sb strings.Builder
 	sb.WriteString("// ToolMesh tools — one-line summaries\n")
 	for _, tool := range tools {
-		fmt.Fprintf(&sb, "%s — %s\n", sanitizeName(tool.Name), firstSentence(tool.Description))
+		fmt.Fprintf(&sb, "%s — %s", sanitizeName(tool.Name), firstSentence(tool.Description))
+		if note := notes.note(tool.Name); note != "" {
+			fmt.Fprintf(&sb, " [%s]", note)
+		}
+		sb.WriteByte('\n')
 	}
 	return sb.String()
 }
 
 // GenerateToolNames renders only the JS-callable tool names, one per line.
-func GenerateToolNames(tools []backend.ToolDescriptor) string {
+// Tools in notes are marked grant_required.
+func GenerateToolNames(tools []backend.ToolDescriptor, notes grantNotes) string {
 	var sb strings.Builder
 	sb.WriteString("// ToolMesh tools — names only\n")
 	for _, tool := range tools {
 		sb.WriteString(sanitizeName(tool.Name))
+		if note := notes.note(tool.Name); note != "" {
+			fmt.Fprintf(&sb, " [%s]", note)
+		}
 		sb.WriteByte('\n')
 	}
 	return sb.String()
 }
 
 // GenerateBackendOverview renders per-backend tool counts, largest first.
-// Used when even a names-only list would flood the caller's context.
-func GenerateBackendOverview(tools []backend.ToolDescriptor) string {
+// Used when even a names-only list would flood the caller's context. The
+// tools in notes are counted separately as grant_required.
+func GenerateBackendOverview(tools []backend.ToolDescriptor, notes grantNotes) string {
 	counts := make(map[string]int)
+	needKit := make(map[string]int)
 	for _, tool := range tools {
 		counts[tool.Backend]++
+		if len(notes[tool.Name]) > 0 {
+			needKit[tool.Backend]++
+		}
 	}
 
 	type entry struct {
@@ -163,7 +198,11 @@ func GenerateBackendOverview(tools []backend.ToolDescriptor) string {
 	var sb strings.Builder
 	sb.WriteString("// ToolMesh tools — per-backend overview\n")
 	for _, e := range entries {
-		fmt.Fprintf(&sb, "%s — %d tools\n", e.backend, e.count)
+		fmt.Fprintf(&sb, "%s — %d tools", e.backend, e.count)
+		if n := needKit[e.backend]; n > 0 {
+			fmt.Fprintf(&sb, " (%d grant_required)", n)
+		}
+		sb.WriteByte('\n')
 	}
 	return sb.String()
 }

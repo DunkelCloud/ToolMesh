@@ -332,6 +332,31 @@ func TestSQLiteStore_NoModifications_StoresNull(t *testing.T) {
 	}
 }
 
+func TestLogStore_WritesMetadata(t *testing.T) {
+	prev := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	var buf bytes.Buffer
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, nil)))
+	store := NewLogStore()
+
+	withMeta := sampleEntry()
+	withMeta.Metadata = map[string]string{"kit": "net-diag-read", "approver": "alice"}
+	if err := store.Record(context.Background(), withMeta); err != nil {
+		t.Fatalf("Record() error = %v", err)
+	}
+	if out := buf.String(); !strings.Contains(out, `"metadata":{"approver":"alice","kit":"net-diag-read"}`) {
+		t.Errorf("audit line lacks the metadata: %s", out)
+	}
+	buf.Reset()
+
+	if err := store.Record(context.Background(), sampleEntry()); err != nil {
+		t.Fatalf("Record() error = %v", err)
+	}
+	if out := buf.String(); strings.Contains(out, `"metadata"`) {
+		t.Errorf("audit line without metadata carries the key: %s", out)
+	}
+}
+
 func TestLogStore_EmitsPolicyModificationLineOnlyWhenModified(t *testing.T) {
 	// Capture slog output so we can verify which lines were emitted.
 	prev := slog.Default()

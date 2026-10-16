@@ -11,9 +11,15 @@ model
 #   identity   user:<id> is member of company:<id>, subscriber of plan:<id> and
 #              assignee of role:<id>, as authentication established it
 #              (users.yaml, apikeys.yaml, TOOLMESH_AUTH_*)
+#   kits       user:<id> is holder of kit:<name> for every kit the caller
+#              holds at the time of the check
 #   structure  tool:<name> belongs to instance:toolmesh, to backend:<name> (the
-#              backend the call is routed to) and to access_class:<class> (the
-#              DADL access classification)
+#              backend the call is routed to), to access_class:<class> (the
+#              DADL access classification) and to backend_access:<both>
+#              (the tools of that backend with that classification)
+#
+# A kit is a role: the store holds what its holders may execute, and holding
+# it is a contextual tuple, so a kit ends without anything to delete.
 #
 # ToolMesh writes this model on first start and again whenever it changes.
 # Tuples written for an earlier version must stay valid: add types and
@@ -33,26 +39,35 @@ type plan
   relations
     define subscriber: [user, company#member]
 
+type kit
+  relations
+    define holder: [user]
+
 type instance
   relations
-    define executor: [user, user:*, company#member, role#assignee, plan#subscriber]
+    define executor: [user, user:*, company#member, role#assignee, plan#subscriber, kit#holder]
     define blocked: [user, user:*, company#member, role#assignee, plan#subscriber]
 
 type backend
   relations
-    define executor: [user, user:*, company#member, role#assignee, plan#subscriber]
+    define executor: [user, user:*, company#member, role#assignee, plan#subscriber, kit#holder]
     define blocked: [user, user:*, company#member, role#assignee, plan#subscriber]
 
 type access_class
   relations
-    define executor: [user, user:*, company#member, role#assignee, plan#subscriber]
+    define executor: [user, user:*, company#member, role#assignee, plan#subscriber, kit#holder]
     define blocked: [user, user:*, company#member, role#assignee, plan#subscriber]
+
+type backend_access
+  relations
+    define executor: [kit#holder]
 
 type tool
   relations
     define instance: [instance]
     define backend: [backend]
     define access_class: [access_class]
-    define executor: [user, user:*, company#member, role#assignee, plan#subscriber]
+    define backend_access: [backend_access]
+    define executor: [user, user:*, company#member, role#assignee, plan#subscriber, kit#holder]
     define blocked: [user, user:*, company#member, role#assignee, plan#subscriber] or blocked from instance or blocked from backend or blocked from access_class
-    define can_execute: (executor or executor from instance or executor from backend or executor from access_class) but not blocked
+    define can_execute: (executor or executor from instance or executor from backend or executor from access_class or executor from backend_access) but not blocked

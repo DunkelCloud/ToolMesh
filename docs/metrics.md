@@ -95,13 +95,13 @@ any non-zero value.
 Tool invocations recorded by the executor, so individual backend calls made
 from inside `execute_code`'s JS body are counted with their real backend/tool
 labels rather than collapsed under `execute_code`. The MCP meta-tools
-(`discover_tools`, `execute_code`, `tell_me_my_rights`) are recorded at the
+(`discover_tools`, `execute_code`, `tell_me_my_rights`, `request_grant`) are recorded at the
 handler under the synthetic `builtin` backend so they remain visible in their
 own right.
 
 | Label     | Values                                                              |
 | --------- | ------------------------------------------------------------------- |
-| `backend` | Backend name (e.g., `hetzner`, `deepl`), `builtin` for `discover_tools`/`execute_code`/`tell_me_my_rights`, or `unknown` for tools without a backend prefix. |
+| `backend` | Backend name (e.g., `hetzner`, `deepl`), `builtin` for `discover_tools`/`execute_code`/`tell_me_my_rights`/`request_grant`, or `unknown` for tools without a backend prefix. |
 | `tool`    | Tool name without the backend prefix, or `*` if `TOOLMESH_METRICS_LABEL_TOOL=false`. |
 | `result`  | `success`, `error`, `denied`                                        |
 
@@ -113,7 +113,7 @@ own right.
 
 End-to-end pipeline latency, from executor entry to result return (covers
 AuthZ → credential injection → pre-gate → backend → post-gate). The
-`discover_tools`, `execute_code` and `tell_me_my_rights` meta-tools are timed
+`discover_tools`, `execute_code`, `tell_me_my_rights` and `request_grant` meta-tools are timed
 at the MCP handler level.
 
 Buckets are tuned to typical REST-backend latencies:

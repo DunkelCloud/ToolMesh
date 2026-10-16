@@ -41,7 +41,7 @@ func TestGenerateToolDefinitions(t *testing.T) {
 		},
 	}
 
-	result := GenerateToolDefinitions(tools)
+	result := GenerateToolDefinitions(tools, nil)
 
 	if !strings.Contains(result, "declare namespace toolmesh") {
 		t.Error("expected namespace declaration")

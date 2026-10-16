@@ -577,8 +577,9 @@ func TestServer_ToolsList(t *testing.T) {
 		t.Fatal("expected tools array")
 	}
 
-	// Only discover_tools and execute_code are exposed as MCP tools
-	if len(tools) != 2 {
-		t.Errorf("expected 2 tools (discover_tools, execute_code), got %d", len(tools))
+	// Only the meta-tools discover_tools, execute_code and tell_me_my_rights
+	// are exposed as MCP tools
+	if len(tools) != 3 {
+		t.Errorf("expected 3 tools (discover_tools, execute_code, tell_me_my_rights), got %d", len(tools))
 	}
 }

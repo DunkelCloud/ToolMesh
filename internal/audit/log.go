@@ -62,6 +62,12 @@ func (s *LogStore) Record(_ context.Context, entry AuditEntry) error {
 	if entry.IsComposite {
 		attrs = append(attrs, "is_composite", true, "child_count", len(entry.ChildEvents))
 	}
+	// Metadata says what the fixed fields cannot: who approved a kit grant
+	// and which, the kits a call held or a denial named, why authorization
+	// was off. Its keys are few and its values short.
+	if len(entry.Metadata) > 0 {
+		attrs = append(attrs, "metadata", entry.Metadata)
+	}
 
 	slog.Info("audit", attrs...)
 

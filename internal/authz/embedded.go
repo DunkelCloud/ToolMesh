@@ -61,14 +61,16 @@ const (
 	// objInstance is the one instance object; grants on it cover every tool.
 	objInstance = "instance:toolmesh"
 
-	relExecutor    = "executor"
-	relBlocked     = "blocked"
-	relInstance    = "instance"
-	relBackend     = "backend"
-	relAccessClass = "access_class"
-	relMember      = "member"
-	relSubscriber  = "subscriber"
-	relAssignee    = "assignee"
+	relExecutor      = "executor"
+	relBlocked       = "blocked"
+	relInstance      = "instance"
+	relBackend       = "backend"
+	relAccessClass   = "access_class"
+	relBackendAccess = "backend_access"
+	relMember        = "member"
+	relSubscriber    = "subscriber"
+	relAssignee      = "assignee"
+	relHolder        = "holder"
 
 	// writeChunk stays within OpenFGA's limit of tuples per write request.
 	writeChunk = 100
@@ -145,6 +147,10 @@ type Embedded struct {
 	// class alone, which lets CheckBatch answer many tools with one check. It
 	// must always be a superset of the tools that do have stored rules.
 	toolGrants atomic.Pointer[map[string]bool]
+	// kits holds the kits of the policy applied last, sorted by name.
+	kits atomic.Pointer[[]Kit]
+	// approvers holds the approvers of the policy applied last.
+	approvers atomic.Pointer[[]Approver]
 
 	applyMu   sync.Mutex
 	closeOnce sync.Once
@@ -221,6 +227,8 @@ func OpenEmbedded(ctx context.Context, opts EmbeddedOptions) (*Embedded, error) 
 	}
 
 	e := &Embedded{srv: srv, db: db, cache: cache, logger: logger}
+	e.kits.Store(&[]Kit{})
+	e.approvers.Store(&[]Approver{})
 	if err := e.bootstrap(ctx, opts.Upgrade, filepath.Join(filepath.Dir(opts.Path), MarkerFileName)); err != nil {
 		srv.Close() // closes the datastore and with it db
 		return nil, err
@@ -434,8 +442,9 @@ func (e *Embedded) writeState(ctx context.Context, values map[string]string) err
 }
 
 // Check reports whether the caller may execute the tool. The caller's
-// identity and the tool's place (instance, backend, access classification)
-// are passed as contextual tuples; the store contributes the grants.
+// identity, the kits it holds and the tool's place (instance, backend, access
+// classification) are passed as contextual tuples; the store contributes the
+// grants.
 func (e *Embedded) Check(ctx context.Context, req Request) (bool, error) {
 	if req.UserID == "" || req.Tool == "" {
 		return false, nil
@@ -450,6 +459,9 @@ func (e *Embedded) Check(ctx context.Context, req Request) (bool, error) {
 	if req.Access != "" {
 		ctxTuples = append(ctxTuples, &openfgav1.TupleKey{User: "access_class:" + escapeID(req.Access), Relation: relAccessClass, Object: tool})
 	}
+	if req.Backend != "" && req.Access != "" {
+		ctxTuples = append(ctxTuples, &openfgav1.TupleKey{User: "backend_access:" + backendAccessID(req.Backend, req.Access), Relation: relBackendAccess, Object: tool})
+	}
 	if req.CompanyID != "" {
 		ctxTuples = append(ctxTuples, &openfgav1.TupleKey{User: user, Relation: relMember, Object: "company:" + escapeID(req.CompanyID)})
 	}
@@ -463,6 +475,14 @@ func (e *Embedded) Check(ctx context.Context, req Request) (bool, error) {
 		}
 		seen[r] = true
 		ctxTuples = append(ctxTuples, &openfgav1.TupleKey{User: user, Relation: relAssignee, Object: "role:" + escapeID(r)})
+	}
+	clear(seen)
+	for _, k := range req.Kits {
+		if k == "" || seen[k] {
+			continue
+		}
+		seen[k] = true
+		ctxTuples = append(ctxTuples, &openfgav1.TupleKey{User: user, Relation: relHolder, Object: "kit:" + escapeID(k)})
 	}
 
 	resp, err := e.srv.Check(ctx, &openfgav1.CheckRequest{
@@ -504,17 +524,48 @@ type ApplyResult struct {
 	Deleted int
 }
 
-// Apply makes the stored rules equal to grants and denies: it writes the
-// tuples that are missing and deletes those no rule asks for. The steps are
-// ordered so that no state in between allows more than both the old and the
-// new rules: new denies first, then removed grants, then new grants, removed
-// denies last. Checks started after Apply returns see the new rules.
+// Kits returns the kits of the policy applied last, sorted by name. The
+// slice is shared and must not be modified.
+func (e *Embedded) Kits() []Kit { return *e.kits.Load() }
+
+// Approvers returns the approvers of the policy applied last. The slice is
+// shared and must not be modified.
+func (e *Embedded) Approvers() []Approver { return *e.approvers.Load() }
+
+// ApplyPolicy makes the stored rules equal to the policy's grants, denies and
+// kits, as Apply does, and takes over its approvers.
+func (e *Embedded) ApplyPolicy(ctx context.Context, p Policy) (ApplyResult, error) {
+	if err := validateApprovers(p.Approvers); err != nil {
+		return ApplyResult{}, err
+	}
+	res, err := e.apply(ctx, p.Grants, p.Denies, p.Kits)
+	if err != nil {
+		return res, err
+	}
+	approvers := normalizeApprovers(p.Approvers)
+	e.approvers.Store(&approvers)
+	return res, nil
+}
+
+// Apply makes the stored rules equal to grants and denies, without kits: it
+// writes the tuples that are missing and deletes those no rule asks for. The
+// steps are ordered so that no state in between allows more than both the
+// old and the new rules: new denies first, then removed grants, then new
+// grants, removed denies last. Checks started after Apply returns see the new
+// rules.
 func (e *Embedded) Apply(ctx context.Context, grants, denies []Grant) (ApplyResult, error) {
+	return e.apply(ctx, grants, denies, nil)
+}
+
+func (e *Embedded) apply(ctx context.Context, grants, denies []Grant, kits []Kit) (ApplyResult, error) {
 	e.applyMu.Lock()
 	defer e.applyMu.Unlock()
 	// Also after a partial failure: whatever was written must take effect.
 	defer e.cache.invalidate()
 
+	if err := validateKits(kits); err != nil {
+		return ApplyResult{}, err
+	}
 	desired := map[tupleKey]bool{}
 	for _, set := range []struct {
 		kind, relation string
@@ -527,6 +578,12 @@ func (e *Embedded) Apply(ctx context.Context, grants, denies []Grant) (ApplyResu
 			for _, t := range g.tuples(set.relation) {
 				desired[t] = true
 			}
+		}
+	}
+	// What a kit covers is a grant to its holders.
+	for _, k := range kits {
+		for _, t := range k.tuples() {
+			desired[t] = true
 		}
 	}
 
@@ -579,6 +636,9 @@ func (e *Embedded) Apply(ctx context.Context, grants, denies []Grant) (ApplyResu
 	if after, err := e.readTuples(ctx); err == nil {
 		e.setToolGrants(after)
 	}
+	sorted := slices.Clone(kits)
+	slices.SortFunc(sorted, func(a, b Kit) int { return strings.Compare(a.Name, b.Name) })
+	e.kits.Store(&sorted)
 	return res, nil
 }
 
@@ -670,10 +730,10 @@ func (e *Embedded) CheckBatch(ctx context.Context, reqs []Request) ([]bool, erro
 // equivalenceKey identifies everything a check depends on except the tool
 // name. An empty tool name is kept apart: Check denies it without asking.
 func equivalenceKey(r Request) string {
-	roles := slices.Clone(r.Roles)
-	slices.Sort(roles)
-	roles = slices.Compact(roles)
-	parts := append([]string{r.UserID, r.CompanyID, r.Plan, r.Backend, r.Access, strconv.FormatBool(r.Tool == "")}, roles...)
+	roles := slices.Compact(slices.Sorted(slices.Values(r.Roles)))
+	kits := slices.Compact(slices.Sorted(slices.Values(r.Kits)))
+	parts := append([]string{r.UserID, r.CompanyID, r.Plan, r.Backend, r.Access, strconv.FormatBool(r.Tool == ""), strconv.Itoa(len(roles))}, roles...)
+	parts = append(parts, kits...)
 	var b strings.Builder
 	for _, p := range parts {
 		b.WriteString(strconv.Itoa(len(p)))

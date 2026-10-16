@@ -434,7 +434,7 @@ func (r *CodeRunner) installDiscovery(ctx context.Context, rt *goja.Runtime, tmO
 				}
 			}
 
-			descs := r.authorizedMatches(ctx, query)
+			descs, notes := r.visibleMatches(ctx, query)
 			if int64(len(descs)) > limit {
 				descs = descs[:limit]
 			}
@@ -444,7 +444,10 @@ func (r *CodeRunner) installDiscovery(ctx context.Context, rt *goja.Runtime, tmO
 				out[i] = map[string]any{
 					jsonKeyName:          sanitizeName(d.Name),
 					schemaKeyDescription: d.Description,
-					"backend":            d.Backend,
+					argNameBackend:       d.Backend,
+				}
+				if kits := notes[d.Name]; len(kits) > 0 {
+					out[i][jsonKeyGrantRequired] = kits
 				}
 			}
 			return rt.ToValue(out)
@@ -458,10 +461,12 @@ func (r *CodeRunner) installDiscovery(ctx context.Context, rt *goja.Runtime, tmO
 			if !ok {
 				d, ok = r.descBySanitized[sanitizeName(name)]
 			}
-			if ok && !r.isAuthorized(ctx, d) {
-				// Deliberately indistinguishable from "not found" so the
-				// sandbox cannot probe for tools the caller may not invoke.
-				ok = false
+			var kits []string
+			if ok {
+				// A tool the caller may neither invoke nor get a kit for is
+				// deliberately indistinguishable from "not found", so the
+				// sandbox cannot probe for it.
+				ok, kits = r.visibleTool(ctx, d)
 			}
 			if !ok {
 				panic(rt.NewGoError(fmt.Errorf(
@@ -471,20 +476,24 @@ func (r *CodeRunner) installDiscovery(ctx context.Context, rt *goja.Runtime, tmO
 			desc := map[string]any{
 				jsonKeyName:          sanitizeName(d.Name),
 				schemaKeyDescription: d.Description,
-				"backend":            d.Backend,
+				argNameBackend:       d.Backend,
 				"inputSchema":        d.InputSchema,
 			}
 			if d.Access != "" {
 				desc["access"] = d.Access
+			}
+			if len(kits) > 0 {
+				desc[jsonKeyGrantRequired] = kits
 			}
 			return rt.ToValue(desc)
 		})
 	}
 }
 
-// authorizedMatches runs a BM25 search and keeps only descriptors the
-// calling user is authorized to execute, preserving rank order.
-func (r *CodeRunner) authorizedMatches(ctx context.Context, query string) []backend.ToolDescriptor {
+// visibleMatches runs a BM25 search and keeps the descriptors the calling
+// user may execute or get through a kit, preserving rank order. The notes
+// name the kits of the latter.
+func (r *CodeRunner) visibleMatches(ctx context.Context, query string) ([]backend.ToolDescriptor, grantNotes) {
 	results := r.index.Search(query, 0)
 	descs := make([]backend.ToolDescriptor, 0, len(results))
 	for _, res := range results {
@@ -495,31 +504,20 @@ func (r *CodeRunner) authorizedMatches(ctx context.Context, query string) []back
 
 	uc := userctx.FromContext(ctx)
 	if r.executor == nil || uc == nil {
-		return descs
+		return descs, nil
 	}
-
-	allowed := r.executor.FilterAuthorizedTools(ctx, uc, descs)
-	allowedSet := make(map[string]struct{}, len(allowed))
-	for _, d := range allowed {
-		allowedSet[d.Name] = struct{}{}
-	}
-
-	filtered := descs[:0]
-	for _, d := range descs {
-		if _, ok := allowedSet[d.Name]; ok {
-			filtered = append(filtered, d)
-		}
-	}
-	return filtered
+	return visibleTools(ctx, r.executor, uc, descs)
 }
 
-// isAuthorized reports whether the calling user may execute the tool.
-func (r *CodeRunner) isAuthorized(ctx context.Context, d backend.ToolDescriptor) bool {
+// visibleTool reports whether the calling user may see the tool and, when
+// it may only get it through a kit, which kits cover it.
+func (r *CodeRunner) visibleTool(ctx context.Context, d backend.ToolDescriptor) (visible bool, kits []string) {
 	uc := userctx.FromContext(ctx)
 	if r.executor == nil || uc == nil {
-		return true
+		return true, nil
 	}
-	return len(r.executor.FilterAuthorizedTools(ctx, uc, []backend.ToolDescriptor{d})) == 1
+	shown, notes := visibleTools(ctx, r.executor, uc, []backend.ToolDescriptor{d})
+	return len(shown) == 1, notes[d.Name]
 }
 
 // errorResult is the buildResult variant used in error paths: it surfaces

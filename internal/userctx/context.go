@@ -29,6 +29,19 @@ type UserContext struct {
 	CallerID      string   `json:"callerId"`    // verified identifier (API key: admin-set, OAuth: client_id UUID)
 	CallerName    string   `json:"callerName"`  // self-reported display name (informational, not for policy decisions)
 	CallerClass   string   `json:"callerClass"` // "trusted" | "standard" | "untrusted"
+	// GrantKey identifies the credential the caller connected with where
+	// CallerID does not: an API key without caller_id, whose CallerID is the
+	// user's id. Grants of kits are bound to it instead of to CallerID.
+	GrantKey string `json:"-"`
+}
+
+// GrantBinding returns what grants of kits are bound to besides the user:
+// GrantKey when set, CallerID otherwise.
+func (uc *UserContext) GrantBinding() string {
+	if uc.GrantKey != "" {
+		return uc.GrantKey
+	}
+	return uc.CallerID
 }
 
 type contextKey struct{}

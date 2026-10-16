@@ -49,6 +49,47 @@ type APIKeyEntry struct {
 	CallerID  string   `yaml:"caller_id"`
 }
 
+// grantKeyDomain separates the grant key of an entry from any other use of
+// its hash.
+const grantKeyDomain = "toolmesh grant key\x00"
+
+// GrantKey identifies the entry for binding grants of kits to it, derived
+// from its key_sha256 or, without one, its key_hash, both unique per entry.
+// It does not reveal either. Changing the entry's hash changes the id, which
+// ends the grants bound to it.
+func (e *APIKeyEntry) GrantKey() string {
+	source := strings.ToLower(strings.TrimSpace(e.KeySHA256))
+	if source == "" {
+		source = e.KeyHash
+	}
+	sum := sha256.Sum256([]byte(grantKeyDomain + source))
+	return "key-" + hex.EncodeToString(sum[:8])
+}
+
+// KeySHA256Sums reads the apikeys file at path and returns the key_sha256 of
+// each entry that has one, in lower case, mapped to a description of the
+// entry. A file that does not exist yields none.
+func KeySHA256Sums(path string) (map[string]string, error) {
+	data, err := os.ReadFile(path) //nolint:gosec // path from trusted config
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read apikeys config: %w", err)
+	}
+	var cfg APIKeysConfig
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return nil, fmt.Errorf("parse apikeys config: %w", err)
+	}
+	out := make(map[string]string, len(cfg.Keys))
+	for i, e := range cfg.Keys {
+		if sum := strings.ToLower(strings.TrimSpace(e.KeySHA256)); sum != "" {
+			out[sum] = fmt.Sprintf("key %d (user_id %q) of %s", i+1, e.UserID, path)
+		}
+	}
+	return out, nil
+}
+
 // APIKeysConfig is the top-level structure of apikeys.yaml.
 type APIKeysConfig struct {
 	Keys []APIKeyEntry `yaml:"keys"`

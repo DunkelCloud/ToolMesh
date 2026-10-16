@@ -33,10 +33,13 @@ separately and never writes to it.
 
 The embedded model keeps only the rules from configuration in the store:
 **grants**, which user, role, plan, company or everyone may execute all tools,
-the tools of a backend, the tools of a DADL access class, or single tools, and
-**denies** of the same form, which win over every grant. Grants come from a
-preset or from `config/authz.yaml`, denies from that file; ToolMesh writes them
-at startup and whenever the file changes. Everything else is passed with each check as contextual tuples, so it
+the tools of a backend, the tools of a DADL access class, or single tools,
+**denies** of the same form, which win over every grant, and **kits**, named
+bundles of tools that a caller is granted as a whole. A kit is a role: the
+store holds what its holders may execute, and holding it is a contextual
+tuple. Grants come from a preset or from `config/authz.yaml`, denies and kits
+from that file; ToolMesh writes them at startup and whenever the file
+changes. Everything else is passed with each check as contextual tuples, so it
 cannot drift from where it is configured:
 
 ```
@@ -44,10 +47,15 @@ caller (from authentication)      tool (from routing and DADL)
   user:<id> ─ member ─▶ company     tool:<name> ─ instance ─▶ instance:toolmesh
            ─ subscriber ─▶ plan                ─ backend ──▶ backend:<name>
            ─ assignee ─▶ role                  ─ access_class ▶ access_class:<class>
+           ─ holder ─▶ kit                     ─ backend_access ▶ backend_access:<name>:<class>
 
-tool#can_execute = (executor on the tool, its instance, its backend or its access class)
-                   but not blocked on any of them
+tool#can_execute = (executor on the tool, its instance, its backend, its access class
+                    or its backend_access) but not blocked on any of them
 ```
+
+`backend_access` stands for the tools of one backend with one access
+classification, so a kit can cover `graylog:read` without two kits ever
+combining into more than each covers.
 
 The backend is the one the call is routed to (longest-prefix match), not the
 first part of the tool name. A tool listing is filtered with one check per
@@ -56,7 +64,15 @@ their own, which gives the same result as checking every tool.
 
 The authorization check happens before any tool execution (fail-closed): an
 error in the check denies the call. If the check denies, the pipeline stops
-immediately and the call is audited as `denied`. `TOOLMESH_AUTHZ_MODE=disabled`
+immediately and the call is audited as `denied`; the denial names the kits
+that would allow the call. Discovery also lists the tools a kit covers,
+marked `grant_required`, and the meta-tool `tell_me_my_rights` answers what a
+caller may do, per backend or as a preflight over the tools of a task. Both
+are information only. A caller asks for a kit with the meta-tool
+`request_grant`; an approver from `config/authz.yaml` approves it on the
+approver API (`/grants`) with a key of its own. The grant lives in Redis, or in
+process memory without one, until it expires or is revoked, and every check
+passes the caller's granted kits as contextual tuples. `TOOLMESH_AUTHZ_MODE=disabled`
 is the only way to skip the check; it is reported at startup and recorded in
 the audit trail.
 
@@ -125,6 +141,7 @@ toolmesh/
 │   ├── executor/       # ExecuteTool pipeline (AuthZ → Creds → Gate → Exec → Audit)
 │   ├── audit/          # Audit store interface + log/sqlite implementations
 │   ├── authz/          # Authorization: embedded OpenFGA, external client, presets, grants
+│   ├── grants/         # Kit requests, approvals and grants (request_grant, /grants)
 │   ├── credentials/    # Credential store interface + EmbeddedStore
 │   ├── gate/           # Output Gate (goja policy engine)
 │   ├── userctx/        # UserContext propagation

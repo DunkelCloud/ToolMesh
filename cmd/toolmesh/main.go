@@ -257,7 +257,7 @@ func main() {
 	}
 	defer authzEngine.close()
 	if authzEngine.embedded != nil {
-		go watchAuthzConfig(ctx, cfg, authzEngine.embedded, 5*time.Second, logger)
+		startAuthzConfigWatch(ctx, cfg, authzEngine.embedded, 5*time.Second, logger)
 	}
 
 	// Initialize gate pipeline via registry

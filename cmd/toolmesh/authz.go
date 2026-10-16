@@ -162,10 +162,15 @@ func defaultAuthzPreset(cfg *config.Config) string {
 	return authz.PresetSingleUser
 }
 
-// watchAuthzConfig applies the authz config file again whenever it appears,
-// changes or disappears. Unlike watchBackendsConfig it also reacts to the
-// file being created or removed: either changes which grants apply.
-func watchAuthzConfig(ctx context.Context, cfg *config.Config, emb *authz.Embedded, interval time.Duration, logger *slog.Logger) {
+// startAuthzConfigWatch starts a goroutine that applies the authz config file
+// again whenever it appears, changes or disappears, polling every interval
+// until ctx ends. Unlike watchBackendsConfig it also reacts to the file being
+// created or removed: either changes which grants apply.
+//
+// The state to compare against is taken before startAuthzConfigWatch
+// returns, not inside the goroutine: otherwise an edit made right after the
+// call could become that starting state and never be applied.
+func startAuthzConfigWatch(ctx context.Context, cfg *config.Config, emb *authz.Embedded, interval time.Duration, logger *slog.Logger) {
 	// Size as well as time: two edits within the file system's timestamp
 	// resolution would otherwise look like one.
 	type fileStamp struct {
@@ -181,24 +186,26 @@ func watchAuthzConfig(ctx context.Context, cfg *config.Config, emb *authz.Embedd
 		return fileStamp{exists: true, mod: info.ModTime(), size: info.Size()}
 	}
 	last := stamp()
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			cur := stamp()
-			if cur.exists == last.exists && cur.mod.Equal(last.mod) && cur.size == last.size {
-				continue
-			}
-			last = cur
-			logger.Info("authz config changed, applying grants", "file", cfg.AuthzConfigPath, "exists", cur.exists)
-			if _, err := applyAuthzPolicy(ctx, cfg, emb, logger); err != nil && !errors.Is(err, context.Canceled) {
-				logger.Error("authz config reload failed, keeping the current grants", "file", cfg.AuthzConfigPath, "error", err)
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				cur := stamp()
+				if cur.exists == last.exists && cur.mod.Equal(last.mod) && cur.size == last.size {
+					continue
+				}
+				last = cur
+				logger.Info("authz config changed, applying grants", "file", cfg.AuthzConfigPath, "exists", cur.exists)
+				if _, err := applyAuthzPolicy(ctx, cfg, emb, logger); err != nil && !errors.Is(err, context.Canceled) {
+					logger.Error("authz config reload failed, keeping the current grants", "file", cfg.AuthzConfigPath, "error", err)
+				}
 			}
 		}
-	}
+	}()
 }
 
 // recordAuthzDisabled writes an audit entry stating that authorization is

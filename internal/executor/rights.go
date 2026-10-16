@@ -24,6 +24,7 @@ import (
 	"github.com/DunkelCloud/ToolMesh/internal/audit"
 	"github.com/DunkelCloud/ToolMesh/internal/authz"
 	"github.com/DunkelCloud/ToolMesh/internal/backend"
+	"github.com/DunkelCloud/ToolMesh/internal/grants"
 	"github.com/DunkelCloud/ToolMesh/internal/userctx"
 	"github.com/google/uuid"
 )
@@ -31,6 +32,10 @@ import (
 // RightsToolName is the built-in meta-tool that tells callers what they may
 // do. Denials point to it.
 const RightsToolName = "tell_me_my_rights"
+
+// RequestGrantToolName is the built-in meta-tool callers ask for a kit with.
+// Denials point to it when kits can be granted.
+const RequestGrantToolName = grants.ToolRequestGrant
 
 // Verdicts of a ToolRight.
 const (
@@ -75,7 +80,7 @@ func (e *Executor) Kits() []authz.Kit {
 // costs no checks beyond the one per tool. The answer is information only:
 // ExecuteTool checks every call again.
 func (e *Executor) AssessTools(ctx context.Context, uc *userctx.UserContext, tools []backend.ToolDescriptor, verify bool) []ToolRight {
-	reqs := e.authzRequests(uc, tools)
+	reqs := e.authzRequests(ctx, uc, tools)
 	if e.authorizer == nil {
 		out := make([]ToolRight, len(tools))
 		for i, r := range reqs {
@@ -145,15 +150,17 @@ func (e *Executor) assess(ctx context.Context, reqs []authz.Request, allowed []b
 	return out
 }
 
-// authzRequests describes a call of each tool for the authorizer.
-func (e *Executor) authzRequests(uc *userctx.UserContext, tools []backend.ToolDescriptor) []authz.Request {
+// authzRequests describes a call of each tool for the authorizer, with the
+// kits the caller holds looked up once for all of them.
+func (e *Executor) authzRequests(ctx context.Context, uc *userctx.UserContext, tools []backend.ToolDescriptor) []authz.Request {
+	kits := e.heldKits(ctx, uc)
 	reqs := make([]authz.Request, len(tools))
 	for i, t := range tools {
 		access := t.Access
 		if access == "" {
 			access = e.lookupToolAccess(t.Name)
 		}
-		reqs[i] = e.authzRequest(uc, t.Name, access)
+		reqs[i] = e.authzRequest(uc, t.Name, access, kits)
 	}
 	return reqs
 }
@@ -199,8 +206,12 @@ func (e *Executor) denialRemedy(ctx context.Context, req authz.Request) (kits []
 	if len(named) > 1 {
 		subject = "The kits " + strings.Join(named, ", ") + " cover"
 	}
-	return right.Kits, fmt.Sprintf(" %s it. Ask for a kit rather than for this one tool, and check first with %s({tools: [...]}) which other tools your task needs, so that one request covers all of them.",
-		subject, RightsToolName)
+	if e.kitHolder == nil {
+		return right.Kits, fmt.Sprintf(" %s it. Ask for a kit rather than for this one tool, and check first with %s({tools: [...]}) which other tools your task needs, so that one request covers all of them.",
+			subject, RightsToolName)
+	}
+	return right.Kits, fmt.Sprintf(" %s it. Check first with %s({tools: [...]}) which other tools your task needs, then ask once with %s({kit, reason}) for a kit that covers all of them, rather than for this one tool.",
+		subject, RightsToolName, RequestGrantToolName)
 }
 
 // AuditRightsQuery records a call of tell_me_my_rights in the audit trail.

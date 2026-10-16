@@ -68,7 +68,11 @@ immediately and the call is audited as `denied`; the denial names the kits
 that would allow the call. Discovery also lists the tools a kit covers,
 marked `grant_required`, and the meta-tool `tell_me_my_rights` answers what a
 caller may do, per backend or as a preflight over the tools of a task. Both
-are information only. `TOOLMESH_AUTHZ_MODE=disabled`
+are information only. A caller asks for a kit with the meta-tool
+`request_grant`; an approver from `config/authz.yaml` approves it on the
+approver API (`/grants`) with a key of its own. The grant lives in Redis, or in
+process memory without one, until it expires or is revoked, and every check
+passes the caller's granted kits as contextual tuples. `TOOLMESH_AUTHZ_MODE=disabled`
 is the only way to skip the check; it is reported at startup and recorded in
 the audit trail.
 
@@ -137,6 +141,7 @@ toolmesh/
 │   ├── executor/       # ExecuteTool pipeline (AuthZ → Creds → Gate → Exec → Audit)
 │   ├── audit/          # Audit store interface + log/sqlite implementations
 │   ├── authz/          # Authorization: embedded OpenFGA, external client, presets, grants
+│   ├── grants/         # Kit requests, approvals and grants (request_grant, /grants)
 │   ├── credentials/    # Credential store interface + EmbeddedStore
 │   ├── gate/           # Output Gate (goja policy engine)
 │   ├── userctx/        # UserContext propagation

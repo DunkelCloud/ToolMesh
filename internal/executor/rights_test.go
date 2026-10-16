@@ -241,3 +241,52 @@ func resultText(res *backend.ToolResult) string {
 	}
 	return sb.String()
 }
+
+// fixedKits is a KitHolder that grants the same kits to one user as one
+// caller.
+type fixedKits struct {
+	user, caller string
+	kits         []string
+}
+
+func (f fixedKits) HeldKits(_ context.Context, userID, callerID string) []string {
+	if userID == f.user && callerID == f.caller {
+		return f.kits
+	}
+	return nil
+}
+
+func TestKitHolder(t *testing.T) {
+	const agent = "agent-1"
+	exec, rec := newKitExecutor(t)
+	exec.SetKitHolder(fixedKits{user: testUserBob, caller: agent, kits: []string{testKitNetDiag}})
+	bob := &userctx.UserContext{UserID: testUserBob, CallerID: agent, Authenticated: true}
+
+	rights := exec.AssessTools(context.Background(), bob, descriptors(testGraylogSearch, testGraylogDelete), true)
+	if rights[0].Verdict != VerdictAllowed || rights[1].Verdict != VerdictDenied {
+		t.Errorf("rights = %+v, want the kit's read tool allowed and the write tool denied", rights)
+	}
+
+	res, err := exec.ExecuteTool(callerCtx(bob), ExecuteToolRequest{ToolName: testGraylogSearch})
+	if err != nil || res.IsError {
+		t.Fatalf("ExecuteTool with the kit = %v, %v", resultText(res), err)
+	}
+	if rec.last.Status != statusSuccess || rec.last.Metadata["held_kits"] != testKitNetDiag {
+		t.Errorf("audit = %s %v, want success with held_kits", rec.last.Status, rec.last.Metadata)
+	}
+	if err := exec.CheckChild(callerCtx(bob), testUnifiClients, nil); err != nil {
+		t.Errorf("CheckChild with the kit: %v", err)
+	}
+
+	// A denial now points to request_grant.
+	res, _ = exec.ExecuteTool(callerCtx(&userctx.UserContext{UserID: testUserBob, CallerID: "agent-2", Authenticated: true}), ExecuteToolRequest{ToolName: testGraylogSearch})
+	if !res.IsError || !strings.Contains(resultText(res), RequestGrantToolName) {
+		t.Errorf("denial for another caller = %q, want it to point to %s", resultText(res), RequestGrantToolName)
+	}
+
+	// Only an authenticated caller holds kits.
+	anon := &userctx.UserContext{UserID: testUserBob, CallerID: agent}
+	if err := exec.CheckChild(callerCtx(anon), testUnifiClients, nil); err == nil {
+		t.Error("an unauthenticated caller was granted the kit")
+	}
+}

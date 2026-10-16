@@ -88,10 +88,26 @@ func (a *rightsAudit) Query(_ context.Context, _ audit.AuditFilter) ([]audit.Aud
 
 func (a *rightsAudit) Healthy(_ context.Context) error { return nil }
 
+// kitSetup is a handler on the embedded engine with what it is built from.
+type kitSetup struct {
+	handler *Handler
+	audit   *rightsAudit
+	engine  *authz.Embedded
+	exec    *executor.Executor
+}
+
 // newKitHandler builds a handler on the embedded engine: the owner may call
 // everything, and the kit net-diag-read covers the read tools of graylog and
 // unifi. The backend "vault" is covered by nothing.
 func newKitHandler(t *testing.T) (*Handler, *rightsAudit) {
+	t.Helper()
+	s := newKitSetup(t, nil)
+	return s.handler, s.audit
+}
+
+// newKitSetup builds the handler of newKitHandler, with the given approvers
+// in the policy.
+func newKitSetup(t *testing.T, approvers []authz.Approver) kitSetup {
 	t.Helper()
 	engine, err := authz.OpenEmbedded(context.Background(), authz.EmbeddedOptions{Path: filepath.Join(t.TempDir(), authz.DBFileName)})
 	if err != nil {
@@ -108,6 +124,7 @@ func newKitHandler(t *testing.T) (*Handler, *rightsAudit) {
 			TTLDefault:  4 * time.Hour,
 			TTLMax:      90 * time.Minute * 16,
 		}},
+		Approvers: approvers,
 	}); err != nil {
 		t.Fatalf("ApplyPolicy: %v", err)
 	}
@@ -118,7 +135,12 @@ func newKitHandler(t *testing.T) (*Handler, *rightsAudit) {
 	})
 	rec := &rightsAudit{}
 	exec := executor.New(engine, nil, composite, nil, rec, 5*time.Second, newQuietMCPLogger(), nil, nil)
-	return NewHandler(exec, composite, nil, "", nil, newQuietMCPLogger(), false), rec
+	return kitSetup{
+		handler: NewHandler(exec, composite, nil, "", nil, newQuietMCPLogger(), false),
+		audit:   rec,
+		engine:  engine,
+		exec:    exec,
+	}
 }
 
 func kitCaller(user string) context.Context {
@@ -387,16 +409,16 @@ func TestStringList(t *testing.T) {
 	}
 }
 
-func TestFormatTTL(t *testing.T) {
+func TestFormatRemaining(t *testing.T) {
 	tests := map[time.Duration]string{
-		0:                       "",
-		4 * time.Hour:           "4h",
-		90 * time.Minute:        "90m",
-		90*time.Second + 500000: "1m30.0005s",
+		30 * time.Second:                   "less than a minute",
+		45*time.Minute + 59*time.Second:    "45m",
+		4 * time.Hour:                      "4h",
+		3*time.Hour + 12*time.Minute + 999: "3h12m",
 	}
 	for d, want := range tests {
-		if got := formatTTL(d); got != want {
-			t.Errorf("formatTTL(%s) = %q, want %q", d, got, want)
+		if got := formatRemaining(d); got != want {
+			t.Errorf("formatRemaining(%s) = %q, want %q", d, got, want)
 		}
 	}
 }

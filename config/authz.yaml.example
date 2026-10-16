@@ -54,10 +54,11 @@ denies:
     tools: [zammad_delete_ticket]
 
 # Optional: kits are named bundles of tools that a caller is granted as a
-# whole and for a limited time. This version does not grant kits yet; their
-# definitions already show in discovery (tools marked grant_required), in
-# denials and in tell_me_my_rights. A tool a kit covers is listed for every
-# caller, so define kits only for tools whose names may be seen.
+# whole and for a limited time. A caller asks with request_grant and holds the
+# kit once an approver (below) has approved the request. Kits also show in
+# discovery (tools marked grant_required), in denials and in
+# tell_me_my_rights. A tool a kit covers is listed for every caller, so define
+# kits only for tools whose names may be seen.
 #
 #   description   required: what the kit is for, in plain language
 #   warning       optional: shown with the description
@@ -74,3 +75,16 @@ denies:
 #     grants: [graylog:read, unifi:read, netbox:read, checkmk:read]
 #     ttl_default: 4h
 #     ttl_max: 24h
+
+# Optional: approvers decide on requests for kits, on the approver API
+# (GET /grants, POST /grants/<id>/approve|deny|revoke) with a key of their
+# own as bearer credential. Store the SHA-256 of the key, never the key:
+#
+#   key=$(openssl rand -hex 32); printf %s "$key" | sha256sum
+#
+# MCP credentials do not work on the approver API; never give an agent an
+# approver key.
+#
+# approvers:
+#   - name: alice@example.com
+#     key_sha256: "<64 hex characters>"

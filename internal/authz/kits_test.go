@@ -103,6 +103,7 @@ func TestParseFile_InvalidKits(t *testing.T) {
 		{"two colons", "k:\n    description: d\n    grants: [\"a:b:c\"]", "more than one colon"},
 		{"empty tool", "k:\n    description: d\n    tools: [\"\"]", "empty names"},
 		{"default above max", "k:\n    description: d\n    grants: [a]\n    ttl_default: 2h\n    ttl_max: 1h", "exceeds ttl_max"},
+		{"long default without max", "k:\n    description: d\n    grants: [a]\n    ttl_default: 48h", "set ttl_max"},
 		{"number as ttl", "k:\n    description: d\n    grants: [a]\n    ttl_max: 3600", "time.Duration"},
 		{"unknown field", "k:\n    description: d\n    grants: [a]\n    approvals: 2", "approvals"},
 	}

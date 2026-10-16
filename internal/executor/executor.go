@@ -64,6 +64,28 @@ type Executor struct {
 	metrics    *metrics.Registry
 	timeout    time.Duration
 	logger     *slog.Logger
+	// kitHolder tells which kits a caller has been granted; nil when kits
+	// cannot be granted.
+	kitHolder KitHolder
+}
+
+// KitHolder tells which kits a caller holds at the moment: the user as the
+// connection it is bound to ([userctx.UserContext.GrantBinding]).
+type KitHolder interface {
+	HeldKits(ctx context.Context, userID, binding string) []string
+}
+
+// SetKitHolder makes every check pass the kits the caller holds according to
+// h. Without it, callers hold no kits.
+func (e *Executor) SetKitHolder(h KitHolder) { e.kitHolder = h }
+
+// heldKits returns the kits the caller holds now. Only an authenticated
+// caller can hold kits.
+func (e *Executor) heldKits(ctx context.Context, uc *userctx.UserContext) []string {
+	if e.kitHolder == nil || e.authorizer == nil || uc == nil || !uc.Authenticated {
+		return nil
+	}
+	return e.kitHolder.HeldKits(ctx, uc.UserID, uc.GrantBinding())
 }
 
 // New creates a new Executor with all required dependencies. The metrics
@@ -163,7 +185,10 @@ func (e *Executor) ExecuteTool(ctx context.Context, req ExecuteToolRequest) (*ba
 	// Step 1: AuthZ check via OpenFGA
 	if e.authorizer != nil {
 		e.logger.DebugContext(ctx, "authz check", "tool", req.ToolName, "user", uc.UserID)
-		authzReq := e.authzRequest(uc, req.ToolName, toolAccess)
+		authzReq := e.authzRequest(uc, req.ToolName, toolAccess, e.heldKits(ctx, uc))
+		if len(authzReq.Kits) > 0 {
+			entry.Metadata = map[string]string{"held_kits": strings.Join(authzReq.Kits, ",")}
+		}
 		allowed, err := e.authorizer.Check(ctx, authzReq)
 		if err != nil {
 			entry.DurationMs = time.Since(start).Milliseconds()
@@ -184,7 +209,10 @@ func (e *Executor) ExecuteTool(ctx context.Context, req ExecuteToolRequest) (*ba
 			entry.DurationMs = time.Since(start).Milliseconds()
 			entry.Status = statusDenied
 			if len(kits) > 0 {
-				entry.Metadata = map[string]string{"remedy_kits": strings.Join(kits, ",")}
+				if entry.Metadata == nil {
+					entry.Metadata = map[string]string{}
+				}
+				entry.Metadata["remedy_kits"] = strings.Join(kits, ",")
 			}
 			e.recordAudit(ctx, entry)
 			return &backend.ToolResult{
@@ -358,7 +386,7 @@ func (e *Executor) CheckChild(ctx context.Context, toolName string, params map[s
 
 	toolAccess := e.lookupToolAccess(toolName)
 	if e.authorizer != nil {
-		allowed, err := e.authorizer.Check(ctx, e.authzRequest(uc, toolName, toolAccess))
+		allowed, err := e.authorizer.Check(ctx, e.authzRequest(uc, toolName, toolAccess, e.heldKits(ctx, uc)))
 		if err != nil {
 			return fmt.Errorf("authz check failed for child tool %s: %w", toolName, err)
 		}
@@ -487,7 +515,7 @@ func (e *Executor) FilterAuthorizedTools(ctx context.Context, uc *userctx.UserCo
 	if uc == nil {
 		return nil
 	}
-	allowed := e.checkAll(ctx, e.authzRequests(uc, tools))
+	allowed := e.checkAll(ctx, e.authzRequests(ctx, uc, tools))
 
 	authorized := make([]backend.ToolDescriptor, 0, len(tools))
 	for i, t := range tools {
@@ -508,12 +536,13 @@ type backendResolver interface {
 // the same routing the call takes; splitting the name at the first underscore
 // would attribute "web_search_query" to a backend "web". Without a resolver
 // the backend stays empty, so grants on a backend do not apply.
-func (e *Executor) authzRequest(uc *userctx.UserContext, toolName, toolAccess string) authz.Request {
+func (e *Executor) authzRequest(uc *userctx.UserContext, toolName, toolAccess string, kits []string) authz.Request {
 	req := authz.Request{
 		UserID:    uc.UserID,
 		CompanyID: uc.CompanyID,
 		Plan:      uc.Plan,
 		Roles:     uc.Roles,
+		Kits:      kits,
 		Tool:      toolName,
 		Access:    toolAccess,
 	}

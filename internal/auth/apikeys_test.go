@@ -608,3 +608,29 @@ func BenchmarkAPIKeyStore_UnknownBearer(b *testing.B) {
 		})
 	}
 }
+
+func TestAPIKeyEntry_GrantKey(t *testing.T) {
+	sum := strings.Repeat("ab", 32)
+	a := (&APIKeyEntry{KeySHA256: strings.ToUpper(sum)}).GrantKey()
+	if a != (&APIKeyEntry{KeySHA256: " " + sum + " "}).GrantKey() {
+		t.Error("the grant key depends on the case or spacing of key_sha256")
+	}
+	b := (&APIKeyEntry{KeyHash: "$2a$10$x"}).GrantKey()
+	if a == b || len(a) != len("key-")+16 || strings.Contains(a, sum[:16]) {
+		t.Errorf("grant keys %q, %q: want distinct ids that do not show the hash", a, b)
+	}
+}
+
+func TestKeySHA256Sums(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "apikeys.yaml")
+	if sums, err := KeySHA256Sums(path); err != nil || sums != nil {
+		t.Errorf("missing file = %v, %v; want none", sums, err)
+	}
+	if err := os.WriteFile(path, []byte("keys:\n  - user_id: bob\n    key_sha256: \"ABCD\"\n  - user_id: carol\n    key_hash: \"$2a$10$x\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sums, err := KeySHA256Sums(path)
+	if err != nil || len(sums) != 1 || !strings.Contains(sums["abcd"], `user_id "bob"`) {
+		t.Errorf("KeySHA256Sums = %v, %v", sums, err)
+	}
+}

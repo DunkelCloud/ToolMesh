@@ -25,6 +25,7 @@ import (
 	"github.com/DunkelCloud/ToolMesh/internal/authz"
 	"github.com/DunkelCloud/ToolMesh/internal/backend"
 	"github.com/DunkelCloud/ToolMesh/internal/executor"
+	"github.com/DunkelCloud/ToolMesh/internal/grants"
 	"github.com/DunkelCloud/ToolMesh/internal/userctx"
 )
 
@@ -32,10 +33,16 @@ import (
 // the checks it costs.
 const maxPreflightTools = 500
 
-// rightsNote ends every answer of tell_me_my_rights.
-const rightsNote = "Information only: every call is still checked when it runs. " +
-	"A kit is a named bundle of tools granted together for a limited time; an administrator of this ToolMesh grants it. " +
-	"Tell the person you work for which kit your task needs and why, once, instead of asking tool by tool."
+// rightsNote ends every answer of tell_me_my_rights where kits cannot be
+// granted, rightsNoteGrants every other.
+const (
+	rightsNote = "Information only: every call is still checked when it runs. " +
+		"A kit is a named bundle of tools granted together for a limited time; an administrator of this ToolMesh grants it. " +
+		"Tell the person you work for which kit your task needs and why, once, instead of asking tool by tool."
+	rightsNoteGrants = "Information only: every call is still checked when it runs. " +
+		"A kit is a named bundle of tools granted together for a limited time, once a person approves it. " +
+		"Ask with " + toolRequestGrant + "({kit, reason}), once for the kits your task needs, instead of asking tool by tool."
+)
 
 // reasonUnavailable is the reason of a denied tool that is not visible to the
 // caller. It does not say whether the tool exists, so that the preflight
@@ -106,6 +113,22 @@ type rightsBundle struct {
 	Covers []string `json:"covers"`
 }
 
+// rightsGrant is a kit the caller holds.
+type rightsGrant struct {
+	ID        string    `json:"id"`
+	Kit       string    `json:"kit"`
+	ExpiresAt time.Time `json:"expires_at"`
+	Remaining string    `json:"remaining"`
+}
+
+// rightsRequest is a request of the caller that waits for an approver.
+type rightsRequest struct {
+	ID       string    `json:"id"`
+	Kit      string    `json:"kit"`
+	TTL      string    `json:"ttl"`
+	LapsesAt time.Time `json:"lapses_at"`
+}
+
 // rightsAnswer is the answer of tell_me_my_rights.
 type rightsAnswer struct {
 	Caller        string          `json:"caller"`
@@ -114,6 +137,8 @@ type rightsAnswer struct {
 	Backend       string          `json:"backend,omitempty"`
 	Tools         []rightsTool    `json:"tools,omitempty"`
 	Bundle        *rightsBundle   `json:"bundle,omitempty"`
+	Grants        []rightsGrant   `json:"grants,omitempty"`
+	Requests      []rightsRequest `json:"requests,omitempty"`
 	Kits          []rightsKit     `json:"kits,omitempty"`
 	Note          string          `json:"note"`
 }
@@ -165,6 +190,12 @@ func (h *Handler) rights(ctx context.Context, params map[string]any) (answer *ri
 		answer.Authorization = "disabled: every authenticated caller may call every tool"
 	}
 	kitsUsed := map[string]bool{}
+	if h.grants != nil && h.executor.Authorizes() {
+		if h.offersRequestGrant() {
+			answer.Note = rightsNoteGrants
+		}
+		h.callerGrants(ctx, uc, answer, kitsUsed)
+	}
 	switch {
 	case len(names) > 0:
 		h.preflight(ctx, uc, all, names, answer, kitsUsed)
@@ -175,6 +206,50 @@ func (h *Handler) rights(ctx context.Context, params map[string]any) (answer *ri
 	}
 	answer.Kits = describeKits(h.executor.Kits(), kitsUsed)
 	return answer, ""
+}
+
+// callerGrants lists the kits the caller holds and its pending requests. A
+// store that fails is logged and leaves both lists out: the answer is
+// information only.
+func (h *Handler) callerGrants(ctx context.Context, uc *userctx.UserContext, answer *rightsAnswer, kitsUsed map[string]bool) {
+	if !uc.Authenticated {
+		return
+	}
+	pending, active, err := h.grants.ForCaller(ctx, uc.UserID, uc.GrantBinding())
+	if err != nil {
+		h.logger.WarnContext(ctx, toolTellMeMyRights+": grant store failed", outcomeError, err)
+		return
+	}
+	now := time.Now()
+	for _, g := range active {
+		answer.Grants = append(answer.Grants, rightsGrant{
+			ID:        g.ID,
+			Kit:       g.Kit,
+			ExpiresAt: g.ExpiresAt,
+			Remaining: formatRemaining(g.ExpiresAt.Sub(now)),
+		})
+		kitsUsed[g.Kit] = true
+	}
+	for _, g := range pending {
+		answer.Requests = append(answer.Requests, rightsRequest{ID: g.ID, Kit: g.Kit, TTL: grants.FormatTTL(g.TTL), LapsesAt: g.ExpiresAt})
+		kitsUsed[g.Kit] = true
+	}
+}
+
+// formatRemaining renders the time left of a grant to the minute ("3h12m",
+// "45m"), or "less than a minute".
+func formatRemaining(d time.Duration) string {
+	d = d.Truncate(time.Minute)
+	switch {
+	case d < time.Minute:
+		return "less than a minute"
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", d/time.Minute)
+	case d%time.Hour == 0:
+		return fmt.Sprintf("%dh", d/time.Hour)
+	default:
+		return fmt.Sprintf("%dh%dm", d/time.Hour, d%time.Hour/time.Minute)
+	}
 }
 
 // preflight gives the verdict for each named tool and the bundle of kits
@@ -362,26 +437,11 @@ func describeKits(kits []authz.Kit, used map[string]bool) []rightsKit {
 			Name:        k.Name,
 			Description: k.Description,
 			Warning:     k.Warning,
-			TTLDefault:  formatTTL(k.TTLDefault),
-			TTLMax:      formatTTL(k.TTLMax),
+			TTLDefault:  grants.FormatTTL(k.TTLDefault),
+			TTLMax:      grants.FormatTTL(k.TTLMax),
 		})
 	}
 	return out
-}
-
-// formatTTL renders a duration without zero units ("4h", "90m"); "" for
-// zero.
-func formatTTL(d time.Duration) string {
-	switch {
-	case d <= 0:
-		return ""
-	case d%time.Hour == 0:
-		return fmt.Sprintf("%dh", d/time.Hour)
-	case d%time.Minute == 0:
-		return fmt.Sprintf("%dm", d/time.Minute)
-	default:
-		return d.String()
-	}
 }
 
 // stringList reads an optional list of strings. Clients that serialize

@@ -36,6 +36,16 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+// testAPIKey is the credential of the test servers whose tests are about
+// something other than authentication: a server without any credential
+// configured rejects every request.
+const testAPIKey = "tm-test-key" //nolint:gosec // test fixture
+
+// authorize sets the Authorization header of req to testAPIKey.
+func authorize(req *http.Request) {
+	req.Header.Set("Authorization", "Bearer "+testAPIKey)
+}
+
 func newTestServer(t *testing.T, cfg *config.Config) (*Server, *http.ServeMux) { //nolint:unparam // Server used in some callers
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
@@ -233,10 +243,11 @@ func TestServer_CORSHeaders_Allowlist(t *testing.T) {
 }
 
 func TestServer_MCP_Initialize(t *testing.T) {
-	_, mux := newTestServer(t, &config.Config{})
+	_, mux := newTestServer(t, &config.Config{APIKey: testAPIKey})
 
 	body := `{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}`
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp", strings.NewReader(body))
+	authorize(req)
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
@@ -258,10 +269,11 @@ func TestServer_MCP_Initialize(t *testing.T) {
 }
 
 func TestServer_MCP_Ping(t *testing.T) {
-	_, mux := newTestServer(t, &config.Config{})
+	_, mux := newTestServer(t, &config.Config{APIKey: testAPIKey})
 
 	body := `{"jsonrpc": "2.0", "id": 2, "method": "ping"}`
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp", strings.NewReader(body))
+	authorize(req)
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
@@ -275,10 +287,11 @@ func TestServer_MCP_Ping(t *testing.T) {
 }
 
 func TestServer_MCP_UnknownMethod(t *testing.T) {
-	_, mux := newTestServer(t, &config.Config{})
+	_, mux := newTestServer(t, &config.Config{APIKey: testAPIKey})
 
 	body := `{"jsonrpc": "2.0", "id": 3, "method": "unknown/method"}`
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp", strings.NewReader(body))
+	authorize(req)
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
@@ -296,9 +309,10 @@ func TestServer_MCP_UnknownMethod(t *testing.T) {
 }
 
 func TestServer_MCP_InvalidJSON(t *testing.T) {
-	_, mux := newTestServer(t, &config.Config{})
+	_, mux := newTestServer(t, &config.Config{APIKey: testAPIKey})
 
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp", strings.NewReader("not json"))
+	authorize(req)
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
@@ -556,10 +570,11 @@ func TestServer_Token_UnsupportedGrantType(t *testing.T) {
 }
 
 func TestServer_ToolsList(t *testing.T) {
-	_, mux := newTestServer(t, &config.Config{})
+	_, mux := newTestServer(t, &config.Config{APIKey: testAPIKey})
 
 	body := `{"jsonrpc": "2.0", "id": 1, "method": "tools/list"}`
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp", strings.NewReader(body))
+	authorize(req)
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)

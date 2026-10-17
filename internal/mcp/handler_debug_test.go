@@ -51,6 +51,7 @@ func postToolCall(t *testing.T, mux http.Handler, name, args string) *httptest.R
 	t.Helper()
 	body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"` + name + `","arguments":` + args + `}}`
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp", strings.NewReader(body))
+	authorize(req)
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
@@ -58,7 +59,7 @@ func postToolCall(t *testing.T, mux http.Handler, name, args string) *httptest.R
 }
 
 func TestHandleToolCall_DebugEcho_Disabled(t *testing.T) {
-	_, mux := newTestServer(t, &config.Config{}) // DebugTools defaults to false
+	_, mux := newTestServer(t, &config.Config{APIKey: testAPIKey}) // DebugTools defaults to false
 
 	w := postToolCall(t, mux, "debug_echo", `{"payload":"hello"}`)
 	text, isError := decodeDebugResponse(t, w)
@@ -71,7 +72,7 @@ func TestHandleToolCall_DebugEcho_Disabled(t *testing.T) {
 }
 
 func TestHandleToolCall_DebugEcho_StringRoundTrip(t *testing.T) {
-	_, mux := newTestServer(t, &config.Config{DebugTools: true})
+	_, mux := newTestServer(t, &config.Config{APIKey: testAPIKey, DebugTools: true})
 
 	payload := "hello, world — Umlauts: ä ö ü"
 	args, _ := json.Marshal(map[string]any{"payload": payload})
@@ -99,7 +100,7 @@ func TestHandleToolCall_DebugEcho_StringRoundTrip(t *testing.T) {
 }
 
 func TestHandleToolCall_DebugEcho_Object(t *testing.T) {
-	_, mux := newTestServer(t, &config.Config{DebugTools: true})
+	_, mux := newTestServer(t, &config.Config{APIKey: testAPIKey, DebugTools: true})
 
 	w := postToolCall(t, mux, "debug_echo", `{"payload":{"a":1,"b":[1,2,3]}}`)
 	text, isError := decodeDebugResponse(t, w)
@@ -120,7 +121,7 @@ func TestHandleToolCall_DebugEcho_Object(t *testing.T) {
 }
 
 func TestHandleToolCall_DebugEcho_MissingPayload(t *testing.T) {
-	_, mux := newTestServer(t, &config.Config{DebugTools: true})
+	_, mux := newTestServer(t, &config.Config{APIKey: testAPIKey, DebugTools: true})
 
 	w := postToolCall(t, mux, "debug_echo", `{}`)
 	text, isError := decodeDebugResponse(t, w)
@@ -133,7 +134,7 @@ func TestHandleToolCall_DebugEcho_MissingPayload(t *testing.T) {
 }
 
 func TestHandleToolCall_DebugGenerate_Disabled(t *testing.T) {
-	_, mux := newTestServer(t, &config.Config{}) // disabled
+	_, mux := newTestServer(t, &config.Config{APIKey: testAPIKey}) // disabled
 
 	w := postToolCall(t, mux, "debug_generate", `{"size_bytes":100}`)
 	text, isError := decodeDebugResponse(t, w)
@@ -146,7 +147,7 @@ func TestHandleToolCall_DebugGenerate_Disabled(t *testing.T) {
 }
 
 func TestHandleToolCall_DebugGenerate_Ascii(t *testing.T) {
-	_, mux := newTestServer(t, &config.Config{DebugTools: true})
+	_, mux := newTestServer(t, &config.Config{APIKey: testAPIKey, DebugTools: true})
 
 	w := postToolCall(t, mux, "debug_generate", `{"size_bytes":1000}`)
 	text, isError := decodeDebugResponse(t, w)
@@ -172,7 +173,7 @@ func TestHandleToolCall_DebugGenerate_Ascii(t *testing.T) {
 }
 
 func TestHandleToolCall_DebugGenerate_Random(t *testing.T) {
-	_, mux := newTestServer(t, &config.Config{DebugTools: true})
+	_, mux := newTestServer(t, &config.Config{APIKey: testAPIKey, DebugTools: true})
 
 	w := postToolCall(t, mux, "debug_generate", `{"size_bytes":256,"pattern":"random"}`)
 	text, isError := decodeDebugResponse(t, w)
@@ -193,7 +194,7 @@ func TestHandleToolCall_DebugGenerate_Random(t *testing.T) {
 }
 
 func TestHandleToolCall_DebugGenerate_TooLarge(t *testing.T) {
-	_, mux := newTestServer(t, &config.Config{DebugTools: true})
+	_, mux := newTestServer(t, &config.Config{APIKey: testAPIKey, DebugTools: true})
 
 	w := postToolCall(t, mux, "debug_generate", `{"size_bytes":99999999999}`)
 	text, isError := decodeDebugResponse(t, w)
@@ -206,7 +207,7 @@ func TestHandleToolCall_DebugGenerate_TooLarge(t *testing.T) {
 }
 
 func TestHandleToolCall_DebugGenerate_BadPattern(t *testing.T) {
-	_, mux := newTestServer(t, &config.Config{DebugTools: true})
+	_, mux := newTestServer(t, &config.Config{APIKey: testAPIKey, DebugTools: true})
 
 	w := postToolCall(t, mux, "debug_generate", `{"size_bytes":10,"pattern":"banana"}`)
 	text, isError := decodeDebugResponse(t, w)

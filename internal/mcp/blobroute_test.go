@@ -115,18 +115,33 @@ func TestBlobRoute_DeleteRequiresAuth(t *testing.T) {
 	})
 }
 
-// TestBlobRoute_OpenServer verifies that when no auth is configured the whole
-// server is open, so DELETE passes through like every other route.
-func TestBlobRoute_OpenServer(t *testing.T) {
+// TestBlobRoute_ServerWithoutCredential verifies that a server without any
+// credential configured is not open: DELETE and upload are rejected like on
+// any other server, while GET stays capability-based.
+func TestBlobRoute_ServerWithoutCredential(t *testing.T) {
 	mux, store := newBlobRouteServer(t, &config.Config{})
 	id, _, err := store.Put(strings.NewReader("x"), "text/plain", time.Hour)
 	if err != nil {
 		t.Fatalf("Put: %v", err)
 	}
-	req := httptest.NewRequestWithContext(context.Background(), http.MethodDelete, "/blobs/"+id, http.NoBody)
+	for _, tt := range []struct{ method, path string }{
+		{http.MethodDelete, "/blobs/" + id},
+		{http.MethodPost, "/files/upload"},
+	} {
+		req := httptest.NewRequestWithContext(context.Background(), tt.method, tt.path, http.NoBody)
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusUnauthorized {
+			t.Errorf("%s %s without a credential = %d, want 401", tt.method, tt.path, rec.Code)
+		}
+	}
+	if _, err := store.Stat(id); err != nil {
+		t.Errorf("blob was deleted despite 401: %v", err)
+	}
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/blobs/"+id, http.NoBody)
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
-	if rec.Code != http.StatusNoContent {
-		t.Errorf("DELETE on open server = %d, want 204", rec.Code)
+	if rec.Code != http.StatusOK {
+		t.Errorf("GET without a credential = %d, want 200", rec.Code)
 	}
 }

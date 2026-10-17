@@ -359,30 +359,6 @@ func TestMCP_AnonymousRequestIsLoggedAndCounted(t *testing.T) {
 	}
 }
 
-// The count is of requests that were turned away. A server without any
-// authentication configured turns nobody away, so it counts and logs nothing
-// here, whatever the request carries.
-func TestMCP_ServerWithoutAuthenticationCountsNoAnonymousFailure(t *testing.T) {
-	cfg := loginTestConfig()
-	cfg.AuthPassword = ""
-	ts := newLoginTestServer(t, cfg, loginTestOptions{})
-
-	for _, authorization := range []string{"", "Bearer " + generateID()} {
-		w := ts.mcpCall(authorization)
-		if w.Code != http.StatusOK || w.Header().Get(testHeaderChallenge) != "" {
-			t.Errorf("authorization %q: status = %d, WWW-Authenticate = %q; want 200 and no challenge", authorization, w.Code, w.Header().Get(testHeaderChallenge))
-		}
-	}
-	for _, result := range []string{"success", "failure"} {
-		if got := ts.loginCount(t, loginMethodAnonymous, result); got != 0 {
-			t.Errorf("anonymous %s = %v, want 0", result, got)
-		}
-	}
-	if n := len(ts.logs.lines(t, testMsgMCPRejected)); n != 0 {
-		t.Errorf("%d rejection lines on a server that turns nobody away", n)
-	}
-}
-
 // A request must not be able to make the server run
 // bcrypt unless a comparison is the only way left to tell. With every
 // comparison slot taken, nothing that needs bcrypt can be answered, so

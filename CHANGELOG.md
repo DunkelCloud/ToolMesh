@@ -218,6 +218,11 @@ Without a persistent data directory every start reports a new site ID. See
 - A failure of the token store is answered `503` instead of being reported
   to the client as an invalid credential, and an API key is accepted without
   the token store being asked.
+- A server without any credential configured (no `TOOLMESH_AUTH_PASSWORD`,
+  `TOOLMESH_API_KEY`, `users.yaml` or `apikeys.yaml`) rejects every request
+  to `/mcp`, `/files/upload` and `DELETE /blobs/…` with `401`, as documented.
+  Until now it served them anonymously, `tools/list` and `execute_code`
+  included.
 
 ## [0.4.1] - 2026-09-24
 

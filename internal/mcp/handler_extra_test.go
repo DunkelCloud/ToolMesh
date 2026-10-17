@@ -45,10 +45,11 @@ type summarizingBackend struct {
 func (s *summarizingBackend) BackendSummaries() []backend.BackendInfo { return s.infos }
 
 func TestHandleToolCall_DiscoverTools(t *testing.T) {
-	_, mux := newTestServer(t, &config.Config{})
+	_, mux := newTestServer(t, &config.Config{APIKey: testAPIKey})
 
 	body := `{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "discover_tools", "arguments": {"pattern": ".*"}}}`
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp", strings.NewReader(body))
+	authorize(req)
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
@@ -64,10 +65,11 @@ func TestHandleToolCall_DiscoverTools(t *testing.T) {
 // pattern argument is treated as ".*" (list all). The previous behavior — error
 // out demanding the magic string — was friction for the most common case.
 func TestHandleToolCall_DiscoverToolsMissingPattern(t *testing.T) {
-	_, mux := newTestServer(t, &config.Config{})
+	_, mux := newTestServer(t, &config.Config{APIKey: testAPIKey})
 
 	body := `{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "discover_tools", "arguments": {}}}`
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp", strings.NewReader(body))
+	authorize(req)
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
@@ -84,10 +86,11 @@ func TestHandleToolCall_DiscoverToolsMissingPattern(t *testing.T) {
 }
 
 func TestHandleToolCall_DiscoverToolsInvalidRegex(t *testing.T) {
-	_, mux := newTestServer(t, &config.Config{})
+	_, mux := newTestServer(t, &config.Config{APIKey: testAPIKey})
 
 	body := `{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "discover_tools", "arguments": {"pattern": "[invalid"}}}`
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp", strings.NewReader(body))
+	authorize(req)
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
@@ -101,10 +104,11 @@ func TestHandleToolCall_DiscoverToolsInvalidRegex(t *testing.T) {
 }
 
 func TestHandleToolCall_ExecuteCodeMissingCode(t *testing.T) {
-	_, mux := newTestServer(t, &config.Config{})
+	_, mux := newTestServer(t, &config.Config{APIKey: testAPIKey})
 
 	body := `{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "execute_code", "arguments": {}}}`
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp", strings.NewReader(body))
+	authorize(req)
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
@@ -118,10 +122,11 @@ func TestHandleToolCall_ExecuteCodeMissingCode(t *testing.T) {
 }
 
 func TestHandleToolCall_ExecuteCodeNonStringCode(t *testing.T) {
-	_, mux := newTestServer(t, &config.Config{})
+	_, mux := newTestServer(t, &config.Config{APIKey: testAPIKey})
 
 	body := `{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "execute_code", "arguments": {"code": 123}}}`
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp", strings.NewReader(body))
+	authorize(req)
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
@@ -135,10 +140,11 @@ func TestHandleToolCall_ExecuteCodeNonStringCode(t *testing.T) {
 }
 
 func TestHandleToolCall_ExecuteCodeEmpty(t *testing.T) {
-	_, mux := newTestServer(t, &config.Config{})
+	_, mux := newTestServer(t, &config.Config{APIKey: testAPIKey})
 
 	body := `{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "execute_code", "arguments": {"code": "// empty"}}}`
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp", strings.NewReader(body))
+	authorize(req)
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
@@ -156,10 +162,11 @@ func TestHandleToolCall_ExecuteCodeEmpty(t *testing.T) {
 // runner's "no tool calls found in code" placeholder and the real error,
 // which was contradictory ("no calls found, but here's a TypeError…").
 func TestHandleToolCall_ExecuteCodeRuntimeError_SurfacesRealError(t *testing.T) {
-	_, mux := newTestServer(t, &config.Config{})
+	_, mux := newTestServer(t, &config.Config{APIKey: testAPIKey})
 
 	body := `{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "execute_code", "arguments": {"code": "throw new Error('runtime-boom');"}}}`
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp", strings.NewReader(body))
+	authorize(req)
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
@@ -194,7 +201,7 @@ func TestHandleToolCall_ExecuteCodeRuntimeError_SurfacesRealError(t *testing.T) 
 // guard message — not the bare goja TypeError "Object has no member …" that
 // gave callers no clue what they did wrong. The same applies to execute_code.
 func TestHandleToolCall_ExecuteCodeDiscoverToolsGuard(t *testing.T) {
-	_, mux := newTestServer(t, &config.Config{})
+	_, mux := newTestServer(t, &config.Config{APIKey: testAPIKey})
 
 	cases := []struct {
 		name string
@@ -208,6 +215,7 @@ func TestHandleToolCall_ExecuteCodeDiscoverToolsGuard(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			body := `{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "execute_code", "arguments": {"code": ` + jsonString(tc.code) + `}}}`
 			req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp", strings.NewReader(body))
+			authorize(req)
 			req.Header.Set("Content-Type", "application/json")
 			w := httptest.NewRecorder()
 			mux.ServeHTTP(w, req)

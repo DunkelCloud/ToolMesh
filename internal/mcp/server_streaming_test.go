@@ -52,10 +52,11 @@ func extractSSEData(t *testing.T, body string) string {
 // When the client advertises SSE, a tools/call is delivered as a text/event-stream
 // whose final "message" event carries the JSON-RPC result.
 func TestServer_MCP_ToolsCall_SSE(t *testing.T) {
-	_, mux := newTestServer(t, &config.Config{})
+	_, mux := newTestServer(t, &config.Config{APIKey: testAPIKey})
 
 	body := `{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"test:tool","arguments":{}}}`
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp", strings.NewReader(body))
+	authorize(req)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
 	w := httptest.NewRecorder()
@@ -83,10 +84,11 @@ func TestServer_MCP_ToolsCall_SSE(t *testing.T) {
 
 // A client that does not advertise SSE gets a buffered JSON response.
 func TestServer_MCP_ToolsCall_JSONFallback(t *testing.T) {
-	_, mux := newTestServer(t, &config.Config{})
+	_, mux := newTestServer(t, &config.Config{APIKey: testAPIKey})
 
 	body := `{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"test:tool","arguments":{}}}`
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp", strings.NewReader(body))
+	authorize(req)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 	w := httptest.NewRecorder()

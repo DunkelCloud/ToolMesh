@@ -97,16 +97,16 @@ func (s *Server) serveLanding(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := landingTmpl.Execute(w, landingData{
-		Endpoint:     endpointURL(r),
-		AuthRequired: s.authRequired(),
+		Endpoint:             endpointURL(r),
+		CredentialConfigured: s.credentialConfigured(),
 	}); err != nil {
 		s.logger.ErrorContext(r.Context(), "landing page render failed", outcomeError, err)
 	}
 }
 
 type landingData struct {
-	Endpoint     string
-	AuthRequired bool
+	Endpoint             string
+	CredentialConfigured bool
 }
 
 // landingTmpl is self-contained on purpose: the page must render on a host that
@@ -157,9 +157,10 @@ settings of an MCP client, which talks to it over JSON-RPC.</p>
 </div>
 
 <h2>Authentication</h2>
-<p>{{if .AuthRequired}}Required. The client is sent through OAuth on first
-connect; an API key in the <code>Authorization</code> header works too.{{else}}None
-configured — this endpoint accepts unauthenticated requests.{{end}}</p>
+<p>{{if .CredentialConfigured}}Required. The client is sent through OAuth on first
+connect; an API key in the <code>Authorization</code> header works too.{{else}}Required,
+but no credential is configured yet — this endpoint rejects every request until
+a password or an API key is set.{{end}}</p>
 
 <h2>Where to paste it</h2>
 <ul>

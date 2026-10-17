@@ -175,8 +175,8 @@ func TestServer_MCP_LandingPageWithoutAuth(t *testing.T) {
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
 
-	if !strings.Contains(w.Body.String(), "None") {
-		t.Errorf("body does not state that no auth is configured:\n%s", w.Body.String())
+	if !strings.Contains(w.Body.String(), "rejects every request") {
+		t.Errorf("body does not state that every request is rejected:\n%s", w.Body.String())
 	}
 }
 
@@ -199,10 +199,11 @@ func TestServer_MCP_HostHeaderIsEscaped(t *testing.T) {
 // TestServer_MCP_PostUnaffected: a client that sets Accept: text/html on a POST
 // still speaks JSON-RPC. The branch is GET-only.
 func TestServer_MCP_PostUnaffected(t *testing.T) {
-	_, mux := newTestServer(t, &config.Config{})
+	_, mux := newTestServer(t, &config.Config{APIKey: testAPIKey})
 
 	body := `{"jsonrpc":"2.0","id":1,"method":"initialize"}`
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp", strings.NewReader(body))
+	authorize(req)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", acceptHTML)
 	w := httptest.NewRecorder()

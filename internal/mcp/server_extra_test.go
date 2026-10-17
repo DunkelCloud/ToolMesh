@@ -103,9 +103,10 @@ func TestExtractBearer(t *testing.T) {
 }
 
 func TestMCP_InvalidContentType(t *testing.T) {
-	_, mux := newTestServer(t, &config.Config{})
+	_, mux := newTestServer(t, &config.Config{APIKey: testAPIKey})
 	body := initBodyExtra
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp", strings.NewReader(body))
+	authorize(req)
 	// Wrong content type.
 	req.Header.Set("Content-Type", "text/plain")
 	w := httptest.NewRecorder()
@@ -137,10 +138,11 @@ func TestMCP_BodyTooLarge(t *testing.T) {
 }
 
 func TestMCP_Notification_Returns202(t *testing.T) {
-	_, mux := newTestServer(t, &config.Config{})
+	_, mux := newTestServer(t, &config.Config{APIKey: testAPIKey})
 	// No "id" field → notification → 202.
 	body := `{"jsonrpc": "2.0", "method": "initialized"}`
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp", strings.NewReader(body))
+	authorize(req)
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)

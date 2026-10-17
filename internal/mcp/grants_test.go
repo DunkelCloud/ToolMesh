@@ -254,6 +254,34 @@ func TestRequestGrant_ApprovalLinkAndPart(t *testing.T) {
 	}
 }
 
+// A client that keeps the tool list it got before kits existed still reaches
+// request_grant and tell_me_my_rights from inside execute_code.
+func TestRequestGrant_FromCodeMode(t *testing.T) {
+	s, svc := newGrantSetup(t)
+	ctx := grantCaller(testGrantCaller)
+	run := func(code string) (bool, string) {
+		t.Helper()
+		return callTool(t, s.handler, ctx, toolExecuteCode, map[string]any{argNameCode: code})
+	}
+
+	failed, text := run(`const r = await toolmesh.tell_me_my_rights({tools: ["` + testGraylogSearch + `"]}); return r.tools[0].verdict + " " + r.tools[0].kits[0];`)
+	if failed || !strings.Contains(text, executor.VerdictEscalatable+" "+testKitNetDiag) {
+		t.Fatalf("tell_me_my_rights from code mode: failed=%v %s", failed, text)
+	}
+	failed, text = run(`const r = await toolmesh.request_grant({kit: "` + testKitNetDiag + `", reason: "` + testGrantReason + `"}); return r.request_id + " " + r.status;`)
+	if failed || !strings.Contains(text, grants.StatePending) {
+		t.Fatalf("request_grant from code mode: failed=%v %s", failed, text)
+	}
+	pending, _, err := svc.ForCaller(context.Background(), testKitUserBob, testGrantCaller)
+	if err != nil || len(pending) != 1 || !strings.Contains(text, pending[0].ID) {
+		t.Errorf("pending requests = %+v, %v; want the one asked for from code mode", pending, err)
+	}
+	// An error of the tool reaches the script as its answer.
+	if _, text = run(`return await toolmesh.request_grant({kit: "nope", reason: "x"});`); !strings.Contains(text, `there is no kit \"nope\"`) {
+		t.Errorf("unknown kit from code mode = %s", text)
+	}
+}
+
 // askRightsAs calls tell_me_my_rights in the given caller context.
 func askRightsAs(t *testing.T, h *Handler, ctx context.Context, params map[string]any) rightsAnswer {
 	t.Helper()

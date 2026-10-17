@@ -373,7 +373,10 @@ approver key that may have leaked, check that the log shows the line
 `authorization policy applied` for that edit, with the new number of
 `approvers`; until then the old key still approves.
 
-**Asking.** `request_grant({kit, reason, ttl})`:
+**Asking.** `request_grant({kit, reason, ttl})`. ToolMesh lists it as an MCP
+tool only while kits are defined, and many clients keep the tool list they got
+when they connected. Inside `execute_code` the same calls are always there:
+`toolmesh.request_grant({...})` and `toolmesh.tell_me_my_rights({...})`.
 
 - `kit`: the kit's name, as `tell_me_my_rights` names it.
 - `reason` (required, at most 500 characters): the task and, if there is one,

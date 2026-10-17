@@ -125,6 +125,9 @@ Without a persistent data directory every start reports a new site ID. See
   `Retry-After`), in counters apart from the login limits. The
   approver API grants part of a kit too (`grants`, `tools` in the approve
   body). See `docs/configuration.md`, "Approval page".
+- `execute_code` scripts can call `toolmesh.request_grant({...})` and
+  `toolmesh.tell_me_my_rights({...})`. A client that keeps the tool list it
+  got before kits were defined reaches `request_grant` there.
 - Meta-tool `tell_me_my_rights`: what the caller may do, per backend, for one
   backend, or as a preflight over the tools a task needs, with the smallest
   set of kits that covers what is missing. Information only; every call is

@@ -329,13 +329,16 @@ authorization engine stays the only place that decides: at every check, the
 kits the caller holds are passed with the check, like its roles. A grant
 therefore ends by itself, and revoking it takes effect with the next call.
 
-**Approvers** are listed in the grants file. Each has a name and the SHA-256
-of a key of its own:
+**Approvers** are listed in the grants file. Each has a name and a key of its
+own: the SHA-256 of a bearer key for the [approver API](#approver-api), a
+signing address for the [approval page](#approval-page), or both:
 
 ```yaml
 approvers:
   - name: alice@example.com
     key_sha256: "<SHA-256 of the key, 64 hex characters>"
+  - name: bob@example.com
+    address: bc1q0xcqpzrky6eff2g52qdye53xkk9jxkvrh6yhyw
 ```
 
 ```bash
@@ -343,15 +346,23 @@ key=$(openssl rand -hex 32)   # the approver's key; hand it over securely
 printf %s "$key" | sha256sum  # the key_sha256 for the grants file
 ```
 
+The `address` is a native segwit P2WPKH address (`bc1q…`; `tb1q…` and
+`bcrt1q…` work as well). The approver signs with its private key; ToolMesh
+stores only the address and never sees the key. No coins and no blockchain are
+involved: the key only signs statements (BIP-322). Make one on the approval
+page under "Set up a signing key" (`https://<toolmesh>/approve/`), or use the
+address of a native segwit account of a wallet that signs BIP-322 messages.
+Taproot (`bc1p…`) and script addresses are refused.
+
 An approver key works only on the approver API below, and the credentials MCP
 callers connect with do not work there, so an agent cannot approve its own
-request. Do not give an agent an approver key. An approver whose key is also
+request. Do not give an agent an approver key or signing key. An approver whose key is also
 an MCP credential is refused: `TOOLMESH_API_KEY`, `TOOLMESH_AUTH_PASSWORD` or
 an entry of `apikeys.yaml` with a `key_sha256`. An `apikeys.yaml` entry with
 only a `key_hash` cannot be compared, so never reuse such a key either. Names
-are slugs or e-mail addresses; neither names nor keys may repeat. Without
-approvers, `request_grant` tells callers that no kit can be granted, and
-ToolMesh logs a warning when the file defines kits.
+are slugs or e-mail addresses; neither names, keys nor addresses may repeat.
+Without approvers, `request_grant` tells callers that no kit can be granted,
+and ToolMesh logs a warning when the file defines kits.
 
 Changes to `approvers:` apply within seconds, like the rest of the file. An
 edit that cannot be applied, because the file does not parse, an approver is
@@ -362,7 +373,10 @@ approver key that may have leaked, check that the log shows the line
 `authorization policy applied` for that edit, with the new number of
 `approvers`; until then the old key still approves.
 
-**Asking.** `request_grant({kit, reason, ttl})`:
+**Asking.** `request_grant({kit, reason, ttl})`. ToolMesh lists it as an MCP
+tool only while kits are defined, and many clients keep the tool list they got
+when they connected. Inside `execute_code` the same calls are always there:
+`toolmesh.request_grant({...})` and `toolmesh.tell_me_my_rights({...})`.
 
 - `kit`: the kit's name, as `tell_me_my_rights` names it.
 - `reason` (required, at most 500 characters): the task and, if there is one,
@@ -374,41 +388,29 @@ approver key that may have leaked, check that the log shows the line
   `ttl_max` is granted, or 24 hours when it sets none. The maximum counts as
   it is when the request is approved.
 
-The answer is a request id of ten characters, which the caller hands to the
-person it works for. A request waits 30 minutes for a decision, then lapses.
-Asking again for a kit that is still pending returns the pending request; a
-caller may have at most five requests pending at a time.
+The answer is a request id of ten characters and a fingerprint such as
+`0873-D5E5-9D1B-2DB7`, which the caller hands to the person it works for.
+When an approver has a signing address and `TOOLMESH_ISSUER` is set to the
+address ToolMesh is reached at, the answer also carries `approval_url`, the
+link to the [approval page](#approval-page). A request waits 30 minutes for a
+decision, then lapses. Asking again for a kit that is still pending returns
+the pending request; a caller may have at most five requests pending at a
+time. With the request, ToolMesh records for each entry of the kit how many
+tools it covers and how many of them the caller cannot call yet; approvers
+see these counts.
 
 **Who holds a grant.** The requesting user, as the caller it connected as:
 the `caller_id` of an API key, or the OAuth client. An API key without
 `caller_id` binds the grant to that key itself (shown as `grant_key`), so two
 such keys of one user do not share grants. The grant survives a token
-refresh; other connections of the same user do not hold it. A grant gives the
-kit as it is defined at the time of each call: a kit removed from the file
-allows nothing any more, and a changed kit applies with its new content.
-
-**Approver API.** On the ToolMesh port, with the approver key as bearer
-credential:
-
-| Request | Effect |
-|---------|--------|
-| `GET /grants` | Pending requests and active grants |
-| `GET /grants/<id>` | One request or grant |
-| `POST /grants/<id>/approve` | Grant the kit. Optional body `{"ttl": "1h"}` to grant it for less than requested, never for more |
-| `POST /grants/<id>/deny` | Reject a pending request |
-| `POST /grants/<id>/revoke` | End an active grant now |
-
-```bash
-curl -s -H "Authorization: Bearer $APPROVER_KEY" https://toolmesh.example.com/grants/k3m9x2p7qa
-curl -s -X POST -H "Authorization: Bearer $APPROVER_KEY" https://toolmesh.example.com/grants/k3m9x2p7qa/approve
-```
-
-Each request and grant shows the kit's description, warning and scope from
-the grants file next to who asked, why, and for how long. Like the reason,
-`caller_name` is the requester's own statement: an OAuth client chooses its
-name itself. It is cleaned like the reason and cut to 128 characters. Approving a kit the
-caller already holds replaces that grant. A grant keeps its request id, so
-the same id revokes it.
+refresh; other connections of the same user do not hold it. A grant of the
+whole kit with an approver key gives the kit as it is defined at the time of
+each call: a kit removed from the file allows nothing any more, and a changed
+kit applies with its new content. A grant of **part of a kit** (some of its
+`grants` scopes and `tools`) and every grant approved on the approval page
+cover the entries the approval named and no others: entries removed from the
+kit later allow nothing, entries added later are not part of it. A deny wins
+over a part as over a kit.
 
 **Where grants live.** In Redis when ToolMesh is connected to one
 ([`REDIS_URL`](#redis)): requests and grants survive a restart and are shared
@@ -420,8 +422,88 @@ fails is logged and contributes no kits.
 backend `toolmesh` and the tool `request_grant`, `grant_approve`,
 `grant_deny` or `grant_revoke`. The entry carries the user and caller the
 grant is for, and in its metadata the grant id, kit, duration, expiry and, for
-the approver actions, the approver. A call made while the caller holds kits
-records them in its metadata (`held_kits`).
+the approver actions, the approver. An approval records how it was given
+(`approved_with`: `key` or `signature`) and, for part of a kit, the entries
+granted (`part_grants`, `part_tools`). An approval on the approval page also
+records the address, the signature, the statement and its SHA-256
+(`statement_sha256`), so that it can be verified later; a refused signature is
+recorded as an error. A call made while the caller holds kits records them in
+its metadata (`held_kits`, a kit held in part marked `(part)`).
+
+#### Approver API
+
+On the ToolMesh port, with the approver key as bearer credential:
+
+| Request | Effect |
+|---------|--------|
+| `GET /grants` | Pending requests and active grants |
+| `GET /grants/<id>` | One request or grant |
+| `POST /grants/<id>/approve` | Grant the kit. Optional body: `{"ttl": "1h"}` to grant it for less than requested, never for more; `{"grants": ["graylog:read"], "tools": [...]}` to grant only these entries of the kit, exactly as the kit lists them |
+| `POST /grants/<id>/deny` | Reject a pending request |
+| `POST /grants/<id>/revoke` | End an active grant now |
+
+```bash
+curl -s -H "Authorization: Bearer $APPROVER_KEY" https://toolmesh.example.com/grants/k3m9x2p7qa
+curl -s -X POST -H "Authorization: Bearer $APPROVER_KEY" https://toolmesh.example.com/grants/k3m9x2p7qa/approve
+```
+
+Each request and grant shows the kit's description, warning and scope from
+the grants file next to who asked, why, and for how long, and a pending
+request its fingerprint, tool counts and approval link. Like the reason,
+`caller_name` is the requester's own statement: an OAuth client chooses its
+name itself. It is cleaned like the reason and cut to 128 characters. Approving a kit the
+caller already holds replaces that grant. A grant keeps its request id, so
+the same id revokes it, whether it was approved here or on the approval page.
+
+#### Approval page
+
+`https://<toolmesh>/approve/<id>` shows a pending request to whoever has the
+link and lets an approver with a signing address approve it. The page needs
+no login: approving takes a signature by the key of an approver's address.
+
+- **What it shows** comes from ToolMesh: the kit's description and warning,
+  its entries grouped by what they allow (every access class first, then
+  dangerous, admin, other, write, read), and per entry the tools it covers and
+  how many of them are new to the caller. The reason and the client name are
+  shown as the requester's own statements. Whom the grant is for (user and
+  connection), the duration asked for and the fingerprint are shown
+  prominently. Compare the fingerprint with the one the agent reported, over
+  the channel you work with it in, to know that the link shows its request.
+- **Narrowing.** Untick entries the task does not need and pick a shorter
+  duration. The grant then covers only the ticked entries.
+- **The statement.** For these choices ToolMesh writes a statement, plain
+  text that names this ToolMesh, the request and its nonce, the approver and
+  address, the kit, the entries granted and left out, the duration, whom the
+  grant is for and the reason. The page shows it as it is, and it is what is
+  signed. ToolMesh writes it again from the stored request to verify the
+  signature, so nothing the page or the requester adds can change it.
+- **Signing.** Paste the private key (WIF or 64 hex characters) to sign in
+  the page; the key stays in the browser and only the signature is sent.
+  Or copy the statement into a wallet that signs BIP-322 messages and paste
+  the signature (with or without the `smp` prefix). On a page served over
+  plain HTTP (other than localhost) the key field is disabled: use HTTPS.
+- **Once.** A signature approves its request once: approving takes the
+  request from the store, and a statement names one request and its nonce.
+- **Limits.** Refused approvals (a signature that does not verify, or
+  choices that do not fit the request) are limited within 15 minutes to 5 per
+  request and source address, 10 per request and 20 per source address;
+  beyond that the page answers `429` with `Retry-After`. A successful
+  approval clears the request's counters. The counters work like those of
+  [login throttling](#login-throttling), with the same source address
+  (right-most public address in `X-Forwarded-For`) and in Redis when it is
+  connected, but apart from them: refused signatures never use up the login
+  limits.
+
+The page loads only its own style sheet and scripts, which are part of the
+ToolMesh binary (Content Security Policy `default-src 'none'`, no other
+origin, no framing). Messengers that show link previews get a summary from
+ToolMesh (kit, user, duration, tool counts, fingerprint), never the reason.
+`/approve/` without an id offers the key setup only.
+
+Set `TOOLMESH_ISSUER` to the address approvers reach ToolMesh at; it is the
+base of the links in `request_grant` and the ToolMesh a statement names.
+Without it, `request_grant` gives no link, and statements name the address
+the page was loaded from.
 
 #### Upgrading an installation that ran without authorization
 

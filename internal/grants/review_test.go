@@ -149,7 +149,7 @@ func TestGrantKey_BindsToTheKey(t *testing.T) {
 		binding string
 		want    int
 	}{{keyA.GrantBinding(), 1}, {keyB.GrantBinding(), 0}, {testUser, 0}} {
-		if got := env.svc.HeldKits(ctx, testUser, tc.binding); len(got) != tc.want {
+		if got := heldWhole(ctx, env.svc, tc.binding); len(got) != tc.want {
 			t.Errorf("HeldKits(%s) = %v, want %d kits", tc.binding, got, tc.want)
 		}
 	}
@@ -171,7 +171,7 @@ func TestHeldKits_ReadsActiveOnly(t *testing.T) {
 	env := newTestEnv(t)
 	store := countingStore{Store: env.svc.store, reads: map[string]*atomic.Int32{StatePending: {}, StateActive: {}}}
 	env.svc.store = store
-	env.svc.HeldKits(context.Background(), testUser, testCaller)
+	heldWhole(context.Background(), env.svc, testCaller)
 	if store.reads[StatePending].Load() != 0 || store.reads[StateActive].Load() != 1 {
 		t.Errorf("reads: pending %d, active %d; want 0 and 1", store.reads[StatePending].Load(), store.reads[StateActive].Load())
 	}

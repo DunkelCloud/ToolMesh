@@ -102,7 +102,26 @@ func NewHandler(exec *executor.Executor, back backend.ToolBackend, coercer *tsde
 	// through — a direct tool call or one made from inside execute_code.
 	h.hints = newHintNotifier(back)
 	runner.hints = h.hints
+	runner.metaTools = map[string]metaTool{
+		toolTellMeMyRights: h.codeModeMetaTool(toolTellMeMyRights, h.handleTellMeMyRights),
+		toolRequestGrant:   h.codeModeMetaTool(toolRequestGrant, h.handleRequestGrant),
+	}
 	return h
+}
+
+// codeModeMetaTool wraps a built-in tool for calls from inside execute_code,
+// recorded in the metrics like a direct call. The tool audits itself.
+func (h *Handler) codeModeMetaTool(name string, fn metaTool) metaTool {
+	return func(ctx context.Context, params map[string]any) *backend.ToolResult {
+		start := time.Now()
+		res := fn(ctx, params)
+		outcome := outcomeSuccess
+		if res == nil || res.IsError {
+			outcome = outcomeError
+		}
+		h.metrics.RecordToolCall("builtin", name, outcome, time.Since(start))
+		return res
+	}
 }
 
 // SetCodeTimeout overrides the wall-clock budget for a single execute_code
@@ -157,7 +176,7 @@ func (h *Handler) HandleToolCall(ctx context.Context, toolName string, params ma
 	if h.isBuiltinTool(toolName) {
 		start := time.Now()
 		defer func() {
-			outcome := "success"
+			outcome := outcomeSuccess
 			if err != nil || (result != nil && result.IsError) {
 				outcome = outcomeError
 			}
@@ -555,7 +574,7 @@ func (h *Handler) BuildToolList(ctx context.Context) ([]ToolDefinition, error) {
 	backendDesc := h.buildBackendDescription()
 
 	discoverToolsDesc := "Discovery tool for ToolMesh. Two search modes: `pattern` (case-insensitive regex matched against tool names and descriptions, e.g. \"github\" or \"^netbox_list\") and `query` (free text, BM25-ranked, returns the top 25 most relevant tools — preferred for exploratory searches like \"dns record management\"). Output detail auto-scales with result count: few matches return full TypeScript signatures, more matches return one-line summaries, then names only, then a per-backend overview; override with detail:\"full\"|\"summary\"|\"names\"|\"overview\" and cap results with limit:N. Every response ends with a footer stating matched/shown counts and refine hints. Call this as a SEPARATE MCP tool — inside execute_code use toolmesh.discover(query) and toolmesh.describe(name) instead."
-	executeCodeDesc := "Executes JavaScript that calls backend tools via toolmesh.<backend>_<function>(...). Tools are exposed as a flat snake_case namespace — `toolmesh.github_list_user_repos`, NOT `toolmesh.github.list_user_repos`. Example: `const repos = await toolmesh.github_list_user_repos({username: \"octocat\"}); return repos.slice(0, 5);`. The value you `return` is the response — project/filter inside the code and return only what you need; each tool call is then listed as a compact {tool, status, resultBytes} entry (failed calls keep their full error). Without an explicit `return`, the full results of all calls are returned in order; include_results:true forces full results alongside a return value. In-sandbox discovery: `toolmesh.discover(\"<free text>\", limit?)` returns ranked {name, description, backend} matches and `toolmesh.describe(\"<tool_name>\")` returns the full parameter schema — use them instead of guessing function names or parameters. discover_tools is NOT a toolmesh.* member and must NOT be invoked from inside this `code` parameter"
+	executeCodeDesc := "Executes JavaScript that calls backend tools via toolmesh.<backend>_<function>(...). Tools are exposed as a flat snake_case namespace — `toolmesh.github_list_user_repos`, NOT `toolmesh.github.list_user_repos`. Example: `const repos = await toolmesh.github_list_user_repos({username: \"octocat\"}); return repos.slice(0, 5);`. The value you `return` is the response — project/filter inside the code and return only what you need; each tool call is then listed as a compact {tool, status, resultBytes} entry (failed calls keep their full error). Without an explicit `return`, the full results of all calls are returned in order; include_results:true forces full results alongside a return value. In-sandbox discovery: `toolmesh.discover(\"<free text>\", limit?)` returns ranked {name, description, backend} matches and `toolmesh.describe(\"<tool_name>\")` returns the full parameter schema — use them instead of guessing function names or parameters. Rights: `toolmesh.tell_me_my_rights({tools: [...]})` tells which tools you may call and which kits would add the rest, `toolmesh.request_grant({kit, reason})` asks for a kit; the same calls exist as separate MCP tools where listed.discover_tools is NOT a toolmesh.* member and must NOT be invoked from inside this `code` parameter"
 	if backendDesc != "" {
 		executeCodeDesc += ". " + backendDesc
 	}

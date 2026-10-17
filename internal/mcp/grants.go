@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/DunkelCloud/ToolMesh/internal/backend"
@@ -51,7 +52,7 @@ func requestGrantToolDefinition() ToolDefinition {
 		Description: "Asks for a kit: a named bundle of tools granted together for a limited time, once a person approves it. " +
 			"Plan first: " + toolTellMeMyRights + "({tools: [...]}) with every tool your task needs names the kits that cover them. " +
 			"Then ask once per kit, with the task (and ticket, if any) as reason, instead of asking tool by tool. " +
-			"The answer is a request id: tell the person you work for, an approver of this ToolMesh decides on it. " +
+			"The answer is a request id and, where approvers sign on the approval page, its link and fingerprint: give them to the person you work for, an approver of this ToolMesh decides on it. " +
 			"Once approved, the kit's tools work for you from this connection until the grant ends; " + toolTellMeMyRights + " shows your grants and pending requests.",
 		InputSchema: map[string]any{
 			contentKeyType: jsonTypeObject,
@@ -86,7 +87,33 @@ type grantAnswer struct {
 	LapsesAt       time.Time `json:"lapses_at"`
 	AlreadyPending bool      `json:"already_pending,omitempty"`
 	HeldUntil      time.Time `json:"held_until,omitzero"`
-	Note           string    `json:"note"`
+	// ApprovalURL is the approval page of the request, where an approver
+	// signs; absent when no approver signs or no public URL is configured.
+	ApprovalURL string `json:"approval_url,omitempty"`
+	// Fingerprint identifies the request; the approval page shows the same.
+	Fingerprint string `json:"fingerprint"`
+	Note        string `json:"note"`
+}
+
+// kitCoverage computes what each entry of the kit would give the caller, for
+// the approver. It is nil when the kit or the tool list is unavailable: the
+// request goes ahead without it.
+func (h *Handler) kitCoverage(ctx context.Context, uc *userctx.UserContext, name string) []grants.EntryCoverage {
+	if h.executor == nil || uc == nil {
+		return nil
+	}
+	for _, k := range h.grants.Kits() {
+		if k.Name != name {
+			continue
+		}
+		all, err := h.backend.ListTools(ctx)
+		if err != nil {
+			h.logger.WarnContext(ctx, toolRequestGrant+": list tools for the coverage of the kit", outcomeError, err)
+			return nil
+		}
+		return h.executor.KitCoverage(ctx, uc, k, all)
+	}
+	return nil
 }
 
 // handleRequestGrant answers request_grant. The grant service audits every
@@ -105,7 +132,11 @@ func (h *Handler) handleRequestGrant(ctx context.Context, params map[string]any)
 			return discoverErrorResult(fmt.Sprintf("%s: %s must be a string", toolRequestGrant, name))
 		}
 	}
-	res, err := h.grants.Request(ctx, userctx.FromContext(ctx), in)
+	uc := userctx.FromContext(ctx)
+	if uc != nil && uc.Authenticated {
+		in.Coverage = h.kitCoverage(ctx, uc, strings.TrimSpace(in.Kit))
+	}
+	res, err := h.grants.Request(ctx, uc, in)
 	if err != nil {
 		return discoverErrorResult(fmt.Sprintf("%s: %s", toolRequestGrant, err))
 	}
@@ -119,6 +150,8 @@ func (h *Handler) handleRequestGrant(ctx context.Context, params map[string]any)
 		LapsesAt:       g.ExpiresAt,
 		AlreadyPending: res.Existing,
 		HeldUntil:      res.HeldUntil,
+		ApprovalURL:    h.grants.ApprovalURL(g.ID),
+		Fingerprint:    g.Fingerprint(),
 	}
 	for _, k := range h.grants.Kits() {
 		if k.Name == g.Kit {
@@ -128,11 +161,15 @@ func (h *Handler) handleRequestGrant(ctx context.Context, params map[string]any)
 	if res.Capped {
 		answer.TTLNote = "more than the kit's maximum was asked for; the request is for the maximum"
 	}
+	approveAt := "An approver of this ToolMesh approves or denies it"
+	if answer.ApprovalURL != "" {
+		approveAt = "Give them the approval_url and the fingerprint: an approver of this ToolMesh opens the link, checks the fingerprint and approves, possibly for less time or fewer tools"
+	}
 	answer.Note = fmt.Sprintf("Tell the person you work for that request %s asks for the kit %q (%s) for %s, and why. "+
-		"An approver of this ToolMesh approves or denies it; unanswered, it lapses at %s. "+
+		"%s; unanswered, it lapses at %s. "+
 		"Once approved, the kit's tools work for you from this connection until the grant ends, without reconnecting. "+
 		"Do not ask again while it is pending; %s shows your grants and pending requests.",
-		g.ID, g.Kit, answer.Description, answer.TTL, g.ExpiresAt.UTC().Format(time.RFC3339), toolTellMeMyRights)
+		g.ID, g.Kit, answer.Description, answer.TTL, approveAt, g.ExpiresAt.UTC().Format(time.RFC3339), toolTellMeMyRights)
 	if res.Existing {
 		answer.Note = "You had asked for this kit already; that request is still pending and unchanged. " + answer.Note
 	}

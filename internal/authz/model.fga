@@ -12,7 +12,9 @@ model
 #              assignee of role:<id>, as authentication established it
 #              (users.yaml, apikeys.yaml, TOOLMESH_AUTH_*)
 #   kits       user:<id> is holder of kit:<name> for every kit the caller
-#              holds at the time of the check
+#              holds at the time of the check; for a kit held in part (an
+#              approver granted some of its entries) user:<id> is executor of
+#              each object those entries stand for
 #   structure  tool:<name> belongs to instance:toolmesh, to backend:<name> (the
 #              backend the call is routed to), to access_class:<class> (the
 #              DADL access classification) and to backend_access:<both>
@@ -60,7 +62,7 @@ type access_class
 
 type backend_access
   relations
-    define executor: [kit#holder]
+    define executor: [user, kit#holder]
 
 type tool
   relations

@@ -80,7 +80,17 @@ type CodeRunner struct {
 	// triggered it. Set by NewHandler to the handler's own notifier so both
 	// surfaces share one ledger; nil is valid and emits nothing.
 	hints *hintNotifier
+	// metaTools are built-in tools the script may call as toolmesh.<name>,
+	// by name, such as tell_me_my_rights and request_grant. They are reached
+	// from inside execute_code too because a client may list tools once and
+	// keep that list: a meta-tool that is listed only under some
+	// configuration would stay out of its reach. A backend tool with the same
+	// sanitized name takes precedence. Set by NewHandler.
+	metaTools map[string]metaTool
 }
+
+// metaTool runs a built-in tool with the caller's context.
+type metaTool func(ctx context.Context, params map[string]any) *backend.ToolResult
 
 // SetTimeout overrides the wall-clock budget for a single execute_code run.
 // A non-positive duration restores the built-in default (codeTimeout).
@@ -303,6 +313,38 @@ func (r *CodeRunner) ExecuteWithOptions(ctx context.Context, code string, opts E
 			// Return the actual API response content for JS consumption,
 			// not the ToolMesh wrapper. This lets JS code use result.field
 			// directly instead of result.Content[0].text.
+			return extractJSValue(rt, result)
+		})
+	}
+
+	// Built-in meta-tools, called like backend tools and counted toward the
+	// same budget.
+	for name, fn := range r.metaTools {
+		if _, taken := r.nameMap[name]; taken {
+			continue
+		}
+		mn, mfn := name, fn
+		_ = tmObj.Set(mn, func(call goja.FunctionCall) goja.Value {
+			mu.Lock()
+			callCount++
+			count := callCount
+			mu.Unlock()
+			if count > maxCodeCalls {
+				panic(rt.NewGoError(fmt.Errorf("execute_code: exceeded maximum %d tool calls", maxCodeCalls)))
+			}
+			if ctx.Err() != nil {
+				panic(rt.NewGoError(fmt.Errorf("execute_code: %w", ctx.Err())))
+			}
+			params := map[string]any{}
+			if len(call.Arguments) > 0 {
+				if m, ok := call.Arguments[0].Export().(map[string]any); ok {
+					params = m
+				}
+			}
+			result := mfn(ctx, params)
+			mu.Lock()
+			results = append(results, map[string]any{logKeyTool: mn, resultKeyResult: result})
+			mu.Unlock()
 			return extractJSValue(rt, result)
 		})
 	}

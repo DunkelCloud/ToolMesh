@@ -48,7 +48,7 @@ func TestParseFile_InvalidApprovers(t *testing.T) {
 		name, approvers, want string
 	}{
 		{"bad name", "  - name: \"-x\"\n    key_sha256: " + testKeySumA, "approver name"},
-		{"no hash", "  - name: alice", wantHexKey},
+		{"no hash", "  - name: alice", "give a key_sha256"},
 		{"short hash", "  - name: alice\n    key_sha256: abcd", wantHexKey},
 		{"not hex", "  - name: alice\n    key_sha256: " + strings.Repeat("z", 64), wantHexKey},
 		{"twice", "  - name: alice\n    key_sha256: " + testKeySumA + "\n  - name: alice\n    key_sha256: " + testKeySumB, "defined twice"},

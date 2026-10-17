@@ -76,15 +76,21 @@ denies:
 #     ttl_default: 4h
 #     ttl_max: 24h
 
-# Optional: approvers decide on requests for kits, on the approver API
-# (GET /grants, POST /grants/<id>/approve|deny|revoke) with a key of their
-# own as bearer credential. Store the SHA-256 of the key, never the key:
+# Optional: approvers decide on requests for kits, with a key of their own:
 #
-#   key=$(openssl rand -hex 32); printf %s "$key" | sha256sum
+#   key_sha256  on the approver API (GET /grants, POST /grants/<id>/approve|
+#               deny|revoke) with the key as bearer credential. Store the
+#               SHA-256 of the key, never the key:
+#                 key=$(openssl rand -hex 32); printf %s "$key" | sha256sum
+#   address     on the approval page (/approve/<id>, the link request_grant
+#               answers with) by signing with the key of this P2WPKH address
+#               (bc1q…, BIP-322). Make a key at /approve/ or use a wallet.
 #
-# MCP credentials do not work on the approver API; never give an agent an
-# approver key.
+# MCP credentials do not work for approving; never give an agent an approver
+# key or signing key.
 #
 # approvers:
 #   - name: alice@example.com
 #     key_sha256: "<64 hex characters>"
+#   - name: bob@example.com
+#     address: bc1q…

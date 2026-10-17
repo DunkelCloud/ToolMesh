@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<meta name="referrer" content="no-referrer">
+<title>{{.Title}}</title>
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="ToolMesh">
+<meta property="og:title" content="{{.Title}}">
+<meta property="og:description" content="{{.Summary}}">
+{{if .URL}}<meta property="og:url" content="{{.URL}}">
+{{end}}<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="{{.Title}}">
+<meta name="twitter:description" content="{{.Summary}}">
+<link rel="stylesheet" href="approve.css">
+<script src="bip322.js" defer></script>
+<script src="approve.js" defer></script>
+</head>
+<body>
+<main id="main" data-request="{{.ID}}" data-found="{{.Found}}">
+<header>
+<h1>{{.Title}}</h1>
+<p class="lead" id="lead">{{.Summary}}</p>
+</header>
+
+<noscript><p class="error">This page needs JavaScript to sign in your browser. Nothing leaves the page but the signature.</p></noscript>
+
+<section id="request" hidden>
+  <div class="facts">
+    <div><span class="label">User</span><span id="user"></span></div>
+    <div><span class="label">Connection</span><span id="connection"></span></div>
+    <div><span class="label">Kit</span><span id="kit"></span></div>
+    <div><span class="label">Duration asked</span><span id="ttl"></span></div>
+    <div><span class="label">Approve before</span><span id="lapses"></span></div>
+    <div><span class="label">Fingerprint</span><code id="fingerprint"></code></div>
+  </div>
+  <p class="warning" id="warning" hidden></p>
+  <div class="claim">
+    <span class="label">Reason, as the requester states it</span>
+    <p id="reason"></p>
+    <p class="hint" id="client-name" hidden></p>
+  </div>
+
+  <h2>What the kit allows</h2>
+  <p class="hint">Untick what the task does not need: the grant then covers only what stays ticked.
+  Counts are the tools each entry covers and how many of them the user cannot call today.</p>
+  <div id="entries"></div>
+
+  <h2>Your approval</h2>
+  <div class="choices">
+    <label>Grant for <select id="ttl-choice"></select></label>
+    <label>Approver <select id="approver"></select></label>
+  </div>
+  <p class="hint" id="no-signers" hidden>No approver of this ToolMesh has a signing address yet.
+  Add one under approvers: in config/authz.yaml (see “Set up a signing key” below).</p>
+  <button type="button" id="prepare">Show what I sign</button>
+</section>
+
+<section id="sign" hidden>
+  <h2>The statement you sign</h2>
+  <p class="hint">This exact text is signed. ToolMesh writes it again from the request and checks the signature against it.</p>
+  <pre id="statement"></pre>
+  <div class="tabs" role="tablist">
+    <button type="button" role="tab" id="tab-key" aria-selected="true">Sign here with my key</button>
+    <button type="button" role="tab" id="tab-wallet" aria-selected="false">Sign in my wallet</button>
+  </div>
+  <div id="panel-key" role="tabpanel">
+    <label class="block">Private key of your address (WIF or 64 hex characters). It stays in this page.
+      <input type="password" id="key" autocomplete="off" spellcheck="false">
+    </label>
+    <p class="hint" id="key-check"></p>
+    <button type="button" id="sign-key" disabled>Sign and approve</button>
+  </div>
+  <div id="panel-wallet" role="tabpanel" hidden>
+    <p class="hint">Copy the statement into a wallet that signs BIP-322 messages for your bc1q address, then paste the signature here.</p>
+    <button type="button" id="copy-statement" class="secondary">Copy the statement</button>
+    <label class="block">Signature
+      <textarea id="signature" rows="3" spellcheck="false"></textarea>
+    </label>
+    <button type="button" id="sign-wallet">Approve</button>
+  </div>
+</section>
+
+<section id="result" hidden>
+  <p id="result-text"></p>
+</section>
+
+<p class="error" id="error" hidden></p>
+
+<details id="setup">
+<summary>Set up a signing key</summary>
+<p>An approver signs with the key of a bc1q address. Make a new key here (it is made in this page and sent nowhere),
+keep the private key in your password manager, and add the address to <code>config/authz.yaml</code>:</p>
+<button type="button" id="generate" class="secondary">Make a new key</button>
+<div id="generated" hidden>
+  <label class="block">Private key (WIF), keep it secret <input type="text" id="new-key" readonly spellcheck="false"></label>
+  <pre id="new-config"></pre>
+</div>
+<p class="hint">ToolMesh applies changes to config/authz.yaml within seconds. A key from a wallet works too:
+use the address of a native segwit (bc1q…) account.</p>
+</details>
+
+<footer>Served by ToolMesh. The private key never leaves this page; only the signature is sent.</footer>
+</main>
+</body>
+</html>

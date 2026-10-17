@@ -29,6 +29,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/DunkelCloud/ToolMesh/internal/audit"
+	"github.com/DunkelCloud/ToolMesh/internal/auth"
 	"github.com/DunkelCloud/ToolMesh/internal/authz"
 	"github.com/DunkelCloud/ToolMesh/internal/userctx"
 	"github.com/google/uuid"
@@ -101,6 +102,37 @@ type Options struct {
 	// records nothing.
 	Audit  audit.AuditStore
 	Logger *slog.Logger
+	// PublicURL is the address callers and approvers reach this ToolMesh at
+	// (TOOLMESH_ISSUER), without a trailing slash. With it, request_grant
+	// answers with the link to the approval page, and signed approvals name
+	// it. Empty when it is not configured.
+	PublicURL string
+	// Throttle limits refused signed approvals on the approval page. Nil
+	// keeps the counters in process memory; give one made with
+	// ApprovalThrottleConfig and Redis to share them between instances.
+	Throttle *auth.LoginThrottle
+}
+
+// Limits of refused signed approvals on the approval page, per request and
+// source address, per request and per source address, within
+// approvalFailureWindow. Only refusals count: a signature that does not
+// verify, or choices that do not fit the request.
+const (
+	approvalFailuresPerRequestIP = 5
+	approvalFailuresPerRequest   = 10
+	approvalFailuresPerIP        = 20
+	approvalFailureWindow        = 15 * time.Minute
+)
+
+// ApprovalThrottleConfig is the throttle configuration of the approval page,
+// in a namespace of its own: refused signatures never use up the limits of
+// password logins.
+var ApprovalThrottleConfig = auth.LoginThrottleConfig{
+	MaxFailuresPerUserIP: approvalFailuresPerRequestIP,
+	MaxFailuresPerUser:   approvalFailuresPerRequest,
+	MaxFailuresPerIP:     approvalFailuresPerIP,
+	Window:               approvalFailureWindow,
+	Namespace:            "approve",
 }
 
 // Service handles requests for kits and the grants that follow from them.
@@ -110,6 +142,8 @@ type Service struct {
 	approvers authz.ApproverRegistry
 	audit     audit.AuditStore
 	logger    *slog.Logger
+	publicURL string
+	throttle  *auth.LoginThrottle
 	now       func() time.Time
 }
 
@@ -119,12 +153,18 @@ func New(opts Options) *Service {
 	if logger == nil {
 		logger = slog.Default()
 	}
+	throttle := opts.Throttle
+	if throttle == nil {
+		throttle = auth.NewLoginThrottle(ApprovalThrottleConfig, nil, logger)
+	}
 	return &Service{
 		store:     opts.Store,
 		kits:      opts.Kits,
 		approvers: opts.Approvers,
 		audit:     opts.Audit,
 		logger:    logger,
+		publicURL: strings.TrimRight(opts.PublicURL, "/"),
+		throttle:  throttle,
 		now:       time.Now,
 	}
 }
@@ -152,6 +192,30 @@ func (s *Service) HasApprovers() bool {
 	return s.approvers != nil && len(s.approvers.Approvers()) > 0
 }
 
+// Signers returns the approvers with a signing address, who approve on the
+// approval page.
+func (s *Service) Signers() []authz.Approver {
+	if s.approvers == nil {
+		return nil
+	}
+	var out []authz.Approver
+	for _, a := range s.approvers.Approvers() {
+		if _, ok := a.SigningAddress(); ok {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
+// ApprovalURL returns the link to the approval page of a request, or "" when
+// there is none to give: without a public URL or an approver who signs.
+func (s *Service) ApprovalURL(id string) string {
+	if s.publicURL == "" || len(s.Signers()) == 0 {
+		return ""
+	}
+	return s.publicURL + ApprovePathPrefix + "/" + id
+}
+
 // Approver returns the approver whose key this is.
 func (s *Service) Approver(key string) (authz.Approver, bool) {
 	if s.approvers == nil || key == "" {
@@ -177,6 +241,10 @@ type RequestInput struct {
 	Reason string
 	// TTL as a duration ("4h"); empty for the kit's default.
 	TTL string
+	// Coverage is what each entry of the kit would give the caller, as
+	// ToolMesh computed it (never from the caller's arguments); nil when
+	// unknown. The approver sees it.
+	Coverage []EntryCoverage
 }
 
 // RequestResult is the outcome of a request.
@@ -256,6 +324,10 @@ func (s *Service) request(ctx context.Context, uc *userctx.UserContext, in Reque
 	if err != nil {
 		return RequestResult{}, err
 	}
+	nonce, err := newNonce()
+	if err != nil {
+		return RequestResult{}, err
+	}
 	now := s.now()
 	g := Grant{
 		ID:          id,
@@ -269,6 +341,8 @@ func (s *Service) request(ctx context.Context, uc *userctx.UserContext, in Reque
 		Reason:      reason,
 		TTL:         ttl,
 		RequestedAt: now,
+		Nonce:       nonce,
+		Coverage:    in.Coverage,
 		ExpiresAt:   now.Add(RequestTTL),
 	}
 	existing, found, err := s.store.AddPending(ctx, g, MaxPending)
@@ -353,22 +427,74 @@ func cleanReason(r string) (string, error) {
 	return r, nil
 }
 
-// Approve turns a pending request into a grant of its kit, for the duration
-// requested or, with ttl, for less. A grant of the same kit the caller holds
-// already is replaced. Every call is audited.
+// Approval is what an approver decides besides yes: less time than asked and
+// part of the kit.
+type Approval struct {
+	// TTL shortens the grant; zero grants the duration requested.
+	TTL time.Duration
+	// Grants and Tools, when either is set, are the entries of the kit
+	// granted: scopes of its grants and tools it lists, exactly as the kit
+	// lists them. Both empty grant the whole kit.
+	Grants []string
+	Tools  []string
+}
+
+// Approve turns a pending request into a grant of its whole kit, for the
+// duration requested or, with ttl, for less. Every call is audited.
 func (s *Service) Approve(ctx context.Context, approver, id string, ttl time.Duration) (Grant, error) {
+	return s.ApproveWith(ctx, approver, id, Approval{TTL: ttl})
+}
+
+// ApproveWith turns a pending request into a grant of its kit or of the part
+// of it the approval names, for the duration requested or for less. A grant
+// of the same kit the caller holds already is replaced. Every call is
+// audited.
+func (s *Service) ApproveWith(ctx context.Context, approver, id string, a Approval) (Grant, error) {
+	return s.approveAudited(ctx, approver, id, a, ApprovedWithKey, nil)
+}
+
+// approveAudited approves and records it with the metadata md.
+func (s *Service) approveAudited(ctx context.Context, approver, id string, a Approval, how string, md map[string]string) (Grant, error) {
 	start := s.now()
-	g, err := s.approve(ctx, approver, id, ttl)
+	g, err := s.approve(ctx, approver, id, a, how)
 	if g.ID == "" {
 		g.ID = id
 	}
 	entry := s.entry(auditApprove, start, g)
 	entry.Metadata["approver"] = approver
+	entry.Metadata["approved_with"] = how
+	for k, v := range md {
+		entry.Metadata[k] = v
+	}
 	s.record(ctx, entry, err)
 	return g, err
 }
 
-func (s *Service) approve(ctx context.Context, approver, id string, ttl time.Duration) (Grant, error) {
+// resolveApproval returns the duration and the entries an approval of req
+// grants. The entries are nil when the approval names none: the whole kit.
+func resolveApproval(kit authz.Kit, req Grant, a Approval) (time.Duration, *Part, error) {
+	ttl := a.TTL
+	switch {
+	case ttl < 0:
+		return 0, nil, invalidf("ttl must be positive")
+	case ttl > req.TTL:
+		return 0, nil, invalidf("ttl %s exceeds the %s requested; an approval can shorten a grant, not extend it", FormatTTL(ttl), FormatTTL(req.TTL))
+	case ttl == 0:
+		ttl = req.TTL
+	}
+	// The kit's maximum may have been lowered since the request.
+	ttl, _ = kitTTL(kit, ttl)
+	if len(a.Grants) == 0 && len(a.Tools) == 0 {
+		return ttl, nil, nil
+	}
+	p, err := kit.Part(a.Grants, a.Tools)
+	if err != nil {
+		return 0, nil, invalidf("%s", err)
+	}
+	return ttl, &Part{Grants: p.Grants, Tools: p.Tools}, nil
+}
+
+func (s *Service) approve(ctx context.Context, approver, id string, a Approval, how string) (Grant, error) {
 	req, err := s.store.Get(ctx, StatePending, id)
 	if err != nil {
 		return Grant{}, notPending(id, err)
@@ -377,16 +503,16 @@ func (s *Service) approve(ctx context.Context, approver, id string, ttl time.Dur
 	if !ok {
 		return req, invalidf("the kit %q of request %s is no longer defined", req.Kit, id)
 	}
-	switch {
-	case ttl < 0:
-		return req, invalidf("ttl must be positive")
-	case ttl > req.TTL:
-		return req, invalidf("ttl %s exceeds the %s requested; an approval can shorten a grant, not extend it", FormatTTL(ttl), FormatTTL(req.TTL))
-	case ttl == 0:
-		ttl = req.TTL
+	ttl, part, err := resolveApproval(kit, req, a)
+	if err != nil {
+		return req, err
 	}
-	// The kit's maximum may have been lowered since the request.
-	ttl, _ = kitTTL(kit, ttl)
+	// With a key, naming every entry is the whole kit, which follows later
+	// changes of the kit as before. A signed approval keeps the entries it
+	// names: the grant never covers more than the statement listed.
+	if part != nil && how == ApprovedWithKey && kit.IsWhole(part.kitPart(kit.Name)) {
+		part = nil
+	}
 	req, err = s.store.Take(ctx, StatePending, id)
 	if err != nil {
 		return Grant{}, notPending(id, err)
@@ -396,7 +522,9 @@ func (s *Service) approve(ctx context.Context, approver, id string, ttl time.Dur
 	g := req
 	g.State = StateActive
 	g.TTL = ttl
+	g.Part = part
 	g.ApprovedBy = approver
+	g.ApprovedWith = how
 	g.ApprovedAt = now
 	g.ExpiresAt = now.Add(ttl)
 	held, err := s.store.ForSubject(ctx, StateActive, g.Subject())
@@ -506,26 +634,46 @@ func (s *Service) activeFor(ctx context.Context, userID, binding string) ([]Gran
 	}), nil
 }
 
-// HeldKits returns the kits the caller holds now; it reads the active grants
-// only, as it runs at every check. binding is what grants are bound to
-// besides the user ([userctx.UserContext.GrantBinding]). A store that fails
-// contributes nothing: the caller then has its steady-state rights only.
-func (s *Service) HeldKits(ctx context.Context, userID, binding string) []string {
+// HeldKits returns the kits the caller holds now, whole and in part; it reads
+// the active grants only, as it runs at every check. binding is what grants
+// are bound to besides the user ([userctx.UserContext.GrantBinding]). A
+// grant whose entries include every entry the kit lists now counts as the
+// whole kit. A store that fails contributes nothing: the caller then has its
+// steady-state rights only.
+func (s *Service) HeldKits(ctx context.Context, userID, binding string) (whole []string, parts []authz.KitPart) {
 	if userID == "" {
-		return nil
+		return nil, nil
 	}
 	active, err := s.activeFor(ctx, userID, binding)
 	if err != nil {
 		s.logger.WarnContext(ctx, "grant store failed, checking without granted kits", "user", userID, "error", err)
-		return nil
+		return nil, nil
 	}
-	var out []string
 	for _, g := range active {
-		if !slices.Contains(out, g.Kit) {
-			out = append(out, g.Kit)
+		if !s.IsWhole(g) {
+			parts = append(parts, g.Part.kitPart(g.Kit))
+			continue
+		}
+		if !slices.Contains(whole, g.Kit) {
+			whole = append(whole, g.Kit)
 		}
 	}
-	return out
+	return whole, parts
+}
+
+// IsWhole reports whether the grant covers every entry its kit lists now: it
+// has no part, or its part names them all.
+func (s *Service) IsWhole(g Grant) bool {
+	if g.Part == nil {
+		return true
+	}
+	kit, _ := s.kit(g.Kit)
+	return kit.IsWhole(g.Part.kitPart(g.Kit))
+}
+
+// kitPart returns the part as the authorization engine takes it.
+func (p *Part) kitPart(kit string) authz.KitPart {
+	return authz.KitPart{Kit: kit, Grants: p.Grants, Tools: p.Tools}
 }
 
 // entry starts the audit entry of a grant action.
@@ -533,6 +681,10 @@ func (s *Service) entry(action string, start time.Time, g Grant) audit.AuditEntr
 	md := map[string]string{"grant_id": g.ID}
 	if g.Kit != "" {
 		md[keyKit] = g.Kit
+	}
+	if g.Part != nil {
+		setIfAny(md, "part_grants", strings.Join(g.Part.Grants, ","))
+		setIfAny(md, "part_tools", strings.Join(g.Part.Tools, ","))
 	}
 	if g.TTL > 0 {
 		md["ttl"] = FormatTTL(g.TTL)

@@ -60,6 +60,72 @@ type Kit struct {
 	TTLMax     time.Duration `yaml:"ttl_max,omitempty"`
 }
 
+// KitPart is the part of a kit an approver granted when not the whole kit:
+// some of its entries, by the scopes of its grants and the names of its
+// tools exactly as the kit lists them. An entry the kit no longer lists
+// allows nothing, and entries added to the kit later are not part of it, so
+// a change of the kit can only narrow what a part allows.
+type KitPart struct {
+	Kit    string
+	Grants []string
+	Tools  []string
+}
+
+// Part returns the part of the kit with the given entries, and an error that
+// names the first entry the kit does not list. Without entries it is an
+// error: a part covers at least one.
+func (k Kit) Part(grants, tools []string) (KitPart, error) {
+	if len(grants) == 0 && len(tools) == 0 {
+		return KitPart{}, errors.New("a part of a kit names at least one of its entries")
+	}
+	for _, g := range grants {
+		if !slices.Contains(k.Grants, g) {
+			return KitPart{}, fmt.Errorf("the kit %q has no grant %q", k.Name, g)
+		}
+	}
+	for _, t := range tools {
+		if !slices.Contains(k.Tools, t) {
+			return KitPart{}, fmt.Errorf("the kit %q has no tool %q", k.Name, t)
+		}
+	}
+	return KitPart{Kit: k.Name, Grants: slices.Compact(slices.Sorted(slices.Values(grants))), Tools: slices.Compact(slices.Sorted(slices.Values(tools)))}, nil
+}
+
+// IsWhole reports whether the part has every entry of the kit.
+func (k Kit) IsWhole(p KitPart) bool {
+	for _, g := range k.Grants {
+		if !slices.Contains(p.Grants, g) {
+			return false
+		}
+	}
+	for _, t := range k.Tools {
+		if !slices.Contains(p.Tools, t) {
+			return false
+		}
+	}
+	return true
+}
+
+// partObjects returns the OpenFGA objects the entries of the part stand for
+// that the kit still lists: a holder of the part is executor of each.
+func (k Kit) partObjects(p KitPart) []string {
+	var out []string
+	for _, g := range p.Grants {
+		if !slices.Contains(k.Grants, g) {
+			continue
+		}
+		if s, err := parseKitScope(g); err == nil {
+			out = append(out, s.object())
+		}
+	}
+	for _, t := range p.Tools {
+		if slices.Contains(k.Tools, t) {
+			out = append(out, "tool:"+escapeID(t))
+		}
+	}
+	return out
+}
+
 // kitScope is one parsed entry of Kit.Grants. An empty field matches any
 // value.
 type kitScope struct {
@@ -172,6 +238,14 @@ func (k Kit) Covers(tool, backend, access string) bool {
 		}
 	}
 	return false
+}
+
+// ScopeCovers reports whether one scope of Kit.Grants covers a tool routed to
+// backend with the access classification access. A malformed scope covers
+// nothing.
+func ScopeCovers(scope, backend, access string) bool {
+	s, err := parseKitScope(scope)
+	return err == nil && s.covers(backend, access)
 }
 
 // holder returns the OpenFGA userset of the kit's holders.

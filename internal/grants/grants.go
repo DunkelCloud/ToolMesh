@@ -16,9 +16,13 @@
 // limited time.
 //
 // A caller asks with the meta-tool request_grant; the request waits under a
-// short id until an approver approves or denies it, or it lapses. An approved
-// request becomes a grant of the kit to the caller that asked, the requesting
-// user as the caller it connected as, until the grant ends. Requests and
+// short id until an approver approves or denies it, or it lapses. Approvers
+// decide on the approver API with a key of their own, or on the approval
+// page by signing a statement of what they approve with the key of their
+// BIP-322 address; either way an approver can grant part of the kit and for
+// less time than asked. An approved request becomes a grant of the kit to
+// the caller that asked, the requesting user as the caller it connected as,
+// until the grant ends. Requests and
 // grants live in a [Store] that forgets them when they expire, so a grant
 // ends without anything to clean up and revoking it is deleting it. The
 // authorization engine stays the only place that decides: at every check the
@@ -27,7 +31,9 @@ package grants
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base32"
+	"encoding/hex"
 	"fmt"
 	"net/url"
 	"strings"
@@ -66,11 +72,77 @@ type Grant struct {
 	TTL         time.Duration `json:"ttl"`
 	RequestedAt time.Time     `json:"requested_at"`
 
+	// Nonce is a random value of the request. A signed approval names it,
+	// so that a signature approves this one request and no other.
+	Nonce string `json:"nonce,omitempty"`
+	// Coverage tells for each entry of the kit how many tools it covers and
+	// how many of them the caller could not call when it asked. ToolMesh
+	// computes it; nil when it could not.
+	Coverage []EntryCoverage `json:"coverage,omitempty"`
+
 	ApprovedBy string    `json:"approved_by,omitempty"`
 	ApprovedAt time.Time `json:"approved_at,omitzero"`
+	// ApprovedWith is how the approver approved: ApprovedWithKey or
+	// ApprovedWithSignature.
+	ApprovedWith string `json:"approved_with,omitempty"`
+	// Part, when set, is the part of the kit the approver granted: these
+	// entries only. Nil for the whole kit.
+	Part *Part `json:"part,omitempty"`
 
 	// ExpiresAt is when a pending request lapses or an active grant ends.
 	ExpiresAt time.Time `json:"expires_at"`
+}
+
+// How an approver approved a request (Grant.ApprovedWith).
+const (
+	// ApprovedWithKey: with an approver key on the approver API.
+	ApprovedWithKey = "key"
+	// ApprovedWithSignature: with a BIP-322 signature on the approval page.
+	ApprovedWithSignature = "signature"
+)
+
+// Part is the part of a kit an approver granted when not the whole kit: some
+// of its entries, the scopes of its grants and names of its tools as the kit
+// lists them.
+type Part struct {
+	Grants []string `json:"grants,omitempty"`
+	Tools  []string `json:"tools,omitempty"`
+}
+
+// EntryCoverage is what one entry of a kit gives the caller.
+type EntryCoverage struct {
+	// Entry is a scope of the kit's grants or, with Tool set, a tool it lists.
+	Entry string `json:"entry"`
+	Tool  bool   `json:"tool,omitempty"`
+	// Access is the access classification of a tool entry.
+	Access string `json:"access,omitempty"`
+	// Tools is how many tools the entry covers, New how many of them the
+	// caller could not call before.
+	Tools int `json:"tools"`
+	New   int `json:"new"`
+}
+
+// Fingerprint returns a short digest of the request (id, nonce, kit, whom it
+// is for, duration and reason) in four groups of four characters. The answer
+// of request_grant and the approval page show it, so that whoever approves
+// can check over a second channel that the page shows the request the agent
+// made.
+func (g Grant) Fingerprint() string {
+	h := sha256.New()
+	for _, f := range []string{"toolmesh grant request", g.ID, g.Nonce, g.Kit, g.UserID, g.Subject().Binding, FormatTTL(g.TTL), g.Reason} {
+		_, _ = fmt.Fprintf(h, "%d:%s\n", len(f), f)
+	}
+	s := strings.ToUpper(hex.EncodeToString(h.Sum(nil)[:8]))
+	return s[0:4] + "-" + s[4:8] + "-" + s[8:12] + "-" + s[12:16]
+}
+
+// newNonce returns 128 random bits as hex.
+func newNonce() (string, error) {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("generate request nonce: %w", err)
+	}
+	return hex.EncodeToString(b), nil
 }
 
 // Subject identifies whom a grant is for: the user, as the connection it is

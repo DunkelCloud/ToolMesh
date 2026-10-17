@@ -21,6 +21,8 @@ import (
 	"log/slog"
 	"net/http"
 	"time"
+
+	"github.com/DunkelCloud/ToolMesh/internal/auth"
 )
 
 // SecurityHeaders sets standard security response headers on all responses (M-4).
@@ -75,7 +77,7 @@ func RequestLogging(logger *slog.Logger) func(http.Handler) http.Handler {
 			logger.InfoContext(ctx, "http request start",
 				"method", r.Method,
 				"path", r.URL.Path,
-				"remote", clientIP(r),
+				"remote", auth.ClientIP(r),
 			)
 
 			next.ServeHTTP(rw, r)
@@ -85,7 +87,7 @@ func RequestLogging(logger *slog.Logger) func(http.Handler) http.Handler {
 				"path", r.URL.Path,
 				"status", rw.status,
 				"duration_ms", time.Since(start).Milliseconds(),
-				"remote", clientIP(r),
+				"remote", auth.ClientIP(r),
 			)
 		})
 	}

@@ -75,6 +75,8 @@ const (
 	// writeChunk stays within OpenFGA's limit of tuples per write request.
 	writeChunk = 100
 	readPage   = 100
+	// maxContextualTuples is OpenFGA's limit of contextual tuples per check.
+	maxContextualTuples = 100
 
 	// dbConns bounds the SQLite connections of the embedded engine. Checks
 	// beyond it wait for a connection instead of opening the file again.
@@ -484,6 +486,28 @@ func (e *Embedded) Check(ctx context.Context, req Request) (bool, error) {
 		seen[k] = true
 		ctxTuples = append(ctxTuples, &openfgav1.TupleKey{User: user, Relation: relHolder, Object: "kit:" + escapeID(k)})
 	}
+	// A kit held in part makes the caller executor of what the granted
+	// entries stand for, so that it gets those and nothing else of the kit.
+	clear(seen)
+	if len(req.KitParts) > 0 {
+		kits := *e.kits.Load()
+		for _, p := range req.KitParts {
+			i := slices.IndexFunc(kits, func(k Kit) bool { return k.Name == p.Kit })
+			if i < 0 {
+				continue
+			}
+			for _, obj := range kits[i].partObjects(p) {
+				if !seen[obj] {
+					seen[obj] = true
+					ctxTuples = append(ctxTuples, &openfgav1.TupleKey{User: user, Relation: relExecutor, Object: obj})
+				}
+			}
+		}
+	}
+	if len(ctxTuples) > maxContextualTuples {
+		return false, fmt.Errorf("authz check for user=%s tool=%s: %d contextual tuples, OpenFGA takes at most %d; the caller holds too many kit entries",
+			req.UserID, req.Tool, len(ctxTuples), maxContextualTuples)
+	}
 
 	resp, err := e.srv.Check(ctx, &openfgav1.CheckRequest{
 		StoreId:              e.storeID,
@@ -733,7 +757,13 @@ func equivalenceKey(r Request) string {
 	roles := slices.Compact(slices.Sorted(slices.Values(r.Roles)))
 	kits := slices.Compact(slices.Sorted(slices.Values(r.Kits)))
 	parts := append([]string{r.UserID, r.CompanyID, r.Plan, r.Backend, r.Access, strconv.FormatBool(r.Tool == ""), strconv.Itoa(len(roles))}, roles...)
+	parts = append(parts, strconv.Itoa(len(kits)))
 	parts = append(parts, kits...)
+	for _, p := range r.KitParts {
+		parts = append(parts, p.Kit, strconv.Itoa(len(p.Grants)), strconv.Itoa(len(p.Tools)))
+		parts = append(parts, p.Grants...)
+		parts = append(parts, p.Tools...)
+	}
 	var b strings.Builder
 	for _, p := range parts {
 		b.WriteString(strconv.Itoa(len(p)))

@@ -416,9 +416,19 @@ func main() {
 	if authzEngine.embedded != nil {
 		var grantStore grants.Store = grants.NewMemoryStore()
 		grantStoreName := "process-local"
+		// Refused signatures on the approval page are counted like failed
+		// logins, in a namespace of their own and shared through Redis.
+		var approvalThrottle *auth.LoginThrottle
 		if redisClient != nil {
 			grantStore = grants.NewRedisStore(redisClient)
 			grantStoreName = "redis"
+			approvalThrottle = auth.NewLoginThrottle(grants.ApprovalThrottleConfig, redisClient, logger)
+		}
+		// Links to the approval page need the address approvers reach this
+		// ToolMesh at; the placeholder issuer is no such address.
+		publicURL := ""
+		if !cfg.IssuerIsPlaceholder() {
+			publicURL = strings.TrimRight(cfg.Issuer, "/")
 		}
 		grantService = grants.New(grants.Options{
 			Store:     grantStore,
@@ -426,10 +436,13 @@ func main() {
 			Approvers: authzEngine.embedded,
 			Audit:     auditStore,
 			Logger:    logger,
+			PublicURL: publicURL,
+			Throttle:  approvalThrottle,
 		})
 		exec.SetKitHolder(grantService)
 		mcpHandler.SetGrants(grantService)
-		logger.Info("kit grants configured", "store", grantStoreName, "api", grants.PathPrefix)
+		logger.Info("kit grants configured", "store", grantStoreName, "api", grants.PathPrefix,
+			"approvalPage", grants.ApprovePathPrefix+"/", "approvalLinks", publicURL != "")
 	}
 
 	// Failed-login limits for the password login. NewServer counts in process
@@ -457,6 +470,9 @@ func main() {
 		approverAPI := grantService.Handler()
 		httpMux.Handle(grants.PathPrefix, approverAPI)
 		httpMux.Handle(grants.PathPrefix+"/", approverAPI)
+		// The approval page. It takes no credential: approving on it takes
+		// a signature by the key of an approver's address.
+		httpMux.Handle(grants.ApprovePathPrefix+"/", grantService.ApprovalHandler())
 	}
 
 	// Wrap with middleware: panic recovery (outermost) → security headers → request logging.

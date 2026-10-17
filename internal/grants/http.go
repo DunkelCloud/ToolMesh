@@ -36,29 +36,36 @@ const jsonKeyError = "error"
 const maxBodyBytes = 4096
 
 // viewNote tells an approver which parts of a request come from where.
-const viewNote = "The description, warning and scope come from the ToolMesh configuration. " +
+const viewNote = "The description, warning, scope and coverage come from the ToolMesh configuration and its tools. " +
 	"The reason and the caller_name are the requester's own statements; ToolMesh does not verify them."
 
 // grantView is a request or grant as the approver API shows it.
 type grantView struct {
-	ID          string    `json:"id"`
-	State       string    `json:"state"`
-	Kit         string    `json:"kit"`
-	Description string    `json:"description,omitempty"`
-	Warning     string    `json:"warning,omitempty"`
-	Grants      []string  `json:"grants,omitempty"`
-	Tools       []string  `json:"tools,omitempty"`
-	UserID      string    `json:"user_id"`
-	CallerID    string    `json:"caller_id"`
-	CallerName  string    `json:"caller_name,omitempty"`
-	CompanyID   string    `json:"company_id,omitempty"`
-	GrantKey    string    `json:"grant_key,omitempty"`
-	Reason      string    `json:"reason"`
-	TTL         string    `json:"ttl"`
-	RequestedAt time.Time `json:"requested_at"`
-	ApprovedBy  string    `json:"approved_by,omitempty"`
-	ApprovedAt  time.Time `json:"approved_at,omitzero"`
-	ExpiresAt   time.Time `json:"expires_at"`
+	ID          string          `json:"id"`
+	State       string          `json:"state"`
+	Kit         string          `json:"kit"`
+	Description string          `json:"description,omitempty"`
+	Warning     string          `json:"warning,omitempty"`
+	Grants      []string        `json:"grants,omitempty"`
+	Tools       []string        `json:"tools,omitempty"`
+	Coverage    []EntryCoverage `json:"coverage,omitempty"`
+	UserID      string          `json:"user_id"`
+	CallerID    string          `json:"caller_id"`
+	CallerName  string          `json:"caller_name,omitempty"`
+	CompanyID   string          `json:"company_id,omitempty"`
+	GrantKey    string          `json:"grant_key,omitempty"`
+	Reason      string          `json:"reason"`
+	TTL         string          `json:"ttl"`
+	RequestedAt time.Time       `json:"requested_at"`
+	Fingerprint string          `json:"fingerprint,omitempty"`
+	ApprovalURL string          `json:"approval_url,omitempty"`
+	ApprovedBy  string          `json:"approved_by,omitempty"`
+	ApprovedAt  time.Time       `json:"approved_at,omitzero"`
+	// ApprovedWith is "key" or "signature".
+	ApprovedWith string `json:"approved_with,omitempty"`
+	// Part lists the entries granted when the grant covers part of the kit.
+	Part      *Part     `json:"part,omitempty"`
+	ExpiresAt time.Time `json:"expires_at"`
 }
 
 // listView is the answer of GET /grants.
@@ -80,7 +87,9 @@ type singleView struct {
 //
 //	GET  /grants              pending requests and active grants
 //	GET  /grants/{id}         one request or grant
-//	POST /grants/{id}/approve grant the kit; optional body {"ttl": "2h"} to shorten
+//	POST /grants/{id}/approve grant the kit; optional body {"ttl": "2h"} to
+//	                          shorten, {"grants": [...], "tools": [...]} to
+//	                          grant only these entries of the kit
 //	POST /grants/{id}/deny    reject a pending request
 //	POST /grants/{id}/revoke  end an active grant now
 func (s *Service) Handler() http.Handler {
@@ -138,7 +147,9 @@ func (s *Service) handleGet(w http.ResponseWriter, r *http.Request) {
 
 func (s *Service) handleApprove(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		TTL string `json:"ttl"`
+		TTL    string   `json:"ttl"`
+		Grants []string `json:"grants"`
+		Tools  []string `json:"tools"`
 	}
 	data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBodyBytes))
 	if err != nil {
@@ -147,7 +158,7 @@ func (s *Service) handleApprove(w http.ResponseWriter, r *http.Request) {
 	}
 	if strings.TrimSpace(string(data)) != "" {
 		if err := json.Unmarshal(data, &body); err != nil {
-			writeError(w, http.StatusBadRequest, "the body must be empty or JSON such as {\"ttl\": \"2h\"}")
+			writeError(w, http.StatusBadRequest, "the body must be empty or JSON such as {\"ttl\": \"2h\", \"grants\": [\"graylog:read\"]}")
 			return
 		}
 	}
@@ -156,7 +167,7 @@ func (s *Service) handleApprove(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	g, err := s.Approve(r.Context(), approverFrom(r).Name, r.PathValue("id"), ttl)
+	g, err := s.ApproveWith(r.Context(), approverFrom(r).Name, r.PathValue("id"), Approval{TTL: ttl, Grants: body.Grants, Tools: body.Tools})
 	s.answer(w, r, g, err)
 }
 
@@ -195,23 +206,31 @@ func (s *Service) fail(w http.ResponseWriter, r *http.Request, err error) {
 // view renders g with what its kit says in the configuration.
 func (s *Service) view(g Grant) grantView {
 	v := grantView{
-		ID:          g.ID,
-		State:       g.State,
-		Kit:         g.Kit,
-		UserID:      g.UserID,
-		CallerID:    g.CallerID,
-		CallerName:  g.CallerName,
-		CompanyID:   g.CompanyID,
-		GrantKey:    g.GrantKey,
-		Reason:      g.Reason,
-		TTL:         FormatTTL(g.TTL),
-		RequestedAt: g.RequestedAt,
-		ApprovedBy:  g.ApprovedBy,
-		ApprovedAt:  g.ApprovedAt,
-		ExpiresAt:   g.ExpiresAt,
+		ID:           g.ID,
+		State:        g.State,
+		Kit:          g.Kit,
+		Coverage:     g.Coverage,
+		UserID:       g.UserID,
+		CallerID:     g.CallerID,
+		CallerName:   g.CallerName,
+		CompanyID:    g.CompanyID,
+		GrantKey:     g.GrantKey,
+		Reason:       g.Reason,
+		TTL:          FormatTTL(g.TTL),
+		RequestedAt:  g.RequestedAt,
+		ApprovedBy:   g.ApprovedBy,
+		ApprovedAt:   g.ApprovedAt,
+		ApprovedWith: g.ApprovedWith,
+		ExpiresAt:    g.ExpiresAt,
+	}
+	if g.State == StatePending {
+		v.Fingerprint, v.ApprovalURL = g.Fingerprint(), s.ApprovalURL(g.ID)
 	}
 	if k, ok := s.kit(g.Kit); ok {
 		v.Description, v.Warning, v.Grants, v.Tools = k.Description, k.Warning, k.Grants, k.Tools
+		if !s.IsWhole(g) {
+			v.Part = g.Part
+		}
 	}
 	return v
 }

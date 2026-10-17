@@ -115,10 +115,13 @@ type rightsBundle struct {
 
 // rightsGrant is a kit the caller holds.
 type rightsGrant struct {
-	ID        string    `json:"id"`
-	Kit       string    `json:"kit"`
-	ExpiresAt time.Time `json:"expires_at"`
-	Remaining string    `json:"remaining"`
+	ID  string `json:"id"`
+	Kit string `json:"kit"`
+	// Part lists the entries granted when the approver granted part of the
+	// kit; absent for the whole kit.
+	Part      *grants.Part `json:"part,omitempty"`
+	ExpiresAt time.Time    `json:"expires_at"`
+	Remaining string       `json:"remaining"`
 }
 
 // rightsRequest is a request of the caller that waits for an approver.
@@ -222,12 +225,16 @@ func (h *Handler) callerGrants(ctx context.Context, uc *userctx.UserContext, ans
 	}
 	now := time.Now()
 	for _, g := range active {
-		answer.Grants = append(answer.Grants, rightsGrant{
+		rg := rightsGrant{
 			ID:        g.ID,
 			Kit:       g.Kit,
 			ExpiresAt: g.ExpiresAt,
 			Remaining: formatRemaining(g.ExpiresAt.Sub(now)),
-		})
+		}
+		if g.Part != nil && !h.grants.IsWhole(g) {
+			rg.Part = g.Part
+		}
+		answer.Grants = append(answer.Grants, rg)
 		kitsUsed[g.Kit] = true
 	}
 	for _, g := range pending {

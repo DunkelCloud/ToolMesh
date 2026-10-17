@@ -88,7 +88,7 @@ func TestHTTP_Lifecycle(t *testing.T) {
 		approved.State != StateActive || approved.TTL != "1h" || approved.ApprovedBy != testApprover {
 		t.Fatalf("approve = %d %+v", code, approved)
 	}
-	if kits := env.svc.HeldKits(t.Context(), testUser, testCaller); len(kits) != 1 {
+	if kits := heldWhole(t.Context(), env.svc, testCaller); len(kits) != 1 {
 		t.Errorf("HeldKits after approval = %v", kits)
 	}
 

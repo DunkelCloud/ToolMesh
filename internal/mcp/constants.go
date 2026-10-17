@@ -54,10 +54,11 @@ const (
 	debugPatternASCII = "ascii"
 
 	// Outcome / log field literals.
-	outcomeError = "error"
-	logKeyTool   = "tool"
-	logKeyRemote = "remote"
-	logKeyReason = "reason"
+	outcomeError   = "error"
+	outcomeSuccess = "success"
+	logKeyTool     = "tool"
+	logKeyRemote   = "remote"
+	logKeyReason   = "reason"
 
 	// logKeyCredential says what an unauthorized request carried: nothing,
 	// or a bearer credential that was rejected.

@@ -24,6 +24,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/DunkelCloud/ToolMesh/internal/auth"
 	"github.com/DunkelCloud/ToolMesh/internal/config"
 )
 
@@ -80,8 +81,8 @@ func TestClientIP(t *testing.T) {
 			if tt.xff != "" {
 				r.Header.Set("X-Forwarded-For", tt.xff)
 			}
-			if got := clientIP(r); got != tt.want {
-				t.Errorf("clientIP = %q, want %q", got, tt.want)
+			if got := auth.ClientIP(r); got != tt.want {
+				t.Errorf("ClientIP = %q, want %q", got, tt.want)
 			}
 		})
 	}

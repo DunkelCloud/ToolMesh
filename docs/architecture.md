@@ -70,9 +70,13 @@ marked `grant_required`, and the meta-tool `tell_me_my_rights` answers what a
 caller may do, per backend or as a preflight over the tools of a task. Both
 are information only. A caller asks for a kit with the meta-tool
 `request_grant`; an approver from `config/authz.yaml` approves it on the
-approver API (`/grants`) with a key of its own. The grant lives in Redis, or in
-process memory without one, until it expires or is revoked, and every check
-passes the caller's granted kits as contextual tuples. `TOOLMESH_AUTHZ_MODE=disabled`
+approver API (`/grants`) with a key of its own, or on the approval page
+(`/approve/<id>`) by signing a statement ToolMesh writes for the request with
+the key of its BIP-322 address, possibly for fewer entries of the kit and less
+time. The grant lives in Redis, or in process memory without one, until it
+expires or is revoked, and every check passes the caller's granted kits as
+contextual tuples: a whole kit as its role, a part of one as the entries
+granted. `TOOLMESH_AUTHZ_MODE=disabled`
 is the only way to skip the check; it is reported at startup and recorded in
 the audit trail.
 

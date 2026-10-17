@@ -109,6 +109,25 @@ Without a persistent data directory every start reports a new site ID. See
   `TOOLMESH_AUTH_PASSWORD`, a `key_sha256` in `apikeys.yaml`) is refused, and
   a kit without `ttl_max` may not have a `ttl_default` above 24 hours. See
   `docs/configuration.md`, "Granting kits".
+- Approval page `/approve/<id>`: an approver with a signing address
+  (`approvers:` → `address`, a P2WPKH `bc1q…` address) approves a request by
+  signing a statement ToolMesh writes for it (BIP-322), in the page with the
+  private key, which never leaves the browser, or in a wallet. The page shows
+  the kit's entries grouped by what they allow, with how many tools each
+  covers and how many are new to the caller, and the approver can untick
+  entries and shorten the duration; the grant then covers exactly the signed
+  entries. `request_grant` answers with the link (when `TOOLMESH_ISSUER` is
+  set) and a fingerprint of the request; messengers get a link preview without
+  the requester's text. The page is part of the binary, with a strict Content
+  Security Policy, and offers making a signing key at `/approve/`. Approvals
+  record the address, signature and statement in the audit trail; refused
+  signatures are limited per request and source address (`429` with
+  `Retry-After`), in counters apart from the login limits. The
+  approver API grants part of a kit too (`grants`, `tools` in the approve
+  body). See `docs/configuration.md`, "Approval page".
+- `execute_code` scripts can call `toolmesh.request_grant({...})` and
+  `toolmesh.tell_me_my_rights({...})`. A client that keeps the tool list it
+  got before kits were defined reaches `request_grant` there.
 - Meta-tool `tell_me_my_rights`: what the caller may do, per backend, for one
   backend, or as a preflight over the tools a task needs, with the smallest
   set of kits that covers what is missing. Information only; every call is

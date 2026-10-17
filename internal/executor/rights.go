@@ -153,16 +153,71 @@ func (e *Executor) assess(ctx context.Context, reqs []authz.Request, allowed []b
 // authzRequests describes a call of each tool for the authorizer, with the
 // kits the caller holds looked up once for all of them.
 func (e *Executor) authzRequests(ctx context.Context, uc *userctx.UserContext, tools []backend.ToolDescriptor) []authz.Request {
-	kits := e.heldKits(ctx, uc)
+	h := e.heldKits(ctx, uc)
 	reqs := make([]authz.Request, len(tools))
 	for i, t := range tools {
 		access := t.Access
 		if access == "" {
 			access = e.lookupToolAccess(t.Name)
 		}
-		reqs[i] = e.authzRequest(uc, t.Name, access, kits)
+		reqs[i] = e.authzRequest(uc, t.Name, access, h)
 	}
 	return reqs
+}
+
+// KitCoverage tells for each entry of the kit how many of the tools it
+// covers, and how many of those the caller may not execute now. It is what
+// an approver sees of a request for the kit: computed by ToolMesh with the
+// checks AssessTools makes, never taken from the caller.
+func (e *Executor) KitCoverage(ctx context.Context, uc *userctx.UserContext, kit authz.Kit, tools []backend.ToolDescriptor) []grants.EntryCoverage {
+	reqs := e.authzRequests(ctx, uc, tools)
+	allowed := make([]bool, len(reqs))
+	if e.authorizer == nil {
+		for i := range allowed {
+			allowed[i] = true
+		}
+	} else {
+		var covered []int
+		for i, r := range reqs {
+			if kit.Covers(r.Tool, r.Backend, r.Access) {
+				covered = append(covered, i)
+			}
+		}
+		sub := make([]authz.Request, len(covered))
+		for j, i := range covered {
+			sub[j] = reqs[i]
+		}
+		for j, ok := range e.checkAll(ctx, sub) {
+			allowed[covered[j]] = ok
+		}
+	}
+
+	out := make([]grants.EntryCoverage, 0, len(kit.Grants)+len(kit.Tools))
+	for _, scope := range kit.Grants {
+		c := grants.EntryCoverage{Entry: scope}
+		for i, r := range reqs {
+			if authz.ScopeCovers(scope, r.Backend, r.Access) {
+				c.Tools++
+				if !allowed[i] {
+					c.New++
+				}
+			}
+		}
+		out = append(out, c)
+	}
+	for _, name := range kit.Tools {
+		c := grants.EntryCoverage{Entry: name, Tool: true}
+		for i, r := range reqs {
+			if r.Tool == name {
+				c.Access, c.Tools = r.Access, 1
+				if !allowed[i] {
+					c.New = 1
+				}
+			}
+		}
+		out = append(out, c)
+	}
+	return out
 }
 
 // checkAll checks every request, in one batch when the authorizer supports

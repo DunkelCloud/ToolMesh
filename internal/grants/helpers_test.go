@@ -39,6 +39,9 @@ const (
 	testOtherCall  = "claude-desktop"
 	testApprover   = "alice"
 	testReason     = "Debug the UniFi outage, ticket 4711"
+	// The scopes of the kit net-diag-read.
+	testScopeGraylog = "graylog:read"
+	testScopeUnifi   = "unifi:read"
 	// testApproverKey is the key of the approver alice in these tests.
 	testApproverKey = "approver-key-for-tests" //nolint:gosec // test fixture, not a credential
 )
@@ -86,7 +89,7 @@ func newTestCatalog() *testCatalog {
 	return &testCatalog{
 		kits: []authz.Kit{
 			{Name: testKitAdmin, Description: "Full access", Warning: "Production systems.", Grants: []string{"*"}, TTLDefault: 10 * time.Minute, TTLMax: 30 * time.Minute},
-			{Name: testKitNetDiag, Description: "Network diagnosis (read-only)", Grants: []string{"graylog:read", "unifi:read"}, TTLDefault: 4 * time.Hour, TTLMax: 24 * time.Hour},
+			{Name: testKitNetDiag, Description: "Network diagnosis (read-only)", Grants: []string{testScopeGraylog, testScopeUnifi}, TTLDefault: 4 * time.Hour, TTLMax: 24 * time.Hour},
 		},
 		approvers: []authz.Approver{{Name: testApprover, KeySHA256: keySum(testApproverKey)}},
 	}
@@ -176,4 +179,10 @@ func (e *testEnv) request(t *testing.T, kit, ttl string) RequestResult {
 		t.Fatalf("Request(%s): %v", kit, err)
 	}
 	return res
+}
+
+// heldWhole returns the kits bob holds whole on the connection binding.
+func heldWhole(ctx context.Context, s *Service, binding string) []string {
+	whole, _ := s.HeldKits(ctx, testUser, binding)
+	return whole
 }

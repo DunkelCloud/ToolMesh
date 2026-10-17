@@ -349,3 +349,66 @@ func TestApprovalURL(t *testing.T) {
 		t.Errorf("ApprovalURL without public URL = %q", got)
 	}
 }
+
+// serveFrom calls the approval handler from the source address ip.
+func serveFrom(t *testing.T, h http.Handler, ip, path string, body any) *httptest.ResponseRecorder {
+	t.Helper()
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(body); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, path, &buf)
+	req.RemoteAddr = ip + ":40000"
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	return rec
+}
+
+func TestApprovalHandler_ThrottlesRefusedSignatures(t *testing.T) {
+	env := newSigningEnv(t)
+	h := env.svc.ApprovalHandler()
+	res := env.request(t, testKitNetDiag, "")
+	path := ApprovePathPrefix + "/" + res.Grant.ID
+	const attacker, approver = "203.0.113.7", "198.51.100.9"
+
+	choice := approvalBody{Approver: testSigner}
+	st, err := env.svc.Statement(context.Background(), res.Grant.ID, testSigner, Approval{}, testAudience)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrong := choice
+	wrong.Signature = env.js.sign(testOtherKey, st.Text)
+	for i := range approvalFailuresPerRequestIP {
+		if rec := serveFrom(t, h, attacker, path, wrong); rec.Code != http.StatusBadRequest {
+			t.Fatalf("refused signature %d = %d, want 400", i+1, rec.Code)
+		}
+	}
+	audited := len(env.audit.entries)
+	rec := serveFrom(t, h, attacker, path, wrong)
+	if rec.Code != http.StatusTooManyRequests || rec.Header().Get("Retry-After") == "" {
+		t.Fatalf("signature after the limit = %d, Retry-After %q", rec.Code, rec.Header().Get("Retry-After"))
+	}
+	if len(env.audit.entries) != audited {
+		t.Error("a throttled attempt was verified and audited")
+	}
+
+	// The approver from another address is not locked out by the attacker.
+	good := choice
+	good.Signature = env.js.sign(testSignerKey, st.Text)
+	if rec := serveFrom(t, h, approver, path, good); rec.Code != http.StatusOK {
+		t.Fatalf("approval from another address = %d %s", rec.Code, rec.Body)
+	}
+
+	// A request that is not pending does not count against the limits.
+	other := env.request(t, testKitAdmin, "")
+	for range approvalFailuresPerIP + 1 {
+		if rec := serveFrom(t, h, approver, ApprovePathPrefix+"/nope", good); rec.Code != http.StatusNotFound {
+			t.Fatalf("approval of an unknown request = %d, want 404", rec.Code)
+		}
+	}
+	st, _ = env.svc.Statement(context.Background(), other.Grant.ID, testSigner, Approval{}, testAudience)
+	good.Signature = env.js.sign(testSignerKey, st.Text)
+	if rec := serveFrom(t, h, approver, ApprovePathPrefix+"/"+other.Grant.ID, good); rec.Code != http.StatusOK {
+		t.Errorf("approval after unknown requests = %d %s", rec.Code, rec.Body)
+	}
+}

@@ -1220,3 +1220,27 @@ func TestLoginThrottle_RandomWalkMatchesModel(t *testing.T) {
 		mr.Close()
 	}
 }
+
+func TestLoginThrottle_NamespacesAreApart(t *testing.T) {
+	for _, be := range throttleBackends(t) {
+		t.Run(be.name, func(t *testing.T) {
+			cfg := LoginThrottleConfig{MaxFailuresPerIP: 2, Window: time.Minute}
+			logins := be.new(t, cfg)
+			cfg.Namespace = "approve"
+			approvals := NewLoginThrottle(cfg, logins.rdb, discardLogger())
+			approvals.now = logins.now
+
+			if got := fail(approvals, testLoginAccount, testLoginIP, 3); got != 2 {
+				t.Fatalf("namespaced attempts allowed: %d, want 2", got)
+			}
+			if !logins.Acquire(context.Background(), testLoginAccount, testLoginIP).Allowed {
+				t.Error("failures in another namespace used up the login limit")
+			}
+		})
+	}
+	th := NewLoginThrottle(LoginThrottleConfig{Namespace: "approve"}, nil, discardLogger())
+	key := th.namespaced(loginIPKey(testLoginIP))
+	if !strings.HasPrefix(key, "auth:{approve}:failures:") || key == loginIPKey(testLoginIP) {
+		t.Errorf("namespaced key = %q", key)
+	}
+}

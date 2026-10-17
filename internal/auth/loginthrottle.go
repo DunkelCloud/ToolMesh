@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/netip"
+	"strings"
 	"sync"
 	"time"
 
@@ -76,6 +77,10 @@ type LoginThrottleConfig struct {
 	MaxFailuresPerUser   int
 	MaxFailuresPerIP     int
 	Window               time.Duration
+	// Namespace keeps the counters of another kind of attempt apart from the
+	// password logins', in Redis and in process memory, so that failures of
+	// one kind never use up the other's limits. Empty for password logins.
+	Namespace string
 }
 
 // LoginAttempt is the outcome of LoginThrottle.Acquire. When Allowed is true
@@ -277,15 +282,25 @@ func (t *LoginThrottle) counters(account, ip string) []loginCounter {
 	// is reported against the narrowest one.
 	counters := make([]loginCounter, 0, 3)
 	if t.cfg.MaxFailuresPerUserIP > 0 {
-		counters = append(counters, loginCounter{scope: LoginScopeUserIP, key: loginUserIPKey(account, ip), limit: t.cfg.MaxFailuresPerUserIP})
+		counters = append(counters, loginCounter{scope: LoginScopeUserIP, key: t.namespaced(loginUserIPKey(account, ip)), limit: t.cfg.MaxFailuresPerUserIP})
 	}
 	if t.cfg.MaxFailuresPerUser > 0 {
-		counters = append(counters, loginCounter{scope: LoginScopeUser, key: loginUserKey(account), limit: t.cfg.MaxFailuresPerUser})
+		counters = append(counters, loginCounter{scope: LoginScopeUser, key: t.namespaced(loginUserKey(account)), limit: t.cfg.MaxFailuresPerUser})
 	}
 	if t.cfg.MaxFailuresPerIP > 0 {
-		counters = append(counters, loginCounter{scope: LoginScopeIP, key: loginIPKey(ip), limit: t.cfg.MaxFailuresPerIP})
+		counters = append(counters, loginCounter{scope: LoginScopeIP, key: t.namespaced(loginIPKey(ip)), limit: t.cfg.MaxFailuresPerIP})
 	}
 	return counters
+}
+
+// namespaced moves a counter key into the configured namespace. The hash tag
+// becomes the namespace, so a namespace's counters still share one slot on a
+// clustered Redis.
+func (t *LoginThrottle) namespaced(key string) string {
+	if t.cfg.Namespace == "" {
+		return key
+	}
+	return "auth:{" + t.cfg.Namespace + "}:failures:" + strings.TrimPrefix(key, prefixLoginFailures)
 }
 
 func (t *LoginThrottle) acquireRedis(ctx context.Context, counters []loginCounter) (LoginAttempt, error) {

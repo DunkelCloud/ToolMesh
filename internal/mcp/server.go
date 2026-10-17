@@ -27,7 +27,6 @@ import (
 	"html/template"
 	"io"
 	"log/slog"
-	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -281,7 +280,7 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 		if presented {
 			credential = credentialRejected
 		}
-		s.logger.InfoContext(ctx, "mcp request rejected: unauthorized", logKeyRemote, clientIP(r), logKeyCredential, credential)
+		s.logger.InfoContext(ctx, "mcp request rejected: unauthorized", logKeyRemote, auth.ClientIP(r), logKeyCredential, credential)
 		s.writeMCPUnauthorized(w, presented)
 		return
 	}
@@ -724,7 +723,7 @@ func (s *Server) apiKeyCaller(entry *auth.APIKeyEntry) *userctx.UserContext {
 // failed login, so nothing is counted.
 func (s *Server) compareDeferred(r *http.Request, method string, err error) {
 	s.logger.WarnContext(r.Context(), "authentication deferred: no password hash comparison could be started",
-		"method", method, logKeyRemote, clientIP(r), outcomeError, err)
+		"method", method, logKeyRemote, auth.ClientIP(r), outcomeError, err)
 }
 
 // writeMCPUnauthorized answers an MCP request without a valid credential: 401
@@ -780,7 +779,7 @@ func (s *Server) bearerRejected(r *http.Request, bearer string, checkedAPIKey, c
 		level, reason = slog.LevelInfo, loginReasonUnknownToken
 	}
 	s.logger.Log(r.Context(), level, "bearer authentication failed",
-		"method", method, logKeyRemote, clientIP(r), logKeyReason, reason)
+		"method", method, logKeyRemote, auth.ClientIP(r), logKeyReason, reason)
 }
 
 // isIssuedTokenShape reports whether v has the form generateID gives the
@@ -810,7 +809,7 @@ func (s *Server) loginFailed(r *http.Request, username, reason string) {
 // login failures in the metric's sense.
 func (s *Server) loginRejected(r *http.Request, username, reason string) {
 	s.logger.WarnContext(r.Context(), "login failed",
-		"username", truncateForLog(username), logKeyRemote, clientIP(r), logKeyReason, reason)
+		"username", truncateForLog(username), logKeyRemote, auth.ClientIP(r), logKeyReason, reason)
 }
 
 // tokenGrantRefused records a token request on a server that has no password
@@ -819,7 +818,7 @@ func (s *Server) loginRejected(r *http.Request, username, reason string) {
 func (s *Server) tokenGrantRefused(r *http.Request, method string) {
 	s.metrics.RecordLogin(method, "failure")
 	s.logger.WarnContext(r.Context(), "token grant refused",
-		"method", method, logKeyRemote, clientIP(r), logKeyReason, loginReasonPasswordLoginDisabled)
+		"method", method, logKeyRemote, auth.ClientIP(r), logKeyReason, loginReasonPasswordLoginDisabled)
 }
 
 // truncateForLog bounds an attacker-chosen value before it is logged.
@@ -837,32 +836,6 @@ func extractBearer(r *http.Request) string {
 	}
 	// L-1: Do not return raw header for non-Bearer auth types.
 	return ""
-}
-
-// clientIP extracts the client IP address. Uses the rightmost non-private IP
-// from X-Forwarded-For to prevent spoofing (H-6), falling back to RemoteAddr.
-func clientIP(r *http.Request) string {
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		parts := strings.Split(xff, ",")
-		// Walk from right to left, return the first non-private IP.
-		// The rightmost entry is set by the closest trusted proxy.
-		for i := len(parts) - 1; i >= 0; i-- {
-			ip := strings.TrimSpace(parts[i])
-			parsed := net.ParseIP(ip)
-			if parsed == nil {
-				continue
-			}
-			if parsed.IsLoopback() || parsed.IsPrivate() || parsed.IsLinkLocalUnicast() {
-				continue
-			}
-			return ip
-		}
-	}
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		return r.RemoteAddr
-	}
-	return host
 }
 
 // OAuth 2.1 Endpoints
@@ -918,7 +891,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 
 	// DCR Rate Limiting
 	if s.rateLimiter != nil {
-		ip := clientIP(r)
+		ip := auth.ClientIP(r)
 		allowed, err := s.rateLimiter.Allow(ctx, ip)
 		if err != nil {
 			s.logger.ErrorContext(ctx, "dcr rate limit check failed", outcomeError, err)
@@ -1116,7 +1089,7 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	if s.userStore == nil {
 		account = s.cfg.AuthUser
 	}
-	attempt := s.loginThrottle.Acquire(r.Context(), account, clientIP(r))
+	attempt := s.loginThrottle.Acquire(r.Context(), account, auth.ClientIP(r))
 	if !attempt.Allowed {
 		s.loginFailed(r, username, loginReasonThrottledPrefix+attempt.Scope)
 		wait := retryAfterSeconds(attempt.RetryAfter)

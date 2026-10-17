@@ -29,6 +29,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/DunkelCloud/ToolMesh/internal/audit"
+	"github.com/DunkelCloud/ToolMesh/internal/auth"
 	"github.com/DunkelCloud/ToolMesh/internal/authz"
 	"github.com/DunkelCloud/ToolMesh/internal/userctx"
 	"github.com/google/uuid"
@@ -106,6 +107,32 @@ type Options struct {
 	// answers with the link to the approval page, and signed approvals name
 	// it. Empty when it is not configured.
 	PublicURL string
+	// Throttle limits refused signed approvals on the approval page. Nil
+	// keeps the counters in process memory; give one made with
+	// ApprovalThrottleConfig and Redis to share them between instances.
+	Throttle *auth.LoginThrottle
+}
+
+// Limits of refused signed approvals on the approval page, per request and
+// source address, per request and per source address, within
+// approvalFailureWindow. Only refusals count: a signature that does not
+// verify, or choices that do not fit the request.
+const (
+	approvalFailuresPerRequestIP = 5
+	approvalFailuresPerRequest   = 10
+	approvalFailuresPerIP        = 20
+	approvalFailureWindow        = 15 * time.Minute
+)
+
+// ApprovalThrottleConfig is the throttle configuration of the approval page,
+// in a namespace of its own: refused signatures never use up the limits of
+// password logins.
+var ApprovalThrottleConfig = auth.LoginThrottleConfig{
+	MaxFailuresPerUserIP: approvalFailuresPerRequestIP,
+	MaxFailuresPerUser:   approvalFailuresPerRequest,
+	MaxFailuresPerIP:     approvalFailuresPerIP,
+	Window:               approvalFailureWindow,
+	Namespace:            "approve",
 }
 
 // Service handles requests for kits and the grants that follow from them.
@@ -116,6 +143,7 @@ type Service struct {
 	audit     audit.AuditStore
 	logger    *slog.Logger
 	publicURL string
+	throttle  *auth.LoginThrottle
 	now       func() time.Time
 }
 
@@ -125,6 +153,10 @@ func New(opts Options) *Service {
 	if logger == nil {
 		logger = slog.Default()
 	}
+	throttle := opts.Throttle
+	if throttle == nil {
+		throttle = auth.NewLoginThrottle(ApprovalThrottleConfig, nil, logger)
+	}
 	return &Service{
 		store:     opts.Store,
 		kits:      opts.Kits,
@@ -132,6 +164,7 @@ func New(opts Options) *Service {
 		audit:     opts.Audit,
 		logger:    logger,
 		publicURL: strings.TrimRight(opts.PublicURL, "/"),
+		throttle:  throttle,
 		now:       time.Now,
 	}
 }

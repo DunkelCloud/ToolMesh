@@ -22,8 +22,11 @@ import (
 	"io"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
+
+	"github.com/DunkelCloud/ToolMesh/internal/auth"
 )
 
 // ApprovePathPrefix is where the approval page is served: /approve/{id} for
@@ -394,12 +397,28 @@ func (s *Service) handleApproveSigned(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "the signature is missing")
 		return
 	}
-	id := r.PathValue("id")
+	id, ip := r.PathValue("id"), auth.ClientIP(r)
+	attempt := s.throttle.Acquire(r.Context(), id, ip)
+	if !attempt.Allowed {
+		s.logger.WarnContext(r.Context(), "signed approval throttled", "id", id, "remote", ip, "scope", attempt.Scope)
+		secs := max(int((attempt.RetryAfter+time.Second-1)/time.Second), 1)
+		w.Header().Set("Retry-After", strconv.Itoa(secs))
+		writeError(w, http.StatusTooManyRequests, fmt.Sprintf("too many refused signatures; try again in %d seconds", secs))
+		return
+	}
 	g, err := s.ApproveSigned(r.Context(), id, SignedApproval{Approver: body.Approver, Approval: a, Audience: s.audience(r), Signature: body.Signature})
+	switch {
+	case err == nil:
+		s.throttle.Success(r.Context(), attempt)
+	case errors.Is(err, ErrInvalid):
+		// A refusal keeps its slot: it counts against the limits.
+		s.logger.WarnContext(r.Context(), "signed approval refused", "id", id, "approver", cleanText(body.Approver), "remote", ip, "error", err)
+	default:
+		// A request that is not pending, or a store that failed, says
+		// nothing about the signature.
+		s.throttle.Cancel(r.Context(), attempt)
+	}
 	if err != nil {
-		if errors.Is(err, ErrInvalid) {
-			s.logger.WarnContext(r.Context(), "signed approval refused", "id", id, "approver", cleanText(body.Approver), "remote", r.RemoteAddr, "error", err)
-		}
 		s.fail(w, r, err)
 		return
 	}

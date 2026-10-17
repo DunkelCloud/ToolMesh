@@ -120,7 +120,9 @@ Without a persistent data directory every start reports a new site ID. See
   set) and a fingerprint of the request; messengers get a link preview without
   the requester's text. The page is part of the binary, with a strict Content
   Security Policy, and offers making a signing key at `/approve/`. Approvals
-  record the address, signature and statement in the audit trail. The
+  record the address, signature and statement in the audit trail; refused
+  signatures are limited per request and source address (`429` with
+  `Retry-After`), in counters apart from the login limits. The
   approver API grants part of a kit too (`grants`, `tools` in the approve
   body). See `docs/configuration.md`, "Approval page".
 - Meta-tool `tell_me_my_rights`: what the caller may do, per backend, for one

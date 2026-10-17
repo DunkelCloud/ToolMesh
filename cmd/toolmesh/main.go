@@ -416,9 +416,13 @@ func main() {
 	if authzEngine.embedded != nil {
 		var grantStore grants.Store = grants.NewMemoryStore()
 		grantStoreName := "process-local"
+		// Refused signatures on the approval page are counted like failed
+		// logins, in a namespace of their own and shared through Redis.
+		var approvalThrottle *auth.LoginThrottle
 		if redisClient != nil {
 			grantStore = grants.NewRedisStore(redisClient)
 			grantStoreName = "redis"
+			approvalThrottle = auth.NewLoginThrottle(grants.ApprovalThrottleConfig, redisClient, logger)
 		}
 		// Links to the approval page need the address approvers reach this
 		// ToolMesh at; the placeholder issuer is no such address.
@@ -433,6 +437,7 @@ func main() {
 			Audit:     auditStore,
 			Logger:    logger,
 			PublicURL: publicURL,
+			Throttle:  approvalThrottle,
 		})
 		exec.SetKitHolder(grantService)
 		mcpHandler.SetGrants(grantService)

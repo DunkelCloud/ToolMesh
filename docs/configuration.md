@@ -481,6 +481,15 @@ no login: approving takes a signature by the key of an approver's address.
   plain HTTP (other than localhost) the key field is disabled: use HTTPS.
 - **Once.** A signature approves its request once: approving takes the
   request from the store, and a statement names one request and its nonce.
+- **Limits.** Refused approvals (a signature that does not verify, or
+  choices that do not fit the request) are limited within 15 minutes to 5 per
+  request and source address, 10 per request and 20 per source address;
+  beyond that the page answers `429` with `Retry-After`. A successful
+  approval clears the request's counters. The counters work like those of
+  [login throttling](#login-throttling), with the same source address
+  (right-most public address in `X-Forwarded-For`) and in Redis when it is
+  connected, but apart from them: refused signatures never use up the login
+  limits.
 
 The page loads only its own style sheet and scripts, which are part of the
 ToolMesh binary (Content Security Policy `default-src 'none'`, no other

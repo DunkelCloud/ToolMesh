@@ -535,8 +535,8 @@ func main() {
 	// Consolidated security-posture summary: one place that reports every
 	// relaxed control (auth, authz, CORS, metrics exposure, debug tools, login
 	// throttling) with a remediation hint. Logged at WARN in the production posture, or at INFO
-	// when TOOLMESH_DEV=true. authConfigured mirrors how the auth middleware
-	// decides whether to enforce credentials.
+	// when TOOLMESH_DEV=true. authConfigured says whether any credential is
+	// configured; without one the MCP server rejects every request.
 	authConfigured := cfg.AuthPassword != "" || cfg.APIKey != "" || userStore != nil || apiKeyStore != nil
 	logSecurityPosture(cfg, authConfigured, authzEngine.openToEveryone(), logger)
 	if authConfigured && cfg.IssuerIsPlaceholder() {

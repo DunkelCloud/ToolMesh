@@ -144,15 +144,11 @@ func (s *Server) handleBlobs(w http.ResponseWriter, r *http.Request) {
 	s.blobStore.ServeHTTP(w, r)
 }
 
-// requireAuth enforces MCP authentication when the server has any auth
-// configured. It returns true when the request may proceed and, on failure,
-// writes the response itself: 401 for a missing or rejected credential, 503
-// when the credential could not be checked. When no auth is configured the
-// whole server is open, so the call passes through unchanged.
+// requireAuth enforces MCP authentication. It returns true when the request
+// may proceed and, on failure, writes the response itself: 401 for a missing
+// or rejected credential, 503 when the credential could not be checked. A
+// server without any credential configured rejects every request.
 func (s *Server) requireAuth(w http.ResponseWriter, r *http.Request) bool {
-	if !s.authRequired() {
-		return true
-	}
 	user, err := s.authenticate(r)
 	if err != nil {
 		w.Header().Set("Retry-After", authUnavailableRetryAfter)
@@ -274,7 +270,7 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, jsonRPCErrorEnvelope(nil, -32000, msgAuthUnavailable))
 		return
 	}
-	if !uc.Authenticated && s.authRequired() {
+	if !uc.Authenticated {
 		presented := extractBearer(r) != ""
 		credential := credentialNone
 		if presented {
@@ -345,8 +341,10 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// authRequired returns true if any authentication mechanism is configured.
-func (s *Server) authRequired() bool {
+// credentialConfigured reports whether any credential is configured: a
+// password, users.yaml, an API key or apikeys.yaml. Authentication does not
+// depend on it; without one, every request is rejected.
+func (s *Server) credentialConfigured() bool {
 	return s.cfg.AuthPassword != "" || s.cfg.APIKey != "" || s.userStore != nil || s.apiKeys != nil
 }
 
@@ -660,19 +658,8 @@ func (s *Server) authenticate(r *http.Request) (*userctx.UserContext, error) {
 		}
 	}
 
-	// No auth configured — allow anonymous (L-4: Authenticated=false for anonymous).
-	if !s.authRequired() {
-		return &userctx.UserContext{
-			UserID:        userAnonymous,
-			CompanyID:     userDefault,
-			Roles:         []string{},
-			Plan:          "free",
-			Authenticated: false,
-			CallerID:      userAnonymous,
-			CallerClass:   "untrusted",
-		}, nil
-	}
-
+	// Nothing accepted the request. That includes a server without any
+	// credential configured: it is not open, it rejects every request.
 	switch {
 	case bearer == "":
 		// No credential at all: not a failed login of any method, but a

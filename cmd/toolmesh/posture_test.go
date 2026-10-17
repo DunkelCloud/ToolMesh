@@ -94,7 +94,7 @@ func TestLogSecurityPosture(t *testing.T) {
 			mutate:         func(*config.Config) {},
 			authConfigured: false,
 			wantLevel:      levelWARN,
-			wantContains:   []string{"no credential configured", "TOOLMESH_AUTH_PASSWORD"},
+			wantContains:   []string{"no credential configured", "every request is rejected", "TOOLMESH_AUTH_PASSWORD"},
 		},
 		{
 			name: "dev mode reports the same facts at info, never warn",

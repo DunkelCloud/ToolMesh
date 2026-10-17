@@ -420,16 +420,24 @@ func main() {
 			grantStore = grants.NewRedisStore(redisClient)
 			grantStoreName = "redis"
 		}
+		// Links to the approval page need the address approvers reach this
+		// ToolMesh at; the placeholder issuer is no such address.
+		publicURL := ""
+		if !cfg.IssuerIsPlaceholder() {
+			publicURL = strings.TrimRight(cfg.Issuer, "/")
+		}
 		grantService = grants.New(grants.Options{
 			Store:     grantStore,
 			Kits:      authzEngine.embedded,
 			Approvers: authzEngine.embedded,
 			Audit:     auditStore,
 			Logger:    logger,
+			PublicURL: publicURL,
 		})
 		exec.SetKitHolder(grantService)
 		mcpHandler.SetGrants(grantService)
-		logger.Info("kit grants configured", "store", grantStoreName, "api", grants.PathPrefix)
+		logger.Info("kit grants configured", "store", grantStoreName, "api", grants.PathPrefix,
+			"approvalPage", grants.ApprovePathPrefix+"/", "approvalLinks", publicURL != "")
 	}
 
 	// Failed-login limits for the password login. NewServer counts in process
@@ -457,6 +465,9 @@ func main() {
 		approverAPI := grantService.Handler()
 		httpMux.Handle(grants.PathPrefix, approverAPI)
 		httpMux.Handle(grants.PathPrefix+"/", approverAPI)
+		// The approval page. It takes no credential: approving on it takes
+		// a signature by the key of an approver's address.
+		httpMux.Handle(grants.ApprovePathPrefix+"/", grantService.ApprovalHandler())
 	}
 
 	// Wrap with middleware: panic recovery (outermost) → security headers → request logging.

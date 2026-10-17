@@ -33,6 +33,9 @@ const (
 	testGrantApprover = "alice"
 	testGrantCaller   = "claude-code"
 	testGrantReason   = "Debug the UniFi outage"
+	// Scopes of the kit net-diag-read.
+	testScopeGraylogRead = "graylog:read"
+	testScopeUnifiRead   = "unifi:read"
 )
 
 // newGrantSetup is the kit setup with the approver alice and kit grants on
@@ -196,6 +199,58 @@ func TestRequestGrant_WithoutService(t *testing.T) {
 	h, _ := newKitHandler(t)
 	if failed, text := callTool(t, h, grantCaller(testGrantCaller), toolRequestGrant, map[string]any{}); !failed || !strings.Contains(text, "cannot be granted") {
 		t.Errorf("result = failed %v %q", failed, text)
+	}
+}
+
+// With an approver who signs and a public URL, request_grant answers with
+// the approval link, the fingerprint and what the kit would add; a grant of
+// part of the kit allows that part only and tell_me_my_rights shows it.
+func TestRequestGrant_ApprovalLinkAndPart(t *testing.T) {
+	const publicURL = "https://toolmesh.example.com"
+	s := newKitSetup(t, []authz.Approver{{Name: testGrantApprover, Address: "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4"}})
+	svc := grants.New(grants.Options{Store: grants.NewMemoryStore(), Kits: s.engine, Approvers: s.engine, Audit: s.audit, Logger: newQuietMCPLogger(), PublicURL: publicURL + "/"})
+	s.exec.SetKitHolder(svc)
+	s.handler.SetGrants(svc)
+	ctx := grantCaller(testGrantCaller)
+
+	failed, text := callTool(t, s.handler, ctx, toolRequestGrant, map[string]any{argNameKit: testKitNetDiag, argNameReason: testGrantReason})
+	if failed {
+		t.Fatalf("request_grant failed: %s", text)
+	}
+	var answer grantAnswer
+	if err := json.Unmarshal([]byte(text), &answer); err != nil {
+		t.Fatal(err)
+	}
+	req, err := svc.Lookup(context.Background(), answer.RequestID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if answer.ApprovalURL != publicURL+"/approve/"+answer.RequestID || answer.Fingerprint != req.Fingerprint() || !strings.Contains(answer.Note, "approval_url") {
+		t.Errorf("answer = %+v", answer)
+	}
+	want := map[string]grants.EntryCoverage{
+		testScopeGraylogRead: {Entry: testScopeGraylogRead, Tools: 1, New: 1},
+		testScopeUnifiRead:   {Entry: testScopeUnifiRead, Tools: 1, New: 1},
+	}
+	if len(req.Coverage) != 2 || req.Coverage[0] != want[req.Coverage[0].Entry] || req.Coverage[1] != want[req.Coverage[1].Entry] {
+		t.Errorf("coverage = %+v", req.Coverage)
+	}
+
+	if _, err := svc.ApproveWith(context.Background(), testGrantApprover, answer.RequestID, grants.Approval{Grants: []string{testScopeGraylogRead}}); err != nil {
+		t.Fatal(err)
+	}
+	if failed, text := callTool(t, s.handler, ctx, testGraylogSearch, map[string]any{}); failed {
+		t.Errorf("the granted part is denied: %s", text)
+	}
+	if e := s.audit.entries[len(s.audit.entries)-1]; e.Metadata["held_kits"] != testKitNetDiag+" (part)" {
+		t.Errorf("audit of the call = %+v", e.Metadata)
+	}
+	if failed, _ := callTool(t, s.handler, ctx, testUnifiClients, map[string]any{}); !failed {
+		t.Error("the left-out part of the kit is allowed")
+	}
+	rights := askRightsAs(t, s.handler, ctx, map[string]any{})
+	if len(rights.Grants) != 1 || rights.Grants[0].Part == nil || rights.Grants[0].Part.Grants[0] != testScopeGraylogRead {
+		t.Errorf("rights = %+v", rights.Grants)
 	}
 }
 

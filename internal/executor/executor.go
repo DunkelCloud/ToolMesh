@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"time"
 
@@ -69,23 +70,41 @@ type Executor struct {
 	kitHolder KitHolder
 }
 
-// KitHolder tells which kits a caller holds at the moment: the user as the
-// connection it is bound to ([userctx.UserContext.GrantBinding]).
+// KitHolder tells which kits a caller holds at the moment, whole and in part:
+// the user as the connection it is bound to
+// ([userctx.UserContext.GrantBinding]).
 type KitHolder interface {
-	HeldKits(ctx context.Context, userID, binding string) []string
+	HeldKits(ctx context.Context, userID, binding string) (whole []string, parts []authz.KitPart)
 }
 
 // SetKitHolder makes every check pass the kits the caller holds according to
 // h. Without it, callers hold no kits.
 func (e *Executor) SetKitHolder(h KitHolder) { e.kitHolder = h }
 
+// held is what a caller holds of kits at the time of a check.
+type held struct {
+	kits  []string
+	parts []authz.KitPart
+}
+
+// names lists the kits held for the audit trail, a kit held in part marked
+// as such.
+func (h held) names() string {
+	out := slices.Clone(h.kits)
+	for _, p := range h.parts {
+		out = append(out, p.Kit+" (part)")
+	}
+	return strings.Join(out, ",")
+}
+
 // heldKits returns the kits the caller holds now. Only an authenticated
 // caller can hold kits.
-func (e *Executor) heldKits(ctx context.Context, uc *userctx.UserContext) []string {
+func (e *Executor) heldKits(ctx context.Context, uc *userctx.UserContext) held {
 	if e.kitHolder == nil || e.authorizer == nil || uc == nil || !uc.Authenticated {
-		return nil
+		return held{}
 	}
-	return e.kitHolder.HeldKits(ctx, uc.UserID, uc.GrantBinding())
+	kits, parts := e.kitHolder.HeldKits(ctx, uc.UserID, uc.GrantBinding())
+	return held{kits: kits, parts: parts}
 }
 
 // New creates a new Executor with all required dependencies. The metrics
@@ -185,9 +204,10 @@ func (e *Executor) ExecuteTool(ctx context.Context, req ExecuteToolRequest) (*ba
 	// Step 1: AuthZ check via OpenFGA
 	if e.authorizer != nil {
 		e.logger.DebugContext(ctx, "authz check", "tool", req.ToolName, "user", uc.UserID)
-		authzReq := e.authzRequest(uc, req.ToolName, toolAccess, e.heldKits(ctx, uc))
-		if len(authzReq.Kits) > 0 {
-			entry.Metadata = map[string]string{"held_kits": strings.Join(authzReq.Kits, ",")}
+		holding := e.heldKits(ctx, uc)
+		authzReq := e.authzRequest(uc, req.ToolName, toolAccess, holding)
+		if len(holding.kits)+len(holding.parts) > 0 {
+			entry.Metadata = map[string]string{"held_kits": holding.names()}
 		}
 		allowed, err := e.authorizer.Check(ctx, authzReq)
 		if err != nil {
@@ -536,13 +556,14 @@ type backendResolver interface {
 // the same routing the call takes; splitting the name at the first underscore
 // would attribute "web_search_query" to a backend "web". Without a resolver
 // the backend stays empty, so grants on a backend do not apply.
-func (e *Executor) authzRequest(uc *userctx.UserContext, toolName, toolAccess string, kits []string) authz.Request {
+func (e *Executor) authzRequest(uc *userctx.UserContext, toolName, toolAccess string, h held) authz.Request {
 	req := authz.Request{
 		UserID:    uc.UserID,
 		CompanyID: uc.CompanyID,
 		Plan:      uc.Plan,
 		Roles:     uc.Roles,
-		Kits:      kits,
+		Kits:      h.kits,
+		KitParts:  h.parts,
 		Tool:      toolName,
 		Access:    toolAccess,
 	}

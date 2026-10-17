@@ -74,6 +74,10 @@ type Request struct {
 	// Kits the caller holds at the time of the check. Only the embedded
 	// engine knows kits; External ignores them.
 	Kits []string
+	// KitParts are kits the caller holds in part: an approver granted some
+	// of the kit's entries, not all. Like Kits, only the embedded engine
+	// knows them.
+	KitParts []KitPart
 
 	// Tool is the canonical "<backend>_<tool>" name.
 	Tool string

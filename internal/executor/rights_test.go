@@ -24,6 +24,7 @@ import (
 
 	"github.com/DunkelCloud/ToolMesh/internal/authz"
 	"github.com/DunkelCloud/ToolMesh/internal/backend"
+	"github.com/DunkelCloud/ToolMesh/internal/grants"
 	"github.com/DunkelCloud/ToolMesh/internal/userctx"
 )
 
@@ -247,13 +248,14 @@ func resultText(res *backend.ToolResult) string {
 type fixedKits struct {
 	user, caller string
 	kits         []string
+	parts        []authz.KitPart
 }
 
-func (f fixedKits) HeldKits(_ context.Context, userID, callerID string) []string {
+func (f fixedKits) HeldKits(_ context.Context, userID, callerID string) ([]string, []authz.KitPart) {
 	if userID == f.user && callerID == f.caller {
-		return f.kits
+		return f.kits, f.parts
 	}
-	return nil
+	return nil, nil
 }
 
 func TestKitHolder(t *testing.T) {
@@ -288,5 +290,48 @@ func TestKitHolder(t *testing.T) {
 	anon := &userctx.UserContext{UserID: testUserBob, CallerID: agent}
 	if err := exec.CheckChild(callerCtx(anon), testUnifiClients, nil); err == nil {
 		t.Error("an unauthenticated caller was granted the kit")
+	}
+}
+
+// testScopeGraylogRead is a scope of the kit net-diag-read.
+const testScopeGraylogRead = "graylog:read"
+
+func TestKitHolder_Part(t *testing.T) {
+	const agent = "agent-1"
+	exec, rec := newKitExecutor(t)
+	exec.SetKitHolder(fixedKits{user: testUserBob, caller: agent, parts: []authz.KitPart{{Kit: testKitNetDiag, Grants: []string{testScopeGraylogRead}}}})
+	bob := &userctx.UserContext{UserID: testUserBob, CallerID: agent, Authenticated: true}
+
+	res, err := exec.ExecuteTool(callerCtx(bob), ExecuteToolRequest{ToolName: testGraylogSearch})
+	if err != nil || res.IsError {
+		t.Fatalf("ExecuteTool with the granted part = %v, %v", resultText(res), err)
+	}
+	if got := rec.last.Metadata["held_kits"]; got != testKitNetDiag+" (part)" {
+		t.Errorf("held_kits = %q, want the kit marked as part", got)
+	}
+	if err := exec.CheckChild(callerCtx(bob), testUnifiClients, nil); err == nil {
+		t.Error("the left-out part of the kit allows unifi")
+	}
+}
+
+func TestKitCoverage(t *testing.T) {
+	exec, _ := newKitExecutor(t)
+	kit := exec.Kits()[0]
+	kit.Tools = []string{testGraylogDelete}
+	tools := descriptors(testGraylogSearch, testGraylogDelete, testUnifiClients)
+
+	got := exec.KitCoverage(context.Background(), &userctx.UserContext{UserID: testUserCarol}, kit, tools)
+	want := []grants.EntryCoverage{
+		{Entry: testScopeGraylogRead, Tools: 1, New: 1},
+		{Entry: "unifi:read", Tools: 1, New: 1},
+		{Entry: testGraylogDelete, Tool: true, Access: testAccessWrite, Tools: 1, New: 1},
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("coverage for carol = %+v, want %+v", got, want)
+	}
+	for _, c := range exec.KitCoverage(context.Background(), &userctx.UserContext{UserID: testUserOwner}, kit, tools) {
+		if c.New != 0 || c.Tools != 1 {
+			t.Errorf("coverage for the owner = %+v, want nothing new", c)
+		}
 	}
 }

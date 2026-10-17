@@ -185,7 +185,7 @@ func TestApprove(t *testing.T) {
 	env := newTestEnv(t)
 	ctx := context.Background()
 	id := env.request(t, testKitNetDiag, "").Grant.ID
-	if kits := env.svc.HeldKits(ctx, testUser, testCaller); len(kits) != 0 {
+	if kits := heldWhole(ctx, env.svc, testCaller); len(kits) != 0 {
 		t.Fatalf("held before approval: %v", kits)
 	}
 
@@ -203,10 +203,10 @@ func TestApprove(t *testing.T) {
 	}
 
 	// Held by the caller that asked, not by another caller of the same user.
-	if kits := env.svc.HeldKits(ctx, testUser, testCaller); !slices.Equal(kits, []string{testKitNetDiag}) {
+	if kits := heldWhole(ctx, env.svc, testCaller); !slices.Equal(kits, []string{testKitNetDiag}) {
 		t.Errorf("HeldKits = %v", kits)
 	}
-	if kits := env.svc.HeldKits(ctx, testUser, testOtherCall); len(kits) != 0 {
+	if kits := heldWhole(ctx, env.svc, testOtherCall); len(kits) != 0 {
 		t.Errorf("HeldKits of another caller = %v, want none", kits)
 	}
 	// Approved once only.
@@ -215,7 +215,7 @@ func TestApprove(t *testing.T) {
 	}
 	// The grant ends by itself.
 	env.clock.advance(4 * time.Hour)
-	if kits := env.svc.HeldKits(ctx, testUser, testCaller); len(kits) != 0 {
+	if kits := heldWhole(ctx, env.svc, testCaller); len(kits) != 0 {
 		t.Errorf("HeldKits after expiry = %v", kits)
 	}
 }
@@ -264,7 +264,7 @@ func TestHeldKits_KitRemovedAfterApproval(t *testing.T) {
 		t.Fatal(err)
 	}
 	env.cat.kits = env.cat.kits[:1]
-	if kits := env.svc.HeldKits(ctx, testUser, testCaller); len(kits) != 0 {
+	if kits := heldWhole(ctx, env.svc, testCaller); len(kits) != 0 {
 		t.Errorf("HeldKits = %v, want none: the kit is no longer defined", kits)
 	}
 }
@@ -297,7 +297,7 @@ func TestDenyAndRevoke(t *testing.T) {
 	if e := env.audit.last(t); e.Tool != auditRevoke || e.Status != statusSuccess {
 		t.Errorf("audit = %+v", e)
 	}
-	if kits := env.svc.HeldKits(ctx, testUser, testCaller); len(kits) != 0 {
+	if kits := heldWhole(ctx, env.svc, testCaller); len(kits) != 0 {
 		t.Errorf("HeldKits after Revoke = %v", kits)
 	}
 	if _, err := env.svc.Revoke(ctx, testApprover, id); !errors.Is(err, ErrNotFound) {
@@ -330,7 +330,7 @@ func TestStoreFailure(t *testing.T) {
 	cat := newTestCatalog()
 	svc := New(Options{Store: failingStore{}, Kits: cat, Approvers: cat, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
 	ctx := context.Background()
-	if kits := svc.HeldKits(ctx, testUser, testCaller); kits != nil {
+	if kits := heldWhole(ctx, svc, testCaller); kits != nil {
 		t.Errorf("HeldKits = %v, want none", kits)
 	}
 	if _, err := svc.Request(ctx, caller(testCaller), RequestInput{Kit: testKitNetDiag, Reason: testReason}); !errors.Is(err, errStoreDown) {

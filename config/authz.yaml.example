@@ -69,6 +69,12 @@ denies:
 #   ttl_default   how long a grant of the kit lasts by default (e.g. 4h)
 #   ttl_max       and at most
 #
+# A call that a held kit covers passes the pre-execution gate on the
+# approver's word: gate policies without the directive
+# "toolmesh: enforce-with-kit" in their header comment are skipped for it,
+# the ones with it still run, and denies below still apply (see
+# docs/configuration.md, "Gate policies").
+#
 # kits:
 #   net-diag-read:
 #     description: "Network diagnosis (read-only)"
@@ -85,6 +91,11 @@ denies:
 #   address     on the approval page (/approve/<id>, the link request_grant
 #               answers with) by signing with the key of this P2WPKH address
 #               (bc1q…, BIP-322). Make a key at /approve/ or use a wallet.
+#   kits        optional: the kits this approver may approve, by name as
+#               defined above; every kit when left out. Approving another
+#               kit is refused and audited, and the approval page offers
+#               only approvers who may approve its kit. Denying and
+#               revoking are open to every approver.
 #
 # MCP credentials do not work for approving; never give an agent an approver
 # key or signing key.
@@ -94,3 +105,4 @@ denies:
 #     key_sha256: "<64 hex characters>"
 #   - name: bob@example.com
 #     address: bc1q…
+#     kits: [net-diag-read]

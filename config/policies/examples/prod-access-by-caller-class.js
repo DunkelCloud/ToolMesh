@@ -32,6 +32,13 @@
 // example one that reserves a set of tools for a single caller ID): a call
 // passes only when every loaded policy lets it through.
 //
+// A kit the caller holds that covers the tool replaces this policy: it
+// carries no "toolmesh: enforce-with-kit" directive, so it is skipped for
+// such a call and the approver's decision for the kit stands in for the
+// table below. Denies in config/authz.yaml still apply. The audit entry of
+// the call records the kit (kit_applied) and this policy as skipped
+// (gate_skipped); the start log shows "pre_gate_with_kit=skipped" for it.
+//
 // The policy runs in the pre-execution phase only; it never touches responses.
 
 // Allowed access classes per caller class. Edit this table to your risk

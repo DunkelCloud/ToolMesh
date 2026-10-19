@@ -11,6 +11,34 @@ for the full narrative and details.
 
 ## [Unreleased]
 
+**Behavior change:** a kit a caller holds now replaces the pre-execution
+gate for the tools it covers. A granted kit used to count in the
+authorization step only, and a pre-execution policy could still refuse the
+call, so a caller's rights were the intersection of the kit and every
+policy. Now, when a held kit covers the tool (a kit granted in part only
+through its granted entries), ToolMesh skips every pre-execution policy
+except those that declare `// toolmesh: enforce-with-kit` in their header
+comment: the approver's decision stands, and the only remaining question is
+whether the approver was allowed to grant the kit. Denies in
+`config/authz.yaml` still win over a kit, and the post-execution gate runs
+in full. The start log shows `pre_gate_with_kit=enforced` or `skipped` for
+each loaded policy; a call in which a kit replaced the gate is logged
+(`kit replaces the pre-execution gate`) and its audit entry carries
+`kit_applied` and `gate_skipped`. Policies see `ctx.kits` and
+`ctx.kitCovered`. Mark parameter filters and other conditions that must hold
+for kit holders with the directive: among the shipped examples `default.js`,
+`github-branch-protection.js` and `shelly_write_protection.js` carry it, and
+`caller_block.js` now runs in the pre-execution phase only, so that a kit
+holder's call is not refused after the backend ran. See
+`docs/configuration.md`, "Gate policies".
+
+Approvers can be limited to kits: `kits: [...]` on an approver in
+`config/authz.yaml` names the kits it may approve (every kit without it; the
+names must be kits the file defines). An approval of another kit is refused,
+with `403` on the approver API, and audited; the approval page offers only
+approvers who may approve the request's kit. Denying and revoking stay open
+to every approver.
+
 New example policy `config/policies/examples/prod-access-by-caller-class.js`:
 a pre-execution gate that lets a call through only when the caller's class
 (`caller-classes.yaml`) may use the tool's DADL `access` class, and denies

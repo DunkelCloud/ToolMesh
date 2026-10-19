@@ -2,6 +2,9 @@
 // Restricts which fields in tool responses are visible based on the
 // user's roles. Users without the required role see filtered content
 // with a notice that fields were redacted.
+//
+// Works on the response, in the post-execution phase, which a kit the caller
+// holds never replaces: fields are filtered for kit holders too.
 
 // Field restriction rules: tool pattern -> required role -> restricted fields
 var rules = [

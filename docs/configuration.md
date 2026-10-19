@@ -304,6 +304,16 @@ ends without anything to clean up. A deny wins over a kit as over every grant.
 classification: holding a kit for `graylog:read` and one for `unifi:write`
 does not add up to `graylog:write`.
 
+**A kit replaces the pre-execution gate.** A call that a held kit covers
+passes the [gate](#gate-policies) on the approver's word: every
+pre-execution policy without the directive `// toolmesh: enforce-with-kit`
+is skipped for it, and only policies with the directive, meant for parameter
+filters, still run. A kit granted in part covers only its granted entries.
+The audit entry of such a call carries `kit_applied` (the kit) and
+`gate_skipped` (the policies), and the log shows `kit replaces the
+pre-execution gate`. Denies decide before the kit is looked at, and the
+post-execution gate (masking, field filters) runs for every call.
+
 A kit allows nothing by itself: a caller holds it once an approver has
 approved its request, until the grant ends (see [Granting kits](#granting-kits)).
 The definitions also shape what callers are told:
@@ -339,6 +349,7 @@ approvers:
     key_sha256: "<SHA-256 of the key, 64 hex characters>"
   - name: bob@example.com
     address: bc1q0xcqpzrky6eff2g52qdye53xkk9jxkvrh6yhyw
+    kits: [net-diag-read]
 ```
 
 ```bash
@@ -353,6 +364,14 @@ involved: the key only signs statements (BIP-322). Make one on the approval
 page under "Set up a signing key" (`https://<toolmesh>/approve/`), or use the
 address of a native segwit account of a wallet that signs BIP-322 messages.
 Taproot (`bc1p…`) and script addresses are refused.
+
+`kits` limits an approver to the named kits, which must be kits the file
+defines; without it an approver may approve every kit. An approval of
+another kit is refused (`403` on the approver API, an error on the approval
+page) and recorded in the audit trail as a failed `grant_approve`, and the
+approval page offers only approvers who may approve the request's kit.
+Denying and revoking are open to every approver, as they only take rights
+away.
 
 An approver key works only on the approver API below, and the credentials MCP
 callers connect with do not work there, so an agent cannot approve its own
@@ -428,7 +447,9 @@ granted (`part_grants`, `part_tools`). An approval on the approval page also
 records the address, the signature, the statement and its SHA-256
 (`statement_sha256`), so that it can be verified later; a refused signature is
 recorded as an error. A call made while the caller holds kits records them in
-its metadata (`held_kits`, a kit held in part marked `(part)`).
+its metadata (`held_kits`, a kit held in part marked `(part)`); when one of
+them covers the tool, `kit_applied` names it and `gate_skipped` the
+pre-execution policies it replaced (see [Gate policies](#gate-policies)).
 
 #### Approver API
 
@@ -578,6 +599,78 @@ Every call is recorded in the audit trail (tool `tell_me_my_rights`, backend
 `toolmesh`): the answer is the first thing an agent that was taken over would
 look up. In external mode there are no kits, so the verdicts are `allowed` and
 `denied`; with authorization disabled, every tool is `allowed`.
+
+## Gate Policies
+
+The gate runs JavaScript policies (goja) on every tool call: in the
+**pre-execution** phase with the tool name and parameters, before the
+backend is called, and in the **post-execution** phase with the response.
+Every `.js` file in the policies directory is a policy; policies run in file
+name order, and a policy rejects a call by throwing. Nested `api.*` calls
+inside a composite go through the pre-execution phase as well.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `TOOLMESH_POLICIES_DIR` | `/app/policies` | The policies directory. The shipped `docker-compose.yml` mounts `./config/policies` there; examples are in `config/policies/examples`. |
+| `GATE_EVALUATORS` | `goja` | The evaluator chain, comma-separated. |
+
+A policy sees one object, `ctx`:
+
+| Field | Content |
+|-------|---------|
+| `ctx.phase` | `"pre"` or `"post"` |
+| `ctx.tool` | The tool's full name, `<backend>_<tool>` |
+| `ctx.toolAccess` | The tool's DADL `access` classification; `""` without one |
+| `ctx.params` | The parameters. Changes made in the pre-execution phase reach the backend and are recorded in the audit entry |
+| `ctx.user` | The caller: `userId`, `companyId`, `roles`, `plan`, `authenticated`, `callerId`, `callerName`, `callerClass` |
+| `ctx.response` | The result, in the post-execution phase; changes to `content` reach the caller and are recorded. `null` in the pre-execution phase |
+| `ctx.kits` | The kits the caller holds, whole or in part, by name; an empty array without any |
+| `ctx.kitCovered` | `true` when one of them covers the tool |
+| `ctx.rateLimitExceeded(n)` | Whether the caller made more than `n` calls in the last hour |
+
+Policies load at startup. The log shows one line `loaded policy` per file,
+and a warning for every tool-name literal in a policy that matches no
+registered tool, a branch that would never fire.
+
+**Directives.** A policy declares how it relates to kits in its header
+comment, the comment lines at the top of the file before the first line of
+code, with a line of the form:
+
+```javascript
+// toolmesh: enforce-with-kit
+```
+
+- Without the directive a policy **yields to a kit**: when a kit the caller
+  holds covers the tool, the policy is skipped in the pre-execution phase.
+  This is the default, and the right choice for rules at tool granularity,
+  such as a caller class that may not use write tools or a read-only
+  posture: an approver has decided for this caller and this kit.
+- With the directive a policy is **enforced with a kit**: it runs in the
+  pre-execution phase whether or not a kit covers the tool. Use it for
+  parameter filters and for conditions that narrow what a scope allows,
+  such as refusing a force-push to `main` or turning a device off: a kit
+  grants the tools, not every argument.
+
+The post-execution phase runs every policy regardless, so masking and field
+filters apply to kit holders too. The start log names the choice per policy
+(`loaded policy name=readonly_gate.js pre_gate_with_kit=skipped`,
+`loaded policy name=default.js pre_gate_with_kit=enforced`) and warns about
+a directive it does not know. Among the shipped examples, `default.js`,
+`github-branch-protection.js` and `shelly_write_protection.js` carry the
+directive.
+
+**When a kit replaces the gate.** After the authorization check, the
+executor looks up whether a kit the caller holds covers the tool: a kit held
+whole through its definition, a kit held in part through its granted entries
+only. If so, the pre-execution gate runs only the policies with the
+directive. The call is logged as `kit replaces the pre-execution gate` with
+the kit and the skipped policies, and its audit entry carries `kit_applied`
+(the kit) and `gate_skipped`, which names every other loaded policy,
+post-execution-only policies included, as none of them ran in that phase.
+A deny in the grants file still wins: it decides in the authorization step,
+before the kit is looked at. Whether the steady-state grants would have
+allowed the call as well does not matter: the kit applies whenever it
+covers the tool.
 
 ## Redis
 

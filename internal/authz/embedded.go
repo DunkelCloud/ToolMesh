@@ -559,7 +559,7 @@ func (e *Embedded) Approvers() []Approver { return *e.approvers.Load() }
 // ApplyPolicy makes the stored rules equal to the policy's grants, denies and
 // kits, as Apply does, and takes over its approvers.
 func (e *Embedded) ApplyPolicy(ctx context.Context, p Policy) (ApplyResult, error) {
-	if err := validateApprovers(p.Approvers); err != nil {
+	if err := validateApprovers(p.Approvers, p.Kits); err != nil {
 		return ApplyResult{}, err
 	}
 	res, err := e.apply(ctx, p.Grants, p.Denies, p.Kits)

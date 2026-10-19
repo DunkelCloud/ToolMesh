@@ -94,14 +94,16 @@ Credentials are injected at execution time within the executor pipeline scope. T
 
 Phase 1 uses an environment-variable-based store (`CREDENTIAL_<NAME>=value`).
 
-### 6. Output Gate
+### 6. Gate
 
-A JavaScript policy engine (powered by goja) evaluates every tool result before it reaches the caller. Policies can:
+A JavaScript policy engine (powered by goja) evaluates every tool call twice: before the backend runs (pre-execution, with the tool name and parameters) and on its result (post-execution, with the response). Policies can:
 
 - Reject requests (throw an error)
 - Check rate limits
 - Validate authentication state
-- Filter or modify response content
+- Rewrite parameters before the call and filter or modify response content after it
+
+A kit the caller holds (see [Kits](configuration.md#kits)) replaces the pre-execution gate for the tools it covers: only policies that declare `// toolmesh: enforce-with-kit` still run, the rest yield to the approver's decision. The post-execution gate runs for every call.
 
 ## Execution Pipeline
 
@@ -112,25 +114,38 @@ sequenceDiagram
     participant Exec as Executor
     participant FGA as OpenFGA
     participant Cred as Credential Store
-    participant Back as Backend (MCP Client)
-    participant Gate as Output Gate
+    participant Gate as Gate (JS policies)
+    participant Back as Backend
 
     Agent->>MCP: tools/call
     MCP->>Exec: ExecuteTool()
-    Exec->>FGA: Check(user, can_execute, tool)
+    Exec->>FGA: Check(user + held kits, can_execute, tool)
     FGA-->>Exec: allowed/denied
     alt denied
-        Exec-->>MCP: Error: unauthorized
+        Exec-->>MCP: Error: unauthorized (names the kits that would allow it)
     end
     Exec->>Cred: Get(api_key, tenant)
     Cred-->>Exec: credential
+    Exec->>Gate: EvaluatePre(context)
+    Note over Exec,Gate: a held kit that covers the tool skips every policy without "toolmesh: enforce-with-kit"
+    Gate-->>Exec: pass/reject
     Exec->>Back: Execute(tool, params)
     Back-->>Exec: ToolResult
-    Exec->>Gate: Evaluate(context)
-    Gate-->>Exec: pass/reject
+    Exec->>Gate: EvaluatePost(context)
+    Gate-->>Exec: pass/reject/modified
     Exec-->>MCP: ToolResult
     MCP-->>Agent: response
 ```
+
+Every step fails closed, and every exit writes an audit entry. The
+authorization step decides first, with the kits the caller holds passed as
+contextual tuples, so a deny blocks the call before any policy is asked.
+When a held kit covers the tool, the executor marks the pre-execution gate
+context as kit-covered: the gate then runs only the policies with the
+directive and reports the rest as skipped, which the audit entry records as
+`kit_applied` (the kit) and `gate_skipped` (the policies), next to
+`held_kits`. Nested `api.*` calls inside a composite go through the same
+authorization and pre-execution checks (`CheckChild`), kit included.
 
 ## Project Structure
 

@@ -93,6 +93,25 @@ func invalidf(format string, args ...any) error {
 	return invalidError{msg: fmt.Sprintf(format, args...)}
 }
 
+// ErrForbidden marks an approval the approver may not give: the kit is not
+// among the kits the approver is limited to (kits: in the authz config
+// file). Such an error also counts as ErrInvalid.
+var ErrForbidden = errors.New("the approver may not approve this kit")
+
+// forbiddenError is an approval outside the approver's scope.
+type forbiddenError struct{ msg string }
+
+// Error returns the message for whoever asked.
+func (e forbiddenError) Error() string { return e.msg }
+
+// Is reports the error as ErrForbidden and as ErrInvalid.
+func (e forbiddenError) Is(target error) bool { return target == ErrForbidden || target == ErrInvalid }
+
+// forbidden returns the error for an approver who may not approve the kit.
+func forbidden(a authz.Approver, kit string) error {
+	return forbiddenError{msg: fmt.Sprintf("approver %q may not approve the kit %q; it is limited to %s", a.Name, kit, strings.Join(a.Kits, ", "))}
+}
+
 // Options configures a Service.
 type Options struct {
 	Store     Store
@@ -233,6 +252,21 @@ func (s *Service) Approver(key string) (authz.Approver, bool) {
 		}
 	}
 	return found, ok
+}
+
+// checkScope returns an error that counts as ErrForbidden when the approver
+// with the name may not approve the kit. An approver the registry does not
+// know has no scope to check: whoever calls with a name vouches for it.
+func (s *Service) checkScope(approver, kit string) error {
+	if s.approvers == nil {
+		return nil
+	}
+	for _, a := range s.approvers.Approvers() {
+		if a.Name == approver && !a.MayApprove(kit) {
+			return forbidden(a, kit)
+		}
+	}
+	return nil
 }
 
 // RequestInput is what a caller asks for.
@@ -447,8 +481,9 @@ func (s *Service) Approve(ctx context.Context, approver, id string, ttl time.Dur
 
 // ApproveWith turns a pending request into a grant of its kit or of the part
 // of it the approval names, for the duration requested or for less. A grant
-// of the same kit the caller holds already is replaced. Every call is
-// audited.
+// of the same kit the caller holds already is replaced. An approver limited
+// to other kits is refused with an error that counts as ErrForbidden. Every
+// call is audited.
 func (s *Service) ApproveWith(ctx context.Context, approver, id string, a Approval) (Grant, error) {
 	return s.approveAudited(ctx, approver, id, a, ApprovedWithKey, nil)
 }
@@ -502,6 +537,9 @@ func (s *Service) approve(ctx context.Context, approver, id string, a Approval, 
 	kit, ok := s.kit(req.Kit)
 	if !ok {
 		return req, invalidf("the kit %q of request %s is no longer defined", req.Kit, id)
+	}
+	if err := s.checkScope(approver, kit.Name); err != nil {
+		return req, err
 	}
 	ttl, part, err := resolveApproval(kit, req, a)
 	if err != nil {

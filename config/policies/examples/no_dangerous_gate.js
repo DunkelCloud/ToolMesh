@@ -19,6 +19,10 @@
 //
 // The policy runs only in the pre-execution phase so blocked calls never
 // reach the backend.
+//
+// A kit the caller holds that covers the tool replaces this policy: it
+// carries no "toolmesh: enforce-with-kit" directive, so a kit an approver
+// granted for admin or dangerous tools lets them through for its holder.
 
 var STRICT_MODE = true;
 var BLOCKED = ["admin", "dangerous"];

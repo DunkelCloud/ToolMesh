@@ -46,6 +46,15 @@ type GateContext struct {
 	Params     map[string]any      `json:"params"`
 	Phase      Phase               `json:"phase"`
 	Response   *backend.ToolResult `json:"response"`
+	// Kits names the kits the caller holds at the time of the call, whole
+	// or in part. Exposed to policies as ctx.kits, always an array.
+	Kits []string `json:"kits"`
+	// KitCovered is set when a kit the caller holds covers the tool: an
+	// approver granted the call. In the pre-execution phase only policies
+	// that declare "// toolmesh: enforce-with-kit" then run; every other
+	// policy yields to the kit and is skipped. The post-execution phase
+	// runs every policy regardless. Exposed to policies as ctx.kitCovered.
+	KitCovered bool `json:"kitCovered"`
 }
 
 // RateLimiter tracks per-user request counts with a sliding window.

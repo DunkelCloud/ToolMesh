@@ -58,7 +58,20 @@ type Gate struct {
 type policy struct {
 	name   string
 	source string
+	// enforceWithKit is set by the directive "// toolmesh: enforce-with-kit"
+	// in the policy's header comment: the policy runs in the pre-execution
+	// phase even when a kit the caller holds covers the tool. Without it the
+	// policy yields to the kit and is skipped in that phase.
+	enforceWithKit bool
 }
+
+// Values of the "pre_gate_with_kit" attribute of the "loaded policy" log
+// line: what the policy does in the pre-execution phase when a kit the
+// caller holds covers the tool.
+const (
+	withKitEnforced = "enforced"
+	withKitSkipped  = "skipped"
+)
 
 // New creates a Gate by loading all .js files from the given directory.
 func New(policiesDir string, logger *slog.Logger) (*Gate, error) {
@@ -87,11 +100,20 @@ func New(policiesDir string, logger *slog.Logger) (*Gate, error) {
 			return nil, fmt.Errorf("read policy %s: %w", path, err)
 		}
 
+		d := parseDirectives(string(data))
 		g.policies = append(g.policies, policy{
-			name:   entry.Name(),
-			source: string(data),
+			name:           entry.Name(),
+			source:         string(data),
+			enforceWithKit: d.enforceWithKit,
 		})
-		logger.Info("loaded policy", "name", entry.Name())
+		withKit := withKitSkipped
+		if d.enforceWithKit {
+			withKit = withKitEnforced
+		}
+		logger.Info("loaded policy", "name", entry.Name(), "pre_gate_with_kit", withKit)
+		for _, name := range d.unknown {
+			logger.Warn("policy declares an unknown directive", "name", entry.Name(), "directive", name, "known", []string{DirectiveEnforceWithKit})
+		}
 	}
 
 	return g, nil
@@ -108,13 +130,23 @@ func (g *Gate) Name() string {
 // produced by a policy — one entry per (policy, target) where the JSON
 // representation changed. Policies that leave the data untouched produce
 // no entries, so an empty list is a positive proof of "no mutation".
+//
+// In the pre-execution phase of a call that a kit the caller holds covers
+// (gctx.KitCovered), only policies with the directive enforce-with-kit run;
+// the others are skipped and named in EvalResult.Skipped. The post-execution
+// phase runs every policy.
 func (g *Gate) Evaluate(gctx GateContext) (*EvalResult, error) {
 	// Record the request once for rate limiting, separate from the Check call
 	// exposed to policies (which is read-only to prevent counter pollution).
 	g.rateLimiter.Record(gctx.User.UserID)
 
 	var mods []audit.PolicyModification
+	var skipped []string
 	for _, p := range g.policies {
+		if gctx.KitCovered && gctx.Phase == PhasePre && !p.enforceWithKit {
+			skipped = append(skipped, p.name)
+			continue
+		}
 		policyMods, err := g.evalPolicy(p, gctx)
 		if err != nil {
 			g.logger.Warn("policy rejected request",
@@ -129,7 +161,7 @@ func (g *Gate) Evaluate(gctx GateContext) (*EvalResult, error) {
 			mods = append(mods, policyMods...)
 		}
 	}
-	return &EvalResult{Allowed: true, Modifications: mods}, nil
+	return &EvalResult{Allowed: true, Modifications: mods, Skipped: skipped}, nil
 }
 
 // gatePolicyTimeout is the maximum time a gate policy may run before being interrupted.
@@ -168,6 +200,11 @@ func (g *Gate) evalPolicy(p policy, gctx GateContext) ([]audit.PolicyModificatio
 	var ctxObj map[string]any
 	if err := json.Unmarshal(ctxJSON, &ctxObj); err != nil {
 		return nil, fmt.Errorf("unmarshal gate context: %w", err)
+	}
+	// A caller without kits has an empty array, not null, so that policies
+	// can call ctx.kits.indexOf(...) without a guard.
+	if ctxObj["kits"] == nil {
+		ctxObj["kits"] = []any{}
 	}
 
 	// Snapshot before policy run. We capture the exact JSON the policy will

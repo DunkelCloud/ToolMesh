@@ -1,6 +1,13 @@
 // github-branch-protection.js — Prevent merges and force-pushes to main/master.
 // Allows all other branch operations (create, delete, merge between feature branches).
 //
+// toolmesh: enforce-with-kit
+//
+// The directive above keeps this policy in force when a kit the caller holds
+// covers the tool: a kit for github or github:write grants the tools, not a
+// force-push to main. Parameter filters like this one belong with the
+// directive; without it a policy is skipped for a call a held kit covers.
+//
 // Tool names follow the ToolMesh convention "<backend>_<tool>" (snake_case,
 // underscore separator) — the MCP spec restricts names to [a-zA-Z0-9_-].
 if (ctx.phase === "pre") {

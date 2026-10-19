@@ -82,6 +82,9 @@ func (s *Service) statement(ctx context.Context, id, approverName string, a Appr
 	if !ok {
 		return Statement{}, authz.Approver{}, bip322.Address{}, invalidf("the kit %q of request %s is no longer defined", req.Kit, id)
 	}
+	if !approver.MayApprove(kit.Name) {
+		return Statement{}, authz.Approver{}, bip322.Address{}, forbidden(approver, kit.Name)
+	}
 	ttl, part, err := resolveApproval(kit, req, a)
 	if err != nil {
 		return Statement{}, authz.Approver{}, bip322.Address{}, err

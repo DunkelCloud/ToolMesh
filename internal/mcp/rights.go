@@ -130,6 +130,11 @@ type rightsRequest struct {
 	Kit      string    `json:"kit"`
 	TTL      string    `json:"ttl"`
 	LapsesAt time.Time `json:"lapses_at"`
+	// ApprovalURL is the approval page of the request, to give to the person
+	// who approves exactly as written; empty when the page is not reachable.
+	ApprovalURL string `json:"approval_url,omitempty"`
+	// Fingerprint identifies the request; the approval page shows the same.
+	Fingerprint string `json:"fingerprint"`
 }
 
 // rightsAnswer is the answer of tell_me_my_rights.
@@ -238,8 +243,14 @@ func (h *Handler) callerGrants(ctx context.Context, uc *userctx.UserContext, ans
 		kitsUsed[g.Kit] = true
 	}
 	for _, g := range pending {
-		answer.Requests = append(answer.Requests, rightsRequest{ID: g.ID, Kit: g.Kit, TTL: grants.FormatTTL(g.TTL), LapsesAt: g.ExpiresAt})
+		answer.Requests = append(answer.Requests, rightsRequest{
+			ID: g.ID, Kit: g.Kit, TTL: grants.FormatTTL(g.TTL), LapsesAt: g.ExpiresAt,
+			ApprovalURL: h.grants.ApprovalURL(g.ID), Fingerprint: g.Fingerprint(),
+		})
 		kitsUsed[g.Kit] = true
+	}
+	if len(answer.Requests) > 0 {
+		answer.Note += " A request of yours is pending: pass its approval_url (or, without one, its id) and its fingerprint on exactly as written, if you have not done so yet."
 	}
 }
 

@@ -195,6 +195,8 @@ func (s *Service) fail(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
 	case errors.Is(err, ErrNotFound):
 		writeError(w, http.StatusNotFound, err.Error())
+	case errors.Is(err, ErrForbidden):
+		writeError(w, http.StatusForbidden, err.Error())
 	case errors.Is(err, ErrInvalid):
 		writeError(w, http.StatusBadRequest, err.Error())
 	default:

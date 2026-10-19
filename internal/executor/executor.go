@@ -97,6 +97,19 @@ func (h held) names() string {
 	return strings.Join(out, ",")
 }
 
+// kitNames lists the kits held, whole and in part, for the gate context. It
+// is never nil, so that policies always see an array.
+func (h held) kitNames() []string {
+	out := make([]string, 0, len(h.kits)+len(h.parts))
+	out = append(out, h.kits...)
+	for _, p := range h.parts {
+		if !slices.Contains(out, p.Kit) {
+			out = append(out, p.Kit)
+		}
+	}
+	return out
+}
+
 // heldKits returns the kits the caller holds now. Only an authenticated
 // caller can hold kits.
 func (e *Executor) heldKits(ctx context.Context, uc *userctx.UserContext) held {
@@ -105,6 +118,54 @@ func (e *Executor) heldKits(ctx context.Context, uc *userctx.UserContext) held {
 	}
 	kits, parts := e.kitHolder.HeldKits(ctx, uc.UserID, uc.GrantBinding())
 	return held{kits: kits, parts: parts}
+}
+
+// appliedKit returns the name of a kit the caller holds that covers the call
+// in req, "" when none does. A kit held whole covers what its definition
+// covers, a kit held in part only what its granted entries cover. With such
+// a kit an approver granted the call, and that decision replaces the
+// pre-execution gate: only policies that declare enforce-with-kit still
+// run. The answer comes from the definitions alone; whether a deny blocks
+// the call regardless is for the authorizer, which decides first.
+func (e *Executor) appliedKit(req authz.Request) string {
+	if len(req.Kits)+len(req.KitParts) == 0 {
+		return ""
+	}
+	kits := e.Kits()
+	find := func(name string) (authz.Kit, bool) {
+		i := slices.IndexFunc(kits, func(k authz.Kit) bool { return k.Name == name })
+		if i < 0 {
+			return authz.Kit{}, false
+		}
+		return kits[i], true
+	}
+	for _, name := range req.Kits {
+		if k, ok := find(name); ok && k.Covers(req.Tool, req.Backend, req.Access) {
+			return name
+		}
+	}
+	for _, p := range req.KitParts {
+		if k, ok := find(p.Kit); ok && k.PartCovers(p, req.Tool, req.Backend, req.Access) {
+			return p.Kit
+		}
+	}
+	return ""
+}
+
+// Audit metadata keys of a call that a held kit covers.
+const (
+	// metaKitApplied names the kit that covered the call.
+	metaKitApplied = "kit_applied"
+	// metaGateSkipped lists the pre-execution policies the kit replaced.
+	metaGateSkipped = "gate_skipped"
+)
+
+// addMetadata sets one metadata value of the audit entry.
+func addMetadata(entry *audit.AuditEntry, key, value string) {
+	if entry.Metadata == nil {
+		entry.Metadata = map[string]string{}
+	}
+	entry.Metadata[key] = value
 }
 
 // New creates a new Executor with all required dependencies. The metrics
@@ -147,6 +208,12 @@ type ExecuteToolRequest struct {
 }
 
 // ExecuteTool runs the full pipeline: AuthZ → Credentials → Gate pre → Backend → Gate post → Audit.
+//
+// When a kit the caller holds covers the tool, an approver granted the call:
+// the pre-execution gate then runs only the policies that declare
+// enforce-with-kit and skips the rest, which the audit entry records
+// (kit_applied, gate_skipped). Denies decide before that, in the
+// authorization step, and the post-execution gate runs in full.
 func (e *Executor) ExecuteTool(ctx context.Context, req ExecuteToolRequest) (*backend.ToolResult, error) {
 	uc := userctx.FromContext(ctx)
 	if uc == nil {
@@ -202,9 +269,12 @@ func (e *Executor) ExecuteTool(ctx context.Context, req ExecuteToolRequest) (*ba
 	}
 
 	// Step 1: AuthZ check via OpenFGA
+	holding := e.heldKits(ctx, uc)
+	// kit is the kit the caller holds that covers the call, "" when none
+	// does. With it the approver's decision replaces the pre-execution gate.
+	var kit string
 	if e.authorizer != nil {
 		e.logger.DebugContext(ctx, "authz check", "tool", req.ToolName, "user", uc.UserID)
-		holding := e.heldKits(ctx, uc)
 		authzReq := e.authzRequest(uc, req.ToolName, toolAccess, holding)
 		if len(holding.kits)+len(holding.parts) > 0 {
 			entry.Metadata = map[string]string{"held_kits": holding.names()}
@@ -229,10 +299,7 @@ func (e *Executor) ExecuteTool(ctx context.Context, req ExecuteToolRequest) (*ba
 			entry.DurationMs = time.Since(start).Milliseconds()
 			entry.Status = statusDenied
 			if len(kits) > 0 {
-				if entry.Metadata == nil {
-					entry.Metadata = map[string]string{}
-				}
-				entry.Metadata["remedy_kits"] = strings.Join(kits, ",")
+				addMetadata(&entry, "remedy_kits", strings.Join(kits, ","))
 			}
 			e.recordAudit(ctx, entry)
 			return &backend.ToolResult{
@@ -242,6 +309,9 @@ func (e *Executor) ExecuteTool(ctx context.Context, req ExecuteToolRequest) (*ba
 					contentKeyText: fmt.Sprintf("User %s is not authorized to execute tool %s.%s", uc.UserID, req.ToolName, remedy),
 				}},
 			}, nil
+		}
+		if kit = e.appliedKit(authzReq); kit != "" {
+			addMetadata(&entry, metaKitApplied, kit)
 		}
 	}
 
@@ -273,8 +343,10 @@ func (e *Executor) ExecuteTool(ctx context.Context, req ExecuteToolRequest) (*ba
 			Tool:       req.ToolName,
 			ToolAccess: toolAccess,
 			Params:     req.Params,
+			Kits:       holding.kitNames(),
+			KitCovered: kit != "",
 		}
-		preMods, err := e.gate.EvaluatePre(gctx)
+		pre, err := e.gate.EvaluatePre(gctx)
 		if err != nil {
 			e.logger.WarnContext(ctx, "gate pre-execution rejected",
 				"tool", req.ToolName,
@@ -293,8 +365,17 @@ func (e *Executor) ExecuteTool(ctx context.Context, req ExecuteToolRequest) (*ba
 				}},
 			}, nil
 		}
-		if len(preMods) > 0 {
-			entry.Modifications = append(entry.Modifications, preMods...)
+		if len(pre.Modifications) > 0 {
+			entry.Modifications = append(entry.Modifications, pre.Modifications...)
+		}
+		if len(pre.Skipped) > 0 {
+			addMetadata(&entry, metaGateSkipped, strings.Join(pre.Skipped, ","))
+			e.logger.InfoContext(ctx, "kit replaces the pre-execution gate",
+				"tool", req.ToolName,
+				"user", uc.UserID,
+				"kit", kit,
+				"skipped", pre.Skipped,
+			)
 		}
 		e.logger.DebugContext(ctx, "gate pre-execution passed", "tool", req.ToolName)
 	}
@@ -332,8 +413,10 @@ func (e *Executor) ExecuteTool(ctx context.Context, req ExecuteToolRequest) (*ba
 			ToolAccess: toolAccess,
 			Params:     req.Params,
 			Response:   result,
+			Kits:       holding.kitNames(),
+			KitCovered: kit != "",
 		}
-		postMods, err := e.gate.EvaluatePost(gctx)
+		post, err := e.gate.EvaluatePost(gctx)
 		if err != nil {
 			e.logger.WarnContext(ctx, "gate post-execution rejected",
 				"tool", req.ToolName,
@@ -352,8 +435,8 @@ func (e *Executor) ExecuteTool(ctx context.Context, req ExecuteToolRequest) (*ba
 				}},
 			}, nil
 		}
-		if len(postMods) > 0 {
-			entry.Modifications = append(entry.Modifications, postMods...)
+		if len(post.Modifications) > 0 {
+			entry.Modifications = append(entry.Modifications, post.Modifications...)
 		}
 		e.logger.DebugContext(ctx, "gate post-execution passed", "tool", req.ToolName)
 	}
@@ -394,7 +477,9 @@ func (e *Executor) ExecuteTool(ctx context.Context, req ExecuteToolRequest) (*ba
 // through. It runs ONLY those two checks — no credential re-injection, no
 // post-gate, no audit or metrics, which the composite as a whole already
 // performs. It fails closed: any authz error, denial, or gate rejection returns
-// a non-nil error that aborts the child call.
+// a non-nil error that aborts the child call. A kit the caller holds that
+// covers the child tool replaces the pre-execution gate as on the direct
+// path; the composite's audit entry does not show it, the log does.
 //
 // toolName is the canonical "<backend>_<tool>" name so it matches the
 // authorization object and gate classification used on the direct path.
@@ -405,14 +490,18 @@ func (e *Executor) CheckChild(ctx context.Context, toolName string, params map[s
 	}
 
 	toolAccess := e.lookupToolAccess(toolName)
+	holding := e.heldKits(ctx, uc)
+	var kit string
 	if e.authorizer != nil {
-		allowed, err := e.authorizer.Check(ctx, e.authzRequest(uc, toolName, toolAccess, e.heldKits(ctx, uc)))
+		authzReq := e.authzRequest(uc, toolName, toolAccess, holding)
+		allowed, err := e.authorizer.Check(ctx, authzReq)
 		if err != nil {
 			return fmt.Errorf("authz check failed for child tool %s: %w", toolName, err)
 		}
 		if !allowed {
 			return fmt.Errorf("user %s is not authorized to execute child tool %s", uc.UserID, toolName)
 		}
+		kit = e.appliedKit(authzReq)
 	}
 
 	if e.gate != nil {
@@ -421,9 +510,20 @@ func (e *Executor) CheckChild(ctx context.Context, toolName string, params map[s
 			Tool:       toolName,
 			ToolAccess: toolAccess,
 			Params:     params,
+			Kits:       holding.kitNames(),
+			KitCovered: kit != "",
 		}
-		if _, err := e.gate.EvaluatePre(gctx); err != nil {
+		pre, err := e.gate.EvaluatePre(gctx)
+		if err != nil {
 			return fmt.Errorf("gate rejected child tool %s: %w", toolName, err)
+		}
+		if len(pre.Skipped) > 0 {
+			e.logger.InfoContext(ctx, "kit replaces the pre-execution gate for child tool",
+				"tool", toolName,
+				"user", uc.UserID,
+				"kit", kit,
+				"skipped", pre.Skipped,
+			)
 		}
 	}
 

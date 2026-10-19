@@ -7,6 +7,9 @@
 // - untrusted callers: ALL PII patterns masked
 // - standard callers: only high-risk patterns (SSN, credit cards, AWS keys, API tokens)
 // - trusted callers: only credential patterns (AWS keys, API tokens)
+//
+// Works on the response, in the post-execution phase, which a kit the caller
+// holds never replaces: output is masked for kit holders too.
 
 var piiPatterns = [
     // Credit card numbers (must be before phone — more specific pattern)

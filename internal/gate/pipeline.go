@@ -31,49 +31,64 @@ func NewPipeline(evaluators []Evaluator) *Pipeline {
 	return &Pipeline{evaluators: evaluators}
 }
 
+// Outcome is what a run of the pipeline reports when it allows the call.
+type Outcome struct {
+	// Modifications lists every (policy, target) pair whose JSON
+	// representation changed during the run. Nil when no policy mutated
+	// the data.
+	Modifications []audit.PolicyModification
+	// Skipped names the policies that did not run because a kit the caller
+	// holds covers the call (GateContext.KitCovered), in the order the
+	// evaluators hold them. Nil when every policy ran.
+	Skipped []string
+}
+
 // EvaluatePre runs all evaluators in the pre-execution phase. Policies
-// receive the tool name and input parameters but no response. The returned
-// modification slice is nil when no policy mutated the data.
-func (p *Pipeline) EvaluatePre(ctx GateContext) ([]audit.PolicyModification, error) {
+// receive the tool name and input parameters but no response. The outcome's
+// modifications are nil when no policy mutated the data.
+func (p *Pipeline) EvaluatePre(ctx GateContext) (Outcome, error) {
 	ctx.Phase = PhasePre
 	return p.evaluate(ctx)
 }
 
 // EvaluatePost runs all evaluators in the post-execution phase. Policies
 // receive the tool name, input parameters, and the backend response. The
-// returned modification slice captures every (policy, target) pair where
-// the JSON representation changed during the run.
-func (p *Pipeline) EvaluatePost(ctx GateContext) ([]audit.PolicyModification, error) {
+// outcome's modifications capture every (policy, target) pair where the JSON
+// representation changed during the run.
+func (p *Pipeline) EvaluatePost(ctx GateContext) (Outcome, error) {
 	ctx.Phase = PhasePost
 	return p.evaluate(ctx)
 }
 
 // Evaluate runs all evaluators in sequence. If Phase is not set, it defaults
 // to PhasePost for backward compatibility. Callers that only care about
-// reject/allow may discard the returned modifications slice.
-func (p *Pipeline) Evaluate(ctx GateContext) ([]audit.PolicyModification, error) {
+// reject/allow may discard the returned outcome.
+func (p *Pipeline) Evaluate(ctx GateContext) (Outcome, error) {
 	if ctx.Phase == "" {
 		ctx.Phase = PhasePost
 	}
 	return p.evaluate(ctx)
 }
 
-func (p *Pipeline) evaluate(ctx GateContext) ([]audit.PolicyModification, error) {
-	var mods []audit.PolicyModification
+func (p *Pipeline) evaluate(ctx GateContext) (Outcome, error) {
+	var out Outcome
 	for _, ev := range p.evaluators {
 		result, err := ev.Evaluate(ctx)
 		if err != nil {
-			return nil, fmt.Errorf("evaluator %s: %w", ev.Name(), err)
+			return Outcome{}, fmt.Errorf("evaluator %s: %w", ev.Name(), err)
 		}
 		if !result.Allowed {
-			return nil, fmt.Errorf("evaluator %s rejected: %s", ev.Name(), result.Reason)
+			return Outcome{}, fmt.Errorf("evaluator %s rejected: %s", ev.Name(), result.Reason)
 		}
 		if result.Modified != nil {
 			ctx.Response = result.Modified
 		}
 		if len(result.Modifications) > 0 {
-			mods = append(mods, result.Modifications...)
+			out.Modifications = append(out.Modifications, result.Modifications...)
+		}
+		if len(result.Skipped) > 0 {
+			out.Skipped = append(out.Skipped, result.Skipped...)
 		}
 	}
-	return mods, nil
+	return out, nil
 }

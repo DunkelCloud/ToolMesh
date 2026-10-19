@@ -106,6 +106,25 @@ func (k Kit) IsWhole(p KitPart) bool {
 	return true
 }
 
+// PartCovers reports whether the part of the kit covers a tool routed to
+// backend with the access classification access: one of the part's entries
+// that the kit still lists does. Like partObjects, an entry the kit no longer
+// lists counts for nothing. It is the static answer from the definitions, as
+// Covers is for the whole kit.
+func (k Kit) PartCovers(p KitPart, tool, backend, access string) bool {
+	for _, g := range p.Grants {
+		if slices.Contains(k.Grants, g) && ScopeCovers(g, backend, access) {
+			return true
+		}
+	}
+	for _, t := range p.Tools {
+		if t == tool && slices.Contains(k.Tools, t) {
+			return true
+		}
+	}
+	return false
+}
+
 // partObjects returns the OpenFGA objects the entries of the part stand for
 // that the kit still lists: a holder of the part is executor of each.
 func (k Kit) partObjects(p KitPart) []string {

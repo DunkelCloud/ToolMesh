@@ -237,10 +237,11 @@ func ParseFile(data []byte) (*File, error) {
 			return nil, fmt.Errorf("authz config: deny %d: %w", i+1, err)
 		}
 	}
-	if err := validateKits(kitsFromFile(f.Kits)); err != nil {
+	kits := kitsFromFile(f.Kits)
+	if err := validateKits(kits); err != nil {
 		return nil, fmt.Errorf("authz config: %w", err)
 	}
-	if err := validateApprovers(f.Approvers); err != nil {
+	if err := validateApprovers(f.Approvers, kits); err != nil {
 		return nil, fmt.Errorf("authz config: %w", err)
 	}
 	return &f, nil

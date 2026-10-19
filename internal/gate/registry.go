@@ -41,6 +41,10 @@ type EvalResult struct {
 	// evaluation, one entry per (policy, target) where before != after. Nil
 	// when no policy changed the data.
 	Modifications []audit.PolicyModification
+	// Skipped names the policies the evaluator did not run because a kit the
+	// caller holds covers the call (GateContext.KitCovered). Nil when every
+	// policy ran.
+	Skipped []string
 }
 
 // EvaluatorFactory creates an Evaluator instance from configuration.

@@ -18,6 +18,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/DunkelCloud/ToolMesh/internal/bip322"
@@ -44,6 +45,9 @@ type Approver struct {
 	// of this address (BIP-322); the key stays with the approver. Optional
 	// when KeySHA256 is set.
 	Address string `yaml:"address,omitempty"`
+	// Kits, when set, are the only kits the approver may approve, by name.
+	// Empty means every kit. Each name must be a kit the same file defines.
+	Kits []string `yaml:"kits,omitempty"`
 }
 
 // Validate checks the approver's name, key hash and address. An approver
@@ -65,7 +69,18 @@ func (a Approver) Validate() error {
 			return fmt.Errorf("approver %q: %w", a.Name, err)
 		}
 	}
+	for _, k := range a.Kits {
+		if strings.TrimSpace(k) == "" {
+			return fmt.Errorf("approver %q: kits must not contain empty names", a.Name)
+		}
+	}
 	return nil
+}
+
+// MayApprove reports whether the approver may approve requests for the kit:
+// it names no kits, or names this one.
+func (a Approver) MayApprove(kit string) bool {
+	return len(a.Kits) == 0 || slices.Contains(a.Kits, kit)
 }
 
 // SigningAddress returns the approver's parsed signing address and whether it
@@ -78,9 +93,10 @@ func (a Approver) SigningAddress() (bip322.Address, bool) {
 	return addr, err == nil
 }
 
-// validateApprovers validates each approver and that no two share a name, a
-// key or an address.
-func validateApprovers(approvers []Approver) error {
+// validateApprovers validates each approver, that no two share a name, a
+// key or an address, and that the kits an approver is limited to are among
+// kits.
+func validateApprovers(approvers []Approver, kits []Kit) error {
 	names := make(map[string]bool, len(approvers))
 	keys := make(map[string]string, len(approvers))
 	addresses := make(map[string]string, len(approvers))
@@ -92,6 +108,11 @@ func validateApprovers(approvers []Approver) error {
 			return fmt.Errorf("approver %q is defined twice", a.Name)
 		}
 		names[a.Name] = true
+		for _, name := range a.Kits {
+			if !slices.ContainsFunc(kits, func(k Kit) bool { return k.Name == name }) {
+				return fmt.Errorf("approver %q: there is no kit %q to limit it to", a.Name, name)
+			}
+		}
 		if a.KeySHA256 != "" {
 			sum := strings.ToLower(a.KeySHA256)
 			if other, dup := keys[sum]; dup {

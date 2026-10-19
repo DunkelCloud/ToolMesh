@@ -254,8 +254,12 @@ func (s *Service) handleApproveRequest(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	v.Entries = entryViews(kit.Grants, kit.Tools, req.Coverage)
+	// Only approvers who may approve this kit are offered; the statement
+	// and the approval refuse the others anyway.
 	for _, a := range s.Signers() {
-		v.Approvers = append(v.Approvers, signerView{Name: a.Name, Address: a.Address})
+		if a.MayApprove(kit.Name) {
+			v.Approvers = append(v.Approvers, signerView{Name: a.Name, Address: a.Address})
+		}
 	}
 	writeJSON(w, http.StatusOK, v)
 }

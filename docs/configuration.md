@@ -411,7 +411,9 @@ The answer is a request id of ten characters and a fingerprint such as
 `0873-D5E5-9D1B-2DB7`, which the caller hands to the person it works for.
 When an approver has a signing address and `TOOLMESH_ISSUER` is set to the
 address ToolMesh is reached at, the answer also carries `approval_url`, the
-link to the [approval page](#approval-page). A request waits 30 minutes for a
+link to the [approval page](#approval-page). The answer's `note` repeats the
+link and the fingerprint word for word, so that an agent which passes the note
+on passes the link on. A request waits 30 minutes for a
 decision, then lapses. Asking again for a kit that is still pending returns
 the pending request; a caller may have at most five requests pending at a
 time. With the request, ToolMesh records for each entry of the kit how many
@@ -590,8 +592,9 @@ every call is checked again when it runs.
   lacks, instead of collecting denials call by call.
 
 Every answer also lists the kits the caller holds (`grants`, with id, expiry
-and time remaining) and its pending requests (`requests`), and describes these
-kits with their warnings.
+and time remaining) and its pending requests (`requests`, each with its
+approval link and fingerprint, so that the link can be handed over later), and
+describes these kits with their warnings.
 
 The answer shows only the tools the caller may call or get through a kit.
 For any other tool it says `denied`, without telling whether the tool exists.

@@ -161,9 +161,9 @@ func (h *Handler) handleRequestGrant(ctx context.Context, params map[string]any)
 	if res.Capped {
 		answer.TTLNote = "more than the kit's maximum was asked for; the request is for the maximum"
 	}
-	approveAt := "An approver of this ToolMesh approves or denies it"
+	approveAt := fmt.Sprintf("Give them the request id %s and the fingerprint %s: an approver of this ToolMesh approves or denies it on the approver API", g.ID, answer.Fingerprint)
 	if answer.ApprovalURL != "" {
-		approveAt = "Give them the approval_url and the fingerprint: an approver of this ToolMesh opens the link, checks the fingerprint and approves, possibly for less time or fewer tools"
+		approveAt = fmt.Sprintf("Give them this link exactly as written, %s, and the fingerprint %s: an approver of this ToolMesh opens the link, checks the fingerprint and approves, possibly for less time or fewer tools", answer.ApprovalURL, answer.Fingerprint)
 	}
 	answer.Note = fmt.Sprintf("Tell the person you work for that request %s asks for the kit %q (%s) for %s, and why. "+
 		"%s; unanswered, it lapses at %s. "+

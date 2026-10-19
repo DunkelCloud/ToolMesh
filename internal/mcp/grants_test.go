@@ -114,7 +114,9 @@ func TestRequestGrant_EndToEnd(t *testing.T) {
 
 	rights := askRightsAs(t, h, ctx, map[string]any{argNameTools: []any{testGraylogSearch}})
 	if len(rights.Requests) != 1 || rights.Requests[0].ID != answer.RequestID || len(rights.Grants) != 0 ||
-		!strings.Contains(rights.Note, toolRequestGrant) || rights.Tools[0].Verdict != executor.VerdictEscalatable {
+		rights.Requests[0].ApprovalURL != answer.ApprovalURL || rights.Requests[0].Fingerprint != answer.Fingerprint ||
+		!strings.Contains(rights.Note, toolRequestGrant) || !strings.Contains(rights.Note, "pending") ||
+		rights.Tools[0].Verdict != executor.VerdictEscalatable {
 		t.Errorf("rights while pending = %+v", rights)
 	}
 
@@ -225,7 +227,7 @@ func TestRequestGrant_ApprovalLinkAndPart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if answer.ApprovalURL != publicURL+"/approve/"+answer.RequestID || answer.Fingerprint != req.Fingerprint() || !strings.Contains(answer.Note, "approval_url") {
+	if answer.ApprovalURL != publicURL+"/approve/"+answer.RequestID || answer.Fingerprint != req.Fingerprint() || !strings.Contains(answer.Note, answer.ApprovalURL) || !strings.Contains(answer.Note, answer.Fingerprint) {
 		t.Errorf("answer = %+v", answer)
 	}
 	want := map[string]grants.EntryCoverage{

@@ -11,6 +11,14 @@ for the full narrative and details.
 
 ## [Unreleased]
 
+New example policy `config/policies/examples/prod-access-by-caller-class.js`:
+a pre-execution gate that lets a call through only when the caller's class
+(`caller-classes.yaml`) may use the tool's DADL `access` class, and denies
+unknown classes and unclassified tools with a reason naming tool and class.
+`discover_tools` and `toolmesh.describe()` now show the `access` field for
+tools of named backends; the composite backend dropped it on the listing
+path before, so only the gate and the audit trail saw it.
+
 **Behavior change:** the password login at `/authorize` answers differently in
 four cases. A wrong password re-renders the login form with `401` instead of
 `200`. A login refused by the new failed-login limits gets `429` with

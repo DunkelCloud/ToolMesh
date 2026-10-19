@@ -488,6 +488,9 @@ func (r *CodeRunner) installDiscovery(ctx context.Context, rt *goja.Runtime, tmO
 					schemaKeyDescription: d.Description,
 					argNameBackend:       d.Backend,
 				}
+				if d.Access != "" {
+					out[i]["access"] = d.Access
+				}
 				if kits := notes[d.Name]; len(kits) > 0 {
 					out[i][jsonKeyGrantRequired] = kits
 				}

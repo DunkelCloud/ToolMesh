@@ -26,6 +26,7 @@ func TestGenerateToolDefinitions(t *testing.T) {
 		{
 			Name:        "search",
 			Description: "Search for things",
+			Access:      testAccessRead,
 			InputSchema: map[string]any{
 				contentKeyType: jsonTypeObject,
 				schemaKeyProperties: map[string]any{
@@ -57,6 +58,14 @@ func TestGenerateToolDefinitions(t *testing.T) {
 	}
 	if !strings.Contains(result, "Promise<any>") {
 		t.Error("expected Promise<any> return type")
+	}
+	// The access classification is printed once, for the classified tool
+	// only; the unclassified memorizer tool gets no access line.
+	if got := strings.Count(result, "  // access: "); got != 1 {
+		t.Errorf("expected exactly one access line, got %d in:\n%s", got, result)
+	}
+	if !strings.Contains(result, "  // access: "+testAccessRead+"\n") {
+		t.Errorf("expected the search tool's access line, got:\n%s", result)
 	}
 }
 

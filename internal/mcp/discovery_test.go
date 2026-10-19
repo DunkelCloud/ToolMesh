@@ -414,6 +414,31 @@ func TestCodeRunner_SandboxDiscover(t *testing.T) {
 	})
 }
 
+// TestCodeRunner_SandboxDiscover_ShowsAccess pins that discover() carries
+// the access classification next to name, description and backend, and
+// leaves the key out for an unclassified tool.
+func TestCodeRunner_SandboxDiscover_ShowsAccess(t *testing.T) {
+	logger := handlerTestLogger()
+	mb := &codeRunnerTestBackend{}
+	exec := executor.New(nil, nil, mb, nil, nil, 120*time.Second, logger, nil, nil)
+	tools := []backend.ToolDescriptor{
+		{Name: "dns:delete_zone", Description: "Delete a DNS zone", Backend: "rest:dns", Access: "dangerous"},
+		{Name: "dns:list_zones", Description: "List DNS zones", Backend: "rest:dns"},
+	}
+	runner := NewCodeRunner(map[string]string{"dns_delete_zone": "dns:delete_zone", "dns_list_zones": "dns:list_zones"}, tools, exec, nil, logger)
+
+	result, err := runner.Execute(testCtx(), `return toolmesh.discover("dns zone").map(d => d.name + "=" + (d.access || "none"));`)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	text := extractText(t, result)
+	for _, want := range []string{"dns_delete_zone=dangerous", "dns_list_zones=none"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("expected %q in discover output, got: %s", want, text)
+		}
+	}
+}
+
 func TestCodeRunner_SandboxDescribe(t *testing.T) {
 	logger := handlerTestLogger()
 	mb := &codeRunnerTestBackend{}

@@ -123,6 +123,9 @@ func GenerateToolDefinitions(tools []backend.ToolDescriptor, notes grantNotes) s
 
 	for _, tool := range tools {
 		fmt.Fprintf(&sb, "  /** %s */\n", tool.Description)
+		if tool.Access != "" {
+			fmt.Fprintf(&sb, "  // access: %s\n", tool.Access)
+		}
 		if note := notes.note(tool.Name); note != "" {
 			fmt.Fprintf(&sb, "  // %s\n", note)
 		}

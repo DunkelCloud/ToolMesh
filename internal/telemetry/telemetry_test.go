@@ -230,6 +230,172 @@ func TestSend_ServerError_KeepsCounters(t *testing.T) {
 	}
 }
 
+// testHash returns a distinct 64-character hex DADL hash for i.
+func testHash(i int) string {
+	h := strconv.FormatInt(int64(i), 16)
+	return strings.Repeat("0", 64-len(h)) + h
+}
+
+// batchCollector is a telemetry endpoint that behaves like the real
+// collector: it rejects requests with more than 50 entries. It records the
+// entries of every accepted request and answers 500 to the request whose
+// 1-based number is failAt.
+type batchCollector struct {
+	srv      *httptest.Server
+	mu       sync.Mutex
+	failAt   int
+	requests int
+	accepted [][]report
+}
+
+func newBatchCollector(t *testing.T, failAt int) *batchCollector {
+	t.Helper()
+	b := &batchCollector{failAt: failAt}
+	b.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var entries []report
+		if err := json.Unmarshal(body, &entries); err != nil {
+			t.Errorf("invalid JSON payload: %v", err)
+		}
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		b.requests++
+		switch {
+		case len(entries) > 50:
+			w.WriteHeader(http.StatusBadRequest)
+		case b.requests == b.failAt:
+			w.WriteHeader(http.StatusInternalServerError)
+		default:
+			b.accepted = append(b.accepted, entries)
+			w.WriteHeader(http.StatusNoContent)
+		}
+	}))
+	t.Cleanup(b.srv.Close)
+	return b
+}
+
+func TestSend_SplitsReportIntoBatchesOfAtMost50(t *testing.T) {
+	tests := []struct {
+		backends  int
+		wantSizes []int
+	}{
+		{backends: 1, wantSizes: []int{1}},
+		{backends: 50, wantSizes: []int{50}},
+		{backends: 51, wantSizes: []int{50, 1}},
+		{backends: 120, wantSizes: []int{50, 50, 20}},
+	}
+	for _, tt := range tests {
+		t.Run(strconv.Itoa(tt.backends), func(t *testing.T) {
+			sink := newBatchCollector(t, 0)
+			c := New(t.TempDir(), "v1", quietLogger())
+			c.SetEndpoint(sink.srv.URL)
+			for i := range tt.backends {
+				name := "api" + strconv.Itoa(i)
+				c.RegisterBackend(name, testHash(i))
+				c.RecordCall(name, true)
+			}
+
+			c.send(t.Context())
+
+			sink.mu.Lock()
+			defer sink.mu.Unlock()
+			if sink.requests != len(tt.wantSizes) {
+				t.Fatalf("requests = %d, want %d", sink.requests, len(tt.wantSizes))
+			}
+			seen := make(map[string]int)
+			for i, batch := range sink.accepted {
+				if len(batch) != tt.wantSizes[i] {
+					t.Errorf("request %d has %d entries, want %d", i+1, len(batch), tt.wantSizes[i])
+				}
+				for _, e := range batch {
+					seen[e.DADLHash]++
+					if e.SiteID != c.siteID || e.CallCount != 1 {
+						t.Errorf("entry %s: site_id %q, call_count %d; want %q, 1", e.DADLHash, e.SiteID, e.CallCount, c.siteID)
+					}
+				}
+			}
+			for i := range tt.backends {
+				if seen[testHash(i)] != 1 {
+					t.Errorf("hash %d reported %d times, want once", i, seen[testHash(i)])
+				}
+			}
+
+			c.mu.Lock()
+			defer c.mu.Unlock()
+			if len(c.counters) != 0 {
+				t.Errorf("%d counters left after a fully accepted report, want 0", len(c.counters))
+			}
+			if c.lastSent.IsZero() {
+				t.Error("lastSent not set after a fully accepted report")
+			}
+		})
+	}
+}
+
+func TestSend_RejectedBatchKeepsItsCounters(t *testing.T) {
+	dir := t.TempDir()
+	sink := newBatchCollector(t, 2) // accept the first request, fail the second
+	c := New(dir, "v1", quietLogger())
+	c.SetEndpoint(sink.srv.URL)
+	for i := range 60 {
+		name := "api" + strconv.Itoa(i)
+		c.RegisterBackend(name, testHash(i))
+		c.RecordCall(name, true)
+	}
+
+	c.send(t.Context())
+
+	c.mu.Lock()
+	if !c.lastSent.IsZero() {
+		t.Error("lastSent set although a request was rejected")
+	}
+	if len(c.counters) != 10 {
+		t.Errorf("%d counters left, want the 10 of the rejected request", len(c.counters))
+	}
+	for i := range 50 {
+		if c.counters[testHash(i)] != nil {
+			t.Errorf("counter of accepted hash %d not reset", i)
+		}
+	}
+	c.mu.Unlock()
+
+	// The reset counters must already be on disk.
+	data, err := os.ReadFile(filepath.Join(dir, stateFile)) //nolint:gosec // path from t.TempDir()
+	if err != nil {
+		t.Fatalf("read state file: %v", err)
+	}
+	var state stateData
+	if err := json.Unmarshal(data, &state); err != nil {
+		t.Fatalf("parse state file: %v", err)
+	}
+	if len(state.Telemetry.Counters) != 10 {
+		t.Errorf("state file holds %d counters, want 10", len(state.Telemetry.Counters))
+	}
+
+	// The next cycle delivers the rest; no call is counted twice.
+	sink.mu.Lock()
+	sink.failAt = 0
+	sink.mu.Unlock()
+	c.send(t.Context())
+
+	sink.mu.Lock()
+	defer sink.mu.Unlock()
+	total := 0
+	for _, batch := range sink.accepted {
+		for _, e := range batch {
+			total += e.CallCount
+		}
+	}
+	if total != 60 {
+		t.Errorf("collector counted %d calls over both cycles, want 60", total)
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.counters) != 0 || c.lastSent.IsZero() {
+		t.Errorf("after the second cycle: %d counters, lastSent zero %v; want 0, false", len(c.counters), c.lastSent.IsZero())
+	}
+}
+
 func TestOptOut_PreventsHTTPSend(t *testing.T) {
 	t.Setenv("DO_NOT_SEND_ANONYMOUS_STATISTICS", "yes")
 

@@ -29,6 +29,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -41,6 +42,10 @@ const (
 	sendInterval = 24 * time.Hour
 	httpTimeout  = 10 * time.Second
 	stateFile    = "toolmesh.json"
+
+	// maxBatchEntries is the largest number of report entries the collector
+	// accepts in one request. Larger reports go out in several requests.
+	maxBatchEntries = 50
 )
 
 // counterPair tracks calls and errors for a single DADL backend.
@@ -258,8 +263,12 @@ func (c *Collector) Run(ctx context.Context) {
 	}
 }
 
-// send posts the current counters to the telemetry endpoint and resets them
-// on success.
+// send posts the current counters to the telemetry endpoint, in requests of
+// at most maxBatchEntries entries because the collector rejects larger ones.
+// The counters of each accepted request are reset right away, so a later
+// request that fails does not make the accepted ones count twice. LastSent
+// advances only when every request was accepted; the counters of a rejected
+// request and of the requests after it wait for the next cycle.
 func (c *Collector) send(ctx context.Context) {
 	c.mu.Lock()
 	payload := c.buildPayload()
@@ -269,36 +278,58 @@ func (c *Collector) send(ctx context.Context) {
 		return
 	}
 
-	body, err := json.Marshal(payload)
+	requests := (len(payload) + maxBatchEntries - 1) / maxBatchEntries
+	for i := range requests {
+		batch := payload[i*maxBatchEntries : min((i+1)*maxBatchEntries, len(payload))]
+		if !c.post(ctx, batch, i+1, requests) {
+			if i > 0 {
+				// Keep the reset counters of the accepted requests.
+				c.persistState()
+			}
+			return
+		}
+		c.mu.Lock()
+		c.resetCounters(batch)
+		c.mu.Unlock()
+	}
+
+	c.mu.Lock()
+	c.lastSent = time.Now().UTC()
+	c.mu.Unlock()
+	c.persistState()
+	c.logger.Info("telemetry: report sent", "entries", len(payload), "requests", requests)
+}
+
+// post sends one batch of report entries and reports whether the collector
+// accepted it. Request n of total is named in the warnings.
+func (c *Collector) post(ctx context.Context, batch []report, n, total int) bool {
+	body, err := json.Marshal(batch)
 	if err != nil {
 		c.logger.WarnContext(ctx, "telemetry: failed to marshal payload", "error", err)
-		return
+		return false
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		c.logger.WarnContext(ctx, "telemetry: failed to create request", "error", err)
-		return
+		return false
 	}
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := c.client.Do(req)
 	if err != nil {
-		c.logger.WarnContext(ctx, "telemetry: send failed, will retry next cycle", "error", err)
-		return
+		c.logger.WarnContext(ctx, "telemetry: send failed, will retry next cycle",
+			"error", err, "request", n, "of", total)
+		return false
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		c.mu.Lock()
-		c.resetCounters(payload)
-		c.lastSent = time.Now().UTC()
-		c.mu.Unlock()
-		c.persistState()
-		c.logger.Info("telemetry: report sent", "entries", len(payload))
-	} else {
-		c.logger.WarnContext(ctx, "telemetry: unexpected status, will retry next cycle", "status", resp.StatusCode)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		c.logger.WarnContext(ctx, "telemetry: unexpected status, will retry next cycle",
+			"status", resp.StatusCode, "request", n, "of", total, "entries", len(batch))
+		return false
 	}
+	return true
 }
 
 // buildPayload creates the report slice from the set of registered backends.
@@ -328,6 +359,8 @@ func (c *Collector) buildPayload() []report {
 			MCPServerCount: c.mcpServerCount,
 		})
 	}
+	// A stable order keeps each DADL in the same request of a split report.
+	slices.SortFunc(reports, func(a, b report) int { return strings.Compare(a.DADLHash, b.DADLHash) })
 	return reports
 }
 

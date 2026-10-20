@@ -188,6 +188,15 @@ Without a persistent data directory every start reports a new site ID. See
   selects `external`, `bypass` selects `embedded`. A warning is logged while
   it is set.
 
+### Fixed
+
+- Telemetry reports of installations with more than 50 distinct DADL files
+  are accepted now. The collector takes at most 50 entries per request and
+  rejected such a report as a whole, so these installations sent no
+  telemetry. ToolMesh now splits the report into requests of at most 50
+  entries. A rejected report kept its counters, so the calls counted in the
+  meantime go out with the next report.
+
 ### Security
 
 - Failed password logins are now limited: per account from one client address

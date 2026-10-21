@@ -21,6 +21,10 @@
 //     is listed in UNCLASSIFIED_ALLOWED_FOR.
 // The error names the tool, the caller class and the reason; the caller sees
 // it in the tool result and the audit entry records it with status "denied".
+// ToolMesh appends the kits that would lift the refusal: a held kit replaces
+// this policy, which does not declare enforce-with-kit. tell_me_my_rights
+// reports a tool this policy refuses as escalatable through those kits, or
+// as denied, before any call is made.
 //
 // To enable, copy this file into the active policies directory (the path in
 // TOOLMESH_POLICIES_DIR, default /app/policies; docker-compose mounts

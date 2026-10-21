@@ -99,16 +99,7 @@ func (h held) names() string {
 
 // kitNames lists the kits held, whole and in part, for the gate context. It
 // is never nil, so that policies always see an array.
-func (h held) kitNames() []string {
-	out := make([]string, 0, len(h.kits)+len(h.parts))
-	out = append(out, h.kits...)
-	for _, p := range h.parts {
-		if !slices.Contains(out, p.Kit) {
-			out = append(out, p.Kit)
-		}
-	}
-	return out
-}
+func (h held) kitNames() []string { return kitNames(h.kits, h.parts) }
 
 // heldKits returns the kits the caller holds now. Only an authenticated
 // caller can hold kits.
@@ -158,6 +149,8 @@ const (
 	metaKitApplied = "kit_applied"
 	// metaGateSkipped lists the pre-execution policies the kit replaced.
 	metaGateSkipped = "gate_skipped"
+	// metaRemedyKits lists the kits that would have allowed a denied call.
+	metaRemedyKits = "remedy_kits"
 )
 
 // addMetadata sets one metadata value of the audit entry.
@@ -270,12 +263,12 @@ func (e *Executor) ExecuteTool(ctx context.Context, req ExecuteToolRequest) (*ba
 
 	// Step 1: AuthZ check via OpenFGA
 	holding := e.heldKits(ctx, uc)
+	authzReq := e.authzRequest(uc, req.ToolName, toolAccess, holding)
 	// kit is the kit the caller holds that covers the call, "" when none
 	// does. With it the approver's decision replaces the pre-execution gate.
 	var kit string
 	if e.authorizer != nil {
 		e.logger.DebugContext(ctx, "authz check", "tool", req.ToolName, "user", uc.UserID)
-		authzReq := e.authzRequest(uc, req.ToolName, toolAccess, holding)
 		if len(holding.kits)+len(holding.parts) > 0 {
 			entry.Metadata = map[string]string{"held_kits": holding.names()}
 		}
@@ -290,7 +283,7 @@ func (e *Executor) ExecuteTool(ctx context.Context, req ExecuteToolRequest) (*ba
 		if !allowed {
 			// Deny with remedy: name the kits that would allow the call, so
 			// that the caller asks once for a kit instead of tool by tool.
-			kits, remedy := e.denialRemedy(ctx, authzReq)
+			kits, remedy := e.denialRemedy(ctx, uc, authzReq, req.Params)
 			e.logger.WarnContext(ctx, "authorization denied",
 				"tool", req.ToolName,
 				"user", uc.UserID,
@@ -299,7 +292,7 @@ func (e *Executor) ExecuteTool(ctx context.Context, req ExecuteToolRequest) (*ba
 			entry.DurationMs = time.Since(start).Milliseconds()
 			entry.Status = statusDenied
 			if len(kits) > 0 {
-				addMetadata(&entry, "remedy_kits", strings.Join(kits, ","))
+				addMetadata(&entry, metaRemedyKits, strings.Join(kits, ","))
 			}
 			e.recordAudit(ctx, entry)
 			return &backend.ToolResult{
@@ -348,20 +341,32 @@ func (e *Executor) ExecuteTool(ctx context.Context, req ExecuteToolRequest) (*ba
 		}
 		pre, err := e.gate.EvaluatePre(gctx)
 		if err != nil {
+			// Refusal with remedy, as for an authorization denial: a kit
+			// that covers the tool replaces the gate, so name the kits that
+			// would lift the refusal.
+			kits, remedy := e.gateRemedy(uc, authzReq, req.Params)
 			e.logger.WarnContext(ctx, "gate pre-execution rejected",
 				"tool", req.ToolName,
 				"user", uc.UserID,
 				"error", err,
+				"kits", kits,
 			)
 			entry.DurationMs = time.Since(start).Milliseconds()
 			entry.Status = statusDenied
 			entry.Error = fmt.Sprintf("gate rejected (pre-execution): %v", err)
+			if len(kits) > 0 {
+				addMetadata(&entry, metaRemedyKits, strings.Join(kits, ","))
+			}
 			e.recordAudit(ctx, entry)
+			msg := "Gate rejected (pre-execution): " + err.Error()
+			if remedy != "" {
+				msg = strings.TrimSuffix(msg, ".") + "." + remedy
+			}
 			return &backend.ToolResult{
 				IsError: true,
 				Content: []any{map[string]any{
 					contentKeyType: contentKeyText,
-					contentKeyText: fmt.Sprintf("Gate rejected (pre-execution): %s", err),
+					contentKeyText: msg,
 				}},
 			}, nil
 		}

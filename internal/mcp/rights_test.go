@@ -27,6 +27,7 @@ import (
 	"github.com/DunkelCloud/ToolMesh/internal/authz"
 	"github.com/DunkelCloud/ToolMesh/internal/backend"
 	"github.com/DunkelCloud/ToolMesh/internal/executor"
+	"github.com/DunkelCloud/ToolMesh/internal/gate"
 	"github.com/DunkelCloud/ToolMesh/internal/userctx"
 )
 
@@ -41,6 +42,7 @@ const (
 	testAccessRead      = "read"
 	testKitWide         = "wide"
 	testBackendGraylog  = "graylog"
+	testBackendUnifi    = "unifi"
 	testKitUserBob      = "bob"
 	testKitUserOwner    = "owner"
 	testUnknownToolName = "nope_tool"
@@ -106,8 +108,15 @@ func newKitHandler(t *testing.T) (*Handler, *rightsAudit) {
 }
 
 // newKitSetup builds the handler of newKitHandler, with the given approvers
-// in the policy.
+// in the policy and no gate.
 func newKitSetup(t *testing.T, approvers []authz.Approver) kitSetup {
+	t.Helper()
+	return newKitSetupWithGate(t, approvers, nil)
+}
+
+// newKitSetupWithGate builds the handler of newKitHandler, with the given
+// approvers in the policy and the gate in the executor.
+func newKitSetupWithGate(t *testing.T, approvers []authz.Approver, g *gate.Pipeline) kitSetup {
 	t.Helper()
 	engine, err := authz.OpenEmbedded(context.Background(), authz.EmbeddedOptions{Path: filepath.Join(t.TempDir(), authz.DBFileName)})
 	if err != nil {
@@ -130,11 +139,11 @@ func newKitSetup(t *testing.T, approvers []authz.Approver) kitSetup {
 	}
 	composite := backend.NewCompositeBackend(map[string]backend.ToolBackend{
 		testBackendGraylog: &kitTestBackend{access: map[string]string{"search": testAccessRead, "delete_stream": "write"}},
-		"unifi":            &kitTestBackend{access: map[string]string{"list_clients": testAccessRead}},
+		testBackendUnifi:   &kitTestBackend{access: map[string]string{"list_clients": testAccessRead}},
 		testBackendVault:   &kitTestBackend{access: map[string]string{"fetch": testAccessRead}},
 	})
 	rec := &rightsAudit{}
-	exec := executor.New(engine, nil, composite, nil, rec, 5*time.Second, newQuietMCPLogger(), nil, nil)
+	exec := executor.New(engine, nil, composite, g, rec, 5*time.Second, newQuietMCPLogger(), nil, nil)
 	return kitSetup{
 		handler: NewHandler(exec, composite, nil, "", nil, newQuietMCPLogger(), false),
 		audit:   rec,
@@ -149,7 +158,13 @@ func kitCaller(user string) context.Context {
 
 func askRights(t *testing.T, h *Handler, user string, params map[string]any) rightsAnswer {
 	t.Helper()
-	res, err := h.HandleToolCall(kitCaller(user), toolTellMeMyRights, params)
+	return askRightsCtx(t, h, kitCaller(user), params)
+}
+
+// askRightsCtx asks tell_me_my_rights as the caller of ctx.
+func askRightsCtx(t *testing.T, h *Handler, ctx context.Context, params map[string]any) rightsAnswer {
+	t.Helper()
+	res, err := h.HandleToolCall(ctx, toolTellMeMyRights, params)
 	if err != nil {
 		t.Fatalf("HandleToolCall: %v", err)
 	}

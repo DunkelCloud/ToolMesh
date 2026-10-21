@@ -11,6 +11,19 @@ for the full narrative and details.
 
 ## [Unreleased]
 
+`tell_me_my_rights` now takes the pre-execution gate policies into account.
+A tool a policy refuses the caller is `escalatable` through the kits that
+would lift the refusal, or `denied`, with a reason that names the policy; it
+used to be `allowed`, and the call then failed at the gate. Policies see
+`ctx.preflight` in such a run, which has no parameters and is not recorded
+for rate limiting. A call the gate refuses is now answered, as an
+authorization denial is, with the kits that would lift the refusal (a held
+kit replaces the gate), and its audit entry carries `remedy_kits`; where
+kits exist and none lifts it, the answer says so. An authorization denial
+names only kits with which the call also passes the gate, and the approval
+page counts a tool a policy refuses as new for the kit that lifts it.
+Discovery does not ask the policies, as before.
+
 **Behavior change:** a kit a caller holds now replaces the pre-execution
 gate for the tools it covers. A granted kit used to count in the
 authorization step only, and a pre-execution policy could still refuse the

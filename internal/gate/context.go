@@ -55,6 +55,12 @@ type GateContext struct {
 	// policy yields to the kit and is skipped. The post-execution phase
 	// runs every policy regardless. Exposed to policies as ctx.kitCovered.
 	KitCovered bool `json:"kitCovered"`
+	// Preflight is set when ToolMesh asks the policies whether a call would
+	// pass without making it: for the verdicts of tell_me_my_rights, where
+	// Params is empty, and to name the kits that would lift a refusal.
+	// Nothing is executed or recorded, and changes to Params are discarded.
+	// Exposed to policies as ctx.preflight.
+	Preflight bool `json:"preflight"`
 }
 
 // RateLimiter tracks per-user request counts with a sliding window.

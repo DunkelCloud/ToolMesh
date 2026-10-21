@@ -37,6 +37,9 @@ type EvalResult struct {
 	Allowed  bool                // Whether the result may be returned to the caller.
 	Modified *backend.ToolResult // Optional: modified result (fields removed, etc.).
 	Reason   string              // If rejected: reason.
+	// Policy names the policy that rejected the call, when the evaluator
+	// runs policies; empty when allowed.
+	Policy string
 	// Modifications lists any policy-driven mutations performed during this
 	// evaluation, one entry per (policy, target) where before != after. Nil
 	// when no policy changed the data.

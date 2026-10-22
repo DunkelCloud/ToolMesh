@@ -312,7 +312,10 @@ filters, still run. A kit granted in part covers only its granted entries.
 The audit entry of such a call carries `kit_applied` (the kit) and
 `gate_skipped` (the policies), and the log shows `kit replaces the
 pre-execution gate`. Denies decide before the kit is looked at, and the
-post-execution gate (masking, field filters) runs for every call.
+post-execution gate (masking, field filters) runs for every call. A call
+the gate refuses is answered, as an authorization denial is, with the kits
+that would lift the refusal, and its audit entry carries `remedy_kits`;
+where kits exist and none lifts it, the answer says so.
 
 A kit allows nothing by itself: a caller holds it once an approver has
 approved its request, until the grant ends (see [Granting kits](#granting-kits)).
@@ -591,6 +594,17 @@ every call is checked again when it runs.
   agent that checks all tools of a task first can then ask once for what it
   lacks, instead of collecting denials call by call.
 
+The verdicts take the [gate policies](#gate-policies) into account, as a
+call meets them after the authorization step: the pre-execution policies are
+asked about every tool the caller may call or get through a kit, with the
+kits the caller holds, no parameters and `ctx.preflight` set. A tool a
+policy refuses is `escalatable` through the kits that cover it and with
+which the gate passes (a held kit replaces the gate, except for policies
+with the directive `enforce-with-kit`), or `denied` when no kit does; the
+reason names the policy and its message. Discovery (`discover_tools`,
+`toolmesh.discover`) does not ask the policies: its `grant_required` marker
+comes from the kit definitions alone.
+
 Every answer also lists the kits the caller holds (`grants`, with id, expiry
 and time remaining) and its pending requests (`requests`, each with its
 approval link and fingerprint, so that the link can be handed over later), and
@@ -601,7 +615,8 @@ For any other tool it says `denied`, without telling whether the tool exists.
 Every call is recorded in the audit trail (tool `tell_me_my_rights`, backend
 `toolmesh`): the answer is the first thing an agent that was taken over would
 look up. In external mode there are no kits, so the verdicts are `allowed` and
-`denied`; with authorization disabled, every tool is `allowed`.
+`denied`; with authorization disabled, every tool is `allowed` unless a
+policy refuses it.
 
 ## Gate Policies
 
@@ -629,6 +644,7 @@ A policy sees one object, `ctx`:
 | `ctx.response` | The result, in the post-execution phase; changes to `content` reach the caller and are recorded. `null` in the pre-execution phase |
 | `ctx.kits` | The kits the caller holds, whole or in part, by name; an empty array without any |
 | `ctx.kitCovered` | `true` when one of them covers the tool |
+| `ctx.preflight` | `true` when ToolMesh asks whether a call would pass without making it: for the verdicts of `tell_me_my_rights`, where `ctx.params` is empty, and to name the kits that would lift a refusal. Nothing runs or is recorded, and changes to `ctx.params` are discarded. A policy that requires a parameter should not refuse a preflight for its absence |
 | `ctx.rateLimitExceeded(n)` | Whether the caller made more than `n` calls in the last hour |
 
 Policies load at startup. The log shows one line `loaded policy` per file,
@@ -673,7 +689,9 @@ post-execution-only policies included, as none of them ran in that phase.
 A deny in the grants file still wins: it decides in the authorization step,
 before the kit is looked at. Whether the steady-state grants would have
 allowed the call as well does not matter: the kit applies whenever it
-covers the tool.
+covers the tool. A preflight (`ctx.preflight`) skips the same policies for
+a kit that covers the tool, which is how `tell_me_my_rights` tells
+`escalatable` from `denied` and a refusal names the kits that lift it.
 
 ## Redis
 

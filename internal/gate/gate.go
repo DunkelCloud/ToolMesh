@@ -135,10 +135,16 @@ func (g *Gate) Name() string {
 // (gctx.KitCovered), only policies with the directive enforce-with-kit run;
 // the others are skipped and named in EvalResult.Skipped. The post-execution
 // phase runs every policy.
+//
+// A preflight (gctx.Preflight) asks the policies without a call behind it:
+// it is not recorded for rate limiting, so that a caller's lookups do not
+// count as calls.
 func (g *Gate) Evaluate(gctx GateContext) (*EvalResult, error) {
 	// Record the request once for rate limiting, separate from the Check call
 	// exposed to policies (which is read-only to prevent counter pollution).
-	g.rateLimiter.Record(gctx.User.UserID)
+	if !gctx.Preflight {
+		g.rateLimiter.Record(gctx.User.UserID)
+	}
 
 	var mods []audit.PolicyModification
 	var skipped []string
@@ -155,7 +161,7 @@ func (g *Gate) Evaluate(gctx GateContext) (*EvalResult, error) {
 				"user", gctx.User.UserID,
 				"error", err,
 			)
-			return &EvalResult{Allowed: false, Reason: fmt.Sprintf("policy %s: %s", p.name, err)}, nil
+			return &EvalResult{Allowed: false, Policy: p.name, Reason: fmt.Sprintf("policy %s: %s", p.name, err)}, nil
 		}
 		if len(policyMods) > 0 {
 			mods = append(mods, policyMods...)

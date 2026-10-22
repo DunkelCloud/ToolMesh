@@ -16,7 +16,9 @@ package executor
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -24,6 +26,7 @@ import (
 	"github.com/DunkelCloud/ToolMesh/internal/audit"
 	"github.com/DunkelCloud/ToolMesh/internal/authz"
 	"github.com/DunkelCloud/ToolMesh/internal/backend"
+	"github.com/DunkelCloud/ToolMesh/internal/gate"
 	"github.com/DunkelCloud/ToolMesh/internal/grants"
 	"github.com/DunkelCloud/ToolMesh/internal/userctx"
 	"github.com/google/uuid"
@@ -59,6 +62,11 @@ type ToolRight struct {
 	// Blocked is set for a denied tool that a kit covers but a deny blocks
 	// for this caller, so that no kit can help.
 	Blocked bool
+	// PolicyRefusal is what a pre-execution policy answers to a call of the
+	// tool, as "policy <file>: <reason>", when that is what stands in the
+	// caller's way: for VerdictEscalatable the kits in Kits lift it, for
+	// VerdictDenied no kit does. Empty when no policy refuses the call.
+	PolicyRefusal string
 }
 
 // Authorizes reports whether calls are checked at all; false when
@@ -76,19 +84,136 @@ func (e *Executor) Kits() []authz.Kit {
 // AssessTools reports for each tool whether the caller may execute it and,
 // if not, which kits would allow it. With verify, a kit counts only when a
 // check with the caller holding it allows the tool, which takes denies into
-// account; without, a kit counts when its definition covers the tool, which
-// costs no checks beyond the one per tool. The answer is information only:
-// ExecuteTool checks every call again.
+// account, and the pre-execution policies are asked as well (see
+// gateRights); without, a kit counts when its definition covers the tool
+// and no policy is asked, which costs no checks beyond the one per tool.
+// The answer is information only: ExecuteTool checks every call again.
 func (e *Executor) AssessTools(ctx context.Context, uc *userctx.UserContext, tools []backend.ToolDescriptor, verify bool) []ToolRight {
 	reqs := e.authzRequests(ctx, uc, tools)
+	var out []ToolRight
 	if e.authorizer == nil {
-		out := make([]ToolRight, len(tools))
+		out = make([]ToolRight, len(tools))
 		for i, r := range reqs {
 			out[i] = ToolRight{Tool: r.Tool, Backend: r.Backend, Verdict: VerdictAllowed}
 		}
-		return out
+	} else {
+		out = e.assess(ctx, reqs, e.checkAll(ctx, reqs), verify)
 	}
-	return e.assess(ctx, reqs, e.checkAll(ctx, reqs), verify)
+	if verify {
+		e.gateRights(uc, reqs, out)
+	}
+	return out
+}
+
+// gateRights asks the pre-execution policies about every tool the caller
+// may execute or get through a kit, as ExecuteTool would after the
+// authorization step: with the kits the caller holds, no parameters and
+// GateContext.Preflight set. A tool the policies refuse becomes escalatable
+// through the kits that cover it and with which the gate passes (a held kit
+// replaces the gate, except for policies that declare enforce-with-kit), or
+// denied when no kit does; an escalatable tool keeps only the kits with
+// which the gate passes. Tools the caller may not see are left alone.
+func (e *Executor) gateRights(uc *userctx.UserContext, reqs []authz.Request, rights []ToolRight) {
+	if e.gate == nil {
+		return
+	}
+	for i := range rights {
+		r := &rights[i]
+		switch r.Verdict {
+		case VerdictAllowed:
+			refusal := e.gatePreflight(uc, reqs[i], nil)
+			if refusal == "" {
+				continue
+			}
+			r.PolicyRefusal = refusal
+			r.Verdict = VerdictDenied
+			if r.Kits = e.liftingKits(uc, reqs[i], nil); len(r.Kits) > 0 {
+				r.Verdict = VerdictEscalatable
+			}
+		case VerdictEscalatable:
+			var kits []string
+			var refusal string
+			for _, name := range r.Kits {
+				if ref := e.gatePreflight(uc, withKit(reqs[i], name), nil); ref != "" {
+					refusal = ref
+					continue
+				}
+				kits = append(kits, name)
+			}
+			r.Kits = kits
+			if len(kits) == 0 {
+				r.Verdict, r.PolicyRefusal = VerdictDenied, refusal
+			}
+		}
+	}
+}
+
+// liftingKits returns the kits that cover the tool of req and with which
+// the pre-execution gate passes a call with params, in the order of the
+// catalog: the kits that would lift a refusal of the gate.
+func (e *Executor) liftingKits(uc *userctx.UserContext, req authz.Request, params map[string]any) []string {
+	var out []string
+	for _, kit := range e.Kits() {
+		if kit.Covers(req.Tool, req.Backend, req.Access) && e.gatePreflight(uc, withKit(req, kit.Name), params) == "" {
+			out = append(out, kit.Name)
+		}
+	}
+	return out
+}
+
+// gatePreflight runs the pre-execution gate for a call of the tool of req
+// without making it: for the caller uc holding the kits of req, with params
+// (none when nil) and GateContext.Preflight set, so that nothing is recorded
+// and the policies know. It returns the gate's refusal as "policy <file>:
+// <reason>", or "" when the call would pass. A gate that fails counts as a
+// refusal, as in ExecuteTool.
+func (e *Executor) gatePreflight(uc *userctx.UserContext, req authz.Request, params map[string]any) string {
+	// Policies may rewrite the parameters they see; the caller's stay as
+	// they are.
+	params = maps.Clone(params)
+	if params == nil {
+		params = map[string]any{}
+	}
+	var user userctx.UserContext
+	if uc != nil {
+		user = *uc
+	}
+	_, err := e.gate.EvaluatePre(gate.GateContext{
+		User:       user,
+		Tool:       req.Tool,
+		ToolAccess: req.Access,
+		Params:     params,
+		Kits:       kitNames(req.Kits, req.KitParts),
+		KitCovered: e.appliedKit(req) != "",
+		Preflight:  true,
+	})
+	if err == nil {
+		return ""
+	}
+	var rej *gate.Rejection
+	if errors.As(err, &rej) {
+		return rej.Reason
+	}
+	return err.Error()
+}
+
+// withKit is req with the caller holding the kit as well.
+func withKit(req authz.Request, kit string) authz.Request {
+	req.Kits = append(slices.Clone(req.Kits), kit)
+	return req
+}
+
+// kitNames lists kits held whole and in part by name, for the gate context:
+// never nil, so that policies always see an array.
+func kitNames(kits []string, parts []authz.KitPart) []string {
+	out := make([]string, 0, len(kits)+len(parts))
+	out = append(out, kits...)
+	for _, p := range parts {
+		if !slices.Contains(out, p.Kit) {
+			out = append(out, p.Kit)
+		}
+	}
+	return out
 }
 
 // assess turns the outcome of the checks of reqs into rights, finding the
@@ -119,8 +244,7 @@ func (e *Executor) assess(ctx context.Context, reqs []authz.Request, allowed []b
 		if verify {
 			held := make([]authz.Request, len(idx))
 			for j, i := range idx {
-				held[j] = reqs[i]
-				held[j].Kits = append(slices.Clone(reqs[i].Kits), kits[k].Name)
+				held[j] = withKit(reqs[i], kits[k].Name)
 			}
 			ok = e.checkAll(ctx, held)
 		} else {
@@ -190,6 +314,15 @@ func (e *Executor) KitCoverage(ctx context.Context, uc *userctx.UserContext, kit
 		for j, ok := range e.checkAll(ctx, sub) {
 			allowed[covered[j]] = ok
 		}
+		// A tool the pre-execution policies refuse now is new to the caller
+		// as well, when the kit lifts the refusal.
+		if e.gate != nil {
+			for _, i := range covered {
+				if allowed[i] && e.gatePreflight(uc, reqs[i], nil) != "" && e.gatePreflight(uc, withKit(reqs[i], kit.Name), nil) == "" {
+					allowed[i] = false
+				}
+			}
+		}
 	}
 
 	out := make([]grants.EntryCoverage, 0, len(kit.Grants)+len(kit.Tools))
@@ -242,19 +375,45 @@ func (e *Executor) checkAll(ctx context.Context, reqs []authz.Request) []bool {
 	return allowed
 }
 
-// denialRemedy returns the kits that would allow a denied call and the text
-// that points the caller to them, or nil and "" when no kit would.
-func (e *Executor) denialRemedy(ctx context.Context, req authz.Request) (kits []string, remedy string) {
+// denialRemedy returns the kits that would allow a call the authorizer
+// denied and the text that points the caller to them, or nil and "" when no
+// kit would. A kit counts when the call with params passes with it, the
+// pre-execution gate included.
+func (e *Executor) denialRemedy(ctx context.Context, uc *userctx.UserContext, req authz.Request, params map[string]any) (kits []string, remedy string) {
 	right := e.assess(ctx, []authz.Request{req}, []bool{false}, true)[0]
-	if len(right.Kits) == 0 {
-		return nil, ""
+	for _, name := range right.Kits {
+		if e.gate == nil || e.gatePreflight(uc, withKit(req, name), params) == "" {
+			kits = append(kits, name)
+		}
+	}
+	return kits, e.remedyText(kits)
+}
+
+// gateRemedy returns the kits that would lift a refusal of the pre-execution
+// gate for a call of req with params, and the text that points the caller
+// to them: a kit that covers the tool replaces the gate, so with one of
+// them the call passes, unless a policy that declares enforce-with-kit
+// refuses it. Where kits exist and none lifts the refusal, the text says so.
+func (e *Executor) gateRemedy(uc *userctx.UserContext, req authz.Request, params map[string]any) (kits []string, remedy string) {
+	kits = e.liftingKits(uc, req, params)
+	if len(kits) == 0 && len(e.Kits()) > 0 {
+		return nil, " No kit lifts this policy."
+	}
+	return kits, e.remedyText(kits)
+}
+
+// remedyText points the caller to the kits that would allow a call, as a
+// sentence that follows the denial; "" without kits.
+func (e *Executor) remedyText(kits []string) string {
+	if len(kits) == 0 {
+		return ""
 	}
 	descs := make(map[string]string)
 	for _, k := range e.Kits() {
 		descs[k.Name] = k.Description
 	}
-	named := make([]string, len(right.Kits))
-	for i, name := range right.Kits {
+	named := make([]string, len(kits))
+	for i, name := range kits {
 		named[i] = fmt.Sprintf("%q (%s)", name, descs[name])
 	}
 	subject := "The kit " + named[0] + " covers"
@@ -262,10 +421,10 @@ func (e *Executor) denialRemedy(ctx context.Context, req authz.Request) (kits []
 		subject = "The kits " + strings.Join(named, ", ") + " cover"
 	}
 	if e.kitHolder == nil {
-		return right.Kits, fmt.Sprintf(" %s it. Ask for a kit rather than for this one tool, and check first with %s({tools: [...]}) which other tools your task needs, so that one request covers all of them.",
+		return fmt.Sprintf(" %s it. Ask for a kit rather than for this one tool, and check first with %s({tools: [...]}) which other tools your task needs, so that one request covers all of them.",
 			subject, RightsToolName)
 	}
-	return right.Kits, fmt.Sprintf(" %s it. Check first with %s({tools: [...]}) which other tools your task needs, then ask once with %s({kit, reason}) for a kit that covers all of them, rather than for this one tool.",
+	return fmt.Sprintf(" %s it. Check first with %s({tools: [...]}) which other tools your task needs, then ask once with %s({kit, reason}) for a kit that covers all of them, rather than for this one tool.",
 		subject, RightsToolName, RequestGrantToolName)
 }
 

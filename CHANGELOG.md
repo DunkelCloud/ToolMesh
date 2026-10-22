@@ -108,7 +108,8 @@ the [configuration reference](https://www.toolmesh.io/en/configuration/).
   warning, scopes such as `graylog:read`, single tools and a default and
   maximum duration. Discovery lists the tools a kit covers, marked
   `grant_required`, and a denied call names the kits that would allow it
-  (audit metadata `remedy_kits`). See `docs/configuration.md`, "Kits".
+  and with which it also passes the pre-execution gate (audit metadata
+  `remedy_kits`). See `docs/configuration.md`, "Kits".
 - Granting kits: a caller asks with the meta-tool `request_grant` (kit,
   reason, optional duration) and gets a short request id. Approvers listed in
   `config/authz.yaml` (`approvers:`, name and SHA-256 of a key of their own)
@@ -130,10 +131,13 @@ the [configuration reference](https://www.toolmesh.io/en/configuration/).
   the post-execution gate runs in full. The start log shows
   `pre_gate_with_kit=enforced` or `skipped` for each loaded policy; a call in
   which a kit replaced the gate is logged (`kit replaces the pre-execution
-  gate`) and its audit entry carries `kit_applied` and `gate_skipped`.
-  Policies see `ctx.kits` and `ctx.kitCovered`. Mark parameter filters and
-  other conditions that must hold for kit holders with the directive. See
-  `docs/configuration.md`, "Gate Policies".
+  gate`) and its audit entry carries `kit_applied` and `gate_skipped`. A
+  call the gate refuses is answered, as an authorization denial is, with the
+  kits that would lift the refusal (`remedy_kits`); where kits exist and none
+  lifts it, the answer says so. Policies see `ctx.kits` and
+  `ctx.kitCovered`. Mark parameter filters and other conditions that must
+  hold for kit holders with the directive. See `docs/configuration.md`,
+  "Gate Policies".
 - Approvers can be limited to kits: `kits: [...]` on an approver in
   `config/authz.yaml` names the kits it may approve (every kit without it;
   the names must be kits the file defines). An approval of another kit is
@@ -145,7 +149,8 @@ the [configuration reference](https://www.toolmesh.io/en/configuration/).
   signing a statement ToolMesh writes for it (BIP-322), in the page with the
   private key, which never leaves the browser, or in a wallet. The page shows
   the kit's entries grouped by what they allow, with how many tools each
-  covers and how many are new to the caller, and the approver can untick
+  covers and how many are new to the caller (a tool a policy refuses counts
+  as new for the kit that lifts the refusal), and the approver can untick
   entries and shorten the duration; the grant then covers exactly the signed
   entries. `request_grant` answers with the link (when `TOOLMESH_ISSUER` is
   set) and a fingerprint of the request; messengers get a link preview without
@@ -161,8 +166,14 @@ the [configuration reference](https://www.toolmesh.io/en/configuration/).
   got before kits were defined reaches `request_grant` there.
 - Meta-tool `tell_me_my_rights`: what the caller may do, per backend, for one
   backend, or as a preflight over the tools a task needs, with the smallest
-  set of kits that covers what is missing. Information only; every call is
-  audited. See `docs/configuration.md`, "Asking what a caller may do".
+  set of kits that covers what is missing. The verdicts take the
+  pre-execution gate policies into account: a tool a policy refuses the
+  caller is `escalatable` through the kits that would lift the refusal, or
+  `denied`, with a reason that names the policy. Policies see
+  `ctx.preflight` in such a run, which has no parameters and is not recorded
+  for rate limiting; discovery does not ask the policies. Information only;
+  every call is audited. See `docs/configuration.md`, "Asking what a caller
+  may do".
 - Example policy `config/policies/examples/prod-access-by-caller-class.js`:
   a pre-execution gate that lets a call through only when the caller's class
   (`caller-classes.yaml`) may use the tool's DADL `access` class, and denies

@@ -53,6 +53,14 @@ const reasonUnavailable = "not available to you, and no kit covers it"
 // blocks for the caller.
 const reasonBlocked = "a deny rule blocks it for you; no kit lifts that"
 
+// reasonPolicy introduces the refusal of a pre-execution policy for a denied
+// tool, which no kit lifts.
+const reasonPolicy = "a policy refuses it for you, and no kit lifts that: "
+
+// reasonPolicyKits introduces the refusal of a pre-execution policy for an
+// escalatable tool, which the kits named lift.
+const reasonPolicyKits = "a policy refuses it for you now, and the kits named lift that: "
+
 // rightsToolDefinition is the MCP definition of tell_me_my_rights.
 func rightsToolDefinition() ToolDefinition {
 	return ToolDefinition{
@@ -62,6 +70,7 @@ func rightsToolDefinition() ToolDefinition {
 			"backend:\"<name>\": the verdict for each tool of one backend. " +
 			"tools:[...]: preflight. Pass every tool your task will need and get one verdict per tool (allowed; escalatable, with the kits that would allow it; denied) " +
 			"plus the smallest set of kits that covers everything escalatable. " +
+			"Policies count: a tool a policy refuses you is denied, or escalatable when a kit lifts the policy. " +
 			"A kit is a named bundle of tools granted together for a limited time. Plan first, then ask once: " +
 			"run the preflight before you start a task instead of collecting denials one call at a time.",
 		InputSchema: map[string]any{
@@ -391,19 +400,23 @@ func visibleTools(ctx context.Context, exec *executor.Executor, uc *userctx.User
 }
 
 // visible reports whether a tool is shown to the caller: when it may execute
-// it, or when a kit covers it.
+// it, when a kit covers it, or when only a policy stands in the way.
 func visible(r executor.ToolRight) bool {
-	return r.Verdict != executor.VerdictDenied || r.Blocked
+	return r.Verdict != executor.VerdictDenied || r.Blocked || r.PolicyRefusal != ""
 }
 
 // toRightsTool renders one tool's right under the given name.
 func toRightsTool(name string, r executor.ToolRight) rightsTool {
 	rt := rightsTool{Tool: name, Verdict: r.Verdict, Kits: r.Kits}
-	if r.Verdict == executor.VerdictDenied {
+	switch {
+	case r.PolicyRefusal != "" && r.Verdict == executor.VerdictDenied:
+		rt.Reason = reasonPolicy + r.PolicyRefusal
+	case r.PolicyRefusal != "":
+		rt.Reason = reasonPolicyKits + r.PolicyRefusal
+	case r.Verdict == executor.VerdictDenied && r.Blocked:
+		rt.Reason = reasonBlocked
+	case r.Verdict == executor.VerdictDenied:
 		rt.Reason = reasonUnavailable
-		if r.Blocked {
-			rt.Reason = reasonBlocked
-		}
 	}
 	return rt
 }

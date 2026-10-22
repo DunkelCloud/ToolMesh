@@ -43,6 +43,23 @@ type Outcome struct {
 	Skipped []string
 }
 
+// Rejection is the error of a run that an evaluator rejected. Callers that
+// act on the refusal, such as the preflight of tell_me_my_rights, read the
+// policy and the reason from it with errors.As.
+type Rejection struct {
+	// Evaluator is the name of the evaluator that rejected the call.
+	Evaluator string
+	// Policy names the rejecting policy when the evaluator told it.
+	Policy string
+	// Reason is the evaluator's reason, "policy <file>: <reason>" for goja.
+	Reason string
+}
+
+// Error renders the rejection as the pipeline has always reported it.
+func (r *Rejection) Error() string {
+	return fmt.Sprintf("evaluator %s rejected: %s", r.Evaluator, r.Reason)
+}
+
 // EvaluatePre runs all evaluators in the pre-execution phase. Policies
 // receive the tool name and input parameters but no response. The outcome's
 // modifications are nil when no policy mutated the data.
@@ -78,7 +95,7 @@ func (p *Pipeline) evaluate(ctx GateContext) (Outcome, error) {
 			return Outcome{}, fmt.Errorf("evaluator %s: %w", ev.Name(), err)
 		}
 		if !result.Allowed {
-			return Outcome{}, fmt.Errorf("evaluator %s rejected: %s", ev.Name(), result.Reason)
+			return Outcome{}, &Rejection{Evaluator: ev.Name(), Policy: result.Policy, Reason: result.Reason}
 		}
 		if result.Modified != nil {
 			ctx.Response = result.Modified

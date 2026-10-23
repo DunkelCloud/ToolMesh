@@ -285,8 +285,8 @@ func TestApprovalHandler(t *testing.T) {
 	if strings.Contains(body, testReason) {
 		t.Error("the link preview shows the requester's reason")
 	}
-	if code := serve(t, h, http.MethodGet, ApprovePathPrefix+"/nope", nil).Code; code != http.StatusNotFound {
-		t.Errorf("page of an unknown request = %d", code)
+	if gone := serve(t, h, http.MethodGet, ApprovePathPrefix+"/nope", nil); gone.Code != http.StatusNotFound || !strings.Contains(gone.Body.String(), `data-status="404"`) {
+		t.Errorf("page of an unknown request = %d", gone.Code)
 	}
 	if setup := serve(t, h, http.MethodGet, ApprovePathPrefix+"/", nil); setup.Code != http.StatusOK || !strings.Contains(setup.Body.String(), "Set up a signing key") {
 		t.Errorf("setup page = %d", setup.Code)

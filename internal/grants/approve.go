@@ -43,11 +43,15 @@ const approvePageCSP = "default-src 'none'; script-src 'self'; style-src 'self';
 const approveNote = "The description, warning, entries and tool counts come from this ToolMesh. " +
 	"The reason and the client name are the requester's own statements; ToolMesh does not verify them."
 
+// scriptType is the content type of the page's scripts.
+const scriptType = "text/javascript; charset=utf-8"
+
 // approveAssets are the files the page loads, by name, with their type.
 var approveAssets = map[string]string{
-	"approve.css": "text/css; charset=utf-8",
-	"approve.js":  "text/javascript; charset=utf-8",
-	"bip322.js":   "text/javascript; charset=utf-8",
+	"approve.css":    "text/css; charset=utf-8",
+	"approve.js":     scriptType,
+	"bip322.js":      scriptType,
+	approveI18nAsset: scriptType,
 }
 
 // approveTmpl is the page. Everything a request contributes to it is escaped
@@ -87,6 +91,9 @@ type pageData struct {
 	Title   string
 	Summary string
 	URL     string
+	// Status is the page's HTTP status: the page tells a request that is no
+	// longer pending (404) from a store that failed.
+	Status int
 }
 
 func (s *Service) handleApprovePage(w http.ResponseWriter, r *http.Request) {
@@ -112,6 +119,7 @@ func (s *Service) handleApprovePage(w http.ResponseWriter, r *http.Request) {
 			status = http.StatusInternalServerError
 		}
 	}
+	data.Status = status
 	h := w.Header()
 	h.Set("Content-Type", "text/html; charset=utf-8")
 	h.Set("Content-Security-Policy", approvePageCSP)
@@ -146,10 +154,13 @@ func (s *Service) preview(g Grant) (title, summary string) {
 }
 
 func (s *Service) serveAsset(w http.ResponseWriter, r *http.Request, name, ctype string) {
-	data, err := webFiles.ReadFile("web/" + name)
-	if err != nil {
-		http.NotFound(w, r)
-		return
+	data := approveI18nScript
+	if name != approveI18nAsset {
+		var err error
+		if data, err = webFiles.ReadFile("web/" + name); err != nil {
+			http.NotFound(w, r)
+			return
+		}
 	}
 	w.Header().Set("Content-Type", ctype)
 	w.Header().Set("Cache-Control", "no-cache")

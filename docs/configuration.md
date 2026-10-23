@@ -487,27 +487,42 @@ the same id revokes it, whether it was approved here or on the approval page.
 link and lets an approver with a signing address approve it. The page needs
 no login: approving takes a signature by the key of an approver's address.
 
-- **What it shows** comes from ToolMesh: the kit's description and warning,
-  its entries grouped by what they allow (every access class first, then
-  dangerous, admin, other, write, read), and per entry the tools it covers and
-  how many of them are new to the caller. The reason and the client name are
-  shown as the requester's own statements. Whom the grant is for (user and
-  connection), the duration asked for and the fingerprint are shown
-  prominently. Compare the fingerprint with the one the agent reported, over
-  the channel you work with it in, to know that the link shows its request.
-- **Narrowing.** Untick entries the task does not need and pick a shorter
-  duration. The grant then covers only the ticked entries.
+- **What it shows** comes from ToolMesh, the plain answers first: whom the
+  grant is for (user and connection), the risk of what the kit allows (high,
+  elevated, medium or low, after the most far-reaching access class among the
+  entries kept), how many actions would be new to the caller, the duration
+  and the fingerprint. Compare the fingerprint with the one the agent
+  reported, over the channel you work with it in, to know that the link
+  shows its request. Then come the kit's description and warning, and the
+  reason and the client name, marked as the requester's own statements.
+  Under "Technical details" are the request's id and times and the kit's
+  entries, grouped by what they allow (every access class first, then
+  dangerous, admin, other, write, read), with the tools each covers and how
+  many of them are new to the caller.
+- **Narrowing.** Keep the kit as requested, take it without its dangerous
+  entries, or switch off single entries under "Technical details", and pick
+  a shorter duration. The grant then covers only the entries that stay on.
 - **The statement.** For these choices ToolMesh writes a statement, plain
   text that names this ToolMesh, the request and its nonce, the approver and
   address, the kit, the entries granted and left out, the duration, whom the
-  grant is for and the reason. The page shows it as it is, and it is what is
-  signed. ToolMesh writes it again from the stored request to verify the
+  grant is for and the reason. The page shows it as it is, under "Show the
+  exact text you sign", and it is what is signed. ToolMesh writes it again from the stored request to verify the
   signature, so nothing the page or the requester adds can change it.
-- **Signing.** Paste the private key (WIF or 64 hex characters) to sign in
-  the page; the key stays in the browser and only the signature is sent.
+- **Signing.** Paste the private key (WIF or 64 hex characters) and press
+  and hold the button to sign in the page; the key stays in the browser and
+  only the signature is sent.
   Or copy the statement into a wallet that signs BIP-322 messages and paste
   the signature (with or without the `smp` prefix). On a page served over
   plain HTTP (other than localhost) the key field is disabled: use HTTPS.
+- **Languages.** The page speaks English, German, French, Spanish and
+  Japanese. It follows the browser's language; `?lang=de` picks one, and the
+  language switch keeps the choice in the browser. The statement stays
+  English: it is what ToolMesh verifies and records. In the other languages
+  the page shows a reading aid beside it, line by line, which is not part of
+  what is signed. The kit's description and warning appear as the grants
+  file has them, and the requester's reason is never translated. The texts
+  are in `internal/grants/web/i18n/<code>.json`; a file there adds a
+  language, with the keys of `en.json`.
 - **Once.** A signature approves its request once: approving takes the
   request from the store, and a statement names one request and its nonce.
 - **Limits.** Refused approvals (a signature that does not verify, or

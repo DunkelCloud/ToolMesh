@@ -11,7 +11,7 @@ for the full narrative and details.
 
 ## [Unreleased]
 
-## [0.5.0] - 2026-10-22
+## [0.5.0] - 2026-10-23
 
 **Behavior change:** authorization is on by default. ToolMesh runs OpenFGA
 inside its own process (`TOOLMESH_AUTHZ_MODE=embedded`, the new default),

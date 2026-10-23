@@ -11,54 +11,36 @@ for the full narrative and details.
 
 ## [Unreleased]
 
-`tell_me_my_rights` now takes the pre-execution gate policies into account.
-A tool a policy refuses the caller is `escalatable` through the kits that
-would lift the refusal, or `denied`, with a reason that names the policy; it
-used to be `allowed`, and the call then failed at the gate. Policies see
-`ctx.preflight` in such a run, which has no parameters and is not recorded
-for rate limiting. A call the gate refuses is now answered, as an
-authorization denial is, with the kits that would lift the refusal (a held
-kit replaces the gate), and its audit entry carries `remedy_kits`; where
-kits exist and none lifts it, the answer says so. An authorization denial
-names only kits with which the call also passes the gate, and the approval
-page counts a tool a policy refuses as new for the kit that lifts it.
-Discovery does not ask the policies, as before.
+## [0.5.0] - 2026-10-23
 
-**Behavior change:** a kit a caller holds now replaces the pre-execution
-gate for the tools it covers. A granted kit used to count in the
-authorization step only, and a pre-execution policy could still refuse the
-call, so a caller's rights were the intersection of the kit and every
-policy. Now, when a held kit covers the tool (a kit granted in part only
-through its granted entries), ToolMesh skips every pre-execution policy
-except those that declare `// toolmesh: enforce-with-kit` in their header
-comment: the approver's decision stands, and the only remaining question is
-whether the approver was allowed to grant the kit. Denies in
-`config/authz.yaml` still win over a kit, and the post-execution gate runs
-in full. The start log shows `pre_gate_with_kit=enforced` or `skipped` for
-each loaded policy; a call in which a kit replaced the gate is logged
-(`kit replaces the pre-execution gate`) and its audit entry carries
-`kit_applied` and `gate_skipped`. Policies see `ctx.kits` and
-`ctx.kitCovered`. Mark parameter filters and other conditions that must hold
-for kit holders with the directive: among the shipped examples `default.js`,
-`github-branch-protection.js` and `shelly_write_protection.js` carry it, and
-`caller_block.js` now runs in the pre-execution phase only, so that a kit
-holder's call is not refused after the backend ran. See
-`docs/configuration.md`, "Gate policies".
+**Behavior change:** authorization is on by default. ToolMesh runs OpenFGA
+inside its own process (`TOOLMESH_AUTHZ_MODE=embedded`, the new default),
+keeps its data in `authz.db` in the data directory and checks every tool call;
+no OpenFGA service is needed. On a fresh installation the owner
+(`TOOLMESH_AUTH_USER`) and the role `admin` may call every tool (preset
+`single-user`); when `users.yaml` or `apikeys.yaml` exists, plan `pro` may
+call every tool and plan `free` every tool classified `read` as well (preset
+`team`). Any other caller gets nothing until a grant names it, and tool
+listings show each caller only what it may call. With the defaults of the
+single password or API key (user `owner`, plan `pro`, role `admin`) nothing
+changes. An installation that ran without authorization is recognized on the
+first start of this version while `TOOLMESH_AUTHZ_MODE` is not set, by
+`OPENFGA_MODE=bypass` or by files an earlier run left in the data directory,
+and keeps every tool open to every authenticated caller (preset `open`),
+reported at every start until a preset or grants are chosen. To begin with
+the defaults above instead, set `TOOLMESH_AUTHZ_MODE=embedded` or
+`TOOLMESH_AUTHZ_PRESET` before that first start. `OPENFGA_MODE=restrict`
+keeps working as `TOOLMESH_AUTHZ_MODE=external`. The data directory must be
+writable; it is in the shipped `docker-compose.yml`, which no longer sets
+`OPENFGA_MODE`.
 
-Approvers can be limited to kits: `kits: [...]` on an approver in
-`config/authz.yaml` names the kits it may approve (every kit without it; the
-names must be kits the file defines). An approval of another kit is refused,
-with `403` on the approver API, and audited; the approval page offers only
-approvers who may approve the request's kit. Denying and revoking stay open
-to every approver.
-
-New example policy `config/policies/examples/prod-access-by-caller-class.js`:
-a pre-execution gate that lets a call through only when the caller's class
-(`caller-classes.yaml`) may use the tool's DADL `access` class, and denies
-unknown classes and unclassified tools with a reason naming tool and class.
-`discover_tools` and `toolmesh.describe()` now show the `access` field for
-tools of named backends; the composite backend dropped it on the listing
-path before, so only the gate and the audit trail saw it.
+**Behavior change:** a server without any credential configured (no
+`TOOLMESH_AUTH_PASSWORD`, `TOOLMESH_API_KEY`, `users.yaml` or `apikeys.yaml`)
+rejects every request to `/mcp`, `/files/upload` and `DELETE /blobs/…` with
+`401`, as the documentation said. Up to 0.4.1 it served them
+anonymously, `tools/list` and `execute_code` included. An installation that
+relied on the open endpoint has to set `TOOLMESH_API_KEY` or
+`TOOLMESH_AUTH_PASSWORD`.
 
 **Behavior change:** the password login at `/authorize` answers differently in
 four cases. A wrong password re-renders the login form with `401` instead of
@@ -90,24 +72,6 @@ has a new `method="anonymous"`; a failure ratio computed over all methods
 now includes requests that carry no credential at all (see `docs/metrics.md`
 for a query that leaves them out).
 
-**Behavior change:** authorization is on by default. ToolMesh runs OpenFGA
-inside its own process (`TOOLMESH_AUTHZ_MODE=embedded`, the new default),
-keeps its data in `authz.db` in the data directory and checks every tool call;
-no OpenFGA service is needed. On a fresh installation the owner
-(`TOOLMESH_AUTH_USER`) and the role `admin` may call every tool (preset
-`single-user`); when `users.yaml` or `apikeys.yaml` exists, plan `pro` may
-call every tool and plan `free` every tool classified `read` as well (preset
-`team`). Any other caller gets nothing until a grant names it, and tool
-listings show each caller only what it may call. With the defaults of the
-single password or API key (user `owner`, plan `pro`, role `admin`) nothing
-changes. An installation that ran without authorization, with
-`OPENFGA_MODE=bypass` or unset, is recognized on its first start and keeps
-every tool open to every authenticated caller (preset `open`), reported at
-every start until a preset or grants are chosen. `OPENFGA_MODE=restrict`
-keeps working as `TOOLMESH_AUTHZ_MODE=external`. The data directory must be
-writable; it is in the shipped `docker-compose.yml`, which no longer sets
-`OPENFGA_MODE`.
-
 **Behavior change:** telemetry reports carry a site ID, a persistent
 identifier of the installation. It is a random UUIDv7, which includes the time
 it was created; ToolMesh creates it on the first start with telemetry enabled
@@ -120,7 +84,7 @@ site ID is created and nothing is sent; an ID created earlier stays in the
 file until it is removed. To discard it, stop ToolMesh and remove `site_id`
 from `toolmesh.json`; the next start with telemetry enabled creates a new one.
 Without a persistent data directory every start reports a new site ID. See
-[Telemetry](https://www.toolmesh.io/en/configuration/#telemetry).
+the [configuration reference](https://www.toolmesh.io/en/configuration/).
 
 ### Added
 
@@ -144,7 +108,8 @@ Without a persistent data directory every start reports a new site ID. See
   warning, scopes such as `graylog:read`, single tools and a default and
   maximum duration. Discovery lists the tools a kit covers, marked
   `grant_required`, and a denied call names the kits that would allow it
-  (audit metadata `remedy_kits`). See `docs/configuration.md`, "Kits".
+  and with which it also passes the pre-execution gate (audit metadata
+  `remedy_kits`). See `docs/configuration.md`, "Kits".
 - Granting kits: a caller asks with the meta-tool `request_grant` (kit,
   reason, optional duration) and gets a short request id. Approvers listed in
   `config/authz.yaml` (`approvers:`, name and SHA-256 of a key of their own)
@@ -158,12 +123,34 @@ Without a persistent data directory every start reports a new site ID. See
   `TOOLMESH_AUTH_PASSWORD`, a `key_sha256` in `apikeys.yaml`) is refused, and
   a kit without `ttl_max` may not have a `ttl_default` above 24 hours. See
   `docs/configuration.md`, "Granting kits".
+- A kit a caller holds replaces the pre-execution gate for the tools it
+  covers (a kit granted in part only through its granted entries): ToolMesh
+  skips every pre-execution policy except those that declare
+  `// toolmesh: enforce-with-kit` in their header comment, so the approver's
+  decision stands. Denies in `config/authz.yaml` still win over a kit, and
+  the post-execution gate runs in full. The start log shows
+  `pre_gate_with_kit=enforced` or `skipped` for each loaded policy; a call in
+  which a kit replaced the gate is logged (`kit replaces the pre-execution
+  gate`) and its audit entry carries `kit_applied` and `gate_skipped`. A
+  call the gate refuses is answered, as an authorization denial is, with the
+  kits that would lift the refusal (`remedy_kits`); where kits exist and none
+  lifts it, the answer says so. Policies see `ctx.kits` and
+  `ctx.kitCovered`. Mark parameter filters and other conditions that must
+  hold for kit holders with the directive. See `docs/configuration.md`,
+  "Gate Policies".
+- Approvers can be limited to kits: `kits: [...]` on an approver in
+  `config/authz.yaml` names the kits it may approve (every kit without it;
+  the names must be kits the file defines). An approval of another kit is
+  refused, with `403` on the approver API, and audited; the approval page
+  offers only approvers who may approve the request's kit. Denying and
+  revoking stay open to every approver.
 - Approval page `/approve/<id>`: an approver with a signing address
   (`approvers:` → `address`, a P2WPKH `bc1q…` address) approves a request by
   signing a statement ToolMesh writes for it (BIP-322), in the page with the
   private key, which never leaves the browser, or in a wallet. The page shows
   the kit's entries grouped by what they allow, with how many tools each
-  covers and how many are new to the caller, and the approver can untick
+  covers and how many are new to the caller (a tool a policy refuses counts
+  as new for the kit that lifts the refusal), and the approver can untick
   entries and shorten the duration; the grant then covers exactly the signed
   entries. `request_grant` answers with the link (when `TOOLMESH_ISSUER` is
   set) and a fingerprint of the request; messengers get a link preview without
@@ -179,8 +166,18 @@ Without a persistent data directory every start reports a new site ID. See
   got before kits were defined reaches `request_grant` there.
 - Meta-tool `tell_me_my_rights`: what the caller may do, per backend, for one
   backend, or as a preflight over the tools a task needs, with the smallest
-  set of kits that covers what is missing. Information only; every call is
-  audited. See `docs/configuration.md`, "Asking what a caller may do".
+  set of kits that covers what is missing. The verdicts take the
+  pre-execution gate policies into account: a tool a policy refuses the
+  caller is `escalatable` through the kits that would lift the refusal, or
+  `denied`, with a reason that names the policy. Policies see
+  `ctx.preflight` in such a run, which has no parameters and is not recorded
+  for rate limiting; discovery does not ask the policies. Information only;
+  every call is audited. See `docs/configuration.md`, "Asking what a caller
+  may do".
+- Example policy `config/policies/examples/prod-access-by-caller-class.js`:
+  a pre-execution gate that lets a call through only when the caller's class
+  (`caller-classes.yaml`) may use the tool's DADL `access` class, and denies
+  unknown classes and unclassified tools with a reason naming tool and class.
 
 ### Changed
 
@@ -191,6 +188,13 @@ Without a persistent data directory every start reports a new site ID. See
   record the kits they held (`held_kits`), denials the kits that would have
   allowed them (`remedy_kits`). A log pipeline that maps the audit fields
   sees this one new field.
+- `discover_tools` and `toolmesh.describe()` show the DADL `access` field for
+  tools of named backends. The composite backend dropped it on the listing
+  path, so only the gate and the audit trail saw it.
+- Shipped example policies: `default.js`, `github-branch-protection.js` and
+  `shelly_write_protection.js` declare `// toolmesh: enforce-with-kit`, and
+  `caller_block.js` runs in the pre-execution phase only, so that a kit
+  holder's call is not refused after the backend ran.
 - Building ToolMesh requires Go 1.26 (was 1.25, which no longer receives
   security fixes); the Docker image is built with `golang:1.26-alpine`. The
   embedded OpenFGA is v1.22.0.
@@ -232,7 +236,8 @@ Without a persistent data directory every start reports a new site ID. See
   bearer credential is logged and counted once, as an `oauth_bearer` or an
   `api_key` failure.
 - Password login is refused when no password is configured (neither
-  `TOOLMESH_AUTH_PASSWORD` nor `users.yaml`). On such a deployment
+  `TOOLMESH_AUTH_PASSWORD` nor `users.yaml`); until now such a deployment
+  accepted an empty password. On such a deployment
   authorization codes are not exchanged and access and refresh tokens are not
   honored either, including ones still in the token store from an earlier
   configuration. The single-password comparison no longer depends on the

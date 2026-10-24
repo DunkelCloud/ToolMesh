@@ -87,9 +87,10 @@ type singleView struct {
 //
 //	GET  /grants              pending requests and active grants
 //	GET  /grants/{id}         one request or grant
-//	POST /grants/{id}/approve grant the kit; optional body {"ttl": "2h"} to
-//	                          shorten, {"grants": [...], "tools": [...]} to
-//	                          grant only these entries of the kit
+//	POST /grants/{id}/approve grant the kit; optional body {"ttl": "2h"} for
+//	                          another duration up to the kit's maximum,
+//	                          {"grants": [...], "tools": [...]} to grant only
+//	                          these entries of the kit
 //	POST /grants/{id}/deny    reject a pending request
 //	POST /grants/{id}/revoke  end an active grant now
 func (s *Service) Handler() http.Handler {

@@ -97,6 +97,8 @@
   "narrowedNoCount": "絞り込み：{all} 項目中 {off} 項目を除外",
   "duration": "期間",
   "asAsked": "申請どおり",
+  "ttlOwn": "その他",
+  "ttlMax": "最長 {max}。キットはこれより長く許可しません。",
   "approver": "承認者",
   "noSigners": "このキットを承認できる人はまだいません。承認を許可された承認者に署名アドレスがありません。config/authz.yaml の approvers: に追加してください（下の「署名鍵を設定」を参照）。",
   "cta": "署名へ進む",

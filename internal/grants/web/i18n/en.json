@@ -97,6 +97,8 @@
   "narrowedNoCount": "Narrowed: {off} of {all} entries left out",
   "duration": "Duration",
   "asAsked": "asked",
+  "ttlOwn": "Other",
+  "ttlMax": "At most {max}; the kit allows no longer.",
   "approver": "Approver",
   "noSigners": "Nobody can approve this kit here yet: none of the approvers allowed to approve it has a signing address. Add one under approvers: in config/authz.yaml, see “Set up a signing key” below.",
   "cta": "Continue to sign",

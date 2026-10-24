@@ -180,7 +180,13 @@
               <div class="opts" role="radiogroup" aria-labelledby="opt-l" id="opts"></div>
               <p class="narrowed" id="narrowed" hidden></p>
             </div>
-            <div class="field"><span class="flabel" id="ttl-l" data-t="duration">Duration</span><div class="pills" role="radiogroup" aria-labelledby="ttl-l" id="ttl"></div></div>
+            <div class="field"><span class="flabel" id="ttl-l" data-t="duration">Duration</span><div class="pills" role="radiogroup" aria-labelledby="ttl-l" id="ttl"></div>
+              <div class="ttl-own" id="ttl-own" hidden>
+                <input class="inp" type="number" id="ttl-n" min="1" step="1" inputmode="numeric" aria-labelledby="ttl-l">
+                <div class="select"><select id="ttl-unit" aria-labelledby="ttl-l"><option value="m">minutes</option><option value="h">hours</option></select><svg class="i sm" aria-hidden="true"><use href="#i-chev"/></svg></div>
+              </div>
+              <p class="fine" id="ttl-hint" hidden><svg class="i sm" aria-hidden="true"><use href="#i-clock"/></svg><span id="ttl-hint-l"></span></p>
+            </div>
             <div class="field"><label class="flabel" for="approver" data-t="approver">Approver</label>
               <div class="select"><select id="approver"></select><svg class="i sm" aria-hidden="true"><use href="#i-chev"/></svg></div>
               <p class="fine warn" id="no-signers" hidden><svg class="i sm" aria-hidden="true"><use href="#i-alert"/></svg><span data-t="noSigners"></span></p>

@@ -97,6 +97,8 @@
   "narrowedNoCount": "Restreinte : {off} entrées sur {all} exclues",
   "duration": "Durée",
   "asAsked": "demandée",
+  "ttlOwn": "Autre",
+  "ttlMax": "{max} au maximum ; le kit ne permet pas plus.",
   "approver": "Approbateur",
   "noSigners": "Personne ne peut encore approuver ce kit ici : aucun des approbateurs autorisés n’a d’adresse de signature. Ajoutez-en une sous approvers: dans config/authz.yaml, voir « Configurer une clé de signature » ci-dessous.",
   "cta": "Continuer vers la signature",

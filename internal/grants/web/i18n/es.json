@@ -97,6 +97,8 @@
   "narrowedNoCount": "Acotado: {off} de {all} entradas excluidas",
   "duration": "Duración",
   "asAsked": "solicitada",
+  "ttlOwn": "Otra",
+  "ttlMax": "Como máximo {max}; el kit no permite más.",
   "approver": "Aprobador",
   "noSigners": "Aquí nadie puede aprobar todavía este kit: ninguno de los aprobadores autorizados tiene dirección de firma. Añada una en approvers: de config/authz.yaml; vea «Configurar una clave de firma» más abajo.",
   "cta": "Continuar para firmar",

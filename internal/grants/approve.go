@@ -58,7 +58,8 @@ var approveAssets = map[string]string{
 // by html/template; the script fills in the rest from the JSON endpoint.
 var approveTmpl = template.Must(template.ParseFS(webFiles, "web/approve.html"))
 
-// ttlChoices are the durations the page offers below the one requested.
+// ttlChoices are the durations the page offers besides the one requested,
+// those up to the kit's maximum.
 var ttlChoices = []time.Duration{5 * time.Minute, 10 * time.Minute, 15 * time.Minute, 30 * time.Minute,
 	time.Hour, 2 * time.Hour, 4 * time.Hour, 8 * time.Hour, 12 * time.Hour, 24 * time.Hour}
 
@@ -216,6 +217,7 @@ type approvalView struct {
 	CoverageKnown bool         `json:"coverage_known"`
 	TTL           string       `json:"ttl"`
 	TTLChoices    []string     `json:"ttl_choices"`
+	TTLMax        string       `json:"ttl_max"`
 	RequestedAt   time.Time    `json:"requested_at"`
 	LapsesAt      time.Time    `json:"lapses_at"`
 	User          string       `json:"user"`
@@ -246,6 +248,7 @@ func (s *Service) handleApproveRequest(w http.ResponseWriter, r *http.Request) {
 		Warning:       cleanText(kit.Warning),
 		CoverageKnown: len(req.Coverage) > 0,
 		TTL:           FormatTTL(req.TTL),
+		TTLMax:        FormatTTL(kitMaxTTL(kit)),
 		RequestedAt:   req.RequestedAt,
 		LapsesAt:      req.ExpiresAt,
 		User:          req.UserID,
@@ -258,11 +261,17 @@ func (s *Service) handleApproveRequest(w http.ResponseWriter, r *http.Request) {
 	if req.CallerName != req.CallerID {
 		v.ClientName = req.CallerName
 	}
-	v.TTLChoices = append(v.TTLChoices, v.TTL)
-	for _, d := range slices.Backward(ttlChoices) {
-		if d < req.TTL {
-			v.TTLChoices = append(v.TTLChoices, FormatTTL(d))
+	// The choices run from the shortest to the longest. The one requested is
+	// among them, even above a maximum lowered since the request.
+	choices := []time.Duration{req.TTL}
+	for _, d := range ttlChoices {
+		if d <= kitMaxTTL(kit) && d != req.TTL {
+			choices = append(choices, d)
 		}
+	}
+	slices.Sort(choices)
+	for _, d := range choices {
+		v.TTLChoices = append(v.TTLChoices, FormatTTL(d))
 	}
 	v.Entries = entryViews(kit.Grants, kit.Tools, req.Coverage)
 	// Only approvers who may approve this kit are offered; the statement

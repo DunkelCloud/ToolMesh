@@ -97,6 +97,8 @@
   "narrowedNoCount": "Eingegrenzt: {off} von {all} Einträgen ausgenommen",
   "duration": "Dauer",
   "asAsked": "angefragt",
+  "ttlOwn": "Andere",
+  "ttlMax": "Höchstens {max}, länger lässt das Kit nicht zu.",
   "approver": "Freigebende Person",
   "noSigners": "Hier kann noch niemand dieses Kit freigeben: Keine der dafür zugelassenen Personen hat eine Signaturadresse. Tragen Sie eine unter approvers: in config/authz.yaml ein, siehe „Signaturschlüssel einrichten“ unten.",
   "cta": "Weiter zum Unterschreiben",

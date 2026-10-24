@@ -464,7 +464,7 @@ On the ToolMesh port, with the approver key as bearer credential:
 |---------|--------|
 | `GET /grants` | Pending requests and active grants |
 | `GET /grants/<id>` | One request or grant |
-| `POST /grants/<id>/approve` | Grant the kit. Optional body: `{"ttl": "1h"}` to grant it for less than requested, never for more; `{"grants": ["graylog:read"], "tools": [...]}` to grant only these entries of the kit, exactly as the kit lists them |
+| `POST /grants/<id>/approve` | Grant the kit. Optional body: `{"ttl": "1h"}` to grant it for another duration than requested, up to the kit's `ttl_max` (24 hours without one); `{"grants": ["graylog:read"], "tools": [...]}` to grant only these entries of the kit, exactly as the kit lists them |
 | `POST /grants/<id>/deny` | Reject a pending request |
 | `POST /grants/<id>/revoke` | End an active grant now |
 
@@ -500,8 +500,12 @@ no login: approving takes a signature by the key of an approver's address.
   dangerous, admin, other, write, read), with the tools each covers and how
   many of them are new to the caller.
 - **Narrowing.** Keep the kit as requested, take it without its dangerous
-  entries, or switch off single entries under "Technical details", and pick
-  a shorter duration. The grant then covers only the entries that stay on.
+  entries, or switch off single entries under "Technical details". The grant
+  then covers only the entries that stay on.
+- **Duration.** The page offers the duration requested and steps from 5
+  minutes to 24 hours up to the kit's `ttl_max` (24 hours without one);
+  "Other" takes whole minutes or hours up to that maximum. A grant may be
+  shorter or longer than requested, never longer than the maximum.
 - **The statement.** For these choices ToolMesh writes a statement, plain
   text that names this ToolMesh, the request and its nonce, the approver and
   address, the kit, the entries granted and left out, the duration, whom the

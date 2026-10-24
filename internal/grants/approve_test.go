@@ -108,7 +108,7 @@ func TestStatement(t *testing.T) {
 		want     string
 	}{
 		{testApprover, Approval{}, "no approver"}, // alice approves with a key only
-		{testSigner, Approval{TTL: 7 * time.Hour}, "exceeds"},
+		{testSigner, Approval{TTL: 25 * time.Hour}, "exceeds"},
 		{testSigner, Approval{Grants: []string{"graylog:write"}}, "no grant"},
 	} {
 		if _, err := env.svc.Statement(context.Background(), res.Grant.ID, tc.approver, tc.a, testAudience); !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), tc.want) {
@@ -267,6 +267,35 @@ func serve(t *testing.T, h http.Handler, method, path string, body any) *httptes
 	return rec
 }
 
+// The page offers the durations up to the kit's maximum, the one requested
+// among them, from the shortest to the longest.
+func TestApprovalHandler_TTLChoices(t *testing.T) {
+	view := func(env *signingEnv, id string) approvalView {
+		t.Helper()
+		var v approvalView
+		rec := serve(t, env.svc.ApprovalHandler(), http.MethodGet, ApprovePathPrefix+"/"+id+"/request", nil)
+		if err := json.Unmarshal(rec.Body.Bytes(), &v); err != nil || rec.Code != http.StatusOK {
+			t.Fatalf("request view = %d %s", rec.Code, rec.Body)
+		}
+		return v
+	}
+	const asked = "45m"
+	limit := FormatTTL(MaxTTL)
+	env := newSigningEnv(t)
+	v := view(env, env.request(t, testKitNetDiag, asked).Grant.ID)
+	if want := []string{"5m", "10m", "15m", "30m", asked, "1h", "2h", "4h", "8h", "12h", limit}; !slices.Equal(v.TTLChoices, want) || v.TTL != asked || v.TTLMax != limit {
+		t.Errorf("choices = %v (ttl %s, max %s), want %v", v.TTLChoices, v.TTL, v.TTLMax, want)
+	}
+	// A maximum lowered since the request keeps the duration requested.
+	env = newSigningEnv(t)
+	id := env.request(t, testKitNetDiag, "4h").Grant.ID
+	env.cat.kits[1].TTLMax = time.Hour
+	v = view(env, id)
+	if want := []string{"5m", "10m", "15m", "30m", "1h", "4h"}; !slices.Equal(v.TTLChoices, want) || v.TTLMax != "1h" {
+		t.Errorf("choices under a lowered maximum = %v (max %s), want %v", v.TTLChoices, v.TTLMax, want)
+	}
+}
+
 func TestApprovalHandler(t *testing.T) {
 	env := newSigningEnv(t)
 	env.cat.kits[1].Description = `Network <script>alert(1)</script> diagnosis`
@@ -302,7 +331,7 @@ func TestApprovalHandler(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &view); err != nil || rec.Code != http.StatusOK {
 		t.Fatalf("request view = %d %s", rec.Code, rec.Body)
 	}
-	if len(view.Approvers) != 1 || view.Approvers[0].Name != testSigner || view.Fingerprint != res.Grant.Fingerprint() || len(view.Entries) != 2 || view.TTLChoices[0] != "4h" {
+	if len(view.Approvers) != 1 || view.Approvers[0].Name != testSigner || view.Fingerprint != res.Grant.Fingerprint() || len(view.Entries) != 2 || view.TTLMax != FormatTTL(MaxTTL) {
 		t.Errorf("request view = %+v", view)
 	}
 

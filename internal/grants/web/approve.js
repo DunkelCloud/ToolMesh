@@ -47,8 +47,9 @@
   let on = [];   // per entry: still granted
   let safe = []; // per entry: kept by "without dangerous actions"
   let customPicked = false;
-  let ttl = '';
-  let statement = null; // { text, body } for the choices it was written for
+  let ttl = '';          // the duration chosen; '' while the one typed is not valid
+  let ttlOwn = false;    // the approver types the duration
+  let statement = null; // { text, body, ttl } for the choices it was written for
   let result = null;    // the answer to the signed approval
   let showGloss = true;
   let holding = false;
@@ -120,6 +121,12 @@
     const hours = min % 60 === 0;
     return new Intl.NumberFormat(lang, { style: 'unit', unit: hours ? 'hour' : 'minute', unitDisplay: display || 'long' })
       .format(hours ? min / 60 : min);
+  }
+
+  // unitName is the name of a unit of time as the page's language counts two.
+  function unitName(unit) {
+    return new Intl.NumberFormat(lang, { style: 'unit', unit, unitDisplay: 'long' }).formatToParts(2)
+      .filter((p) => p.type === 'unit').map((p) => p.value).join('').trim();
   }
 
   function clock(sec) {
@@ -589,12 +596,12 @@
         ? sub(t('narrowed'), { off: nf(s.off), all: nf(s.all) })
         : sub(t('narrowedNoCount'), { off: nf(s.offEntries), all: nf(request.entries.length) }));
     }
-    const blocked = !s.entries || request.approvers.length === 0;
+    const blocked = !s.entries || !ttl || request.approvers.length === 0;
     $('cta').disabled = blocked;
     $('m-cta').disabled = blocked;
     $('cta-l').textContent = s.entries ? t('cta') : t('ctaNone');
     $('m-num').textContent = !s.entries ? t('ctaNone') : s.known ? plural('actions', s.tools) : scopeLabel();
-    $('m-meta').textContent = dur(ttl, 'short') + (s.level ? ' · ' + t('gRisk') + ' ' + t('lvl')[s.level] : '');
+    $('m-meta').textContent = [dur(ttl, 'short'), s.level ? t('gRisk') + ' ' + t('lvl')[s.level] : ''].filter(Boolean).join(' · ');
   }
 
   function renderOpts() {
@@ -643,28 +650,39 @@
   }
 
   function renderDecide() {
-    $('g-dur').textContent = dur(ttl);
+    $('g-dur').textContent = ttl ? dur(ttl) : '–';
     const pills = $('ttl');
     pills.replaceChildren();
-    request.ttl_choices.forEach((d, i) => {
+    // The last choice, '', is a duration of the approver's own.
+    const items = request.ttl_choices.concat(['']);
+    items.forEach((d, i) => {
+      const checked = d === '' ? ttlOwn : !ttlOwn && d === ttl;
       const b = el('button');
       b.type = 'button';
       b.setAttribute('role', 'radio');
-      b.setAttribute('aria-checked', String(d === ttl));
-      b.tabIndex = d === ttl ? 0 : -1;
-      b.append(el('span', '', dur(d, 'short')));
-      if (i === 0) b.append(el('small', '', t('asAsked')));
-      b.addEventListener('click', () => chooseTTL(d));
+      b.setAttribute('aria-checked', String(checked));
+      b.tabIndex = checked ? 0 : -1;
+      b.append(el('span', '', d === '' ? t('ttlOwn') : dur(d, 'short')));
+      if (d === request.ttl) b.append(el('small', '', t('asAsked')));
+      b.addEventListener('click', () => (d === '' ? chooseOwnTTL(true) : chooseTTL(d)));
       b.addEventListener('keydown', (ev) => {
         const step = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[ev.key];
         if (!step) return;
         ev.preventDefault();
-        const n = request.ttl_choices.length;
-        chooseTTL(request.ttl_choices[(i + step + n) % n]);
+        const next = items[(i + step + items.length) % items.length];
+        if (next === '') chooseOwnTTL(false);
+        else chooseTTL(next);
         pills.querySelector('[aria-checked="true"]').focus();
       });
       pills.append(b);
     });
+    const unit = $('ttl-unit');
+    unit.options[0].textContent = unitName('minute');
+    unit.options[1].textContent = unitName('hour');
+    $('ttl-own').hidden = !ttlOwn;
+    $('ttl-hint').hidden = !ttlOwn;
+    $('ttl-hint').classList.toggle('warn', !ttl);
+    $('ttl-hint-l').textContent = sub(t('ttlMax'), { max: dur(request.ttl_max) });
     const sel = $('approver');
     const chosen = sel.value;
     sel.replaceChildren();
@@ -679,7 +697,32 @@
   }
 
   function chooseTTL(d) {
+    ttlOwn = false;
     ttl = d;
+    renderDecide();
+    updateReach();
+  }
+
+  // chooseOwnTTL starts the duration typed from the one chosen.
+  function chooseOwnTTL(focus) {
+    if (!ttlOwn) {
+      const min = minutesOf(ttl);
+      const hours = min !== null && min % 60 === 0;
+      $('ttl-n').value = min === null ? '' : String(hours ? min / 60 : min);
+      $('ttl-unit').value = hours ? 'h' : 'm';
+      ttlOwn = true;
+    }
+    readOwnTTL();
+    if (focus) $('ttl-n').focus();
+  }
+
+  // readOwnTTL takes the duration typed: whole minutes or hours, up to the
+  // kit's maximum.
+  function readOwnTTL() {
+    const n = Number($('ttl-n').value);
+    const unit = $('ttl-unit').value;
+    const ok = Number.isInteger(n) && n > 0 && n * (unit === 'h' ? 60 : 1) <= minutesOf(request.ttl_max);
+    ttl = ok ? n + unit : '';
     renderDecide();
     updateReach();
   }
@@ -699,11 +742,15 @@
       fail(t('ctaNone'));
       return;
     }
+    if (!ttl) {
+      fail(sub(t('ttlMax'), { max: dur(request.ttl_max) }));
+      return;
+    }
     $('cta').disabled = true;
     $('m-cta').disabled = true;
     try {
       const st = await call('/statement', body);
-      statement = { text: st.statement, body };
+      statement = { text: st.statement, body, ttl: st.ttl };
       $('key').value = '';
       $('signature').value = '';
       $('stmt-wrap').open = false;
@@ -737,7 +784,7 @@
     meta.replaceChildren();
     if (s.known) meta.append(plural('actions', s.tools) + ' · ');
     meta.append(t('gRisk') + ' ', el('span', 'lvl l-' + s.level, t('lvl')[s.level]));
-    $('sum-how').textContent = dur(statement.body.ttl);
+    $('sum-how').textContent = dur(statement.ttl);
     renderStatement();
     setHold(t('hold'));
     checkKey();
@@ -1064,6 +1111,8 @@
     $('tab-key').addEventListener('click', () => selectTab(false));
     $('tab-wallet').addEventListener('click', () => selectTab(true));
     $('key').addEventListener('input', checkKey);
+    $('ttl-n').addEventListener('input', readOwnTTL);
+    $('ttl-unit').addEventListener('change', readOwnTTL);
     $('signature').addEventListener('input', () => {
       $('sign-wallet').disabled = !$('signature').value.trim();
     });
@@ -1108,7 +1157,7 @@
     }
     on = request.entries.map(() => true);
     safe = request.entries.map((e) => e.effect !== 'dangerous' && e.effect !== 'all');
-    ttl = request.ttl_choices[0] || request.ttl;
+    ttl = request.ttl;
     $('fp-glyph').append(glyph(request.fingerprint));
     $('stub-glyph').append(glyph(request.fingerprint));
     $('stub').prepend(guilloche());

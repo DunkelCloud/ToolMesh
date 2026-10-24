@@ -399,10 +399,7 @@ func (s *Service) request(ctx context.Context, uc *userctx.UserContext, in Reque
 // default), and whether d exceeded the maximum: the kit's ttl_max, or MaxTTL
 // for a kit without one.
 func kitTTL(k authz.Kit, d time.Duration) (time.Duration, bool) {
-	limit := k.TTLMax
-	if limit <= 0 {
-		limit = MaxTTL
-	}
+	limit := kitMaxTTL(k)
 	if d <= 0 {
 		d = k.TTLDefault
 		if d <= 0 {
@@ -414,6 +411,15 @@ func kitTTL(k authz.Kit, d time.Duration) (time.Duration, bool) {
 		return limit, true
 	}
 	return d, false
+}
+
+// kitMaxTTL is the longest the kit is granted for: its ttl_max, or MaxTTL
+// for a kit without one.
+func kitMaxTTL(k authz.Kit) time.Duration {
+	if k.TTLMax > 0 {
+		return k.TTLMax
+	}
+	return MaxTTL
 }
 
 // cleanText turns text a caller chose into one plain line: line breaks and
@@ -461,10 +467,11 @@ func cleanReason(r string) (string, error) {
 	return r, nil
 }
 
-// Approval is what an approver decides besides yes: less time than asked and
-// part of the kit.
+// Approval is what an approver decides besides yes: another duration than
+// asked and part of the kit.
 type Approval struct {
-	// TTL shortens the grant; zero grants the duration requested.
+	// TTL is the duration granted, up to the kit's maximum; zero grants the
+	// duration requested.
 	TTL time.Duration
 	// Grants and Tools, when either is set, are the entries of the kit
 	// granted: scopes of its grants and tools it lists, exactly as the kit
@@ -512,13 +519,16 @@ func resolveApproval(kit authz.Kit, req Grant, a Approval) (time.Duration, *Part
 	switch {
 	case ttl < 0:
 		return 0, nil, invalidf("ttl must be positive")
-	case ttl > req.TTL:
-		return 0, nil, invalidf("ttl %s exceeds the %s requested; an approval can shorten a grant, not extend it", FormatTTL(ttl), FormatTTL(req.TTL))
 	case ttl == 0:
 		ttl = req.TTL
 	}
-	// The kit's maximum may have been lowered since the request.
-	ttl, _ = kitTTL(kit, ttl)
+	// An approval may grant longer than requested, up to the kit's maximum.
+	// Up to the duration requested it is cut instead: the kit's maximum may
+	// have been lowered since the request.
+	ttl, over := kitTTL(kit, ttl)
+	if over && a.TTL > req.TTL {
+		return 0, nil, invalidf("ttl %s exceeds the %s the kit %q is granted for at most", FormatTTL(a.TTL), FormatTTL(ttl), kit.Name)
+	}
 	if len(a.Grants) == 0 && len(a.Tools) == 0 {
 		return ttl, nil, nil
 	}

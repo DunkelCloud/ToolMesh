@@ -11,6 +11,23 @@ for the full narrative and details.
 
 ## [Unreleased]
 
+### Changed
+
+- The approval page `/approve/<id>` leads with what an approver decides on:
+  whom the grant is for, the risk of what the kit allows, how many actions
+  would be new to the caller, the duration and the fingerprint; the
+  technical detail is one click away. It comes in English, German, French,
+  Spanish and Japanese (`?lang=<code>`, or the browser's language); the
+  statement that is signed stays English. The texts are in
+  `internal/grants/web/i18n/`.
+- An approval may grant a kit for longer than requested, up to the kit's
+  `ttl_max` (24 hours without one), on the approval page and on the approver
+  API (`POST /grants/<id>/approve` with `{"ttl": ...}`). Until now it could
+  only shorten the duration. The page offers durations from 5 minutes to 24
+  hours up to that maximum and one typed in whole minutes or hours; the
+  request view (`GET /approve/<id>/request`) carries `ttl_max`, and
+  `ttl_choices` runs from the shortest to the longest.
+
 ## [0.5.0] - 2026-10-23
 
 **Behavior change:** authorization is on by default. ToolMesh runs OpenFGA

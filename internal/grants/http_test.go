@@ -76,8 +76,8 @@ func TestHTTP_Lifecycle(t *testing.T) {
 	}
 
 	var bad map[string]string
-	if code := call(t, h, http.MethodPost, PathPrefix+"/"+id+"/approve", `{"ttl": "3h"}`, &bad); code != http.StatusBadRequest || bad[jsonKeyError] == "" {
-		t.Errorf("approve longer than requested = %d %v, want 400", code, bad)
+	if code := call(t, h, http.MethodPost, PathPrefix+"/"+id+"/approve", `{"ttl": "25h"}`, &bad); code != http.StatusBadRequest || bad[jsonKeyError] == "" {
+		t.Errorf("approve longer than the kit's maximum = %d %v, want 400", code, bad)
 	}
 	if code := call(t, h, http.MethodPost, PathPrefix+"/"+id+"/approve", `not json`, &bad); code != http.StatusBadRequest {
 		t.Errorf("approve with a body that is not JSON = %d, want 400", code)

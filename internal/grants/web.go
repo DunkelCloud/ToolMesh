@@ -16,9 +16,9 @@ package grants
 
 import "embed"
 
-// webFiles holds the approval page: its template, style sheet and scripts.
-// They are part of the binary, so that the page an approver signs on is the
-// one this ToolMesh ships.
+// webFiles holds the approval page: its template, style sheet, scripts and
+// the catalogs of its languages. They are part of the binary, so that the
+// page an approver signs on is the one this ToolMesh ships.
 //
 //go:embed web
 var webFiles embed.FS

@@ -43,18 +43,23 @@ const approvePageCSP = "default-src 'none'; script-src 'self'; style-src 'self';
 const approveNote = "The description, warning, entries and tool counts come from this ToolMesh. " +
 	"The reason and the client name are the requester's own statements; ToolMesh does not verify them."
 
+// scriptType is the content type of the page's scripts.
+const scriptType = "text/javascript; charset=utf-8"
+
 // approveAssets are the files the page loads, by name, with their type.
 var approveAssets = map[string]string{
-	"approve.css": "text/css; charset=utf-8",
-	"approve.js":  "text/javascript; charset=utf-8",
-	"bip322.js":   "text/javascript; charset=utf-8",
+	"approve.css":    "text/css; charset=utf-8",
+	"approve.js":     scriptType,
+	"bip322.js":      scriptType,
+	approveI18nAsset: scriptType,
 }
 
 // approveTmpl is the page. Everything a request contributes to it is escaped
 // by html/template; the script fills in the rest from the JSON endpoint.
 var approveTmpl = template.Must(template.ParseFS(webFiles, "web/approve.html"))
 
-// ttlChoices are the durations the page offers below the one requested.
+// ttlChoices are the durations the page offers besides the one requested,
+// those up to the kit's maximum.
 var ttlChoices = []time.Duration{5 * time.Minute, 10 * time.Minute, 15 * time.Minute, 30 * time.Minute,
 	time.Hour, 2 * time.Hour, 4 * time.Hour, 8 * time.Hour, 12 * time.Hour, 24 * time.Hour}
 
@@ -87,6 +92,9 @@ type pageData struct {
 	Title   string
 	Summary string
 	URL     string
+	// Status is the page's HTTP status: the page tells a request that is no
+	// longer pending (404) from a store that failed.
+	Status int
 }
 
 func (s *Service) handleApprovePage(w http.ResponseWriter, r *http.Request) {
@@ -112,6 +120,7 @@ func (s *Service) handleApprovePage(w http.ResponseWriter, r *http.Request) {
 			status = http.StatusInternalServerError
 		}
 	}
+	data.Status = status
 	h := w.Header()
 	h.Set("Content-Type", "text/html; charset=utf-8")
 	h.Set("Content-Security-Policy", approvePageCSP)
@@ -146,10 +155,13 @@ func (s *Service) preview(g Grant) (title, summary string) {
 }
 
 func (s *Service) serveAsset(w http.ResponseWriter, r *http.Request, name, ctype string) {
-	data, err := webFiles.ReadFile("web/" + name)
-	if err != nil {
-		http.NotFound(w, r)
-		return
+	data := approveI18nScript
+	if name != approveI18nAsset {
+		var err error
+		if data, err = webFiles.ReadFile("web/" + name); err != nil {
+			http.NotFound(w, r)
+			return
+		}
 	}
 	w.Header().Set("Content-Type", ctype)
 	w.Header().Set("Cache-Control", "no-cache")
@@ -205,6 +217,7 @@ type approvalView struct {
 	CoverageKnown bool         `json:"coverage_known"`
 	TTL           string       `json:"ttl"`
 	TTLChoices    []string     `json:"ttl_choices"`
+	TTLMax        string       `json:"ttl_max"`
 	RequestedAt   time.Time    `json:"requested_at"`
 	LapsesAt      time.Time    `json:"lapses_at"`
 	User          string       `json:"user"`
@@ -235,6 +248,7 @@ func (s *Service) handleApproveRequest(w http.ResponseWriter, r *http.Request) {
 		Warning:       cleanText(kit.Warning),
 		CoverageKnown: len(req.Coverage) > 0,
 		TTL:           FormatTTL(req.TTL),
+		TTLMax:        FormatTTL(kitMaxTTL(kit)),
 		RequestedAt:   req.RequestedAt,
 		LapsesAt:      req.ExpiresAt,
 		User:          req.UserID,
@@ -247,11 +261,17 @@ func (s *Service) handleApproveRequest(w http.ResponseWriter, r *http.Request) {
 	if req.CallerName != req.CallerID {
 		v.ClientName = req.CallerName
 	}
-	v.TTLChoices = append(v.TTLChoices, v.TTL)
-	for _, d := range slices.Backward(ttlChoices) {
-		if d < req.TTL {
-			v.TTLChoices = append(v.TTLChoices, FormatTTL(d))
+	// The choices run from the shortest to the longest. The one requested is
+	// among them, even above a maximum lowered since the request.
+	choices := []time.Duration{req.TTL}
+	for _, d := range ttlChoices {
+		if d <= kitMaxTTL(kit) && d != req.TTL {
+			choices = append(choices, d)
 		}
+	}
+	slices.Sort(choices)
+	for _, d := range choices {
+		v.TTLChoices = append(v.TTLChoices, FormatTTL(d))
 	}
 	v.Entries = entryViews(kit.Grants, kit.Tools, req.Coverage)
 	// Only approvers who may approve this kit are offered; the statement

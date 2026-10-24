@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="robots" content="noindex">
 <meta name="referrer" content="no-referrer">
 <title>{{.Title}}</title>
@@ -16,93 +16,323 @@
 <meta name="twitter:description" content="{{.Summary}}">
 <link rel="stylesheet" href="approve.css">
 <script src="bip322.js" defer></script>
+<script src="i18n.js" defer></script>
 <script src="approve.js" defer></script>
 </head>
 <body>
-<main id="main" data-request="{{.ID}}" data-found="{{.Found}}">
-<header>
-<h1>{{.Title}}</h1>
-<p class="lead" id="lead">{{.Summary}}</p>
+<svg class="sprite" aria-hidden="true">
+  <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3l7 3v5c0 4.6-3 8.4-7 9.6C8 19.4 5 15.6 5 11V6l7-3z"/><path d="M9 12l2.2 2.2L15.5 10"/></symbol>
+  <symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></symbol>
+  <symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 4l9 16H3z"/><path d="M12 10v4.2"/><path d="M12 17.4v.1"/></symbol>
+  <symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3c2.5 2.7 3.8 5.7 3.8 9s-1.3 6.3-3.8 9c-2.5-2.7-3.8-5.7-3.8-9S9.5 5.7 12 3z"/></symbol>
+  <symbol id="i-chev" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></symbol>
+  <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h14"/><path d="M13 6l6 6-6 6"/></symbol>
+  <symbol id="i-back" viewBox="0 0 24 24"><path d="M19 12H5"/><path d="M11 18l-6-6 6-6"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h9"/></symbol>
+  <symbol id="i-key" viewBox="0 0 24 24"><circle cx="8" cy="15" r="4"/><path d="M10.9 12.1L20 3"/><path d="M16 7l3 3"/></symbol>
+  <symbol id="i-wallet" viewBox="0 0 24 24"><path d="M19 7V5.5A1.5 1.5 0 0 0 17.5 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h13a1 1 0 0 0 1-1v-3"/><path d="M20 9h-5a3 3 0 0 0 0 6h5a1 1 0 0 0 1-1v-4a1 1 0 0 0-1-1z"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></symbol>
+  <symbol id="i-user" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 20c1.5-3.5 4.5-5 8-5s6.5 1.5 8 5"/></symbol>
+  <symbol id="i-link" viewBox="0 0 24 24"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/></symbol>
+  <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
+  <symbol id="i-hourglass" viewBox="0 0 24 24"><path d="M7 3h10M7 21h10"/><path d="M8 3c0 4 8 5 8 9s-8 5-8 9"/><path d="M16 3c0 4-8 5-8 9s8 5 8 9"/></symbol>
+  <symbol id="i-fp" viewBox="0 0 24 24"><circle cx="6" cy="7" r="2"/><circle cx="18" cy="7" r="2"/><circle cx="12" cy="17" r="2"/><path d="M8 7h8M7 8.8l4 6.4M17 8.8l-4 6.4"/></symbol>
+  <symbol id="i-doc" viewBox="0 0 24 24"><path d="M7 3h7l5 5v12a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/><path d="M14 3v5h5"/><path d="M9 13h6M9 17h4"/></symbol>
+  <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5"/><path d="M12 7.6v.1"/></symbol>
+  <symbol id="i-sign" viewBox="0 0 24 24"><path d="M3 16c2.5 0 3.5-7 5.5-7S9.5 15 11.5 15s2-3 4-3 2 2 5.5 2"/><path d="M3 20h18"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 8v8M8 12h8"/></symbol>
+  <symbol id="i-gauge" viewBox="0 0 24 24"><path d="M4 17a8 8 0 1 1 16 0"/><path d="M12 17l4-5"/></symbol>
+  <symbol id="i-spark" viewBox="0 0 24 24"><path d="M12 3l1.8 4.7 4.7 1.8-4.7 1.8L12 16l-1.8-4.7L5.5 9.5l4.7-1.8z"/><path d="M18.5 15l.7 1.8 1.8.7-1.8.7-.7 1.8-.7-1.8-1.8-.7 1.8-.7z"/></symbol>
+  <symbol id="i-server" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="6.5" rx="1.6"/><rect x="4" y="13.5" width="16" height="6.5" rx="1.6"/><path d="M8 7.25h.01M8 16.75h.01M12 7.25h4M12 16.75h4"/></symbol>
+  <symbol id="i-tile" viewBox="0 0 128 128"><rect width="128" height="128" rx="28" fill="#20a0e8" stroke="none"/><path d="M34 36h60v15H71.5v41h-15V51H34z" fill="#ffffff" stroke="none"/></symbol>
+</svg>
+
+<main class="app" id="main" data-request="{{.ID}}" data-found="{{.Found}}" data-status="{{.Status}}">
+
+<header class="wrap top">
+  <div class="brand">
+    <svg class="tile" aria-hidden="true"><use href="#i-tile"/></svg>
+    <span class="wordmark">Tool<b>Mesh</b></span>
+    <span class="div" aria-hidden="true"></span>
+    <span class="sub" data-t="brand">Approval</span>
+  </div>
+  <div class="top-meta">
+    <span class="pill timer" id="timer" role="timer" hidden>
+      <svg class="ring" viewBox="0 0 20 20" aria-hidden="true"><circle class="bg" cx="10" cy="10" r="8"/><circle class="fg" id="ring" cx="10" cy="10" r="8"/></svg>
+      <span id="timer-l"></span>
+    </span>
+    <label class="pill lang">
+      <svg class="i sm" aria-hidden="true"><use href="#i-globe"/></svg>
+      <span class="sr" data-t="langLabel">Language</span>
+      <select id="lang"></select>
+      <svg class="i sm chev" aria-hidden="true"><use href="#i-chev"/></svg>
+    </label>
+  </div>
 </header>
 
-<noscript><p class="error">This page needs JavaScript to sign in your browser. Nothing leaves the page but the signature.</p></noscript>
-
-<section id="request" hidden>
-  <div class="facts">
-    <div><span class="label">User</span><span id="user"></span></div>
-    <div><span class="label">Connection</span><span id="connection"></span></div>
-    <div><span class="label">Kit</span><span id="kit"></span></div>
-    <div><span class="label">Duration asked</span><span id="ttl"></span></div>
-    <div><span class="label">Approve before</span><span id="lapses"></span></div>
-    <div><span class="label">Fingerprint</span><code id="fingerprint"></code></div>
+<div class="wrap">
+  <noscript><p class="banner">This page needs JavaScript to sign in your browser. Nothing leaves the page but the signature.</p></noscript>
+  <ol class="steps" id="steps" hidden>
+    <li data-s="review"><span class="n"><span class="num">1</span><svg class="i ck" aria-hidden="true"><use href="#i-check"/></svg></span><span data-t="s1">Review</span></li>
+    <li data-s="sign"><span class="n"><span class="num">2</span><svg class="i ck" aria-hidden="true"><use href="#i-check"/></svg></span><span data-t="s2">Sign</span></li>
+    <li data-s="done"><span class="n"><span class="num">3</span><svg class="i ck" aria-hidden="true"><use href="#i-check"/></svg></span><span data-t="s3">Approved</span></li>
+  </ol>
+  <div class="banner error" id="error" role="alert" hidden>
+    <svg class="i" aria-hidden="true"><use href="#i-alert"/></svg>
+    <div><strong data-t="errorLabel">That did not work</strong><p id="error-text"></p></div>
   </div>
-  <p class="warning" id="warning" hidden></p>
-  <div class="claim">
-    <span class="label">Reason, as the requester states it</span>
-    <p id="reason"></p>
-    <p class="hint" id="client-name" hidden></p>
-  </div>
-
-  <h2>What the kit allows</h2>
-  <p class="hint">Untick what the task does not need: the grant then covers only what stays ticked.
-  Counts are the tools each entry covers and how many of them the user cannot call today.</p>
-  <div id="entries"></div>
-
-  <h2>Your approval</h2>
-  <div class="choices">
-    <label>Grant for <select id="ttl-choice"></select></label>
-    <label>Approver <select id="approver"></select></label>
-  </div>
-  <p class="hint" id="no-signers" hidden>No approver of this ToolMesh can approve this kit here: none who may approve it has a signing address yet.
-  Add one under approvers: in config/authz.yaml (see “Set up a signing key” below).</p>
-  <button type="button" id="prepare">Show what I sign</button>
-</section>
-
-<section id="sign" hidden>
-  <h2>The statement you sign</h2>
-  <p class="hint">This exact text is signed. ToolMesh writes it again from the request and checks the signature against it.</p>
-  <pre id="statement"></pre>
-  <div class="tabs" role="tablist">
-    <button type="button" role="tab" id="tab-key" aria-selected="true">Sign here with my key</button>
-    <button type="button" role="tab" id="tab-wallet" aria-selected="false">Sign in my wallet</button>
-  </div>
-  <div id="panel-key" role="tabpanel">
-    <label class="block">Private key of your address (WIF or 64 hex characters). It stays in this page.
-      <input type="password" id="key" autocomplete="off" spellcheck="false">
-    </label>
-    <p class="hint" id="key-check"></p>
-    <button type="button" id="sign-key" disabled>Sign and approve</button>
-  </div>
-  <div id="panel-wallet" role="tabpanel" hidden>
-    <p class="hint">Copy the statement into a wallet that signs BIP-322 messages for your bc1q address, then paste the signature here.</p>
-    <button type="button" id="copy-statement" class="secondary">Copy the statement</button>
-    <label class="block">Signature
-      <textarea id="signature" rows="3" spellcheck="false"></textarea>
-    </label>
-    <button type="button" id="sign-wallet">Approve</button>
-  </div>
-</section>
-
-<section id="result" hidden>
-  <p id="result-text"></p>
-</section>
-
-<p class="error" id="error" hidden></p>
-
-<details id="setup">
-<summary>Set up a signing key</summary>
-<p>An approver signs with the key of a bc1q address. Make a new key here (it is made in this page and sent nowhere),
-keep the private key in your password manager, and add the address to <code>config/authz.yaml</code>:</p>
-<button type="button" id="generate" class="secondary">Make a new key</button>
-<div id="generated" hidden>
-  <label class="block">Private key (WIF), keep it secret <input type="text" id="new-key" readonly spellcheck="false"></label>
-  <pre id="new-config"></pre>
 </div>
-<p class="hint">ToolMesh applies changes to config/authz.yaml within seconds. A key from a wallet works too:
-use the address of a native segwit (bc1q…) account.</p>
-</details>
 
-<footer>Served by ToolMesh. The private key never leaves this page; only the signature is sent.</footer>
+<!-- 1 · review -->
+<section class="view" id="view-review" hidden>
+  <div class="wrap">
+    <div class="layout">
+      <div class="col-main">
+        <div class="hero">
+          <div class="art-wrap"><div class="art" id="art-review" aria-hidden="true"></div></div>
+          <p class="eyebrow" id="eyebrow"></p>
+          <h1 class="hero-t" id="hero-title"></h1>
+          <p class="desc"><span id="desc"></span><span class="src" data-t="byOperator">from the operator</span></p>
+          <div class="glance">
+            <div class="gtile">
+              <span class="glabel"><svg class="i sm" aria-hidden="true"><use href="#i-user"/></svg><span data-t="gWho">For whom</span></span>
+              <div class="gwho"><span class="avatar round" id="g-av"></span><span class="gwho-t"><span class="gval" id="g-user"></span><span class="gmeta" id="g-conn"></span><span class="gmeta" id="g-when"></span></span></div>
+            </div>
+            <div class="gtile risk" id="g-risk">
+              <span class="glabel"><svg class="i sm" aria-hidden="true"><use href="#i-gauge"/></svg><span data-t="gRisk">Risk</span></span>
+              <span class="gval"><span class="lvl" id="g-lvl"></span></span>
+              <span class="gmeta" id="g-lvl-text"></span>
+              <div class="bar" id="bar" aria-hidden="true"></div>
+              <ul class="legend" id="legend"></ul>
+            </div>
+            <div class="gtile">
+              <span class="glabel"><svg class="i sm" aria-hidden="true"><use href="#i-plus"/></svg><span data-t="gNew">Newly allowed</span></span>
+              <span class="gval"><span id="g-new-num"></span> <span id="g-new-unit"></span></span>
+              <span class="gmeta" id="g-new-text"></span>
+            </div>
+            <div class="gtile">
+              <span class="glabel"><svg class="i sm" aria-hidden="true"><use href="#i-clock"/></svg><span data-t="gDur">Duration</span></span>
+              <span class="gval" id="g-dur"></span>
+              <span class="gmeta" data-t="durText">from the approval, then it ends on its own</span>
+            </div>
+          </div>
+          <div class="fpstrip">
+            <span class="glyph-tile" id="fp-glyph"></span>
+            <div class="fp-t">
+              <span class="glabel"><svg class="i sm" aria-hidden="true"><use href="#i-fp"/></svg><span data-t="fFp">Fingerprint</span></span>
+              <code class="fp-code" id="fp-code"></code>
+              <span class="gmeta" data-t="fpHint">Compare it with the fingerprint the agent gave you. If they match, this page shows its request.</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="banner warn" id="warning-box" role="note" hidden>
+          <svg class="i" aria-hidden="true"><use href="#i-alert"/></svg>
+          <div><strong data-t="warningLabel">Operator warning</strong><p id="warning"></p></div>
+        </div>
+
+        <figure class="claim">
+          <figcaption><span data-t="claimLabel">Reason, as the requester states it</span><span class="tag-unv"><svg class="i sm" aria-hidden="true"><use href="#i-alert"/></svg><span data-t="unverified">Not verified</span></span></figcaption>
+          <blockquote id="reason" dir="auto"></blockquote>
+          <p class="claim-note"><span data-t="claimNote">In the requester’s own words, not translated. ToolMesh does not verify it.</span> <span id="client" hidden></span></p>
+        </figure>
+
+        <details class="fold" id="tech">
+          <summary>
+            <svg class="i chev" aria-hidden="true"><use href="#i-chev"/></svg>
+            <span class="fold-t"><strong data-t="techTitle">Technical details</strong><span class="fold-sub" id="tech-sub"></span></span>
+          </summary>
+          <div class="fold-body">
+            <div class="ledger">
+              <div class="ledger-h"><span class="prov"><svg class="i sm" aria-hidden="true"><use href="#i-shield"/></svg><span data-t="verified">Verified by ToolMesh</span></span></div>
+              <dl class="facts">
+                <div class="fact"><dt><svg class="i sm" aria-hidden="true"><use href="#i-user"/></svg><span data-t="fUser">User</span></dt><dd id="f-user"></dd></div>
+                <div class="fact"><dt><svg class="i sm" aria-hidden="true"><use href="#i-link"/></svg><span data-t="fConn">Connection</span></dt><dd><code id="f-conn"></code></dd></div>
+                <div class="fact"><dt><svg class="i sm" aria-hidden="true"><use href="#i-doc"/></svg><span data-t="fRequest">Request</span></dt><dd><code id="f-id"></code></dd></div>
+                <div class="fact"><dt><svg class="i sm" aria-hidden="true"><use href="#i-clock"/></svg><span data-t="fRequested">Requested</span></dt><dd><span id="f-req"></span><span class="meta" id="f-req-meta"></span><span class="meta mono" id="f-req-utc"></span></dd></div>
+                <div class="fact"><dt><svg class="i sm" aria-hidden="true"><use href="#i-hourglass"/></svg><span data-t="fBefore">Approve before</span></dt><dd><span id="f-before"></span><span class="meta" id="f-before-meta"></span><span class="meta mono" id="f-before-utc"></span></dd></div>
+                <div class="fact"><dt><svg class="i sm" aria-hidden="true"><use href="#i-clock"/></svg><span data-t="fAsked">Duration asked</span></dt><dd id="f-asked"></dd></div>
+              </dl>
+            </div>
+            <div class="mx" id="mx" hidden>
+              <div class="mx-t">
+                <span class="flabel" data-t="matrixTitle">Each cell is one tool</span>
+                <span class="num"><span id="mx-num"></span> <span class="unit" id="mx-unit"></span></span>
+                <p class="sub" id="mx-sub"></p>
+                <ul class="legend keys"><li class="k-new"><i></i><span data-t="legendNew">not allowed yet</span></li><li class="k-known"><i></i><span data-t="legendKnown">allowed already</span></li></ul>
+              </div>
+              <div class="matrix" id="matrix" aria-hidden="true"></div>
+            </div>
+            <section id="scope" aria-labelledby="scope-h">
+              <h2 class="sub-t" id="scope-h" data-t="scopeTitle">Entries of the kit</h2>
+              <p class="hint" data-t="scopeHint">Switch off what the task does not need. The grant covers only what stays on.</p>
+              <div class="groups" id="entries"></div>
+            </section>
+          </div>
+        </details>
+      </div>
+
+      <aside class="col-side">
+        <div class="side-sticky">
+          <section class="card decide">
+            <div class="field">
+              <span class="flabel" id="opt-l" data-t="scopeLabel">Scope</span>
+              <div class="opts" role="radiogroup" aria-labelledby="opt-l" id="opts"></div>
+              <p class="narrowed" id="narrowed" hidden></p>
+            </div>
+            <div class="field"><span class="flabel" id="ttl-l" data-t="duration">Duration</span><div class="pills" role="radiogroup" aria-labelledby="ttl-l" id="ttl"></div>
+              <div class="ttl-own" id="ttl-own" hidden>
+                <input class="inp" type="number" id="ttl-n" min="1" step="1" inputmode="numeric" aria-labelledby="ttl-l">
+                <div class="select"><select id="ttl-unit" aria-labelledby="ttl-l"><option value="m">minutes</option><option value="h">hours</option></select><svg class="i sm" aria-hidden="true"><use href="#i-chev"/></svg></div>
+              </div>
+              <p class="fine" id="ttl-hint" hidden><svg class="i sm" aria-hidden="true"><use href="#i-clock"/></svg><span id="ttl-hint-l"></span></p>
+            </div>
+            <div class="field"><label class="flabel" for="approver" data-t="approver">Approver</label>
+              <div class="select"><select id="approver"></select><svg class="i sm" aria-hidden="true"><use href="#i-chev"/></svg></div>
+              <p class="fine warn" id="no-signers" hidden><svg class="i sm" aria-hidden="true"><use href="#i-alert"/></svg><span data-t="noSigners"></span></p>
+            </div>
+            <button type="button" class="cta" id="cta"><span id="cta-l"></span><svg class="i" aria-hidden="true"><use href="#i-arrow"/></svg></button>
+            <p class="fine"><svg class="i sm" aria-hidden="true"><use href="#i-lock"/></svg><span data-t="keyNote">Your private key never leaves this page. Only the signature is sent.</span></p>
+          </section>
+        </div>
+      </aside>
+    </div>
+  </div>
+  <div class="mcta">
+    <div class="mcta-sum"><strong id="m-num"></strong><span id="m-meta"></span></div>
+    <button type="button" class="cta" id="m-cta"><span data-t="s2">Sign</span><svg class="i" aria-hidden="true"><use href="#i-arrow"/></svg></button>
+  </div>
+</section>
+
+<!-- 2 · sign -->
+<section class="view" id="view-sign" hidden>
+  <div class="wrap">
+    <div class="layout">
+      <div class="col-main">
+        <div class="view-h"><h1 class="view-t" data-t="signTitle">Sign the approval</h1><p class="hint" data-t="signHint">Your signature covers exactly this approval, and only once.</p></div>
+        <section class="sumcard">
+          <h2 data-t="sumTitle">You approve</h2>
+          <dl class="sum-dl">
+            <div><dt data-t="sumWho">For</dt><dd><span id="sum-who"></span><span class="meta" id="sum-who-meta"></span></dd></div>
+            <div><dt data-t="sumWhat">What</dt><dd><span id="sum-what"></span><span class="meta" id="sum-what-meta"></span></dd></div>
+            <div><dt data-t="sumHow">How long</dt><dd><span id="sum-how"></span><span class="meta" data-t="durText">from the approval, then it ends on its own</span></dd></div>
+          </dl>
+        </section>
+        <details class="stmt-wrap" id="stmt-wrap">
+          <summary><svg class="i sm" aria-hidden="true"><use href="#i-doc"/></svg><span data-t="stmtShow">Show the exact text you sign</span><svg class="i sm chev" aria-hidden="true"><use href="#i-chev"/></svg></summary>
+          <div class="doc">
+            <div class="doc-h">
+              <span class="lbl" data-t="signedText">Exact text</span>
+              <div class="doc-actions">
+                <label class="gloss-t" id="gloss-wrap"><span class="switch"><input type="checkbox" id="gloss" role="switch" checked><span class="track"></span></span><span data-t="glossToggle"></span></label>
+                <button type="button" class="btn-s" id="copy"><svg class="i sm" aria-hidden="true"><use href="#i-copy"/></svg><span id="copy-l" data-t="copy">Copy</span></button>
+              </div>
+            </div>
+            <ol class="stmt" id="stmt"></ol>
+            <p class="gloss-note" id="gloss-note"><svg class="i sm" aria-hidden="true"><use href="#i-info"/></svg><span data-t="glossNote"></span></p>
+          </div>
+        </details>
+      </div>
+      <aside class="col-side">
+        <div class="side-sticky">
+          <section class="card sign">
+            <div class="signer"><span class="avatar" id="avatar"></span><span class="who"><span class="flabel" data-t="signAs">Signing as</span><strong id="signer-name"></strong><code id="signer-addr"></code></span></div>
+            <div class="tabs" role="tablist">
+              <button type="button" role="tab" id="tab-key" aria-selected="true" aria-controls="panel-key"><svg class="i sm" aria-hidden="true"><use href="#i-key"/></svg><span data-t="tabKey">With my key</span></button>
+              <button type="button" role="tab" id="tab-wallet" aria-selected="false" aria-controls="panel-wallet"><svg class="i sm" aria-hidden="true"><use href="#i-wallet"/></svg><span data-t="tabWallet">In my wallet</span></button>
+            </div>
+            <div id="panel-key" role="tabpanel" aria-labelledby="tab-key">
+              <label class="ilabel" for="key" data-t="keyLabel">Your signing key, for example from your password manager (WIF or 64 hex characters). It stays in this page.</label>
+              <input class="inp" type="password" id="key" autocomplete="off" spellcheck="false">
+              <p class="check" id="key-check" hidden></p>
+              <button type="button" class="hold" id="hold" disabled><span class="lab" id="hold-a"></span><span class="lab over" id="hold-b" aria-hidden="true"></span></button>
+            </div>
+            <div id="panel-wallet" role="tabpanel" aria-labelledby="tab-wallet" hidden>
+              <p class="hint" data-t="walletHint">Copy the exact text into a wallet that signs BIP-322 messages for your bc1q address, then paste the signature here.</p>
+              <button type="button" class="btn-s wallet-copy" id="copy2"><svg class="i sm" aria-hidden="true"><use href="#i-copy"/></svg><span id="copy2-l" data-t="copy">Copy</span></button>
+              <label class="ilabel" for="signature" data-t="signature">Signature</label>
+              <textarea class="inp" id="signature" rows="3" spellcheck="false"></textarea>
+              <button type="button" class="cta" id="sign-wallet" disabled><span data-t="approveBtn">Approve</span></button>
+            </div>
+            <p class="fine"><svg class="i sm" aria-hidden="true"><use href="#i-lock"/></svg><span data-t="keyNote">Your private key never leaves this page. Only the signature is sent.</span></p>
+            <button type="button" class="ghost" id="back"><svg class="i sm" aria-hidden="true"><use href="#i-back"/></svg><span data-t="back">Back to the choices</span></button>
+          </section>
+        </div>
+      </aside>
+    </div>
+  </div>
+</section>
+
+<!-- 3 · approved -->
+<section class="view" id="view-done" hidden>
+  <div class="wrap done">
+    <div class="art-wrap"><div class="art open" id="art-done" aria-hidden="true"></div></div>
+    <h1 class="done-t" data-t="doneTitle">Approved</h1>
+    <p class="lead" id="done-lead"></p>
+    <div class="pass-wrap">
+      <article class="pass" id="pass">
+        <div class="pass-main">
+          <div class="pass-top">
+            <svg class="tile" aria-hidden="true"><use href="#i-tile"/></svg>
+            <span class="kind" data-t="passKind">Access grant</span>
+            <span class="pass-state"><svg class="i sm" aria-hidden="true"><use href="#i-check"/></svg><span data-t="s3">Approved</span></span>
+          </div>
+          <h2 class="pass-kit" id="p-kit"></h2>
+          <dl class="pass-dl">
+            <div><dt data-t="pHolder">Granted to</dt><dd><span id="p-holder"></span><span class="meta mono" id="p-holder-meta"></span></dd></div>
+            <div><dt data-t="pValid">Valid until</dt><dd><span id="p-valid"></span><span class="meta" id="p-valid-meta"></span></dd></div>
+            <div><dt data-t="pScope">Scope</dt><dd><span id="p-scope"></span><span class="meta mono" id="p-scope-meta"></span></dd></div>
+            <div><dt data-t="pBy">Approved by</dt><dd><span id="p-by"></span><span class="meta mono" id="p-by-meta"></span></dd></div>
+          </dl>
+          <div class="pass-sig"><span class="ok-txt"><svg class="i sm" aria-hidden="true"><use href="#i-shield"/></svg><span data-t="sigOk">Signature verified by ToolMesh</span></span><span class="audit" id="p-audit"></span></div>
+        </div>
+        <div class="pass-stub" id="stub">
+          <span class="stub-glyph" id="stub-glyph"></span>
+          <code id="p-fp"></code>
+          <span class="rid" id="p-rid"></span>
+        </div>
+      </article>
+    </div>
+    <p class="close-note" data-t="closeNote">You can close this window now.</p>
+  </div>
+</section>
+
+<!-- no longer pending, could not load, or key setup -->
+<section class="view" id="view-info" hidden>
+  <div class="wrap info" id="info">
+    <span class="info-ic"><svg class="i" aria-hidden="true"><use id="info-icon" href="#i-info"/></svg></span>
+    <h1 id="info-title"></h1>
+    <p id="info-text"></p>
+  </div>
+</section>
+
+<div class="wrap">
+  <details class="fold setup" id="setup">
+    <summary>
+      <svg class="i chev" aria-hidden="true"><use href="#i-chev"/></svg>
+      <span class="fold-t"><strong data-t="setupTitle">Set up a signing key</strong></span>
+    </summary>
+    <div class="fold-body setup-body">
+      <p id="setup-lead" data-t="setupLead">Approvers sign with the key of a bc1q address. Make one here: it is made in this page and sent nowhere.</p>
+      <p id="setup-text"></p>
+      <button type="button" class="btn-2" id="generate"><svg class="i sm" aria-hidden="true"><use href="#i-key"/></svg><span data-t="generate">Make a new key</span></button>
+      <div id="generated" hidden>
+        <label class="ilabel" for="new-key" data-t="newKey">Private key (WIF). Keep it secret.</label>
+        <input class="inp" type="text" id="new-key" readonly spellcheck="false">
+        <pre class="cfg" id="new-config"></pre>
+      </div>
+      <p class="hint" id="setup-hint"></p>
+    </div>
+  </details>
+</div>
+
+<footer class="wrap">
+  <div class="foot">
+    <span class="foot-l"><svg class="i sm" aria-hidden="true"><use href="#i-lock"/></svg><span data-t="footServed">Served by ToolMesh. Your key never leaves this page.</span></span>
+    <a href="#setup" id="setup-link" data-t="footSetup">Set up a signing key</a>
+  </div>
+</footer>
+
 </main>
 </body>
 </html>

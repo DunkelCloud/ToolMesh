@@ -224,12 +224,22 @@ func TestApprove_TTL(t *testing.T) {
 	env := newTestEnv(t)
 	ctx := context.Background()
 	id := env.request(t, testKitNetDiag, "2h").Grant.ID
-	if _, err := env.svc.Approve(ctx, testApprover, id, 3*time.Hour); !errors.Is(err, ErrInvalid) {
-		t.Fatalf("approval longer than requested: err = %v, want ErrInvalid", err)
+	if _, err := env.svc.Approve(ctx, testApprover, id, 25*time.Hour); !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "24h") {
+		t.Fatalf("approval longer than the kit's maximum: err = %v, want ErrInvalid naming 24h", err)
 	}
 	g, err := env.svc.Approve(ctx, testApprover, id, 30*time.Minute)
 	if err != nil || g.TTL != 30*time.Minute || !g.ExpiresAt.Equal(t0.Add(30*time.Minute)) {
 		t.Errorf("shortened approval = %+v, %v", g, err)
+	}
+}
+
+// An approver may grant longer than requested, up to the kit's maximum.
+func TestApprove_LongerThanRequested(t *testing.T) {
+	env := newTestEnv(t)
+	id := env.request(t, testKitNetDiag, "2h").Grant.ID
+	g, err := env.svc.Approve(context.Background(), testApprover, id, 24*time.Hour)
+	if err != nil || g.TTL != 24*time.Hour || !g.ExpiresAt.Equal(t0.Add(24*time.Hour)) {
+		t.Errorf("approval for the kit's maximum = %+v, %v", g, err)
 	}
 }
 

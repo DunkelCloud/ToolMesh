@@ -161,7 +161,11 @@ that way; a script with failures from two backends counts once for each.
   request that failed on the network or timed out. The script got
   `{error, tool}`.
 - `coercion` — the arguments could not be converted to the types the tool
-  declares. The call did not run; the script got `undefined`.
+  declares. The call did not run; the script got `undefined`. Only the tools
+  defined in the TypeScript files of the tools directory (`tools/`,
+  `TOOLMESH_TOOLS_DIR`) are coerced. Tools of DADL and MCP backends pass their
+  arguments on unchanged, so a wrong argument there comes back as an error
+  result and counts as `tool_error`.
 - `tool_error` — the call returned an error result: the backend reported an
   error (such as an HTTP error status), or authorization or a gate policy
   refused the call. The script got the error text or the parsed error body.

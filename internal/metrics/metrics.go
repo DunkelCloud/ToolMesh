@@ -57,6 +57,8 @@ const (
 	SwallowedDispatch = "dispatch"
 	// SwallowedCoercion means the arguments could not be converted to the
 	// tool's declared types; the call did not run and returned undefined.
+	// Only tools with a TypeScript definition in the tools directory are
+	// coerced, so DADL and MCP backend tools never report it.
 	SwallowedCoercion = "coercion"
 	// SwallowedToolError means the call returned an error result: the backend
 	// reported an error, or authorization or a gate policy refused the call.

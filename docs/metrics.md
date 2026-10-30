@@ -124,6 +124,58 @@ Buckets are tuned to typical REST-backend latencies:
 | `backend` | See above.                                                          |
 | `tool`    | See above.                                                          |
 
+### `toolmesh_codemode_scripts_total` (counter)
+
+`execute_code` scripts by how they ended. All three series exist from the
+start, at zero.
+
+| Label     | Values                     |
+| --------- | -------------------------- |
+| `outcome` | `ok`, `error`, `timeout`   |
+
+- `ok` — the script ran to completion without throwing.
+- `error` — the script did not run to completion: the static analysis
+  rejected it, it threw an exception it did not catch, it went over the budget
+  of 50 tool calls, or the client canceled the request.
+- `timeout` — the script ran out of its wall-clock budget
+  (`TOOLMESH_CODE_TIMEOUT`).
+
+### `toolmesh_codemode_swallowed_errors_total` (counter)
+
+Scripts that ran to completion although a tool call in them failed. Inside
+`execute_code` a failed tool call does not throw: the script gets the failure
+as the call's value and runs on. This counter shows how often a script
+finished regardless, possibly without the data it asked for. ToolMesh cannot
+tell a script that checked the value from one that went on without it, so
+both count. Scripts that end in `error` or `timeout` are not counted.
+
+A script counts once per backend and reason, however many of its calls failed
+that way; a script with failures from two backends counts once for each.
+
+| Label     | Values                                                              |
+| --------- | ------------------------------------------------------------------- |
+| `backend` | The backend's configured name, `builtin` for `tell_me_my_rights` and `request_grant`, or `unknown` for a tool no backend claims. |
+| `reason`  | `dispatch`, `coercion`, `tool_error`                                |
+
+- `dispatch` — the call produced no result at all, for example a backend
+  request that failed on the network or timed out. The script got
+  `{error, tool}`.
+- `coercion` — the arguments could not be converted to the types the tool
+  declares. The call did not run; the script got `undefined`. Only the tools
+  defined in the TypeScript files of the tools directory (`tools/`,
+  `TOOLMESH_TOOLS_DIR`) are coerced. Tools of DADL and MCP backends pass their
+  arguments on unchanged, so a wrong argument there comes back as an error
+  result and counts as `tool_error`.
+- `tool_error` — the call returned an error result: the backend reported an
+  error (such as an HTTP error status), or authorization or a gate policy
+  refused the call. The script got the error text or the parsed error body.
+
+The series of every configured backend exist from the start, at zero. The
+`backend` label is the name the backend is configured under, also when it
+contains an underscore; `toolmesh_tool_calls_total` takes the backend from the
+tool name up to the first underscore, so for such a backend the two labels
+differ.
+
 ## Example queries
 
 ```promql
@@ -153,6 +205,13 @@ sum by (backend) (increase(toolmesh_tool_calls_total{result="denied"}[1h]))
 # p95 tool-call latency per backend
 histogram_quantile(0.95,
   sum by (backend, le) (rate(toolmesh_tool_call_duration_seconds_bucket[5m])))
+
+# execute_code scripts that finished despite a failed tool call, last 14 days,
+# by backend and reason
+sum by (backend, reason) (increase(toolmesh_codemode_swallowed_errors_total[14d]))
+
+# Scripts by outcome over the same range, the base for the counts above
+sum by (outcome) (increase(toolmesh_codemode_scripts_total[14d]))
 ```
 
 ## Scrape configuration

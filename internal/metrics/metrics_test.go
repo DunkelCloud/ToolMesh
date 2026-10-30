@@ -84,6 +84,9 @@ func TestNilRegistry_IsSafe(t *testing.T) {
 
 	r.RecordLogin("api_key", testLoginResultSuccess)
 	r.RecordToolCall("any", "thing", testLoginResultSuccess, time.Second)
+	r.RecordCodeScript(metrics.ScriptOutcomeOK)
+	r.RecordSwallowedError(testBackendShop, metrics.SwallowedDispatch)
+	r.InitSwallowedErrors([]string{testBackendShop})
 
 	srv := httptest.NewServer(r.Handler())
 	t.Cleanup(srv.Close)
@@ -115,6 +118,42 @@ func TestEmptyScrape_LoginsPreinitialized_NoPromhttpSelfMetrics(t *testing.T) {
 
 	if strings.Contains(body, "promhttp_metric_handler_") {
 		t.Errorf("promhttp self-metrics leaked into scrape output:\n%s", body)
+	}
+}
+
+func TestCodeModeCounters(t *testing.T) {
+	r := metrics.New(metrics.Options{LabelTool: true})
+
+	// The script outcomes exist at zero before the first script runs.
+	body := scrapeMetrics(t, r)
+	for _, outcome := range []string{metrics.ScriptOutcomeOK, metrics.ScriptOutcomeError, metrics.ScriptOutcomeTimeout} {
+		mustContain(t, body, `toolmesh_codemode_scripts_total{outcome="`+outcome+`"} 0`)
+	}
+
+	r.InitSwallowedErrors([]string{testBackendShop, testBackendWebSearch})
+	// A second call, as after a reload, keeps what was counted.
+	r.RecordSwallowedError(testBackendShop, metrics.SwallowedDispatch)
+	r.InitSwallowedErrors([]string{testBackendShop})
+	r.RecordSwallowedError(testBackendShop, metrics.SwallowedDispatch)
+	r.RecordSwallowedError(testBackendWebSearch, metrics.SwallowedToolError)
+	r.RecordCodeScript(metrics.ScriptOutcomeOK)
+	r.RecordCodeScript(metrics.ScriptOutcomeOK)
+	r.RecordCodeScript(metrics.ScriptOutcomeTimeout)
+
+	body = scrapeMetrics(t, r)
+	for _, want := range []string{
+		"# TYPE toolmesh_codemode_scripts_total counter",
+		"# TYPE toolmesh_codemode_swallowed_errors_total counter",
+		`toolmesh_codemode_scripts_total{outcome="ok"} 2`,
+		`toolmesh_codemode_scripts_total{outcome="error"} 0`,
+		`toolmesh_codemode_scripts_total{outcome="timeout"} 1`,
+		`toolmesh_codemode_swallowed_errors_total{backend="shop",reason="dispatch"} 2`,
+		`toolmesh_codemode_swallowed_errors_total{backend="shop",reason="coercion"} 0`,
+		`toolmesh_codemode_swallowed_errors_total{backend="shop",reason="tool_error"} 0`,
+		`toolmesh_codemode_swallowed_errors_total{backend="web_search",reason="dispatch"} 0`,
+		`toolmesh_codemode_swallowed_errors_total{backend="web_search",reason="tool_error"} 1`,
+	} {
+		mustContain(t, body, want)
 	}
 }
 

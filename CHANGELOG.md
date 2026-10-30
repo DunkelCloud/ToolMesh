@@ -11,6 +11,18 @@ for the full narrative and details.
 
 ## [Unreleased]
 
+### Added
+
+- Two Prometheus counters show how often `execute_code` scripts finish
+  although a tool call in them failed. Such a call does not throw inside the
+  script; the script gets the failure as a value and may carry on without
+  the data. `toolmesh_codemode_swallowed_errors_total{backend, reason}`
+  counts these scripts once per backend and reason
+  (`dispatch|coercion|tool_error`), and
+  `toolmesh_codemode_scripts_total{outcome}` counts all scripts by how they
+  ended (`ok|error|timeout`). Scripts behave as before. See
+  `docs/metrics.md`.
+
 ### Changed
 
 - The approval page `/approve/<id>` leads with what an approver decides on:

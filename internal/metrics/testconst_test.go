@@ -20,4 +20,6 @@ const (
 	testLoginMethodOAuthCode = "oauth_code"
 	testLoginResultFailure   = "failure"
 	testLoginResultSuccess   = "success"
+	testBackendShop          = "shop"
+	testBackendWebSearch     = "web_search"
 )

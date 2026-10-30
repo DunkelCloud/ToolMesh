@@ -27,6 +27,7 @@ import (
 	"github.com/DunkelCloud/ToolMesh/internal/backend"
 	"github.com/DunkelCloud/ToolMesh/internal/composite"
 	"github.com/DunkelCloud/ToolMesh/internal/executor"
+	"github.com/DunkelCloud/ToolMesh/internal/metrics"
 	"github.com/DunkelCloud/ToolMesh/internal/toolindex"
 	"github.com/DunkelCloud/ToolMesh/internal/tsdef"
 	"github.com/DunkelCloud/ToolMesh/internal/userctx"
@@ -87,10 +88,25 @@ type CodeRunner struct {
 	// configuration would stay out of its reach. A backend tool with the same
 	// sanitized name takes precedence. Set by NewHandler.
 	metaTools map[string]metaTool
+	// metrics counts how scripts end and, for a script that runs to
+	// completion, which of its tool calls failed: the script got an error
+	// value instead of an exception and may have carried on without the
+	// data. Set by NewHandler; nil records nothing.
+	metrics *metrics.Registry
+	// backends names the backend that owns a tool for the metrics' backend
+	// label. Set by NewHandler; nil labels every tool "unknown".
+	backends backend.BackendNameResolver
 }
 
 // metaTool runs a built-in tool with the caller's context.
 type metaTool func(ctx context.Context, params map[string]any) *backend.ToolResult
+
+// failedCall is the backend and reason of a tool call that failed inside a
+// script, the labels of the swallowed-error counter.
+type failedCall struct {
+	backend string
+	reason  string
+}
 
 // SetTimeout overrides the wall-clock budget for a single execute_code run.
 // A non-positive duration restores the built-in default (codeTimeout).
@@ -151,6 +167,11 @@ func (r *CodeRunner) Execute(ctx context.Context, code string) (*backend.ToolRes
 // the return value is the caller's projection of the data, so the full echo
 // would transport the same payload twice.
 func (r *CodeRunner) ExecuteWithOptions(ctx context.Context, code string, opts ExecuteOptions) (*backend.ToolResult, error) {
+	// outcome is how the script ended, for the metrics. Every return before
+	// the script has run to completion counts as an error.
+	outcome := metrics.ScriptOutcomeError
+	defer func() { r.metrics.RecordCodeScript(outcome) }()
+
 	// Static analysis: scan code-mode submissions for forbidden patterns
 	violations, err := composite.ScanCode(code, "execute_code")
 	if err == nil && len(violations) > 0 {
@@ -179,6 +200,7 @@ func (r *CodeRunner) ExecuteWithOptions(ctx context.Context, code string, opts E
 		mu        sync.Mutex
 		results   []any
 		console   []string
+		failed    = map[failedCall]struct{}{}
 	)
 
 	rt := goja.New()
@@ -255,6 +277,7 @@ func (r *CodeRunner) ExecuteWithOptions(ctx context.Context, code string, opts E
 						logKeyTool:   cn,
 						outcomeError: fmt.Sprintf("coercion failed: %s", err),
 					})
+					failed[failedCall{r.backendLabel(cn), metrics.SwallowedCoercion}] = struct{}{}
 					mu.Unlock()
 					// Return undefined — coercion failure is non-fatal
 					return goja.Undefined()
@@ -277,6 +300,7 @@ func (r *CodeRunner) ExecuteWithOptions(ctx context.Context, code string, opts E
 					logKeyTool:   cn,
 					outcomeError: err.Error(),
 				})
+				failed[failedCall{r.backendLabel(cn), metrics.SwallowedDispatch}] = struct{}{}
 				mu.Unlock()
 				// Return error object to JS instead of panicking.
 				// This lets loops continue and subsequent calls execute.
@@ -308,6 +332,9 @@ func (r *CodeRunner) ExecuteWithOptions(ctx context.Context, code string, opts E
 			}
 			mu.Lock()
 			results = append(results, entry)
+			if result.IsError {
+				failed[failedCall{r.backendLabel(cn), metrics.SwallowedToolError}] = struct{}{}
+			}
 			mu.Unlock()
 
 			// Return the actual API response content for JS consumption,
@@ -344,6 +371,9 @@ func (r *CodeRunner) ExecuteWithOptions(ctx context.Context, code string, opts E
 			result := mfn(ctx, params)
 			mu.Lock()
 			results = append(results, map[string]any{logKeyTool: mn, resultKeyResult: result})
+			if result == nil || result.IsError {
+				failed[failedCall{metricsBackendBuiltin, metrics.SwallowedToolError}] = struct{}{}
+			}
 			mu.Unlock()
 			return extractJSValue(rt, result)
 		})
@@ -398,6 +428,7 @@ func (r *CodeRunner) ExecuteWithOptions(ctx context.Context, code string, opts E
 
 	val, err := rt.RunString(wrappedCode)
 	if err != nil {
+		outcome = failedOutcome(ctx)
 		var interrupt *goja.InterruptedError
 		if errors.As(err, &interrupt) {
 			return r.errorResult(results, console),
@@ -410,8 +441,17 @@ func (r *CodeRunner) ExecuteWithOptions(ctx context.Context, code string, opts E
 	// Resolve promise
 	retVal, err := composite.ResolvePromise(val)
 	if err != nil {
+		outcome = failedOutcome(ctx)
 		return r.errorResult(results, console),
 			fmt.Errorf("execute_code: %w", err)
+	}
+
+	// The script ran to completion. Each failed tool call it saw was handed
+	// to it as a value, not thrown, so the script may have carried on
+	// without the data; count them, once per backend and reason.
+	outcome = metrics.ScriptOutcomeOK
+	for f := range failed {
+		r.metrics.RecordSwallowedError(f.backend, f.reason)
 	}
 
 	// If we have tool call results, return them in the standard format.
@@ -563,6 +603,50 @@ func (r *CodeRunner) visibleTool(ctx context.Context, d backend.ToolDescriptor) 
 	}
 	shown, notes := visibleTools(ctx, r.executor, uc, []backend.ToolDescriptor{d})
 	return len(shown) == 1, notes[d.Name]
+}
+
+// backendLabel names the backend that owns a tool for the metrics, resolved
+// the way the call is routed rather than by splitting the name.
+func (r *CodeRunner) backendLabel(toolName string) string {
+	if r.backends != nil {
+		if name, ok := r.backends.ResolveBackendName(toolName); ok {
+			return name
+		}
+	}
+	return metricsBackendUnknown
+}
+
+// initSwallowedErrors creates the swallowed-error series of every backend a
+// script can call at zero, the built-in tools included.
+func (r *CodeRunner) initSwallowedErrors(tools []backend.ToolDescriptor) {
+	if r.metrics == nil {
+		return
+	}
+	seen := make(map[string]struct{}, len(tools))
+	names := make([]string, 0, len(tools)+1)
+	add := func(name string) {
+		if _, ok := seen[name]; !ok {
+			seen[name] = struct{}{}
+			names = append(names, name)
+		}
+	}
+	for _, t := range tools {
+		add(r.backendLabel(t.Name))
+	}
+	if len(r.metaTools) > 0 {
+		add(metricsBackendBuiltin)
+	}
+	r.metrics.InitSwallowedErrors(names)
+}
+
+// failedOutcome classifies a script that did not run to completion: a timeout
+// when its wall-clock budget ran out, an error otherwise (a canceled request
+// included).
+func failedOutcome(ctx context.Context) string {
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return metrics.ScriptOutcomeTimeout
+	}
+	return metrics.ScriptOutcomeError
 }
 
 // errorResult is the buildResult variant used in error paths: it surfaces

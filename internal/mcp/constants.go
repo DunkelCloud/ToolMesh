@@ -60,6 +60,11 @@ const (
 	logKeyRemote   = "remote"
 	logKeyReason   = "reason"
 
+	// Backend labels of the metrics for calls no backend owns: the built-in
+	// tools, and a tool no backend claims (the executor's label for it).
+	metricsBackendBuiltin = "builtin"
+	metricsBackendUnknown = "unknown"
+
 	// logKeyCredential says what an unauthorized request carried: nothing,
 	// or a bearer credential that was rejected.
 	logKeyCredential   = "credential"

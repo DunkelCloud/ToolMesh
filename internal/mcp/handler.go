@@ -106,6 +106,11 @@ func NewHandler(exec *executor.Executor, back backend.ToolBackend, coercer *tsde
 		toolTellMeMyRights: h.codeModeMetaTool(toolTellMeMyRights, h.handleTellMeMyRights),
 		toolRequestGrant:   h.codeModeMetaTool(toolRequestGrant, h.handleRequestGrant),
 	}
+	runner.metrics = m
+	if resolver, ok := back.(backend.BackendNameResolver); ok {
+		runner.backends = resolver
+	}
+	runner.initSwallowedErrors(tools)
 	return h
 }
 
@@ -119,7 +124,7 @@ func (h *Handler) codeModeMetaTool(name string, fn metaTool) metaTool {
 		if res == nil || res.IsError {
 			outcome = outcomeError
 		}
-		h.metrics.RecordToolCall("builtin", name, outcome, time.Since(start))
+		h.metrics.RecordToolCall(metricsBackendBuiltin, name, outcome, time.Since(start))
 		return res
 	}
 }
@@ -180,7 +185,7 @@ func (h *Handler) HandleToolCall(ctx context.Context, toolName string, params ma
 			if err != nil || (result != nil && result.IsError) {
 				outcome = outcomeError
 			}
-			h.metrics.RecordToolCall("builtin", toolName, outcome, time.Since(start))
+			h.metrics.RecordToolCall(metricsBackendBuiltin, toolName, outcome, time.Since(start))
 		}()
 	}
 

@@ -35,6 +35,34 @@ import (
 // either configuration.
 const AnyTool = "*"
 
+// Values of the "outcome" label on toolmesh_codemode_scripts_total: how an
+// execute_code script ended.
+const (
+	// ScriptOutcomeOK means the script ran to completion without throwing.
+	ScriptOutcomeOK = "ok"
+	// ScriptOutcomeError means the script did not run to completion: the
+	// static analysis rejected it, it threw an uncaught exception, it
+	// exceeded the tool-call budget, or the request was canceled.
+	ScriptOutcomeError = "error"
+	// ScriptOutcomeTimeout means the script ran out of its wall-clock budget.
+	ScriptOutcomeTimeout = "timeout"
+)
+
+// Values of the "reason" label on toolmesh_codemode_swallowed_errors_total:
+// how a tool call inside an execute_code script failed.
+const (
+	// SwallowedDispatch means the call produced no result at all, such as a
+	// backend request that failed on the network or timed out; the script
+	// got an {error, tool} object.
+	SwallowedDispatch = "dispatch"
+	// SwallowedCoercion means the arguments could not be converted to the
+	// tool's declared types; the call did not run and returned undefined.
+	SwallowedCoercion = "coercion"
+	// SwallowedToolError means the call returned an error result: the backend
+	// reported an error, or authorization or a gate policy refused the call.
+	SwallowedToolError = "tool_error"
+)
+
 // restLatencyBuckets are histogram buckets tuned to typical REST backend
 // latencies — finer-grained at the low end where most ToolMesh calls land,
 // with a 30 s ceiling that matches the default executor timeout.
@@ -54,11 +82,16 @@ type Registry struct {
 	logins           *prometheus.CounterVec
 	toolCalls        *prometheus.CounterVec
 	toolCallDuration *prometheus.HistogramVec
+	codeScripts      *prometheus.CounterVec
+	swallowedErrors  *prometheus.CounterVec
 	labelTool        bool
 }
 
 // metricsNamespace is the Prometheus namespace prefix for all ToolMesh metrics.
 const metricsNamespace = "toolmesh"
+
+// labelBackend is the name of the label that carries the backend name.
+const labelBackend = "backend"
 
 // New constructs a Registry with all ToolMesh metrics pre-registered.
 func New(opts Options) *Registry {
@@ -74,16 +107,28 @@ func New(opts Options) *Registry {
 		Namespace: metricsNamespace,
 		Name:      "tool_calls_total",
 		Help:      "Tool invocations after authentication. result=success|error|denied (denied = blocked by OpenFGA or output gate).",
-	}, []string{"backend", "tool", "result"})
+	}, []string{labelBackend, "tool", "result"})
 
 	toolCallDuration := prometheus.NewHistogramVec(prometheus.HistogramOpts{
 		Namespace: metricsNamespace,
 		Name:      "tool_call_duration_seconds",
 		Help:      "End-to-end tool-call latency, from handler entry to result return.",
 		Buckets:   restLatencyBuckets,
-	}, []string{"backend", "tool"})
+	}, []string{labelBackend, "tool"})
 
-	reg.MustRegister(logins, toolCalls, toolCallDuration)
+	codeScripts := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: metricsNamespace,
+		Name:      "codemode_scripts_total",
+		Help:      "execute_code scripts by how they ended. outcome=ok|error|timeout (error = rejected by the static analysis, uncaught exception, tool-call budget exceeded or request canceled).",
+	}, []string{"outcome"})
+
+	swallowedErrors := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: metricsNamespace,
+		Name:      "codemode_swallowed_errors_total",
+		Help:      "execute_code scripts that ended without throwing although a tool call in them failed, counted once per script, backend and reason. reason=dispatch|coercion|tool_error.",
+	}, []string{labelBackend, "reason"})
+
+	reg.MustRegister(logins, toolCalls, toolCallDuration, codeScripts, swallowedErrors)
 
 	// Pre-initialize all login label combinations to zero so a fresh scrape
 	// returns informative output (HELP/TYPE plus zero counters) before the
@@ -94,12 +139,17 @@ func New(opts Options) *Registry {
 			logins.WithLabelValues(method, result)
 		}
 	}
+	for _, outcome := range []string{ScriptOutcomeOK, ScriptOutcomeError, ScriptOutcomeTimeout} {
+		codeScripts.WithLabelValues(outcome)
+	}
 
 	return &Registry{
 		reg:              reg,
 		logins:           logins,
 		toolCalls:        toolCalls,
 		toolCallDuration: toolCallDuration,
+		codeScripts:      codeScripts,
+		swallowedErrors:  swallowedErrors,
 		labelTool:        opts.LabelTool,
 	}
 }
@@ -132,6 +182,47 @@ func (r *Registry) RecordToolCall(backendName, toolName, result string, duration
 	}
 	r.toolCalls.WithLabelValues(backendName, tool, result).Inc()
 	r.toolCallDuration.WithLabelValues(backendName, tool).Observe(duration.Seconds())
+}
+
+// RecordCodeScript counts one execute_code script by how it ended: one of
+// [ScriptOutcomeOK], [ScriptOutcomeError] or [ScriptOutcomeTimeout].
+//
+// Safe to call on a nil receiver.
+func (r *Registry) RecordCodeScript(outcome string) {
+	if r == nil {
+		return
+	}
+	r.codeScripts.WithLabelValues(outcome).Inc()
+}
+
+// RecordSwallowedError counts an execute_code script that ran to completion
+// although a tool call of the given backend failed for the given reason
+// ([SwallowedDispatch], [SwallowedCoercion] or [SwallowedToolError]). Callers
+// record each (backend, reason) pair at most once per script.
+//
+// Safe to call on a nil receiver.
+func (r *Registry) RecordSwallowedError(backendName, reason string) {
+	if r == nil {
+		return
+	}
+	r.swallowedErrors.WithLabelValues(backendName, reason).Inc()
+}
+
+// InitSwallowedErrors creates the swallowed-error series of every given
+// backend at zero, so the counter shows up before the first failure and
+// increase() over a range sees that first failure. Creating a series twice
+// is a no-op, so callers may pass the backend list again after a reload.
+//
+// Safe to call on a nil receiver.
+func (r *Registry) InitSwallowedErrors(backendNames []string) {
+	if r == nil {
+		return
+	}
+	for _, name := range backendNames {
+		for _, reason := range []string{SwallowedDispatch, SwallowedCoercion, SwallowedToolError} {
+			r.swallowedErrors.WithLabelValues(name, reason)
+		}
+	}
 }
 
 // Handler returns an http.Handler that serves the metrics in Prometheus text

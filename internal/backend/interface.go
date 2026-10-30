@@ -28,6 +28,12 @@ type ToolDescriptor struct {
 	// strings are allowed. Empty means unclassified (e.g. tools sourced
 	// from upstream MCP servers that do not provide an access tag).
 	Access string `json:"access,omitempty"`
+	// Unranked keeps the tool out of relevance-ranked discovery
+	// (discover_tools query mode, toolmesh.discover). It stays callable,
+	// describable and listed by pattern. Set on the synthetic health tool
+	// that every backend with a declared check carries (DADL spec §4.6):
+	// ranked, one per backend, those would crowd out the real tools.
+	Unranked bool `json:"-"`
 }
 
 // ToolResult holds the result of a tool execution.

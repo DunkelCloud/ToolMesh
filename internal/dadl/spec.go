@@ -74,6 +74,9 @@ type BackendDef struct {
 	Composites  map[string]CompositeDef `yaml:"composites"`     // server-side JS functions combining tools
 	Scoping     *ScopingConfig          `yaml:"scoping"`        // nil = expose all tools
 	OpenAPI     string                  `yaml:"openapi_source"` // optional path to OpenAPI spec
+	// Health declares the backend health check (spec §4.6). nil means no
+	// check exists and nothing runs.
+	Health *HealthConfig `yaml:"health"`
 
 	// Documentation-oriented fields (spec §§3–4), parsed so spec-conformant
 	// files do not trip the §15.3 unknown-key warning. The request pipeline

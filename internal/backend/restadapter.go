@@ -30,6 +30,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/DunkelCloud/ToolMesh/internal/blob"
@@ -75,6 +76,9 @@ type RESTAdapter struct {
 	maxBodySizes        map[string]int64  // declared max_body_size string → effective byte ceiling; see resolveMaxBodySizes
 	childGuard          ChildGuard        // authorizes composite child api.* calls; nil = no per-child checks (e.g. standalone/tests)
 	hint                string            // operator guidance from backends.yaml hint:; empty = none configured
+	syntheticHealth     bool              // the DADL's health check is offered as the synthetic health tool (spec §4.6)
+	authExpiresAt       time.Time         // operator-recorded credential expiry from backends.yaml; zero = unknown
+	healthObserver      atomic.Pointer[HealthObserver]
 }
 
 // SetChildGuard installs the guard used to authorize composite child api.*
@@ -125,6 +129,11 @@ type RESTAdapterOptions struct {
 	// backend.description, which says what the API is; empty means the
 	// operator configured no hint.
 	Hint string
+	// AuthExpiresAt is the credential expiry the operator recorded in
+	// backends.yaml (health_check.auth_expires_at). Health results carry it
+	// as auth_expires_at when the check response reports none (DADL spec
+	// §4.6). Zero means unknown.
+	AuthExpiresAt time.Time
 }
 
 // NewRESTAdapter creates a RESTAdapter from a parsed DADL spec.
@@ -221,6 +230,8 @@ func NewRESTAdapter(spec *dadl.Spec, creds credentials.CredentialStore, logger *
 
 	return &RESTAdapter{
 		spec:                spec,
+		syntheticHealth:     spec.Backend.HasSyntheticHealthTool(),
+		authExpiresAt:       opts.AuthExpiresAt,
 		httpClient:          httpClient,
 		streamingHTTPClient: streamingClient,
 		fileFetchClient:     fileFetchClient,
@@ -315,9 +326,7 @@ func buildIncludeSet(spec *dadl.Spec, names []string, logger *slog.Logger) map[s
 	}
 	set := make(map[string]bool, len(names))
 	for _, name := range names {
-		_, hasTool := spec.Backend.Tools[name]
-		_, hasComposite := spec.Backend.Composites[name]
-		if !hasTool && !hasComposite {
+		if !specHasTool(spec, name) {
 			logger.Warn("include_tools entry does not match any tool or composite, skipping",
 				"backend", spec.Backend.Name,
 				"tool", name,
@@ -327,6 +336,14 @@ func buildIncludeSet(spec *dadl.Spec, names []string, logger *slog.Logger) map[s
 		set[name] = true
 	}
 	return set
+}
+
+// specHasTool reports whether name is a tool the backend offers: a declared
+// tool or composite, or the synthetic health tool (DADL spec §4.6).
+func specHasTool(spec *dadl.Spec, name string) bool {
+	_, hasTool := spec.Backend.Tools[name]
+	_, hasComposite := spec.Backend.Composites[name]
+	return hasTool || hasComposite || (name == dadl.HealthToolName && spec.Backend.HasSyntheticHealthTool())
 }
 
 // filterExposeTools drops names that do not match any tool or composite in
@@ -341,9 +358,7 @@ func filterExposeTools(spec *dadl.Spec, names []string, logger *slog.Logger) []s
 	}
 	filtered := make([]string, 0, len(names))
 	for _, name := range names {
-		_, hasTool := spec.Backend.Tools[name]
-		_, hasComposite := spec.Backend.Composites[name]
-		if !hasTool && !hasComposite {
+		if !specHasTool(spec, name) {
 			logger.Warn("expose_tools entry does not match any tool or composite, skipping",
 				"backend", spec.Backend.Name,
 				"tool", name,
@@ -414,6 +429,10 @@ func (a *RESTAdapter) ListTools(_ context.Context) ([]ToolDescriptor, error) {
 		})
 	}
 
+	if a.syntheticHealth && a.included(dadl.HealthToolName) {
+		tools = append(tools, a.healthToolDescriptor())
+	}
+
 	// Sort for deterministic output
 	sort.Slice(tools, func(i, j int) bool { return tools[i].Name < tools[j].Name })
 	return tools, nil
@@ -468,6 +487,10 @@ func (a *RESTAdapter) Execute(ctx context.Context, toolName string, params map[s
 	// appears in discover_tools/execute_code.
 	if !a.included(toolName) {
 		return nil, fmt.Errorf("tool %q not found in REST backend %q", toolName, a.spec.Backend.Name)
+	}
+
+	if a.syntheticHealth && toolName == dadl.HealthToolName {
+		return a.executeHealthTool(ctx, params)
 	}
 
 	// Check if it's a composite tool
@@ -713,6 +736,9 @@ func (a *RESTAdapter) LookupTool(toolName string) (ToolDescriptor, bool) {
 			Backend:     "rest:" + a.spec.Backend.Name,
 			Access:      comp.Access,
 		}, true
+	}
+	if a.syntheticHealth && toolName == dadl.HealthToolName {
+		return a.healthToolDescriptor(), true
 	}
 	return ToolDescriptor{}, false
 }

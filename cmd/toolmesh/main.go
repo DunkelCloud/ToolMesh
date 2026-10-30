@@ -41,6 +41,7 @@ import (
 	"github.com/DunkelCloud/ToolMesh/internal/executor"
 	"github.com/DunkelCloud/ToolMesh/internal/gate"
 	"github.com/DunkelCloud/ToolMesh/internal/grants"
+	"github.com/DunkelCloud/ToolMesh/internal/health"
 	"github.com/DunkelCloud/ToolMesh/internal/mcp"
 	"github.com/DunkelCloud/ToolMesh/internal/metrics"
 	"github.com/DunkelCloud/ToolMesh/internal/telemetry"
@@ -196,6 +197,14 @@ func main() {
 	// Initialize telemetry collector
 	tc := telemetry.New(cfg.DataDir, version.Version, logger)
 
+	// Initialize Prometheus metrics registry (nil when disabled — all record
+	// calls are no-ops on a nil receiver). Created before the backends so the
+	// health monitor and the executor can record per-backend metrics.
+	var metricsReg *metrics.Registry
+	if cfg.MetricsEnabled {
+		metricsReg = metrics.New(metrics.Options{LabelTool: cfg.MetricsLabelTool})
+	}
+
 	// Build backends from backends.yaml (MCP + REST via DADL)
 	bldCfg := &buildBackendsConfig{
 		cfg:         cfg,
@@ -213,6 +222,12 @@ func main() {
 		os.Exit(1)
 	}
 	defer res.mcpAdapter.Close()
+
+	// Health checks declared by the DADLs (spec §4.6): each runs once now,
+	// in the background, and is polled where backends.yaml asks for it.
+	healthMonitor := health.NewMonitor(logger, metricsReg)
+	defer healthMonitor.Stop()
+	healthMonitor.Replace(ctx, res.healthTargets)
 
 	// Compose all backends: built-in echo + external MCP + REST
 	compositeBackend := backend.NewCompositeBackend(res.named)
@@ -244,6 +259,7 @@ func main() {
 		// Merge echo backend (static) with reloaded backends
 		newRes.named["echo"] = echoBackend
 		compositeBackend.Swap(newRes.named, newRes.passthroughs)
+		healthMonitor.Replace(ctx, newRes.healthTargets)
 		tc.SetMCPServerCount(newRes.mcpAdapter.BackendCount())
 		logger.Info("backends hot-reloaded successfully")
 	})
@@ -298,14 +314,6 @@ func main() {
 	logger.Info("audit store initialized", "type", cfg.AuditStore)
 	if authzEngine.authorizer == nil {
 		recordAuthzDisabled(ctx, auditStore, cfg, logger)
-	}
-
-	// Initialize Prometheus metrics registry (nil when disabled — all record
-	// calls are no-ops on a nil receiver). Created before the executor so the
-	// executor can record per-call metrics with backend/tool labels.
-	var metricsReg *metrics.Registry
-	if cfg.MetricsEnabled {
-		metricsReg = metrics.New(metrics.Options{LabelTool: cfg.MetricsLabelTool})
 	}
 
 	// Initialize executor
@@ -408,6 +416,7 @@ func main() {
 	mcpHandler.SetBlobStore(blobStore, blob.DefaultUploadLimits())
 	mcpServer := mcp.NewServer(mcpHandler, cfg, logger, tokenStore, userStore, apiKeyStore, rateLimiter, callerClasses, metricsReg)
 	mcpServer.SetBlobStore(blobStore, blob.DefaultUploadLimits())
+	mcpServer.SetHealthReporter(healthMonitor)
 
 	// Kit grants (embedded authorization only, where kits exist): requests
 	// and grants live in Redis when it is connected, so that they survive a
@@ -568,11 +577,13 @@ type buildBackendsConfig struct {
 }
 
 // backendsResult holds the output of buildBackends — the named backend map,
-// passthrough backends, and the MCPAdapter (for lifecycle management).
+// passthrough backends, the MCPAdapter (for lifecycle management), and the
+// backends whose declared health check the monitor watches.
 type backendsResult struct {
-	named        map[string]backend.ToolBackend
-	passthroughs []backend.ToolBackend
-	mcpAdapter   *backend.MCPAdapter
+	named         map[string]backend.ToolBackend
+	passthroughs  []backend.ToolBackend
+	mcpAdapter    *backend.MCPAdapter
+	healthTargets []health.Target
 }
 
 // buildBackends creates all MCP and REST backends from backends.yaml and DADL
@@ -596,12 +607,13 @@ func buildBackends(ctx context.Context, bc *buildBackendsConfig) (*backendsResul
 
 	// Build named REST backends from DADL files
 	named := make(map[string]backend.ToolBackend)
-	loadRESTBackendsInto(named, bc.cfg.BackendsConfigPath, bc.cfg.DADLDir, bc.blobStore, bc.credStore, bc.tc, bc.logger, bc.baseHandler, bc.debugFile, bc.debugSet)
+	healthTargets := loadRESTBackendsInto(named, bc.cfg.BackendsConfigPath, bc.cfg.DADLDir, bc.blobStore, bc.credStore, bc.tc, bc.logger, bc.baseHandler, bc.debugFile, bc.debugSet)
 
 	return &backendsResult{
-		named:        named,
-		passthroughs: []backend.ToolBackend{mcpAdapter},
-		mcpAdapter:   mcpAdapter,
+		named:         named,
+		passthroughs:  []backend.ToolBackend{mcpAdapter},
+		mcpAdapter:    mcpAdapter,
+		healthTargets: healthTargets,
 	}, nil
 }
 
@@ -662,18 +674,22 @@ func backendLogger(name string, globalLogger *slog.Logger, stdoutHandler slog.Ha
 }
 
 // loadRESTBackendsInto scans the backends config for transport: rest entries,
-// parses their DADL files, and populates the named map.
-func loadRESTBackendsInto(named map[string]backend.ToolBackend, backendsConfigPath, dadlDir string, blobStore *blob.Store, creds credentials.CredentialStore, tc *telemetry.Collector, logger *slog.Logger, stdoutHandler slog.Handler, debugFile *os.File, debugSet map[string]bool) {
+// parses their DADL files, and populates the named map. It returns the
+// backends whose DADL declares a health check (spec §4.6) and whose
+// monitoring the operator has not turned off.
+func loadRESTBackendsInto(named map[string]backend.ToolBackend, backendsConfigPath, dadlDir string, blobStore *blob.Store, creds credentials.CredentialStore, tc *telemetry.Collector, logger *slog.Logger, stdoutHandler slog.Handler, debugFile *os.File, debugSet map[string]bool) []health.Target {
 	data, err := os.ReadFile(backendsConfigPath) //nolint:gosec // path from trusted config
 	if err != nil {
-		return // no config = no REST backends
+		return nil // no config = no REST backends
 	}
 
 	var cfg backend.BackendConfig
 	if err := backendsYAMLUnmarshal(data, &cfg); err != nil {
 		logger.Error("failed to parse backends config for REST entries", "error", err)
-		return
+		return nil
 	}
+
+	var healthTargets []health.Target
 
 	// Fetch remote spec manifest once (best-effort, non-blocking with 5s timeout)
 	var specManifest *dadl.SpecManifest
@@ -688,6 +704,9 @@ func loadRESTBackendsInto(named map[string]backend.ToolBackend, backendsConfigPa
 		// Non-REST entries are wired by the MCPAdapter, which applies
 		// include_tools/expose_tools itself after upstream tool discovery.
 		if entry.Transport != "rest" {
+			if entry.HealthCheck != nil {
+				logger.Warn("health_check applies to transport: rest backends only, ignoring", "name", entry.Name, "transport", entry.Transport)
+			}
 			continue
 		}
 		if entry.DADL == "" {
@@ -769,6 +788,12 @@ func loadRESTBackendsInto(named map[string]backend.ToolBackend, backendsConfigPa
 			logger.Info("credential env remapping active", "name", entry.Name, "mappings", len(entry.Env))
 		}
 
+		// A malformed health_check field costs that setting, not the backend.
+		healthSettings, hcErr := health.ParseSettings(entry.HealthCheck)
+		if hcErr != nil {
+			logger.Error("invalid health_check settings, using defaults for them", "name", entry.Name, "error", hcErr)
+		}
+
 		bl := backendLogger(spec.Backend.Name, logger, stdoutHandler, debugFile, debugSet)
 		adapter, err := backend.NewRESTAdapter(spec, backendCreds, bl, backend.RESTAdapterOptions{
 			AllowPrivateURL:     allowPrivate,
@@ -778,6 +803,7 @@ func loadRESTBackendsInto(named map[string]backend.ToolBackend, backendsConfigPa
 			ExposeTools:         entry.ExposeTools,
 			IncludeTools:        entry.IncludeTools,
 			Hint:                entry.Hint,
+			AuthExpiresAt:       healthSettings.AuthExpiresAt,
 		})
 		if err != nil {
 			logger.Error("failed to create REST adapter", "name", entry.Name, "error", err)
@@ -812,13 +838,28 @@ func loadRESTBackendsInto(named map[string]backend.ToolBackend, backendsConfigPa
 		if tc != nil {
 			tc.RegisterBackend(spec.Backend.Name, spec.ContentHash)
 		}
+		switch {
+		case !adapter.HasHealthCheck():
+			if entry.HealthCheck != nil {
+				logger.Warn("health_check is configured but the DADL declares no health check, ignoring", "name", entry.Name)
+			}
+		case healthSettings.Enabled:
+			healthTargets = append(healthTargets, health.Target{
+				Name:    spec.Backend.Name,
+				Checker: adapter,
+				Policy:  healthSettings.Policy,
+			})
+		}
 		logger.Info("REST proxy backend loaded",
 			"name", spec.Backend.Name,
 			"tools", len(spec.Backend.Tools),
 			"baseURL", spec.Backend.BaseURL,
 			"content_hash", spec.ContentHash,
+			"health_check", adapter.HasHealthCheck() && healthSettings.Enabled,
+			"health_poll_interval", healthSettings.Policy.Interval,
 		)
 	}
+	return healthTargets
 }
 
 // backendsYAMLUnmarshal unmarshals backends YAML config. It shares the strict

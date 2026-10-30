@@ -86,6 +86,9 @@ type Registry struct {
 	toolCallDuration *prometheus.HistogramVec
 	codeScripts      *prometheus.CounterVec
 	swallowedErrors  *prometheus.CounterVec
+	healthUp         *prometheus.GaugeVec
+	healthDegraded   *prometheus.GaugeVec
+	authExpiry       *prometheus.GaugeVec
 	labelTool        bool
 }
 
@@ -130,7 +133,25 @@ func New(opts Options) *Registry {
 		Help:      "execute_code scripts that ended without throwing although a tool call in them failed, counted once per script, backend and reason. reason=dispatch|coercion|tool_error.",
 	}, []string{labelBackend, "reason"})
 
-	reg.MustRegister(logins, toolCalls, toolCallDuration, codeScripts, swallowedErrors)
+	healthUp := prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: metricsNamespace,
+		Name:      "backend_health_up",
+		Help:      "1 when the latest health check of a backend (DADL spec 4.6) passed, 0 when it failed. Only backends whose DADL declares a check.",
+	}, []string{labelBackend})
+
+	healthDegraded := prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: metricsNamespace,
+		Name:      "backend_health_degraded",
+		Help:      "1 while a backend counts as degraded: its health check failed at least degrade_after times in a row.",
+	}, []string{labelBackend})
+
+	authExpiry := prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: metricsNamespace,
+		Name:      "backend_auth_expiry_timestamp_seconds",
+		Help:      "Unix time at which a backend credential expires, from the health check response or backends.yaml auth_expires_at. Absent when unknown.",
+	}, []string{labelBackend})
+
+	reg.MustRegister(logins, toolCalls, toolCallDuration, codeScripts, swallowedErrors, healthUp, healthDegraded, authExpiry)
 
 	// Pre-initialize all login label combinations to zero so a fresh scrape
 	// returns informative output (HELP/TYPE plus zero counters) before the
@@ -152,6 +173,9 @@ func New(opts Options) *Registry {
 		toolCallDuration: toolCallDuration,
 		codeScripts:      codeScripts,
 		swallowedErrors:  swallowedErrors,
+		healthUp:         healthUp,
+		healthDegraded:   healthDegraded,
+		authExpiry:       authExpiry,
 		labelTool:        opts.LabelTool,
 	}
 }
@@ -225,6 +249,54 @@ func (r *Registry) InitSwallowedErrors(backendNames []string) {
 			r.swallowedErrors.WithLabelValues(name, reason)
 		}
 	}
+}
+
+// SetBackendHealth records the latest health check of a backend: whether it
+// passed, and whether the backend counts as degraded.
+//
+// Safe to call on a nil receiver.
+func (r *Registry) SetBackendHealth(backendName string, up, degraded bool) {
+	if r == nil {
+		return
+	}
+	r.healthUp.WithLabelValues(backendName).Set(boolGauge(up))
+	r.healthDegraded.WithLabelValues(backendName).Set(boolGauge(degraded))
+}
+
+// SetBackendAuthExpiry records when a backend credential expires. A zero
+// time removes the series: the expiry is unknown.
+//
+// Safe to call on a nil receiver.
+func (r *Registry) SetBackendAuthExpiry(backendName string, expires time.Time) {
+	if r == nil {
+		return
+	}
+	if expires.IsZero() {
+		r.authExpiry.DeleteLabelValues(backendName)
+		return
+	}
+	r.authExpiry.WithLabelValues(backendName).Set(float64(expires.Unix()))
+}
+
+// DeleteBackendHealth removes the health series of a backend that is no
+// longer monitored, so a removed backend does not linger as failing.
+//
+// Safe to call on a nil receiver.
+func (r *Registry) DeleteBackendHealth(backendName string) {
+	if r == nil {
+		return
+	}
+	r.healthUp.DeleteLabelValues(backendName)
+	r.healthDegraded.DeleteLabelValues(backendName)
+	r.authExpiry.DeleteLabelValues(backendName)
+}
+
+// boolGauge maps a bool to a gauge value.
+func boolGauge(b bool) float64 {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 // Handler returns an http.Handler that serves the metrics in Prometheus text

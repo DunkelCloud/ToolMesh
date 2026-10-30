@@ -222,6 +222,7 @@ func (c *CompositeBackend) ListTools(ctx context.Context) ([]ToolDescriptor, err
 				InputSchema: t.InputSchema,
 				Backend:     t.Backend,
 				Access:      t.Access,
+				Unranked:    t.Unranked,
 			})
 		}
 	}

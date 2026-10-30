@@ -162,6 +162,20 @@ func (a *RestAuth) InjectAuth(ctx context.Context, req *http.Request) error {
 	}
 }
 
+// CanReauthenticate reports whether HandleUnauthorized can renew the
+// credential — a session re-login or a fresh OAuth2 token — so that a retry
+// after a 401 may succeed. For static credentials a retry would only repeat
+// the rejected request.
+func (a *RestAuth) CanReauthenticate() bool {
+	switch a.config.Type {
+	case authTypeSession:
+		return a.config.Refresh != nil && a.config.Refresh.Action == sessionRefreshLogin
+	case authTypeOAuth2:
+		return true
+	}
+	return false
+}
+
 // HandleUnauthorized is called when a 401 response is received.
 // For session auth, it triggers re-login.
 func (a *RestAuth) HandleUnauthorized(ctx context.Context) error {

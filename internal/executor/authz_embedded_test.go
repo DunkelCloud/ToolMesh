@@ -27,10 +27,12 @@ import (
 	"github.com/DunkelCloud/ToolMesh/internal/userctx"
 )
 
-// Names shared by the embedded-authorization tests.
+// Names shared by the embedded-authorization and backend-routing tests.
 const (
 	testPlanPro            = "pro"
 	testPlanFree           = "free"
+	testBackendWeb         = "web"
+	testBackendWebSearch   = "web_search"
 	testToolWebFetch       = "web_fetch"
 	testToolWebSearchQuery = "web_search_query"
 )
@@ -49,8 +51,8 @@ func newEmbeddedExecutor(t *testing.T, grants, denies []authz.Grant) (*Executor,
 		t.Fatalf("Apply: %v", err)
 	}
 	composite := backend.NewCompositeBackend(map[string]backend.ToolBackend{
-		"web":        &mockBackend{},
-		"web_search": &mockBackend{},
+		testBackendWeb:       &mockBackend{},
+		testBackendWebSearch: &mockBackend{},
 	})
 	rec := &recordingAudit{}
 	return New(engine, nil, composite, nil, rec, time.Second, newTestLogger(), nil, nil), rec
@@ -62,8 +64,8 @@ func callerCtx(uc *userctx.UserContext) context.Context {
 
 func TestExecuteTool_EmbeddedAuthz(t *testing.T) {
 	exec, rec := newEmbeddedExecutor(t, []authz.Grant{
-		{Plan: testPlanPro, Backends: []string{"web"}},
-		{Role: "searcher", Backends: []string{"web_search"}},
+		{Plan: testPlanPro, Backends: []string{testBackendWeb}},
+		{Role: "searcher", Backends: []string{testBackendWebSearch}},
 	}, nil)
 
 	tests := []struct {

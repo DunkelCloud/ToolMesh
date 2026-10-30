@@ -104,6 +104,15 @@ for the full narrative and details.
 
 - A `REDIS_URL` that does not parse no longer puts the URL, and with it a
   password, into the log; the warning names only what is wrong with it.
+- Tool calls to a backend whose name contains an underscore, such as
+  `web_search`, are attributed to that backend in the audit trail, in
+  telemetry and in the metrics `toolmesh_tool_calls_total` and
+  `toolmesh_tool_call_duration_seconds`. The backend was taken from the
+  tool name up to the first underscore, so `web_search_query` was recorded
+  as backend `web`, tool `search_query`, and telemetry counted the call for
+  a backend `web` or not at all. Dashboards and alerts that select such a
+  backend by the shortened `backend` label need its full name now. Tools no
+  backend claims are counted under backend `unknown` with their full name.
 
 ## [0.5.0] - 2026-10-23
 

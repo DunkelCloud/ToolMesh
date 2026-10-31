@@ -13,6 +13,24 @@ for the full narrative and details.
 
 ### Added
 
+- DADL health checks (spec §4.6) are implemented. A DADL can declare under
+  `backend.health` the cheapest call that proves the API is reachable and the
+  credential works, by referencing a tool or naming an endpoint. ToolMesh runs
+  the check at startup, after a reload and every 15 minutes, so a revoked or
+  expired credential is reported before an agent needs the backend. It
+  reports failing backends and credentials close to expiry on `/health` as
+  `degraded` or `warning`, still with HTTP 200, and offers the check as
+  `<backend>_health` with a standardized result (`{ok, http_status?,
+  error_code?, latency_ms, checked_at, auth_expires_at?, error?}`, never the
+  API response). `health_check` in `backends.yaml` sets the polling interval
+  (`interval`, `0` turns polling off), a failure threshold
+  (`degrade_after`), the expiry warning window (`warn_before`) and a
+  credential expiry the API does not report (`auth_expires_at`). Three gauges
+  follow the same state: `toolmesh_backend_health_up`,
+  `toolmesh_backend_health_degraded` and
+  `toolmesh_backend_auth_expiry_timestamp_seconds`. The feature identifier
+  `health` is accepted in `requires.features`. See `docs/configuration.md`.
+
 - Two Prometheus counters show how often `execute_code` scripts finish
   although a tool call in them failed. Such a call does not throw inside the
   script; the script gets the failure as a value and may carry on without

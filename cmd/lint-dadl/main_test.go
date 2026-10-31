@@ -91,11 +91,17 @@ func TestLintFile_UnknownKeyClassification(t *testing.T) {
 	})
 
 	t.Run("a key the spec defines is a warning", func(t *testing.T) {
-		// backend.health is spec §4.6 and this build does not implement it —
-		// the same state max_body_size was in. The file is correct; failing
-		// the author's build over a gap in ToolMesh would misdirect the fix.
-		path := writeDADL(t, dir, "specdefined.dadl", `  health:
-    tool: t
+		// auth.rotates_refresh_token is spec §5.3 and this build does not
+		// implement it — the same state max_body_size and health were in.
+		// The file is correct; failing the author's build over a gap in
+		// ToolMesh would misdirect the fix.
+		path := writeDADL(t, dir, "specdefined.dadl", `  auth:
+    type: oauth2
+    flow: refresh_token
+    token_url: https://api.example.com/token
+    client_id_credential: client_id
+    refresh_token_credential: refresh_token
+    rotates_refresh_token: true
   tools:
     t:
       method: GET
@@ -108,7 +114,7 @@ func TestLintFile_UnknownKeyClassification(t *testing.T) {
 		if len(r.warnings) != 1 {
 			t.Fatalf("warnings = %v, want exactly one", r.warnings)
 		}
-		for _, want := range []string{`unknown key "health"`, "the gap is in ToolMesh, not in the file"} {
+		for _, want := range []string{`unknown key "rotates_refresh_token"`, "the gap is in ToolMesh, not in the file"} {
 			if !strings.Contains(r.warnings[0], want) {
 				t.Errorf("warning = %q, want substring %q", r.warnings[0], want)
 			}

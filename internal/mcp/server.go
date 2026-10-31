@@ -37,6 +37,7 @@ import (
 	"github.com/DunkelCloud/ToolMesh/internal/backend"
 	"github.com/DunkelCloud/ToolMesh/internal/blob"
 	"github.com/DunkelCloud/ToolMesh/internal/config"
+	"github.com/DunkelCloud/ToolMesh/internal/health"
 	"github.com/DunkelCloud/ToolMesh/internal/metrics"
 	"github.com/DunkelCloud/ToolMesh/internal/userctx"
 	"github.com/DunkelCloud/ToolMesh/internal/version"
@@ -58,6 +59,18 @@ type Server struct {
 	metrics       *metrics.Registry
 	blobStore     *blob.Store
 	uploadLimits  blob.UploadLimits
+	health        HealthReporter
+}
+
+// HealthReporter supplies the backend health /health reports.
+type HealthReporter interface {
+	Report() health.Report
+}
+
+// SetHealthReporter makes /health report backend health — a degraded or
+// warning status naming the affected backends — instead of a bare ok.
+func (s *Server) SetHealthReporter(h HealthReporter) {
+	s.health = h
 }
 
 // SetBlobStore enables the file broker upload endpoint (POST /files/upload).
@@ -1391,8 +1404,16 @@ func (s *Server) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request)
 	})
 }
 
+// handleHealth reports liveness plus the aggregate backend health. The
+// status code is 200 even when a backend is degraded: the endpoint also
+// serves container liveness probes, and a failing upstream credential is no
+// reason to restart ToolMesh. Monitors match on the status field instead.
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	if s.health == nil {
+		writeJSON(w, http.StatusOK, health.Report{Status: health.StatusOK})
+		return
+	}
+	writeJSON(w, http.StatusOK, s.health.Report())
 }
 
 var loginTmpl = template.Must(template.New("login").Parse(`<!DOCTYPE html>

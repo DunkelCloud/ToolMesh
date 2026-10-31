@@ -757,6 +757,89 @@ TOOLMESH_CODE_TIMEOUT=600
 | `TOOLMESH_BACKENDS_CONFIG` | `/app/config/backends.yaml` | Path to backend configuration YAML |
 | `TOOLMESH_POLICIES_DIR` | `/app/policies` | Path to output gate policy directory |
 
+### Backend health checks
+
+A DADL can declare a health check ([DADL spec §4.6](dadl-spec-v0.2.md#46-health-check-since-v02)):
+the cheapest request that shows the API is reachable and the configured
+credential works. Auth is injected as for every other call, so an expired
+token shows up here instead of as a surprise `401` on the next real call. For
+such a backend ToolMesh
+
+- runs the check in the background at startup, after every `backends.yaml`
+  reload and every 15 minutes, so a revoked or expired credential is reported
+  before an agent needs the backend;
+- offers it as the tool `<backend>_health`. It returns a standardized result
+  instead of the API response, `{ok, http_status?, error_code?, latency_ms,
+  checked_at, auth_expires_at?, error?}`, and never fails: a failed check is a
+  successful call with `ok: false`. Like every tool it passes authorization; it
+  is classified `access: read`. `discover_tools` lists it for a pattern but
+  does not rank it in query mode, and neither does `toolmesh.discover()`;
+- reports backends whose check fails, or whose credential is about to expire,
+  on `/health` and in the [metrics](metrics.md#toolmesh_backend_health_up-gauge).
+
+The check never runs as part of a regular tool call. Backends without a
+declared check are not affected.
+
+`health_check` in `backends.yaml` tunes the monitoring per backend. Every key
+is optional:
+
+```yaml
+backends:
+  - name: tailscale
+    transport: rest
+    dadl: tailscale.dadl
+    health_check:
+      interval: 1h                 # poll hourly (default: 15m, minimum 30s, 0 turns polling off)
+      degrade_after: 2             # consecutive failures before the backend counts as degraded (default: 1)
+      warn_before: 7d              # warning window before a known credential expiry (default: 7d)
+      auth_expires_at: 2026-10-16  # when the credential expires, if the API does not say (ISO 8601)
+      # enabled: false             # no checks and no /health entry; tailscale_health stays callable
+```
+
+Choose the interval by how soon you want to hear about a broken credential
+and by what the API allows: every check is a real, authenticated request.
+With `interval: 0` the check runs only at startup, after a reload, and
+whenever someone calls `<backend>_health`. Every result, polled or on
+demand, counts toward the backend's state. `auth_expires_at` covers APIs whose check endpoint does not report when
+the credential expires, such as an API key with a fixed lifetime: record the
+date when you issue the key. When the DADL extracts an expiry from the check
+response (`auth_expires_path`), that value wins. Durations take Go syntax
+(`90s`, `15m`, `12h`) or days (`7d`). A malformed value costs only that
+setting and is logged at startup; the backend loads regardless.
+
+#### What `/health` reports
+
+`/health` answers `{"status":"ok"}` while every monitored backend passes.
+Otherwise it names the affected backends:
+
+```json
+{
+  "status": "degraded",
+  "backends": {
+    "tailscale": {
+      "status": "degraded",
+      "reason": "health check failing since 2026-10-30T09:15:00Z (2 consecutive): unauthorized (HTTP 401)",
+      "checked_at": "2026-10-30T09:30:00Z",
+      "failing_since": "2026-10-30T09:15:00Z"
+    },
+    "gitlab": {
+      "status": "warning",
+      "reason": "credential expires at 2026-11-03T00:00:00Z",
+      "checked_at": "2026-10-30T09:00:00Z",
+      "auth_expires_at": "2026-11-03T00:00:00Z"
+    }
+  }
+}
+```
+
+`status` is `degraded` when any backend is degraded, `warning` when any is
+inside its expiry window, `ok` otherwise. The HTTP status stays `200` in every
+case, so a container liveness probe does not restart ToolMesh over an upstream
+credential; have an uptime monitor check the `status` field instead (for
+example a keyword or JSON query monitor). `/health` needs no authentication, so
+it carries backend names and short reasons only: the semantic error code, the
+HTTP status or the transport error, never response content.
+
 ## Logging
 
 | Variable | Default | Description |

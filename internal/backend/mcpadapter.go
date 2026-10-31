@@ -89,6 +89,35 @@ type BackendEntry struct {
 	// fetches to this exact set of hostnames (case-insensitive). Empty means no
 	// host restriction (only the address-class policy above applies).
 	FileURLAllowedHosts []string `yaml:"file_url_allowed_hosts"`
+	// HealthCheck tunes how ToolMesh monitors the health check the backend's
+	// DADL declares (spec §4.6). nil = a check at startup and on demand, no
+	// polling, default thresholds. Honored for transport: rest only.
+	HealthCheck *HealthCheckConfig `yaml:"health_check"`
+}
+
+// HealthCheckConfig is the backends.yaml health_check block: deployment
+// settings for a DADL-declared health check. Whether and how often ToolMesh
+// polls is deployment configuration, not part of the DADL (spec §4.6).
+type HealthCheckConfig struct {
+	// Enabled set to false turns monitoring off for this backend: no
+	// startup check, no polling, no entry in /health. The synthetic health
+	// tool stays callable. nil means true.
+	Enabled *bool `yaml:"enabled"`
+	// Interval is how often the check is polled, e.g. "1h". Empty means
+	// every 15 minutes; "0" turns polling off, leaving the check at startup,
+	// after a reload and when the tool is called.
+	Interval string `yaml:"interval"`
+	// DegradeAfter is the number of consecutive failed checks after which
+	// the backend counts as degraded. 0 means 1.
+	DegradeAfter int `yaml:"degrade_after"`
+	// WarnBefore is the window before a known credential expiry in which
+	// the backend is reported with a warning, e.g. "7d". Empty means 7d.
+	WarnBefore string `yaml:"warn_before"`
+	// AuthExpiresAt records when the configured credential expires, for
+	// APIs whose check response does not say (spec §4.6 deployment
+	// metadata), e.g. "2026-10-16" or "2026-10-16T23:42:00Z". A value the
+	// check response reports takes precedence.
+	AuthExpiresAt string `yaml:"auth_expires_at"`
 }
 
 // BackendInfo provides a summary of a backend for tool description enrichment.

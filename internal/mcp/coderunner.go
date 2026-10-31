@@ -132,6 +132,11 @@ func NewCodeRunner(nameMap map[string]string, tools []backend.ToolDescriptor, ex
 
 	docs := make([]toolindex.Doc, 0, len(descBySanitized))
 	for sanitized, t := range descBySanitized {
+		// Unranked tools stay callable and describable, but discover()
+		// never ranks them (see backend.ToolDescriptor.Unranked).
+		if t.Unranked {
+			continue
+		}
 		docs = append(docs, descriptorDoc(t, sanitized))
 	}
 

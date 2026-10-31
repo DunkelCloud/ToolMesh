@@ -95,6 +95,13 @@ func GenerateTypeScript(spec *Spec) string {
 		fmt.Fprintf(&sb, "  function %s(params: { %s }): Promise<any>;\n\n", fullName, params)
 	}
 
+	// A declared health check is offered as the synthetic health tool with
+	// the standardized result (spec §4.6), unless the file names its own.
+	if b.HasSyntheticHealthTool() {
+		fmt.Fprintf(&sb, "  /** %s */\n", HealthToolDescription)
+		fmt.Fprintf(&sb, "  function %s_%s(): Promise<%s>;\n\n", b.Name, HealthToolName, HealthResultTS)
+	}
+
 	return sb.String()
 }
 

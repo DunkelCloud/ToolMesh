@@ -452,12 +452,16 @@ func discoverLimitParam(params map[string]any) int {
 }
 
 // rankByQuery orders descriptors by BM25 relevance to the free-text query.
-// Descriptors that match no query term are dropped.
+// Descriptors that match no query term are dropped, and so are unranked ones
+// (see backend.ToolDescriptor.Unranked).
 func rankByQuery(descs []backend.ToolDescriptor, query string) []backend.ToolDescriptor {
-	docs := make([]toolindex.Doc, len(descs))
+	docs := make([]toolindex.Doc, 0, len(descs))
 	byName := make(map[string]backend.ToolDescriptor, len(descs))
-	for i, d := range descs {
-		docs[i] = descriptorDoc(d, d.Name)
+	for _, d := range descs {
+		if d.Unranked {
+			continue
+		}
+		docs = append(docs, descriptorDoc(d, d.Name))
 		byName[d.Name] = d
 	}
 

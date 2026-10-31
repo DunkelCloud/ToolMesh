@@ -117,7 +117,7 @@ func ParseBytes(data []byte) (*Spec, error) {
 	if err := Validate(&spec); err != nil {
 		return nil, fmt.Errorf("validate dadl: %w", err)
 	}
-	spec.Warnings = unknownKeyWarnings(data)
+	spec.Warnings = append(unknownKeyWarnings(data), healthWarnings(&spec.Backend)...)
 	if err := checkRequires(&spec, version.Version); err != nil {
 		return nil, fmt.Errorf("refusing to load dadl: %w", err)
 	}
@@ -158,6 +158,7 @@ var yamlTypeContext = map[string]string{
 	"dadl.ScopingConfig":       "scoping",
 	"dadl.ScopeDef":            "scoping.scopes",
 	"dadl.DiscoveryConfig":     "scoping.discovery",
+	"dadl.HealthConfig":        "health",
 }
 
 // unknownKeyWarnings re-decodes data strictly and reports every key this
@@ -380,6 +381,12 @@ func Validate(spec *Spec) error {
 		if err := validateComposite(name, &comp, b.Tools, b.Composites); err != nil {
 			return err
 		}
+	}
+
+	// Validate the health check (spec §4.6) — a form-1 check references a
+	// tool, so it runs after the per-tool pass.
+	if err := validateHealth(b); err != nil {
+		return err
 	}
 
 	// Validate v0.2 tool metadata (spec §6.5/§6.7) — needs the full tool

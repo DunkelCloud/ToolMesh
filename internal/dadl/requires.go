@@ -38,6 +38,7 @@ var implementedFeatures = map[string]bool{
 	"authorization_code": true,
 	"returns":            true, // §6.5: typed results in TS generation + descriptors
 	"deprecation":        true, // §6.7: deprecated/replaced_by markers
+	"health":             true, // §4.6: health check + synthetic health tool
 }
 
 // checkRequires enforces the file's requires block (DADL spec §15.3,

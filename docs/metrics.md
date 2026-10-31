@@ -176,6 +176,31 @@ contains an underscore; `toolmesh_tool_calls_total` takes the backend from the
 tool name up to the first underscore, so for such a backend the two labels
 differ.
 
+### `toolmesh_backend_health_up` (gauge)
+
+`1` when the latest health check of a backend passed, `0` when it failed. Only
+backends whose DADL declares a health check and whose monitoring is not turned
+off have a series (see
+[Backend health checks](configuration.md#backend-health-checks)). Every check
+counts: the one at startup, polling, and calls of `<backend>_health`.
+
+| Label     | Values                          |
+| --------- | ------------------------------- |
+| `backend` | The backend's configured name.  |
+
+### `toolmesh_backend_health_degraded` (gauge)
+
+`1` while a backend counts as degraded: its check failed `degrade_after` times
+in a row. Same label as above.
+
+### `toolmesh_backend_auth_expiry_timestamp_seconds` (gauge)
+
+Unix time at which a backend's credential expires, from the health check
+response or `health_check.auth_expires_at` in `backends.yaml`. A backend
+without a known expiry has no series. Same label as above.
+
+The series of a backend disappear when it is removed from `backends.yaml`.
+
 ## Example queries
 
 ```promql
@@ -212,6 +237,12 @@ sum by (backend, reason) (increase(toolmesh_codemode_swallowed_errors_total[14d]
 
 # Scripts by outcome over the same range, the base for the counts above
 sum by (outcome) (increase(toolmesh_codemode_scripts_total[14d]))
+
+# Backends whose health check has been failing (degraded)
+toolmesh_backend_health_degraded == 1
+
+# Backend credentials that expire within the next 7 days
+toolmesh_backend_auth_expiry_timestamp_seconds - time() < 7 * 86400
 ```
 
 ## Scrape configuration

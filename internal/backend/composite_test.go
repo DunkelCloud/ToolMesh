@@ -446,6 +446,55 @@ func TestCompositeBackend_PromotedTools_ConflictBeatsReserved(t *testing.T) {
 // TestCompositeBackend_ConcurrentAccess exercises AddNamed / Execute /
 // ListTools in parallel. The point is to detect data races under -race,
 // not to assert on outputs.
+// Every change of the children must move the tool set version, and the new
+// children must already be listed once the version moved: a caller that
+// caches what it built from a listing (the execute_code name table) relies
+// on both to notice a hot reload.
+func TestCompositeBackend_ToolSetVersion(t *testing.T) {
+	tests := []struct {
+		name     string
+		change   func(c *CompositeBackend)
+		wantTool string
+	}{
+		{
+			name: "Swap",
+			change: func(c *CompositeBackend) {
+				c.Swap(map[string]ToolBackend{"swapped": &stubBackend{name: "swapped", tools: []ToolDescriptor{{Name: "t"}}}}, nil)
+			},
+			wantTool: "swapped_t",
+		},
+		{
+			name: "AddNamed",
+			change: func(c *CompositeBackend) {
+				c.AddNamed("added", &stubBackend{name: "added", tools: []ToolDescriptor{{Name: "t"}}})
+			},
+			wantTool: "added_t",
+		},
+		{
+			name: "AddPassthrough",
+			change: func(c *CompositeBackend) {
+				c.AddPassthrough(&stubBackend{name: "pt", tools: []ToolDescriptor{{Name: "pt_t"}}})
+			},
+			wantTool: "pt_t",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var c ToolSetVersioner = NewCompositeBackend(map[string]ToolBackend{})
+			before := c.ToolSetVersion()
+			tc.change(c.(*CompositeBackend))
+			if got := c.ToolSetVersion(); got <= before {
+				t.Fatalf("version after %s = %d, want more than %d", tc.name, got, before)
+			}
+			tools, _ := c.(*CompositeBackend).ListTools(context.Background())
+			if len(tools) != 1 || tools[0].Name != tc.wantTool {
+				t.Errorf("tools after %s = %+v, want only %s", tc.name, tools, tc.wantTool)
+			}
+		})
+	}
+}
+
 func TestCompositeBackend_ConcurrentAccess(t *testing.T) {
 	c := NewCompositeBackend(map[string]ToolBackend{})
 	var wg sync.WaitGroup

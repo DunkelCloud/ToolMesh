@@ -123,3 +123,16 @@ type BackendNameResolver interface {
 type ToolAliasResolver interface {
 	ResolveAlias(name string) string
 }
+
+// ToolSetVersioner is implemented by backends whose tool set can change while
+// the process runs, such as the composite backend that a hot reload of
+// backends.yaml swaps. ToolSetVersion changes whenever the tools ListTools
+// reports may have changed, so a caller can keep what it derives from a
+// listing and list again only once the version moved.
+//
+// An implementation publishes a new tool set before it bumps the version, so
+// a caller that reads the version before it lists never gets a listing older
+// than that version.
+type ToolSetVersioner interface {
+	ToolSetVersion() uint64
+}

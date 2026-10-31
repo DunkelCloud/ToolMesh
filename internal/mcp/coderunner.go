@@ -22,6 +22,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/DunkelCloud/ToolMesh/internal/backend"
@@ -70,13 +71,21 @@ const (
 // CodeRunner executes JavaScript code in a sandboxed goja runtime,
 // resolving toolmesh.* calls to real tool executions via the executor.
 type CodeRunner struct {
-	nameMap         map[string]string // sanitized JS name → canonical tool name
-	descBySanitized map[string]backend.ToolDescriptor
-	index           *toolindex.Index // BM25 index for toolmesh.discover()
-	executor        *executor.Executor
-	coercer         *tsdef.Coercer
-	logger          *slog.Logger
-	timeout         time.Duration // wall-clock budget for one Execute; 0 → codeTimeout
+	// view is the tool set a new run starts from; see currentView.
+	view atomic.Pointer[toolView]
+	// toolSource is the backend the tool set comes from when it can change
+	// at runtime: a run that starts after its version moved lists the tools
+	// again. Set by NewHandler through followToolSet; nil keeps the tool
+	// set given to NewCodeRunner.
+	toolSource versionedToolSource
+	// refreshMu lets one run list the tools after a change while concurrent
+	// runs wait for its result instead of each listing them again.
+	refreshMu sync.Mutex
+
+	executor *executor.Executor
+	coercer  *tsdef.Coercer
+	logger   *slog.Logger
+	timeout  time.Duration // wall-clock budget for one Execute; 0 → codeTimeout
 	// hints delivers a backend's first-use hint alongside the call that
 	// triggered it. Set by NewHandler to the handler's own notifier so both
 	// surfaces share one ledger; nil is valid and emits nothing.
@@ -96,6 +105,48 @@ type CodeRunner struct {
 	// backends names the backend that owns a tool for the metrics' backend
 	// label. Set by NewHandler; nil labels every tool "unknown".
 	backends backend.BackendNameResolver
+}
+
+// versionedToolSource is a tool listing whose version tells when to list
+// again, such as the composite backend that a hot reload of backends.yaml
+// swaps.
+type versionedToolSource interface {
+	ListTools(ctx context.Context) ([]backend.ToolDescriptor, error)
+	backend.ToolSetVersioner
+}
+
+// toolView is the tool set one execute_code run sees: the sandbox names and
+// the descriptors behind toolmesh.discover() and toolmesh.describe(). A view
+// never changes once built, so a running script keeps the tool set it
+// started with while the next script gets the one a hot reload brought.
+type toolView struct {
+	version         uint64            // tool source version the tools were listed at
+	nameMap         map[string]string // sanitized JS name → canonical tool name
+	descBySanitized map[string]backend.ToolDescriptor
+	index           *toolindex.Index // BM25 index for toolmesh.discover()
+}
+
+// newToolView builds the view of tools, listed at the given version, under
+// the name map NewCodeModeParser built from them.
+func newToolView(version uint64, nameMap map[string]string, tools []backend.ToolDescriptor) *toolView {
+	descBySanitized := make(map[string]backend.ToolDescriptor, len(tools))
+	for _, t := range tools {
+		// Last entry wins on sanitized-name collisions, matching the
+		// nameMap construction in NewCodeModeParser.
+		descBySanitized[sanitizeName(t.Name)] = t
+	}
+
+	docs := make([]toolindex.Doc, 0, len(descBySanitized))
+	for sanitized, t := range descBySanitized {
+		docs = append(docs, descriptorDoc(t, sanitized))
+	}
+
+	return &toolView{
+		version:         version,
+		nameMap:         nameMap,
+		descBySanitized: descBySanitized,
+		index:           toolindex.Build(docs),
+	}
 }
 
 // metaTool runs a built-in tool with the caller's context.
@@ -120,29 +171,63 @@ func (r *CodeRunner) SetTimeout(d time.Duration) {
 
 // NewCodeRunner creates a CodeRunner with the given name mapping and executor.
 // The descriptors back the in-sandbox toolmesh.discover()/describe() helpers;
-// the BM25 index over them is built once here since the tool set only changes
-// when the handler (and with it the runner) is rebuilt.
+// the BM25 index over them is built here, once per tool set. The tool set
+// stays fixed unless followToolSet ties the runner to a changing source.
 func NewCodeRunner(nameMap map[string]string, tools []backend.ToolDescriptor, exec *executor.Executor, coercer *tsdef.Coercer, logger *slog.Logger) *CodeRunner {
-	descBySanitized := make(map[string]backend.ToolDescriptor, len(tools))
-	for _, t := range tools {
-		// Last entry wins on sanitized-name collisions, matching the
-		// nameMap construction in NewCodeModeParser.
-		descBySanitized[sanitizeName(t.Name)] = t
+	r := &CodeRunner{
+		executor: exec,
+		coercer:  coercer,
+		logger:   logger,
+	}
+	r.view.Store(newToolView(0, nameMap, tools))
+	return r
+}
+
+// followToolSet makes the runner pick up changes of src's tool set, such as
+// a hot reload of backends.yaml. version is src's version read before the
+// listing given to NewCodeRunner, so a change that landed in between is
+// picked up by the first run.
+func (r *CodeRunner) followToolSet(src versionedToolSource, version uint64) {
+	v := *r.view.Load()
+	v.version = version
+	r.view.Store(&v)
+	r.toolSource = src
+}
+
+// currentView returns the tool set a new run starts from. While the tool
+// source's version stands still, that is the cached view; after a change,
+// the first run lists the tools again and caches the result for the runs
+// after it. Should that listing fail, the run keeps the previous view and
+// the next run tries again.
+func (r *CodeRunner) currentView(ctx context.Context) *toolView {
+	v := r.view.Load()
+	if r.toolSource == nil {
+		return v
+	}
+	// Versions only grow, and a view's tools are at least as new as its
+	// version (see backend.ToolSetVersioner), so a view at or past the
+	// current version is fresh.
+	version := r.toolSource.ToolSetVersion()
+	if v.version >= version {
+		return v
 	}
 
-	docs := make([]toolindex.Doc, 0, len(descBySanitized))
-	for sanitized, t := range descBySanitized {
-		docs = append(docs, descriptorDoc(t, sanitized))
+	r.refreshMu.Lock()
+	defer r.refreshMu.Unlock()
+	if v = r.view.Load(); v.version >= version {
+		return v // a concurrent run listed the tools meanwhile
 	}
-
-	return &CodeRunner{
-		nameMap:         nameMap,
-		descBySanitized: descBySanitized,
-		index:           toolindex.Build(docs),
-		executor:        exec,
-		coercer:         coercer,
-		logger:          logger,
+	tools, err := r.toolSource.ListTools(ctx)
+	if err != nil {
+		r.logger.WarnContext(ctx, "execute_code: listing tools failed, keeping the previous tool set", outcomeError, err)
+		return v
 	}
+	next := newToolView(version, NewCodeModeParser(tools).nameMap, tools)
+	r.view.Store(next)
+	r.initSwallowedErrors(tools)
+	r.logger.InfoContext(ctx, "execute_code tool set changed",
+		"nameMapSize", len(next.nameMap), "toolCount", len(tools))
+	return next
 }
 
 // ExecuteOptions controls how Execute shapes the wire-format response.
@@ -225,9 +310,13 @@ func (r *CodeRunner) ExecuteWithOptions(ctx context.Context, code string, opts E
 		return nil, fmt.Errorf("execute_code: set console: %w", err)
 	}
 
+	// The tool set this run sees, taken once: a hot reload while the script
+	// runs reaches the next script, not this one.
+	view := r.currentView(ctx)
+
 	// Register toolmesh object with one method per tool
 	tmObj := rt.NewObject()
-	for sanitized, canonical := range r.nameMap {
+	for sanitized, canonical := range view.nameMap {
 		sn := sanitized // capture for closure
 		cn := canonical // capture for closure
 		_ = tmObj.Set(sn, func(call goja.FunctionCall) goja.Value {
@@ -347,7 +436,7 @@ func (r *CodeRunner) ExecuteWithOptions(ctx context.Context, code string, opts E
 	// Built-in meta-tools, called like backend tools and counted toward the
 	// same budget.
 	for name, fn := range r.metaTools {
-		if _, taken := r.nameMap[name]; taken {
+		if _, taken := view.nameMap[name]; taken {
 			continue
 		}
 		mn, mfn := name, fn
@@ -383,7 +472,7 @@ func (r *CodeRunner) ExecuteWithOptions(ctx context.Context, code string, opts E
 	// toolmesh.describe(name). These run locally against the descriptor
 	// index — no backend round-trip — so they do not count toward the
 	// maxCodeCalls budget.
-	r.installDiscovery(ctx, rt, tmObj)
+	r.installDiscovery(ctx, rt, tmObj, view)
 
 	// Guard against the common LLM mistake of invoking discover_tools or
 	// execute_code from inside the JS sandbox. Both are top-level MCP tools,
@@ -394,7 +483,7 @@ func (r *CodeRunner) ExecuteWithOptions(ctx context.Context, code string, opts E
 	// the caller at the right fix. We only install the guard when no real
 	// backend tool has claimed the same sanitized name.
 	for _, name := range []string{toolDiscoverTools, toolExecuteCode} {
-		if _, taken := r.nameMap[name]; taken {
+		if _, taken := view.nameMap[name]; taken {
 			continue
 		}
 		guardName := name
@@ -498,10 +587,10 @@ func (r *CodeRunner) ExecuteWithOptions(ctx context.Context, code string, opts E
 }
 
 // installDiscovery registers the local discovery helpers on the toolmesh
-// object. Real backend tools win sanitized-name collisions; in that case the
-// helper is simply not installed.
-func (r *CodeRunner) installDiscovery(ctx context.Context, rt *goja.Runtime, tmObj *goja.Object) {
-	if _, taken := r.nameMap[sandboxDiscoverFn]; !taken {
+// object, answering from the run's tool set. Real backend tools win
+// sanitized-name collisions; in that case the helper is simply not installed.
+func (r *CodeRunner) installDiscovery(ctx context.Context, rt *goja.Runtime, tmObj *goja.Object, view *toolView) {
+	if _, taken := view.nameMap[sandboxDiscoverFn]; !taken {
 		_ = tmObj.Set(sandboxDiscoverFn, func(call goja.FunctionCall) goja.Value {
 			query := strings.TrimSpace(call.Argument(0).String())
 			if query == "" || query == "undefined" {
@@ -516,7 +605,7 @@ func (r *CodeRunner) installDiscovery(ctx context.Context, rt *goja.Runtime, tmO
 				}
 			}
 
-			descs, notes := r.visibleMatches(ctx, query)
+			descs, notes := r.visibleMatches(ctx, view, query)
 			if int64(len(descs)) > limit {
 				descs = descs[:limit]
 			}
@@ -539,12 +628,12 @@ func (r *CodeRunner) installDiscovery(ctx context.Context, rt *goja.Runtime, tmO
 		})
 	}
 
-	if _, taken := r.nameMap[sandboxDescribeFn]; !taken {
+	if _, taken := view.nameMap[sandboxDescribeFn]; !taken {
 		_ = tmObj.Set(sandboxDescribeFn, func(call goja.FunctionCall) goja.Value {
 			name := call.Argument(0).String()
-			d, ok := r.descBySanitized[name]
+			d, ok := view.descBySanitized[name]
 			if !ok {
-				d, ok = r.descBySanitized[sanitizeName(name)]
+				d, ok = view.descBySanitized[sanitizeName(name)]
 			}
 			var kits []string
 			if ok {
@@ -575,14 +664,14 @@ func (r *CodeRunner) installDiscovery(ctx context.Context, rt *goja.Runtime, tmO
 	}
 }
 
-// visibleMatches runs a BM25 search and keeps the descriptors the calling
-// user may execute or get through a kit, preserving rank order. The notes
-// name the kits of the latter.
-func (r *CodeRunner) visibleMatches(ctx context.Context, query string) ([]backend.ToolDescriptor, grantNotes) {
-	results := r.index.Search(query, 0)
+// visibleMatches runs a BM25 search over the view's tools and keeps the
+// descriptors the calling user may execute or get through a kit, preserving
+// rank order. The notes name the kits of the latter.
+func (r *CodeRunner) visibleMatches(ctx context.Context, view *toolView, query string) ([]backend.ToolDescriptor, grantNotes) {
+	results := view.index.Search(query, 0)
 	descs := make([]backend.ToolDescriptor, 0, len(results))
 	for _, res := range results {
-		if d, ok := r.descBySanitized[res.Doc.Name]; ok {
+		if d, ok := view.descBySanitized[res.Doc.Name]; ok {
 			descs = append(descs, d)
 		}
 	}

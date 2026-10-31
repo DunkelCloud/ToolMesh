@@ -50,7 +50,6 @@ type Handler struct {
 	executor      *executor.Executor
 	backend       backend.ToolBackend
 	aliasResolver backend.ToolAliasResolver // resolves promoted bare tool names → canonical
-	codeParser    *CodeModeParser           // kept for GenerateToolDefinitions / discover_tools
 	codeRunner    *CodeRunner
 	coercer       *tsdef.Coercer
 	rawTS         string // raw TypeScript content for built-in tools
@@ -73,6 +72,16 @@ type Handler struct {
 // optional; pass nil to disable instrumentation. Set debugTools to true to
 // expose the diagnostic tools (debug_echo, debug_generate); off in production.
 func NewHandler(exec *executor.Executor, back backend.ToolBackend, coercer *tsdef.Coercer, rawTS string, m *metrics.Registry, logger *slog.Logger, debugTools bool) *Handler {
+	// A backend whose tool set can change at runtime (the composite that a
+	// hot reload of backends.yaml swaps) is followed by the code runner. Its
+	// version is read before the listing, so a reload that lands in between
+	// reaches the first script.
+	versioned, _ := back.(versionedToolSource)
+	var version uint64
+	if versioned != nil {
+		version = versioned.ToolSetVersion()
+	}
+
 	// Build the code mode parser with reverse name lookup from all registered tools
 	tools, _ := back.ListTools(context.Background())
 	parser := NewCodeModeParser(tools)
@@ -82,11 +91,13 @@ func NewHandler(exec *executor.Executor, back backend.ToolBackend, coercer *tsde
 	logger.Info("codeParser initialized", "nameMapSize", len(parser.nameMap), "toolCount", len(tools))
 
 	runner := NewCodeRunner(parser.nameMap, tools, exec, coercer, logger)
+	if versioned != nil {
+		runner.followToolSet(versioned, version)
+	}
 
 	h := &Handler{
 		executor:   exec,
 		backend:    back,
-		codeParser: parser,
 		codeRunner: runner,
 		coercer:    coercer,
 		rawTS:      rawTS,

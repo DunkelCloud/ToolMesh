@@ -47,7 +47,7 @@ func TestParseDuration(t *testing.T) {
 
 func TestParseSettings(t *testing.T) {
 	off := false
-	defaults := Settings{Enabled: true, Policy: Policy{DegradeAfter: 1, WarnBefore: DefaultWarnBefore}}
+	defaults := Settings{Enabled: true, Policy: Policy{Interval: DefaultInterval, DegradeAfter: 1, WarnBefore: DefaultWarnBefore}}
 
 	t.Run("nil block yields the defaults", func(t *testing.T) {
 		got, err := ParseSettings(nil)
@@ -74,6 +74,15 @@ func TestParseSettings(t *testing.T) {
 		}
 		if got != want {
 			t.Errorf("ParseSettings = %+v, want %+v", got, want)
+		}
+	})
+
+	t.Run("interval 0 turns polling off", func(t *testing.T) {
+		got, err := ParseSettings(&backend.HealthCheckConfig{Interval: "0"})
+		want := defaults
+		want.Policy.Interval = 0
+		if err != nil || got != want {
+			t.Errorf("ParseSettings(interval 0) = %+v, %v; want %+v", got, err, want)
 		}
 	})
 

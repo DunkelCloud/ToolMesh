@@ -68,10 +68,10 @@ backends:
   #   dadl: vikunja.dadl
   #   url: "https://vikunja.example.com/api/v1"  # overrides base_url in .dadl (optional)
   #   # Optional, for DADLs that declare a health check: how ToolMesh monitors
-  #   # it. Without this block the check runs at startup and when the
-  #   # <backend>_health tool is called; failures show up on /health.
+  #   # it. Without this block the check runs at startup, after a reload and
+  #   # every 15 minutes; failures show up on /health and in the metrics.
   #   health_check:
-  #     interval: 15m              # also poll every 15 minutes (minimum 30s)
+  #     interval: 1h               # poll hourly instead (minimum 30s, 0 turns polling off)
   #     degrade_after: 2           # consecutive failures before "degraded" (default: 1)
   #     warn_before: 7d            # warn this long before a known credential expiry (default: 7d)
   #     auth_expires_at: 2026-12-31  # credential expiry, when the API does not report it

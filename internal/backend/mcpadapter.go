@@ -103,8 +103,9 @@ type HealthCheckConfig struct {
 	// startup check, no polling, no entry in /health. The synthetic health
 	// tool stays callable. nil means true.
 	Enabled *bool `yaml:"enabled"`
-	// Interval polls the check periodically, e.g. "15m". Empty means no
-	// polling: the check runs at startup and when the tool is called.
+	// Interval is how often the check is polled, e.g. "1h". Empty means
+	// every 15 minutes; "0" turns polling off, leaving the check at startup,
+	// after a reload and when the tool is called.
 	Interval string `yaml:"interval"`
 	// DegradeAfter is the number of consecutive failed checks after which
 	// the backend counts as degraded. 0 means 1.

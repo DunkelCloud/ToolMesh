@@ -14,8 +14,8 @@
 
 // Package health monitors the health checks DADL backends declare (DADL
 // spec §4.6) and folds their results into ToolMesh's own status: a check at
-// startup, optional polling, a degraded state after consecutive failures and
-// a warning state before a known credential expiry.
+// startup, polling, a degraded state after consecutive failures and a
+// warning state before a known credential expiry.
 package health
 
 import (
@@ -29,6 +29,11 @@ import (
 	"github.com/DunkelCloud/ToolMesh/internal/dadl"
 )
 
+// DefaultInterval is how often a declared check is polled unless
+// health_check.interval says otherwise. The check exists to report a broken
+// credential before an agent needs the backend, not at the next restart.
+const DefaultInterval = 15 * time.Minute
+
 // DefaultWarnBefore is the window before a known credential expiry in which
 // a backend is reported with a warning, unless warn_before says otherwise.
 const DefaultWarnBefore = 7 * 24 * time.Hour
@@ -40,7 +45,8 @@ const MinInterval = 30 * time.Second
 // Policy is how the monitor treats one backend's check results.
 type Policy struct {
 	// Interval polls the check periodically; 0 means no polling — the
-	// check runs at startup and when the health tool is called.
+	// check runs at startup, after a reload and when the health tool is
+	// called.
 	Interval time.Duration
 	// DegradeAfter is the number of consecutive failures after which the
 	// backend counts as degraded. Values below 1 mean 1.
@@ -69,13 +75,14 @@ type Settings struct {
 }
 
 // ParseSettings reads a health_check block; nil yields the defaults: on,
-// no polling, degraded after one failure, warning seven days before a known
-// expiry. A malformed field falls back to its default and is reported in
-// the returned error, so a typo costs the setting, not the backend.
+// polling every DefaultInterval, degraded after one failure, warning seven
+// days before a known expiry. An interval of 0 turns polling off. A
+// malformed field falls back to its default and is reported in the
+// returned error, so a typo costs the setting, not the backend.
 func ParseSettings(c *backend.HealthCheckConfig) (Settings, error) {
 	s := Settings{
 		Enabled: true,
-		Policy:  Policy{DegradeAfter: 1, WarnBefore: DefaultWarnBefore},
+		Policy:  Policy{Interval: DefaultInterval, DegradeAfter: 1, WarnBefore: DefaultWarnBefore},
 	}
 	if c == nil {
 		return s, nil
@@ -90,8 +97,10 @@ func ParseSettings(c *backend.HealthCheckConfig) (Settings, error) {
 		switch {
 		case err != nil:
 			errs = append(errs, fmt.Errorf("interval: %w", err))
+		case d == 0:
+			s.Policy.Interval = 0
 		case d < MinInterval:
-			errs = append(errs, fmt.Errorf("interval %q is shorter than the minimum %s; polling stays off", c.Interval, MinInterval))
+			errs = append(errs, fmt.Errorf("interval %q is shorter than the minimum %s; polling every %s instead", c.Interval, MinInterval, DefaultInterval))
 		default:
 			s.Policy.Interval = d
 		}

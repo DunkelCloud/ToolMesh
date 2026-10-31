@@ -765,8 +765,9 @@ credential works. Auth is injected as for every other call, so an expired
 token shows up here instead of as a surprise `401` on the next real call. For
 such a backend ToolMesh
 
-- runs the check once at startup and after every `backends.yaml` reload, in
-  the background;
+- runs the check in the background at startup, after every `backends.yaml`
+  reload and every 15 minutes, so a revoked or expired credential is reported
+  before an agent needs the backend;
 - offers it as the tool `<backend>_health`. It returns a standardized result
   instead of the API response, `{ok, http_status?, error_code?, latency_ms,
   checked_at, auth_expires_at?, error?}`, and never fails: a failed check is a
@@ -788,16 +789,18 @@ backends:
     transport: rest
     dadl: tailscale.dadl
     health_check:
-      interval: 15m                # poll every 15 minutes (default: no polling, minimum 30s)
+      interval: 1h                 # poll hourly (default: 15m, minimum 30s, 0 turns polling off)
       degrade_after: 2             # consecutive failures before the backend counts as degraded (default: 1)
       warn_before: 7d              # warning window before a known credential expiry (default: 7d)
       auth_expires_at: 2026-10-16  # when the credential expires, if the API does not say (ISO 8601)
       # enabled: false             # no checks and no /health entry; tailscale_health stays callable
 ```
 
-Without `interval` the check runs at startup, after a reload, and whenever
-someone calls `<backend>_health`; every result counts toward the backend's
-state. `auth_expires_at` covers APIs whose check endpoint does not report when
+Choose the interval by how soon you want to hear about a broken credential
+and by what the API allows: every check is a real, authenticated request.
+With `interval: 0` the check runs only at startup, after a reload, and
+whenever someone calls `<backend>_health`. Every result, polled or on
+demand, counts toward the backend's state. `auth_expires_at` covers APIs whose check endpoint does not report when
 the credential expires, such as an API key with a fixed lifetime: record the
 date when you issue the key. When the DADL extracts an expiry from the check
 response (`auth_expires_path`), that value wins. Durations take Go syntax

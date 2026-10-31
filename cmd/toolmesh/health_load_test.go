@@ -56,12 +56,17 @@ backends:
     transport: rest
     dadl: checked.dadl
     health_check:
-      interval: 15m
+      interval: 1h
       degrade_after: 2
       auth_expires_at: 2026-10-16
   - name: defaults
     transport: rest
     dadl: checked.dadl
+  - name: unpolled
+    transport: rest
+    dadl: checked.dadl
+    health_check:
+      interval: 0
   - name: silenced
     transport: rest
     dadl: checked.dadl
@@ -87,24 +92,27 @@ backends:
 	named := make(map[string]backend.ToolBackend)
 	targets := loadRESTBackendsInto(named, backendsPath, dir, nil, credentials.NewEmbeddedStore(), nil, logger, nil, nil, nil)
 
-	if len(named) != 5 {
-		t.Fatalf("loaded %d backends, want all 5: a health_check problem must not cost the backend", len(named))
+	if len(named) != 6 {
+		t.Fatalf("loaded %d backends, want all 6: a health_check problem must not cost the backend", len(named))
 	}
 	byName := map[string]health.Target{}
 	for _, tg := range targets {
 		byName[tg.Name] = tg
 	}
-	if len(byName) != 3 {
-		t.Fatalf("targets = %v, want polled, defaults and typo", targets)
+	if len(byName) != 4 {
+		t.Fatalf("targets = %v, want polled, defaults, unpolled and typo", targets)
 	}
-	if p := byName["polled"].Policy; p.Interval != 15*time.Minute || p.DegradeAfter != 2 {
+	if p := byName["polled"].Policy; p.Interval != time.Hour || p.DegradeAfter != 2 {
 		t.Errorf("polled policy = %+v", p)
 	}
-	if p := byName["defaults"].Policy; p.Interval != 0 || p.WarnBefore != health.DefaultWarnBefore {
-		t.Errorf("defaults policy = %+v, want no polling and the default window", p)
+	if p := byName["defaults"].Policy; p.Interval != health.DefaultInterval || p.WarnBefore != health.DefaultWarnBefore {
+		t.Errorf("defaults policy = %+v, want the default interval and window", p)
 	}
-	if p := byName["typo"].Policy; p.Interval != 0 {
-		t.Errorf("typo policy = %+v, want polling off", p)
+	if p := byName["unpolled"].Policy; p.Interval != 0 {
+		t.Errorf("unpolled policy = %+v, want polling off for interval 0", p)
+	}
+	if p := byName["typo"].Policy; p.Interval != health.DefaultInterval {
+		t.Errorf("typo policy = %+v, want the default interval", p)
 	}
 	logs := string(buf.data)
 	for _, want := range []string{"DADL declares no health check", "invalid health_check settings"} {

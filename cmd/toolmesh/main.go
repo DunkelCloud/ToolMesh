@@ -838,6 +838,9 @@ func loadRESTBackendsInto(named map[string]backend.ToolBackend, backendsConfigPa
 		if tc != nil {
 			tc.RegisterBackend(spec.Backend.Name, spec.ContentHash)
 		}
+		// pollInterval stays zero for a backend that is not monitored, so the
+		// load line does not claim polling where no check runs.
+		var pollInterval time.Duration
 		switch {
 		case !adapter.HasHealthCheck():
 			if entry.HealthCheck != nil {
@@ -849,6 +852,7 @@ func loadRESTBackendsInto(named map[string]backend.ToolBackend, backendsConfigPa
 				Checker: adapter,
 				Policy:  healthSettings.Policy,
 			})
+			pollInterval = healthSettings.Policy.Interval
 		}
 		logger.Info("REST proxy backend loaded",
 			"name", spec.Backend.Name,
@@ -856,7 +860,7 @@ func loadRESTBackendsInto(named map[string]backend.ToolBackend, backendsConfigPa
 			"baseURL", spec.Backend.BaseURL,
 			"content_hash", spec.ContentHash,
 			"health_check", adapter.HasHealthCheck() && healthSettings.Enabled,
-			"health_poll_interval", healthSettings.Policy.Interval,
+			"health_poll_interval", pollInterval.String(),
 		)
 	}
 	return healthTargets

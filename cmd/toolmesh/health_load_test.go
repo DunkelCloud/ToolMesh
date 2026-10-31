@@ -120,6 +120,26 @@ backends:
 			t.Errorf("logs lack %q:\n%s", want, logs)
 		}
 	}
+	// The load line names the poll interval only for monitored backends.
+	wantInterval := map[string]string{"defaults": "15m0s", "polled": "1h0m0s", "unpolled": "0s", "silenced": "0s", "undeclared": "0s"}
+	seen := 0
+	for _, line := range strings.Split(logs, "\n") {
+		if !strings.Contains(line, "REST proxy backend loaded") {
+			continue
+		}
+		for name, interval := range wantInterval {
+			if !strings.Contains(line, " name="+name+" ") {
+				continue
+			}
+			seen++
+			if !strings.Contains(line, "health_poll_interval="+interval) {
+				t.Errorf("load line for %s lacks health_poll_interval=%s: %s", name, interval, line)
+			}
+		}
+	}
+	if seen != len(wantInterval) {
+		t.Errorf("found %d load lines for %d backends:\n%s", seen, len(wantInterval), logs)
+	}
 
 	res := byName["polled"].Checker.CheckHealth(t.Context())
 	if want := time.Date(2026, 10, 16, 0, 0, 0, 0, time.UTC); !res.AuthExpiresAt.Equal(want) {

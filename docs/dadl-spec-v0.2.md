@@ -666,7 +666,7 @@ ToolMesh provides a built-in file broker for uploading and downloading files out
 |---|---|---|
 | `/files/upload` | POST | Upload a file (multipart field `file`, optional form field `ttl` as a Go duration like `24h`). Requires the same authentication as the MCP endpoint. |
 | `/blobs/{blob_id}` | GET, HEAD | Download a blob. Capability URL: the unguessable ID is the only credential, bounded by the TTL. |
-| `/blobs/{blob_id}` | DELETE | Delete a blob before its TTL expires. Requires the same authentication as the MCP endpoint: possession of the ID alone does not authorize deletion. |
+| `/blobs/{blob_id}` | DELETE | Delete a blob before its TTL expires. Capability-based like GET: possession of the ID authorizes deletion. |
 
 The upload response carries both the handle and the download URL:
 

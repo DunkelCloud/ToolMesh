@@ -137,11 +137,13 @@ func (s *Server) SetupRoutes(mux *http.ServeMux) {
 
 // handleFileUpload guards the broker upload endpoint with MCP authentication
 // and delegates the multipart mechanics to the blob store (DADL spec §6.2.3).
+// The file counts against the quota of the authenticated user.
 func (s *Server) handleFileUpload(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuth(w, r) {
+	user, ok := s.requireUser(w, r)
+	if !ok {
 		return
 	}
-	s.blobStore.HandleUpload(w, r, s.uploadLimits)
+	s.blobStore.HandleUpload(w, r, s.uploadLimits, user.UserID)
 }
 
 // handleBlobs serves blob download and deletion (DADL spec §6.2.3). GET and
@@ -162,18 +164,25 @@ func (s *Server) handleBlobs(w http.ResponseWriter, r *http.Request) {
 // or rejected credential, 503 when the credential could not be checked. A
 // server without any credential configured rejects every request.
 func (s *Server) requireAuth(w http.ResponseWriter, r *http.Request) bool {
+	_, ok := s.requireUser(w, r)
+	return ok
+}
+
+// requireUser is requireAuth for handlers that need to know who the caller
+// is. The user is nil exactly when ok is false.
+func (s *Server) requireUser(w http.ResponseWriter, r *http.Request) (user *userctx.UserContext, ok bool) {
 	user, err := s.authenticate(r)
 	if err != nil {
 		w.Header().Set("Retry-After", authUnavailableRetryAfter)
 		http.Error(w, msgAuthUnavailable, http.StatusServiceUnavailable)
-		return false
+		return nil, false
 	}
 	if user.Authenticated {
-		return true
+		return user, true
 	}
 	w.Header().Set("WWW-Authenticate", `Bearer realm="toolmesh"`)
 	http.Error(w, "unauthorized", http.StatusUnauthorized)
-	return false
+	return nil, false
 }
 
 // cors wraps a handler with CORS headers.
@@ -889,12 +898,14 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// DCR Rate Limiting
+	// DCR Rate Limiting. Fails open: an outage of Redis must not take
+	// registration, and with it every new connection, down with it.
 	if s.rateLimiter != nil {
 		ip := auth.ClientIP(r)
 		allowed, err := s.rateLimiter.Allow(ctx, ip)
 		if err != nil {
-			s.logger.ErrorContext(ctx, "dcr rate limit check failed", outcomeError, err)
+			s.logger.WarnContext(ctx, "dcr rate limit unavailable, registration allowed without limit (fail-open)",
+				outcomeError, err, "remote", ip)
 		} else if !allowed {
 			writeJSON(w, http.StatusTooManyRequests, map[string]string{outcomeError: "too_many_requests"})
 			return
@@ -938,12 +949,18 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	clientID := generateID()
 	clientSecret := generateID()
 
+	now := time.Now()
 	client := &auth.OAuthClient{
 		ClientID:     clientID,
 		ClientSecret: clientSecret,
 		ClientName:   req.ClientName,
 		RedirectURIs: req.RedirectURIs,
-		CreatedAt:    time.Now(),
+		CreatedAt:    now,
+	}
+	// A client that never obtains a token goes after DCRClientTTL; the first
+	// token extends it (extendClient).
+	if s.cfg.DCRClientTTL > 0 {
+		client.ExpiresAt = now.Add(time.Duration(s.cfg.DCRClientTTL) * time.Second)
 	}
 
 	if s.tokenStore != nil {
@@ -962,6 +979,26 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		"redirect_uris":              req.RedirectURIs,
 		"token_endpoint_auth_method": "none",
 	})
+}
+
+// extendClient keeps a client that just obtained a token for
+// DCRClientIdleTTL from now, or forever when that is 0. The token is issued
+// either way: a client that cannot be extended only has to register again
+// once it expires.
+func (s *Server) extendClient(ctx context.Context, clientID string) {
+	var until time.Time
+	if s.cfg.DCRClientIdleTTL > 0 {
+		// Never shorter than a refresh token lives, whatever the config.
+		idle := max(s.cfg.DCRClientIdleTTL, config.MinDCRClientIdleTTL)
+		until = time.Now().Add(time.Duration(idle) * time.Second)
+	}
+	if err := auth.ExtendClient(ctx, s.tokenStore, clientID, until); err != nil {
+		level := slog.LevelWarn
+		if errors.Is(err, auth.ErrNotFound) {
+			level = slog.LevelInfo
+		}
+		s.logger.Log(ctx, level, "could not extend oauth client lifetime", "clientId", clientID, outcomeError, err)
+	}
 }
 
 // passwordLoginConfigured reports whether a password login can succeed at all:
@@ -1228,9 +1265,9 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	code := r.FormValue("code")                  //nolint:gosec // G120: body size limited in handleToken
-	codeVerifier := r.FormValue("code_verifier") //nolint:gosec // G120: body size limited in handleToken
-	clientID := r.FormValue(oauthClientID)       //nolint:gosec // G120: body size limited in handleToken
+	code := r.FormValue("code")                    //nolint:gosec // G120: body size limited in handleToken
+	codeVerifier := r.FormValue(oauthCodeVerifier) //nolint:gosec // G120: body size limited in handleToken
+	clientID := r.FormValue(oauthClientID)         //nolint:gosec // G120: body size limited in handleToken
 
 	if s.tokenStore == nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: invalidGrantError})
@@ -1320,6 +1357,7 @@ func (s *Server) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Req
 		return
 	}
 
+	s.extendClient(ctx, ti.ClientID)
 	s.metrics.RecordLogin(loginMethodOAuthCode, "success")
 	writeJSON(w, http.StatusOK, map[string]any{
 		"access_token":    accessToken,
@@ -1394,6 +1432,7 @@ func (s *Server) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	s.extendClient(ctx, ti.ClientID)
 	s.metrics.RecordLogin(loginMethodOAuthRefresh, "success")
 	writeJSON(w, http.StatusOK, map[string]any{
 		"access_token":    newAccessToken,

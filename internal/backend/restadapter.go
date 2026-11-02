@@ -37,6 +37,7 @@ import (
 	"github.com/DunkelCloud/ToolMesh/internal/composite"
 	"github.com/DunkelCloud/ToolMesh/internal/credentials"
 	"github.com/DunkelCloud/ToolMesh/internal/dadl"
+	"github.com/DunkelCloud/ToolMesh/internal/userctx"
 )
 
 // defaultAllowedUploadDir is the directory under which file uploads must reside.
@@ -1609,7 +1610,13 @@ func (a *RESTAdapter) handleBinaryResponse(ctx context.Context, _ *dadl.ToolDef,
 	// Fallback: embedded blob store
 	if a.blobStore != nil {
 		ttl := a.effectiveBlobTTL(respConfig)
-		blobID, _, err := a.blobStore.Put(bytes.NewReader(body), contentType, ttl)
+		// The response counts against the quota of the user who made the
+		// call, like a file that user uploaded.
+		var owner string
+		if uc := userctx.FromContext(ctx); uc != nil {
+			owner = uc.UserID
+		}
+		blobID, _, err := a.blobStore.PutOwned(bytes.NewReader(body), contentType, "", owner, ttl)
 		if err != nil {
 			return &ToolResult{
 				Content: []any{textContent(fmt.Sprintf("Error: failed to store binary response: %s", err))},

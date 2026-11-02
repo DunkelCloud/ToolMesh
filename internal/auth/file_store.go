@@ -91,10 +91,14 @@ func (s *FileTokenStore) loadState() error {
 	now := time.Now()
 
 	if state.Clients != nil {
+		restored := 0
 		for k, v := range state.Clients {
-			s.clients[k] = v
+			if !v.Expired(now) {
+				s.clients[k] = v
+				restored++
+			}
 		}
-		slog.Info("restored registered OAuth clients from disk", "count", len(state.Clients))
+		slog.Info("restored registered OAuth clients from disk", "count", restored)
 	}
 
 	if state.AccessTokens != nil {
@@ -160,12 +164,13 @@ func (s *FileTokenStore) SaveClient(_ context.Context, c *OAuthClient) error {
 	return nil
 }
 
-// GetClient retrieves an OAuth client by its client ID.
+// GetClient retrieves an OAuth client by its client ID. An expired client is
+// not found, even before Cleanup has removed it.
 func (s *FileTokenStore) GetClient(_ context.Context, clientID string) (*OAuthClient, error) {
 	s.mu.Lock()
 	c, ok := s.clients[clientID]
 	s.mu.Unlock()
-	if !ok {
+	if !ok || c.Expired(time.Now()) {
 		return nil, ErrNotFound
 	}
 	return c, nil
@@ -257,9 +262,12 @@ func (s *FileTokenStore) ConsumeRefreshToken(_ context.Context, refreshToken str
 // in the primary store without waiting for a read-through fallback.
 func (s *FileTokenStore) WarmUp(ctx context.Context, dst TokenStore) {
 	s.mu.Lock()
+	now := time.Now()
 	clients := make([]*OAuthClient, 0, len(s.clients))
 	for _, c := range s.clients {
-		clients = append(clients, c)
+		if !c.Expired(now) {
+			clients = append(clients, c)
+		}
 	}
 	tokens := make([]*TokenInfo, 0, len(s.accessTokens))
 	for _, t := range s.accessTokens {
@@ -300,32 +308,43 @@ func (s *FileTokenStore) Cleanup(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			s.mu.Lock()
-			now := time.Now()
-			dirty := false
-
-			for k, v := range s.authCodes {
-				if v.ExpiresAt.Before(now) {
-					delete(s.authCodes, k)
-				}
-			}
-			for k, v := range s.accessTokens {
-				if v.ExpiresAt.Before(now) {
-					delete(s.accessTokens, k)
-					dirty = true
-				}
-			}
-			for k, v := range s.refreshTokens {
-				if v.RefreshExpiry().Before(now) {
-					delete(s.refreshTokens, k)
-					dirty = true
-				}
-			}
-
-			if dirty {
-				s.saveState()
-			}
-			s.mu.Unlock()
+			s.removeExpired(time.Now())
 		}
+	}
+}
+
+// removeExpired drops every entry that has expired at now and persists the
+// result when anything that is persisted went away.
+func (s *FileTokenStore) removeExpired(now time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	dirty := false
+
+	for k, v := range s.clients {
+		if v.Expired(now) {
+			delete(s.clients, k)
+			dirty = true
+		}
+	}
+	for k, v := range s.authCodes {
+		if v.ExpiresAt.Before(now) {
+			delete(s.authCodes, k)
+		}
+	}
+	for k, v := range s.accessTokens {
+		if v.ExpiresAt.Before(now) {
+			delete(s.accessTokens, k)
+			dirty = true
+		}
+	}
+	for k, v := range s.refreshTokens {
+		if v.RefreshExpiry().Before(now) {
+			delete(s.refreshTokens, k)
+			dirty = true
+		}
+	}
+
+	if dirty {
+		s.saveState()
 	}
 }

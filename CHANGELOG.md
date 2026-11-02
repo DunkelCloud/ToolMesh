@@ -41,7 +41,29 @@ for the full narrative and details.
   ended (`ok|error|timeout`). Scripts behave as before. See
   `docs/metrics.md`.
 
+- The file broker can be switched off and bounded.
+  `TOOLMESH_FILE_BROKER_ENABLED=false` removes `upload_file`, `/files/upload`
+  and `/blobs/` (both answer `404`); tools with a binary response then return
+  an error instead of a download URL. `TOOLMESH_FILE_BROKER_MAX_TOTAL_BYTES`
+  and `TOOLMESH_FILE_BROKER_MAX_BYTES_PER_USER` bound the bytes it holds, in
+  total and per user; uploads and binary responses count against the user who
+  made the call, and a file that does not fit is refused with a clear error
+  (`507` on `/files/upload`). Without these variables nothing changes: the
+  broker is on and unbounded, which the startup security-posture summary now
+  lists as a relaxed control. Blob files left by a previous run are removed at
+  startup; they could no longer be served. See `docs/configuration.md`.
+
 ### Changed
+
+- OAuth clients registered at `/register` expire. A client that never obtains
+  a token is forgotten after a day (`TOOLMESH_DCR_CLIENT_TTL`, default
+  `86400`), and every token issued to a client keeps it for 90 days from then
+  on (`TOOLMESH_DCR_CLIENT_IDLE_TTL`, default `7776000`); `0` keeps clients
+  forever as before. Clients registered with earlier versions get an expiry
+  with their next token. When the registration rate limit cannot be checked
+  because Redis is unreachable, the registration still goes through and is
+  now logged at `WARN` as a fail-open; a start without Redis reports that
+  registrations are not rate-limited. See `docs/configuration.md`.
 
 - The approval page `/approve/<id>` leads with what an approver decides on:
   whom the grant is for, the risk of what the kit allows, how many actions

@@ -184,15 +184,13 @@ func main() {
 	// Create type coercer for LLM tolerance
 	coercer := tsdef.NewCoercer(toolDefs, logger)
 
-	// Initialize blob store for binary API responses
-	blobBaseURL := strings.TrimRight(cfg.Issuer, "/")
-	blobDir := filepath.Join(cfg.DataDir, "blobs")
-	blobStore, err := blob.NewStore(blobDir, blobBaseURL, logger)
+	// Initialize the file broker's blob store, which also holds binary API
+	// responses. Nil when the broker is switched off.
+	blobStore, err := newBlobStore(cfg, logger)
 	if err != nil {
 		logger.Error("failed to create blob store", "error", err)
 		os.Exit(1)
 	}
-	logger.Info("blob store initialized", "dir", blobDir, "base_url", blobBaseURL)
 
 	// Initialize telemetry collector
 	tc := telemetry.New(cfg.DataDir, version.Version, logger)
@@ -360,6 +358,9 @@ func main() {
 				fileStore.WarmUp(ctx, redisStore)
 			}
 		}
+	}
+	if rateLimiter == nil {
+		logger.Warn("dynamic client registration (/register) is not rate-limited: the limit needs Redis")
 	}
 
 	// One bound for every bcrypt comparison in the process: password logins
@@ -560,6 +561,31 @@ func main() {
 	}
 
 	logger.Info("ToolMesh stopped")
+}
+
+// newBlobStore creates the blob store of the file broker with the configured
+// quota, or returns nil when TOOLMESH_FILE_BROKER_ENABLED=false. Without a
+// store, upload_file is not offered, /files/upload and /blobs/ answer 404,
+// and binary API responses are refused with an error.
+func newBlobStore(cfg *config.Config, logger *slog.Logger) (*blob.Store, error) {
+	if !cfg.FileBrokerEnabled {
+		logger.Info("file broker disabled (TOOLMESH_FILE_BROKER_ENABLED=false): no upload_file, /files/upload or /blobs/, and binary API responses cannot be returned")
+		return nil, nil
+	}
+	baseURL := strings.TrimRight(cfg.Issuer, "/")
+	dir := filepath.Join(cfg.DataDir, "blobs")
+	store, err := blob.NewStore(dir, baseURL, logger)
+	if err != nil {
+		return nil, err
+	}
+	store.SetQuota(blob.Quota{
+		MaxTotalBytes:   cfg.FileBrokerMaxTotalBytes,
+		MaxBytesPerUser: cfg.FileBrokerMaxBytesPerUser,
+	})
+	logger.Info("blob store initialized", "dir", dir, "base_url", baseURL,
+		"maxTotalBytes", cfg.FileBrokerMaxTotalBytes,
+		"maxBytesPerUser", cfg.FileBrokerMaxBytesPerUser)
+	return store, nil
 }
 
 // buildBackendsConfig holds the dependencies needed by buildBackends.

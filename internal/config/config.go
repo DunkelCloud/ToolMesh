@@ -34,6 +34,19 @@ const (
 // lockout that long is almost certainly a value given in the wrong unit.
 const maxLoginFailureWindow = 30 * 24 * 60 * 60
 
+// Lifetimes of OAuth clients from Dynamic Client Registration, in seconds.
+const (
+	// defaultDCRClientTTL keeps a client that never obtained a token for a day.
+	defaultDCRClientTTL = 24 * 60 * 60
+	// minDCRClientTTL leaves time for registration, login and code exchange.
+	minDCRClientTTL = 10 * 60
+	// defaultDCRClientIdleTTL keeps a client for 90 days after its last token.
+	defaultDCRClientIdleTTL = 90 * 24 * 60 * 60
+	// MinDCRClientIdleTTL is the lifetime of a refresh token: a client that
+	// went before its refresh token could no longer sign in again.
+	MinDCRClientIdleTTL = 7 * 24 * 60 * 60
+)
+
 // Authorization modes for AuthzMode / TOOLMESH_AUTHZ_MODE.
 const (
 	// AuthzModeEmbedded runs OpenFGA inside the ToolMesh process on a SQLite
@@ -190,6 +203,21 @@ type Config struct {
 	// limits and round-trip integrity. Default off; intended for dev/test.
 	DebugTools bool // TOOLMESH_DEBUG_TOOLS, default false
 
+	// File broker: the blob store behind upload_file, POST /files/upload and
+	// /blobs/, which also holds binary API responses. Disabled, none of these
+	// exist and binary responses cannot be returned.
+	FileBrokerEnabled bool // TOOLMESH_FILE_BROKER_ENABLED, default true
+	// Quota of the file broker in bytes; 0 means no limit.
+	FileBrokerMaxTotalBytes   int64 // TOOLMESH_FILE_BROKER_MAX_TOTAL_BYTES, default 0
+	FileBrokerMaxBytesPerUser int64 // TOOLMESH_FILE_BROKER_MAX_BYTES_PER_USER, default 0
+
+	// Lifetime in seconds of OAuth clients from Dynamic Client Registration.
+	// DCRClientTTL applies from registration until the client obtains its
+	// first token, 0 keeps such clients forever. DCRClientIdleTTL applies
+	// from each token issued to the client, 0 keeps used clients forever.
+	DCRClientTTL     int // TOOLMESH_DCR_CLIENT_TTL, default 86400
+	DCRClientIdleTTL int // TOOLMESH_DCR_CLIENT_IDLE_TTL, default 7776000
+
 	// DevMode selects the local-development security posture. It deliberately
 	// does NOT relax any individual default — every secure default stands on
 	// its own so the server is secure-by-default whether or not this is set.
@@ -270,6 +298,12 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 	if err := cfg.loadBcryptLimit(); err != nil {
+		return nil, err
+	}
+	if err := cfg.loadFileBroker(); err != nil {
+		return nil, err
+	}
+	if err := cfg.loadDCRClientTTL(); err != nil {
 		return nil, err
 	}
 
@@ -385,6 +419,59 @@ func (c *Config) loadBcryptLimit() error {
 	return nil
 }
 
+// loadFileBroker reads the file broker switch and quota. All three are parsed
+// strictly: a typo must not leave the broker on, or without the quota the
+// operator meant to set.
+func (c *Config) loadFileBroker() error {
+	enabled, err := envBoolStrict("TOOLMESH_FILE_BROKER_ENABLED", true)
+	if err != nil {
+		return err
+	}
+	c.FileBrokerEnabled = enabled
+
+	limits := []struct {
+		key string
+		dst *int64
+	}{
+		{"TOOLMESH_FILE_BROKER_MAX_TOTAL_BYTES", &c.FileBrokerMaxTotalBytes},
+		{"TOOLMESH_FILE_BROKER_MAX_BYTES_PER_USER", &c.FileBrokerMaxBytesPerUser},
+	}
+	for _, l := range limits {
+		n, err := envInt64Strict(l.key, 0)
+		if err != nil {
+			return err
+		}
+		if n < 0 {
+			return fmt.Errorf("invalid %s: %d (must be 0 for no limit, or a positive number of bytes)", l.key, n)
+		}
+		*l.dst = n
+	}
+	return nil
+}
+
+// loadDCRClientTTL reads the lifetimes of dynamically registered OAuth
+// clients, strictly like the other security limits.
+func (c *Config) loadDCRClientTTL() error {
+	ttl, err := envIntStrict("TOOLMESH_DCR_CLIENT_TTL", defaultDCRClientTTL)
+	if err != nil {
+		return err
+	}
+	if ttl != 0 && ttl < minDCRClientTTL {
+		return fmt.Errorf("invalid TOOLMESH_DCR_CLIENT_TTL: %d (must be 0 to keep unused clients, or at least %d seconds)", ttl, minDCRClientTTL)
+	}
+	c.DCRClientTTL = ttl
+
+	idle, err := envIntStrict("TOOLMESH_DCR_CLIENT_IDLE_TTL", defaultDCRClientIdleTTL)
+	if err != nil {
+		return err
+	}
+	if idle != 0 && idle < MinDCRClientIdleTTL {
+		return fmt.Errorf("invalid TOOLMESH_DCR_CLIENT_IDLE_TTL: %d (must be 0 to keep used clients, or at least %d seconds, the lifetime of a refresh token)", idle, MinDCRClientIdleTTL)
+	}
+	c.DCRClientIdleTTL = idle
+	return nil
+}
+
 // LoginThrottleDisabled lists the failed-login limits that are switched off,
 // by the name of the variable that controls each.
 func (c *Config) LoginThrottleDisabled() []string {
@@ -470,6 +557,34 @@ func envIntStrict(key string, fallback int) (int, error) {
 		return 0, fmt.Errorf("invalid %s: %q is not an integer", key, v)
 	}
 	return n, nil
+}
+
+// envInt64Strict is envIntStrict for values that may exceed 32 bits, such
+// as sizes in bytes.
+func envInt64Strict(key string, fallback int64) (int64, error) {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback, nil
+	}
+	n, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("invalid %s: %q is not an integer", key, v)
+	}
+	return n, nil
+}
+
+// envBoolStrict is envBool for switches where a silently applied default
+// would be worse than a refused start.
+func envBoolStrict(key string, fallback bool) (bool, error) {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback, nil
+	}
+	b, err := strconv.ParseBool(strings.TrimSpace(v))
+	if err != nil {
+		return false, fmt.Errorf("invalid %s: %q (must be true or false)", key, v)
+	}
+	return b, nil
 }
 
 func envBool(key string, fallback bool) bool {

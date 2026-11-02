@@ -226,10 +226,10 @@ func TestTokenGrant_ClientIDMismatch(t *testing.T) {
 
 	// Exchange with wrong client_id.
 	tokenForm := url.Values{
-		oauthGrantType:  {oauthGrantAuthCode},
-		argNameCode:     {code},
-		"code_verifier": {codeVerifier},
-		oauthClientID:   {"wrong-client-id"},
+		oauthGrantType:    {oauthGrantAuthCode},
+		argNameCode:       {code},
+		oauthCodeVerifier: {codeVerifier},
+		oauthClientID:     {"wrong-client-id"},
 	}
 	tokReq := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/token", strings.NewReader(tokenForm.Encode()))
 	tokReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")

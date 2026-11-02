@@ -137,6 +137,23 @@ A comparison that finds every slot taken waits up to 5 seconds for a free one. I
 
 The default is half of the CPUs the process may use (in a container with a CPU limit, half of that limit), and at least one. Raise it on a deployment where many people log in with passwords at the same moment; lower it to reserve more of the machine for tool calls. There is no value that switches the limit off. The startup log line `bcrypt comparisons bounded` shows the value in effect.
 
+## Client Registration
+
+MCP clients such as Claude register themselves at `/register` (OAuth 2.0 Dynamic Client Registration) before the user logs in. Registration takes no credential, so registered clients do not stay forever:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `TOOLMESH_DCR_CLIENT_TTL` | `86400` (1 day) | Seconds a registered client is kept as long as it has not obtained a token. `0` keeps such clients forever; otherwise at least `600`, the time registration, login and code exchange need. |
+| `TOOLMESH_DCR_CLIENT_IDLE_TTL` | `7776000` (90 days) | Seconds a client is kept after the last token issued to it. `0` keeps clients that obtained a token forever; otherwise at least `604800`, the lifetime of a refresh token. |
+
+Both must be plain integers; anything else stops the server at startup.
+
+- **Every token extends the client.** The code exchange after a login and every refresh set the client's expiry to `TOOLMESH_DCR_CLIENT_IDLE_TTL` from then on. A client in use refreshes its access token every hour and does not expire. A client that is idle for longer has to register again; until it does, the login answers `400` with `unknown client`.
+- **Clients registered with an earlier version** carry no expiry. They get one with the next token issued to them; one that never obtains a token again stays.
+- **Where it is kept.** In Redis the client's key expires with it; the file store (`oauth-state.json` in the data directory) drops it within 5 minutes of its expiry and does not restore an expired client after a restart.
+
+Registrations are limited to 5 per hour from one client address. The counters live in Redis: without Redis there is no limit, which the startup log reports as `dynamic client registration (/register) is not rate-limited`. When Redis cannot be reached for a check, the registration is allowed rather than refused (fail-open, so that an outage of Redis does not stop new connections) and logged at `WARN` as `dcr rate limit unavailable, registration allowed without limit (fail-open)` with `error` and `remote`.
+
 ## Audit
 
 | Variable | Default | Description |
@@ -749,6 +766,22 @@ TOOLMESH_CODE_TIMEOUT=600
 ```
 
 > Long tool calls no longer trip a "connector isn't responding" error: ToolMesh streams the `tools/call` response over SSE and emits keepalives while the backend works, so the MCP client's idle timer never fires mid-call. The per-request write deadline is also lifted for tool calls, so these timeouts — not the HTTP server's `WriteTimeout` — are the real bound.
+
+## File Broker
+
+The file broker holds files that tool calls pass around without sending their content through the conversation: `upload_file` fetches a public URL into it, `POST /files/upload` takes a file directly (multipart field `file`, optional `ttl`), and tools with a binary response (audio, images, PDFs) return a download URL under `/blobs/<id>` instead of the bytes. Files are kept in `blobs/` in the data directory for their TTL: 1 hour by default, at most 24 hours for uploads, at most 100 MB each. Files left there by a previous run are removed at startup, since the index of files lives in memory.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `TOOLMESH_FILE_BROKER_ENABLED` | `true` | `false` switches the file broker off: `upload_file` is not offered, `/files/upload` and `/blobs/` answer `404`, and a tool with a binary response returns an error instead of a download URL. Must be `true` or `false`; anything else stops the server at startup. |
+| `TOOLMESH_FILE_BROKER_MAX_TOTAL_BYTES` | `0` (no limit) | Bytes all files together may take. |
+| `TOOLMESH_FILE_BROKER_MAX_BYTES_PER_USER` | `0` (no limit) | Bytes the files of one user may take. |
+
+The two limits must be plain integers of bytes, `0` or more; anything else stops the server at startup. While the broker is on without `TOOLMESH_FILE_BROKER_MAX_TOTAL_BYTES`, the startup security-posture summary lists it as a relaxed control. Switch the broker off on an instance where callers have no files to exchange, such as a public demo.
+
+- **What counts.** A file counts from the moment it is written until it is deleted (`DELETE /blobs/<id>`) or removed after its TTL, which happens within a minute of the TTL running out. Uploads through `/files/upload` and `upload_file` count against the user who made the call, and so do binary responses of that user's tool calls.
+- **A file that does not fit is refused.** `/files/upload` answers `507 Insufficient Storage`; `upload_file` and a tool with a binary response return an error. The message names the limit, the bytes already in use, and how to make room. A file of unknown length stops as soon as it reaches the limit, and nothing of it stays on disk. Each refusal is logged at `WARN` as `blob refused: file broker quota exceeded` with the `owner`.
+- **Lowering a limit** keeps the files already stored; it only keeps new ones out until enough of them are gone.
 
 ## Backend Configuration
 

@@ -42,6 +42,8 @@ func hardenedConfig() *config.Config {
 		LoginMaxFailuresPerUser:   20,
 		LoginMaxFailuresPerIP:     50,
 		LoginFailureWindow:        900,
+		FileBrokerEnabled:         true,
+		FileBrokerMaxTotalBytes:   10 << 30,
 	}
 }
 
@@ -88,6 +90,20 @@ func TestLogSecurityPosture(t *testing.T) {
 			wantLevel:      levelWARN,
 			wantContains:   []string{"failed-login throttling is switched off", "TOOLMESH_LOGIN_MAX_FAILURES_PER_IP"},
 			wantAbsent:     []string{"TOOLMESH_LOGIN_MAX_FAILURES_PER_USER"},
+		},
+		{
+			name:           "file broker without total quota warns",
+			mutate:         func(c *config.Config) { c.FileBrokerMaxTotalBytes = 0 },
+			authConfigured: true,
+			wantLevel:      levelWARN,
+			wantContains:   []string{"file broker has no total quota", "TOOLMESH_FILE_BROKER_MAX_TOTAL_BYTES", "TOOLMESH_FILE_BROKER_ENABLED=false"},
+		},
+		{
+			name:           "file broker switched off needs no quota",
+			mutate:         func(c *config.Config) { c.FileBrokerEnabled, c.FileBrokerMaxTotalBytes = false, 0 },
+			authConfigured: true,
+			wantContains:   []string{"all checked controls are hardened"},
+			wantAbsent:     []string{"file broker"},
 		},
 		{
 			name:           "missing auth warns with remediation",

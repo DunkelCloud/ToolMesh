@@ -193,9 +193,11 @@ func (s *Store) Delete(id string) error {
 	return nil
 }
 
-// ServeHTTP handles GET/HEAD/DELETE /blobs/{id} requests. All three are
-// capability-based: the unguessable blob ID is the only credential, bounded
-// by the TTL.
+// ServeHTTP handles GET/HEAD/DELETE /blobs/{id} requests and performs no
+// authentication itself. GET and HEAD are capability-based: the unguessable
+// blob ID is the only credential, bounded by the TTL. DELETE must be
+// authenticated by the caller before it reaches this handler, as the MCP
+// server's /blobs/ route does.
 func (s *Store) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead && r.Method != http.MethodDelete {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)

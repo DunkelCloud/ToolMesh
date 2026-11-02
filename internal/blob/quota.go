@@ -56,10 +56,23 @@ func (s *Store) Usage(owner string) (total, ofOwner int64) {
 // CheckQuota reports whether size more bytes for owner fit in the quota. Put
 // enforces the quota on its own while it writes; CheckQuota only lets a caller
 // that knows the size in advance turn a request away before reading its body.
+// A size that does not fit is logged as a refusal, like one found while
+// writing, since every caller turns the file away on an error.
 func (s *Store) CheckQuota(owner string, size int64) error {
 	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.fitsLocked(owner, 0, size)
+	err := s.fitsLocked(owner, 0, size)
+	s.mu.RUnlock()
+	if err != nil {
+		s.logRefusal(owner, err)
+	}
+	return err
+}
+
+// logRefusal logs a blob the quota keeps out. Every refusal passes here
+// exactly once: a failed pre-check ends the request before anything is
+// written, and a failed reservation ends the write.
+func (s *Store) logRefusal(owner string, err error) {
+	s.logger.Warn("blob refused: file broker quota exceeded", "owner", owner, "error", err)
 }
 
 // fitsLocked reports whether n more bytes fit for owner, of which pending are
@@ -81,12 +94,15 @@ func (s *Store) fitsLocked(owner string, pending, n int64) error {
 // bytes held by other blobs.
 func (s *Store) reserve(owner string, pending, n int64) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	if err := s.fitsLocked(owner, pending, n); err != nil {
-		return err
+	err := s.fitsLocked(owner, pending, n)
+	if err == nil {
+		s.addLocked(owner, n)
 	}
-	s.addLocked(owner, n)
-	return nil
+	s.mu.Unlock()
+	if err != nil {
+		s.logRefusal(owner, err)
+	}
+	return err
 }
 
 // release gives back n bytes counted for owner.

@@ -158,3 +158,41 @@ func TestHandleUploadFile_Quota(t *testing.T) {
 		t.Errorf("other user refused: %s", resultText(t, res))
 	}
 }
+
+// TestHandleUploadFile_PrecheckRefusalIsLogged covers a fetch whose
+// Content-Length is over the quota: it is refused before the body is read,
+// and that refusal is logged like one found while writing.
+func TestHandleUploadFile_PrecheckRefusalIsLogged(t *testing.T) {
+	src := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.Header().Set("Content-Length", "64")
+		_, _ = w.Write([]byte(strings.Repeat("x", 64)))
+	}))
+	defer src.Close()
+
+	logs := &loginLogBuffer{}
+	store, err := blob.NewStore(t.TempDir(), "http://localhost:8080", slog.New(slog.NewJSONHandler(logs, nil)))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	store.SetQuota(blob.Quota{MaxBytesPerUser: 32})
+	h := &Handler{logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	h.SetBlobStore(store, blob.UploadLimits{MaxBytes: 1 << 20, DefaultTTL: time.Hour, MaxTTL: time.Hour})
+	h.uploadFetchClient = &http.Client{Timeout: 10 * time.Second}
+	ctx := userctx.WithUserContext(context.Background(), &userctx.UserContext{UserID: testBrokerUser, Authenticated: true})
+
+	res, err := h.handleUploadFile(ctx, map[string]any{argNameURL: src.URL + "/a.bin"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.IsError || !strings.Contains(resultText(t, res), blob.ErrQuotaExceeded.Error()) {
+		t.Fatalf("result = %s, want the quota error", resultText(t, res))
+	}
+	lines := logs.lines(t, "blob refused: file broker quota exceeded")
+	if len(lines) != 1 {
+		t.Fatalf("%d refusal log lines, want 1; log:\n%s", len(lines), logs.String())
+	}
+	if lines[0]["level"] != testLogLevelWarn || lines[0]["owner"] != testBrokerUser {
+		t.Errorf("refusal logged as %v, want WARN for %s", lines[0], testBrokerUser)
+	}
+}

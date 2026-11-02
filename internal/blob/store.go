@@ -173,11 +173,7 @@ func (s *Store) PutOwned(body io.Reader, contentType, filename, owner string, tt
 	if err != nil {
 		s.release(owner, qw.reserved)
 		if errors.Is(err, ErrQuotaExceeded) {
-			s.logger.Warn("blob refused: file broker quota exceeded",
-				"owner", owner,
-				"content_type", contentType,
-				"error", err,
-			)
+			// Logged by the reservation that failed.
 			return "", 0, err
 		}
 		return "", 0, fmt.Errorf("write blob: %w", err)

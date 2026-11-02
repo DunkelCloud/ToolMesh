@@ -20,6 +20,7 @@ package blob
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -27,10 +28,15 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
 )
+
+// blobFileName matches the names Put gives blob files: the 32 hex digits of
+// the ID and an optional extension.
+var blobFileName = regexp.MustCompile(`^[0-9a-f]{32}(\.[A-Za-z0-9._+-]+)?$`)
 
 // Store manages binary blobs on disk with TTL-based expiry.
 type Store struct {
@@ -38,8 +44,11 @@ type Store struct {
 	baseURL string // e.g. "http://localhost:8080" — used to construct download URLs
 	logger  *slog.Logger
 
-	mu    sync.RWMutex
-	blobs map[string]*blobEntry
+	mu     sync.RWMutex
+	blobs  map[string]*blobEntry
+	quota  Quota
+	used   int64            // bytes of all blobs on disk, including those being written
+	usedBy map[string]int64 // the same per owner; owners without blobs have no entry
 }
 
 type blobEntry struct {
@@ -47,6 +56,7 @@ type blobEntry struct {
 	ContentType string
 	Size        int64
 	Filename    string // original upload filename; empty when none was provided
+	Owner       string // user the blob counts against in the quota; empty for none
 	ExpiresAt   time.Time
 }
 
@@ -75,6 +85,9 @@ func (e *blobEntry) info(id string) *BlobInfo {
 
 // NewStore creates a blob store. baseURL is the externally reachable server URL
 // (e.g. "http://localhost:8080"). dir is the on-disk directory for blob files.
+// Blob files a previous process left in dir are removed: the index of blobs
+// lives in memory, so they can no longer be served, and the quota would not
+// see them.
 func NewStore(dir, baseURL string, logger *slog.Logger) (*Store, error) {
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return nil, fmt.Errorf("create blob dir %s: %w", dir, err)
@@ -84,9 +97,40 @@ func NewStore(dir, baseURL string, logger *slog.Logger) (*Store, error) {
 		baseURL: strings.TrimRight(baseURL, "/"),
 		logger:  logger,
 		blobs:   make(map[string]*blobEntry),
+		usedBy:  make(map[string]int64),
 	}
+	s.removeLeftovers()
 	go s.cleanupLoop()
 	return s, nil
+}
+
+// removeLeftovers deletes the blob files in s.dir that no index entry knows.
+// Only names of the form Put gives are touched.
+func (s *Store) removeLeftovers() {
+	entries, err := os.ReadDir(s.dir)
+	if err != nil {
+		s.logger.Warn("failed to list blob dir for leftover files", "dir", s.dir, "error", err)
+		return
+	}
+	var files, size int64
+	for _, e := range entries {
+		if !e.Type().IsRegular() || !blobFileName.MatchString(e.Name()) {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		if err := os.Remove(filepath.Join(s.dir, e.Name())); err != nil {
+			s.logger.Warn("failed to remove leftover blob file", "file", e.Name(), "error", err)
+			continue
+		}
+		files++
+		size += info.Size()
+	}
+	if files > 0 {
+		s.logger.Info("removed blob files left from a previous run", "dir", s.dir, "files", files, "bytes", size)
+	}
 }
 
 // Put writes data to a new blob and returns its ID.
@@ -97,6 +141,13 @@ func (s *Store) Put(body io.Reader, contentType string, ttl time.Duration) (id s
 // PutNamed writes data to a new blob, remembering the original filename so
 // downstream multipart uploads can carry it. An empty filename is allowed.
 func (s *Store) PutNamed(body io.Reader, contentType, filename string, ttl time.Duration) (id string, size int64, err error) {
+	return s.PutOwned(body, contentType, filename, "", ttl)
+}
+
+// PutOwned is PutNamed for a blob that counts against owner's share of the
+// quota (see Quota). An empty owner counts toward the total only. When the
+// blob does not fit, nothing is kept and the error wraps ErrQuotaExceeded.
+func (s *Store) PutOwned(body io.Reader, contentType, filename, owner string, ttl time.Duration) (id string, size int64, err error) {
 	id, err = generateID()
 	if err != nil {
 		return "", 0, fmt.Errorf("generate blob id: %w", err)
@@ -117,8 +168,14 @@ func (s *Store) PutNamed(body io.Reader, contentType, filename string, ttl time.
 		}
 	}()
 
-	n, err := io.Copy(f, body)
+	qw := &quotaWriter{s: s, owner: owner, w: f}
+	n, err := io.Copy(qw, body)
 	if err != nil {
+		s.release(owner, qw.reserved)
+		if errors.Is(err, ErrQuotaExceeded) {
+			// Logged by the reservation that failed.
+			return "", 0, err
+		}
 		return "", 0, fmt.Errorf("write blob: %w", err)
 	}
 
@@ -128,6 +185,7 @@ func (s *Store) PutNamed(body io.Reader, contentType, filename string, ttl time.
 		ContentType: contentType,
 		Size:        n,
 		Filename:    filename,
+		Owner:       owner,
 		ExpiresAt:   time.Now().Add(ttl),
 	}
 	s.mu.Unlock()
@@ -181,6 +239,7 @@ func (s *Store) Delete(id string) error {
 	entry, ok := s.blobs[id]
 	if ok {
 		delete(s.blobs, id)
+		s.addLocked(entry.Owner, -entry.Size)
 	}
 	s.mu.Unlock()
 	if !ok {
@@ -247,18 +306,24 @@ func (s *Store) cleanupLoop() {
 	defer ticker.Stop()
 
 	for range ticker.C {
-		s.mu.Lock()
-		now := time.Now()
-		for id, entry := range s.blobs {
-			if now.After(entry.ExpiresAt) {
-				if err := os.Remove(entry.FilePath); err != nil && !os.IsNotExist(err) {
-					s.logger.Warn("failed to remove expired blob", "blob_id", id, "error", err)
-				}
-				delete(s.blobs, id)
-				s.logger.Debug("expired blob removed", "blob_id", id)
+		s.removeExpired(time.Now())
+	}
+}
+
+// removeExpired deletes the blobs that have expired at now, files and quota
+// usage alike.
+func (s *Store) removeExpired(now time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for id, entry := range s.blobs {
+		if now.After(entry.ExpiresAt) {
+			if err := os.Remove(entry.FilePath); err != nil && !os.IsNotExist(err) {
+				s.logger.Warn("failed to remove expired blob", "blob_id", id, "error", err)
 			}
+			delete(s.blobs, id)
+			s.addLocked(entry.Owner, -entry.Size)
+			s.logger.Debug("expired blob removed", "blob_id", id)
 		}
-		s.mu.Unlock()
 	}
 }
 

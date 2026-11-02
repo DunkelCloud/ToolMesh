@@ -174,7 +174,11 @@ A request to `/mcp` without a valid credential is answered `401` with a `WWW-Aut
 
 ### DCR Rate Limiting
 
-Dynamic Client Registration is rate-limited to 5 registrations per hour per IP to prevent abuse.
+Dynamic Client Registration is rate-limited to 5 registrations per hour per IP to prevent abuse (with Redis; a Redis outage lets registrations through and is logged). A registered client that never obtains a token is forgotten after a day, and one that does after 90 days without a new token (`TOOLMESH_DCR_CLIENT_TTL`, `TOOLMESH_DCR_CLIENT_IDLE_TTL`). See [docs/configuration.md](docs/configuration.md#client-registration).
+
+### File Broker
+
+The file broker (`upload_file`, `POST /files/upload`, download URLs under `/blobs/`) can be switched off with `TOOLMESH_FILE_BROKER_ENABLED=false` and bounded with a quota in bytes, in total and per user (`TOOLMESH_FILE_BROKER_MAX_TOTAL_BYTES`, `TOOLMESH_FILE_BROKER_MAX_BYTES_PER_USER`). It is on and unbounded by default. See [docs/configuration.md](docs/configuration.md#file-broker).
 
 ### Login Throttling
 

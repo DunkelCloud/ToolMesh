@@ -73,6 +73,12 @@ func logSecurityPosture(cfg *config.Config, authConfigured, authzOpen bool, logg
 			remediation: "unset the listed variables to restore the defaults, or set them to a positive limit",
 		})
 	}
+	if cfg.FileBrokerEnabled && cfg.FileBrokerMaxTotalBytes == 0 {
+		relaxed = append(relaxed, relaxedControl{
+			summary:     "the file broker has no total quota — any authenticated caller can fill the data volume through upload_file and /files/upload",
+			remediation: "set TOOLMESH_FILE_BROKER_MAX_TOTAL_BYTES (and TOOLMESH_FILE_BROKER_MAX_BYTES_PER_USER), or TOOLMESH_FILE_BROKER_ENABLED=false where no files are exchanged",
+		})
+	}
 	if cfg.DebugTools {
 		relaxed = append(relaxed, relaxedControl{
 			summary:     "debug tools are exposed on the MCP surface (debug_echo, debug_generate)",

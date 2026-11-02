@@ -110,6 +110,7 @@ const (
 	oauthScope            = "scope"
 	oauthCode             = "code"
 	oauthCodeChallenge    = "code_challenge"
+	oauthCodeVerifier     = "code_verifier"
 	oauthRefreshToken     = "refresh_token" //nolint:gosec // OAuth field name, not a credential
 	oauthGrantAuthCode    = "authorization_code"
 	oauthErrorDescription = "error_description"

@@ -434,10 +434,10 @@ func TestServer_OAuthFlow(t *testing.T) {
 
 	// Step 3: Exchange code for token (with PKCE verifier + client_id per H-7)
 	tokenForm := url.Values{
-		oauthGrantType:  {oauthGrantAuthCode},
-		argNameCode:     {code},
-		"code_verifier": {codeVerifier},
-		oauthClientID:   {clientID},
+		oauthGrantType:    {oauthGrantAuthCode},
+		argNameCode:       {code},
+		oauthCodeVerifier: {codeVerifier},
+		oauthClientID:     {clientID},
 	}
 	tokenReq := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/token", strings.NewReader(tokenForm.Encode()))
 	tokenReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")

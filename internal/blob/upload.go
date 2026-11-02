@@ -62,11 +62,21 @@ type UploadResult struct {
 // HandleUpload processes POST /files/upload: a multipart form with the file
 // in field "file" and an optional "ttl" field (Go duration, e.g. "24h").
 // Authentication is the caller's responsibility — this method implements
-// only the storage mechanics (DADL spec §6.2.3).
-func (s *Store) HandleUpload(w http.ResponseWriter, r *http.Request, limits UploadLimits) {
+// only the storage mechanics (DADL spec §6.2.3). The file counts against
+// owner's share of the quota; a file that does not fit is answered with 507.
+func (s *Store) HandleUpload(w http.ResponseWriter, r *http.Request, limits UploadLimits, owner string) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
+	}
+	// A body that cannot fit even without the form overhead is turned away
+	// before it is read and spooled to disk. Everything else is checked
+	// against the file size below, and again while the file is stored.
+	if size := r.ContentLength - uploadFormOverhead; size > 0 {
+		if err := s.CheckQuota(owner, size); err != nil {
+			http.Error(w, err.Error(), http.StatusInsufficientStorage)
+			return
+		}
 	}
 
 	r.Body = http.MaxBytesReader(w, r.Body, limits.MaxBytes+uploadFormOverhead)
@@ -96,6 +106,10 @@ func (s *Store) HandleUpload(w http.ResponseWriter, r *http.Request, limits Uplo
 		http.Error(w, fmt.Sprintf("upload exceeds the %d byte limit", limits.MaxBytes), http.StatusRequestEntityTooLarge)
 		return
 	}
+	if err := s.CheckQuota(owner, header.Size); err != nil {
+		http.Error(w, err.Error(), http.StatusInsufficientStorage)
+		return
+	}
 
 	contentType := header.Header.Get("Content-Type")
 	if contentType == "" {
@@ -115,7 +129,11 @@ func (s *Store) HandleUpload(w http.ResponseWriter, r *http.Request, limits Uplo
 		ttl = d
 	}
 
-	id, size, err := s.PutNamed(file, contentType, header.Filename, ttl)
+	id, size, err := s.PutOwned(file, contentType, header.Filename, owner, ttl)
+	if errors.Is(err, ErrQuotaExceeded) {
+		http.Error(w, err.Error(), http.StatusInsufficientStorage)
+		return
+	}
 	if err != nil {
 		s.logger.Error("blob upload failed", "error", err)
 		http.Error(w, "store upload", http.StatusInternalServerError)

@@ -17,6 +17,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime"
@@ -27,6 +28,7 @@ import (
 
 	"github.com/DunkelCloud/ToolMesh/internal/backend"
 	"github.com/DunkelCloud/ToolMesh/internal/blob"
+	"github.com/DunkelCloud/ToolMesh/internal/userctx"
 )
 
 // toolUploadFile is the built-in tool that fetches a URL server-side and
@@ -104,6 +106,12 @@ func (h *Handler) handleUploadFile(ctx context.Context, params map[string]any) (
 	if resp.ContentLength > h.uploadLimits.MaxBytes {
 		return uploadFileError(fmt.Sprintf("file is %d bytes, exceeding the %d byte limit", resp.ContentLength, h.uploadLimits.MaxBytes)), nil
 	}
+	owner := blobOwner(ctx)
+	if resp.ContentLength > 0 {
+		if err := h.blobStore.CheckQuota(owner, resp.ContentLength); err != nil {
+			return uploadFileError(err.Error()), nil
+		}
+	}
 
 	contentType := resp.Header.Get("Content-Type")
 	if contentType == "" {
@@ -117,7 +125,10 @@ func (h *Handler) handleUploadFile(ctx context.Context, params map[string]any) (
 	// Stream at most MaxBytes+1 into the store; one extra byte distinguishes
 	// "exactly at the limit" from "over it" for chunked responses without a
 	// Content-Length header.
-	id, size, err := h.blobStore.PutNamed(io.LimitReader(resp.Body, h.uploadLimits.MaxBytes+1), contentType, filename, ttl)
+	id, size, err := h.blobStore.PutOwned(io.LimitReader(resp.Body, h.uploadLimits.MaxBytes+1), contentType, filename, owner, ttl)
+	if errors.Is(err, blob.ErrQuotaExceeded) {
+		return uploadFileError(err.Error()), nil
+	}
 	if err != nil {
 		return uploadFileError(fmt.Sprintf("store fetched file: %s", err)), nil
 	}
@@ -155,6 +166,15 @@ func (h *Handler) handleUploadFile(ctx context.Context, params map[string]any) (
 			contentKeyText: string(payload),
 		}},
 	}, nil
+}
+
+// blobOwner names the user a blob stored during the request counts against
+// in the file broker quota, or "" when the request carries no user.
+func blobOwner(ctx context.Context) string {
+	if uc := userctx.FromContext(ctx); uc != nil {
+		return uc.UserID
+	}
+	return ""
 }
 
 // uploadFetchFilename derives a filename from the response headers or the URL

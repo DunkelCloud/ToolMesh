@@ -200,7 +200,7 @@ func TestStore_HandleUpload(t *testing.T) {
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/files/upload", body)
 	req.Header.Set("Content-Type", ct)
 	rec := httptest.NewRecorder()
-	s.HandleUpload(rec, req, limits)
+	s.HandleUpload(rec, req, limits, "")
 
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("status = %d, body %s", rec.Code, rec.Body.String())
@@ -243,7 +243,7 @@ func TestStore_HandleUploadErrors(t *testing.T) {
 	t.Run("method not allowed", func(t *testing.T) {
 		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/files/upload", http.NoBody)
 		rec := httptest.NewRecorder()
-		s.HandleUpload(rec, req, limits)
+		s.HandleUpload(rec, req, limits, "")
 		if rec.Code != http.StatusMethodNotAllowed {
 			t.Errorf("status = %d", rec.Code)
 		}
@@ -257,7 +257,7 @@ func TestStore_HandleUploadErrors(t *testing.T) {
 		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/files/upload", &buf)
 		req.Header.Set("Content-Type", w.FormDataContentType())
 		rec := httptest.NewRecorder()
-		s.HandleUpload(rec, req, limits)
+		s.HandleUpload(rec, req, limits, "")
 		if rec.Code != http.StatusBadRequest {
 			t.Errorf("status = %d", rec.Code)
 		}
@@ -268,7 +268,7 @@ func TestStore_HandleUploadErrors(t *testing.T) {
 		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/files/upload", body)
 		req.Header.Set("Content-Type", ct)
 		rec := httptest.NewRecorder()
-		s.HandleUpload(rec, req, limits)
+		s.HandleUpload(rec, req, limits, "")
 		if rec.Code != http.StatusBadRequest {
 			t.Errorf("status = %d", rec.Code)
 		}
@@ -279,7 +279,7 @@ func TestStore_HandleUploadErrors(t *testing.T) {
 		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/files/upload", body)
 		req.Header.Set("Content-Type", ct)
 		rec := httptest.NewRecorder()
-		s.HandleUpload(rec, req, limits)
+		s.HandleUpload(rec, req, limits, "")
 		if rec.Code != http.StatusCreated {
 			t.Fatalf("status = %d, body %s", rec.Code, rec.Body.String())
 		}
@@ -295,7 +295,7 @@ func TestStore_HandleUploadErrors(t *testing.T) {
 		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/files/upload", body)
 		req.Header.Set("Content-Type", ct)
 		rec := httptest.NewRecorder()
-		s.HandleUpload(rec, req, limits)
+		s.HandleUpload(rec, req, limits, "")
 		if rec.Code != http.StatusRequestEntityTooLarge {
 			t.Errorf("status = %d, body %s", rec.Code, rec.Body.String())
 		}

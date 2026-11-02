@@ -32,6 +32,30 @@ type OAuthClient struct {
 	ClientName   string    `json:"client_name,omitempty"`
 	RedirectURIs []string  `json:"redirect_uris"`
 	CreatedAt    time.Time `json:"created_at"`
+	// ExpiresAt is when the stores forget the client unless it is extended
+	// first (see ExtendClient). Zero keeps it forever, as for clients that
+	// were registered before clients expired.
+	ExpiresAt time.Time `json:"expires_at,omitzero"`
+}
+
+// Expired reports whether the client's lifetime has run out at now.
+func (c *OAuthClient) Expired(now time.Time) bool {
+	return !c.ExpiresAt.IsZero() && !now.Before(c.ExpiresAt)
+}
+
+// ExtendClient sets the expiry of a registered client to until, or keeps the
+// client forever when until is zero. Call it whenever the client obtains a
+// token, so that only clients nobody uses run out. A client that is unknown
+// or already expired returns ErrNotFound.
+func ExtendClient(ctx context.Context, store TokenStore, clientID string, until time.Time) error {
+	c, err := store.GetClient(ctx, clientID)
+	if err != nil {
+		return err
+	}
+	// The file store hands out its own record; change a copy.
+	extended := *c
+	extended.ExpiresAt = until
+	return store.SaveClient(ctx, &extended)
 }
 
 // AuthCode represents a short-lived authorization code.
@@ -120,13 +144,22 @@ func NewRedisTokenStore(rdb *redis.Client) *RedisTokenStore {
 	return &RedisTokenStore{rdb: rdb}
 }
 
-// SaveClient stores an OAuth client registration in Redis.
+// SaveClient stores an OAuth client registration in Redis. The key expires
+// with the client; a client without ExpiresAt is kept.
 func (s *RedisTokenStore) SaveClient(ctx context.Context, c *OAuthClient) error {
+	var ttl time.Duration // 0: no expiry
+	if !c.ExpiresAt.IsZero() {
+		ttl = time.Until(c.ExpiresAt)
+		if ttl <= 0 {
+			// Already expired, as a warm-up from the file store may find it.
+			return s.rdb.Del(ctx, prefixClient+c.ClientID).Err()
+		}
+	}
 	data, err := json.Marshal(c) //nolint:gosec // G117: intentional — storing OAuth data in Redis
 	if err != nil {
 		return fmt.Errorf("marshal client: %w", err)
 	}
-	return s.rdb.Set(ctx, prefixClient+c.ClientID, data, 0).Err()
+	return s.rdb.Set(ctx, prefixClient+c.ClientID, data, ttl).Err()
 }
 
 // GetClient retrieves an OAuth client by its client ID.

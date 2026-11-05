@@ -15,12 +15,16 @@ for the full narrative and details.
 
 - Credential store `command` (`CREDENTIAL_STORE=command`). ToolMesh runs
   `TOOLMESH_CREDENTIAL_COMMAND`, for example `sops -d --output-type dotenv`
-  on an encrypted file, and keeps the dotenv lines it prints in memory only:
-  never in the process environment, which Docker writes into the container
-  configuration on disk, and never in the log. The command runs without a
-  shell; a failed first run stops the start. `TOOLMESH_CREDENTIAL_RELOAD_IN`
-  refreshes the values on an interval, and a `RELOAD_IN=<seconds>` line in the
-  output sets the next run itself, which suits short-lived tokens. A failed
+  on an encrypted file, and keeps the values it prints in memory only: never
+  in the process environment, which Docker writes into the container
+  configuration on disk, and never in the log. The output is dotenv, or JSON
+  with `TOOLMESH_CREDENTIAL_FORMAT=json`: `TOOLMESH_CREDENTIAL_JSON_PATH`
+  selects the object that holds the values (`data.data` for
+  `vault kv get -format=json` or `bao kv get -format=json`), and nested
+  objects below it are flattened. The command runs without a shell; a failed
+  first run stops the start. `TOOLMESH_CREDENTIAL_RELOAD_IN` refreshes the
+  values on an interval, and a `RELOAD_IN` key in the output sets the next
+  run itself, which suits short-lived tokens. A failed
   refresh keeps the previous values and retries with backoff. With this store
   `TOOLMESH_AUTH_PASSWORD`, `TOOLMESH_API_KEY`, `REDIS_URL` and `env:`
   remappings come from the output too, and stdio backends receive only the

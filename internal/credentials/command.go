@@ -41,6 +41,20 @@ const (
 	// CommandConfigTimeout is the time limit of one run in seconds; empty
 	// means DefaultCommandTimeout.
 	CommandConfigTimeout = "timeout"
+	// CommandConfigFormat is the output format, FormatDotenv (default) or
+	// FormatJSON.
+	CommandConfigFormat = "format"
+	// CommandConfigJSONPath is the dot-separated path to the JSON object that
+	// holds the credentials, e.g. "data.data"; empty selects the top level.
+	CommandConfigJSONPath = "json_path"
+)
+
+// Output formats of the command.
+const (
+	// FormatDotenv reads KEY=value lines (see parseDotenv).
+	FormatDotenv = "dotenv"
+	// FormatJSON reads a JSON object and flattens it (see parseJSONOutput).
+	FormatJSON = "json"
 )
 
 // ReloadInKey is the reserved output key with which the command sets the
@@ -89,6 +103,13 @@ type CommandStoreOptions struct {
 	Interval time.Duration
 	// Timeout bounds a run; 0 means DefaultCommandTimeout.
 	Timeout time.Duration
+	// Format is the output format, FormatDotenv (also when empty) or
+	// FormatJSON.
+	Format string
+	// JSONPath selects the object that holds the credentials in JSON
+	// output, dot-separated; empty selects the top level. Only with
+	// FormatJSON.
+	JSONPath string
 	// Logger receives run outcomes, never values; nil means slog.Default().
 	Logger *slog.Logger
 }
@@ -113,7 +134,36 @@ func ParseCommandStoreConfig(cfg map[string]string) (CommandStoreOptions, error)
 		return opts, errors.New("credential store command: timeout (TOOLMESH_CREDENTIAL_COMMAND_TIMEOUT) must be at least one second")
 	}
 	opts.Interval, opts.Timeout = reload, timeout
+	opts.Format = strings.TrimSpace(cfg[CommandConfigFormat])
+	opts.JSONPath = strings.TrimSpace(cfg[CommandConfigJSONPath])
+	if _, _, err := outputFormat(opts.Format, opts.JSONPath); err != nil {
+		return opts, err
+	}
 	return opts, nil
+}
+
+// outputFormat checks the output format and splits the JSON path.
+func outputFormat(name, jsonPath string) (format string, path []string, err error) {
+	switch name {
+	case "", FormatDotenv:
+		if jsonPath != "" {
+			return "", nil, fmt.Errorf("credential store command: a JSON path (TOOLMESH_CREDENTIAL_JSON_PATH) needs TOOLMESH_CREDENTIAL_FORMAT=%s", FormatJSON)
+		}
+		return FormatDotenv, nil, nil
+	case FormatJSON:
+		if jsonPath == "" || jsonPath == "." {
+			return FormatJSON, nil, nil
+		}
+		path = strings.Split(jsonPath, ".")
+		for _, p := range path {
+			if p == "" {
+				return "", nil, fmt.Errorf("credential store command: JSON path %q has an empty segment", jsonPath)
+			}
+		}
+		return FormatJSON, path, nil
+	default:
+		return "", nil, fmt.Errorf("credential store command: unknown output format %q (TOOLMESH_CREDENTIAL_FORMAT must be %s or %s)", name, FormatDotenv, FormatJSON)
+	}
 }
 
 // seconds parses a non-negative number of seconds; empty yields fallback.
@@ -131,18 +181,21 @@ func seconds(v string, fallback time.Duration) (time.Duration, error) {
 
 // CommandStore implements CredentialStore with values a command prints in
 // dotenv format, typically a decryption such as `sops -d --output-type
-// dotenv`. The values live only in a map in memory: never in the process
-// environment (so neither in a container configuration nor in stdio
-// children) and never in the log.
+// dotenv`, or as JSON, such as `vault kv get -format=json` with a path to the
+// object that holds them. The values live only in a map in memory: never in
+// the process environment (so neither in a container configuration nor in
+// stdio children) and never in the log.
 //
 // A successful run replaces the whole set atomically; keys it no longer
 // prints are gone. A failed run keeps the previous set and is retried with
 // backoff. The command can set the time to its next run with a RELOAD_IN
-// line, which suits short-lived tokens.
+// key, which suits short-lived tokens.
 type CommandStore struct {
 	argv     []string
 	interval time.Duration
 	timeout  time.Duration
+	format   string
+	jsonPath []string
 	logger   *slog.Logger
 
 	// retryDelay is the wait after the first failed refresh.
@@ -173,6 +226,10 @@ func NewCommandStore(opts CommandStoreOptions) (*CommandStore, error) {
 	if opts.Interval < 0 {
 		return nil, errors.New("credential store command: negative reload interval")
 	}
+	format, jsonPath, err := outputFormat(opts.Format, opts.JSONPath)
+	if err != nil {
+		return nil, err
+	}
 	timeout := opts.Timeout
 	if timeout <= 0 {
 		timeout = DefaultCommandTimeout
@@ -185,6 +242,8 @@ func NewCommandStore(opts CommandStoreOptions) (*CommandStore, error) {
 		argv:       argv,
 		interval:   opts.Interval,
 		timeout:    timeout,
+		format:     format,
+		jsonPath:   jsonPath,
 		logger:     logger.With("credential_store", CommandStoreName),
 		retryDelay: firstRetryDelay,
 		unit:       time.Second,
@@ -316,7 +375,11 @@ func (s *CommandStore) fetch(ctx context.Context) (vars map[string]string, reloa
 		return nil, 0, fmt.Errorf("command failed: %w", runErr)
 	}
 
-	vars, err = parseDotenv(stdout.buf)
+	if s.format == FormatJSON {
+		vars, err = parseJSONOutput(stdout.buf, s.jsonPath)
+	} else {
+		vars, err = parseDotenv(stdout.buf)
+	}
 	if err != nil {
 		return nil, 0, fmt.Errorf("parse command output: %w", err)
 	}

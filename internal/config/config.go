@@ -209,6 +209,8 @@ type Config struct {
 	CredentialCommand  string // TOOLMESH_CREDENTIAL_COMMAND: command line printing dotenv
 	CredentialReloadIn string // TOOLMESH_CREDENTIAL_RELOAD_IN: seconds between runs, default 0 (only at startup)
 	CredentialTimeout  string // TOOLMESH_CREDENTIAL_COMMAND_TIMEOUT: seconds per run, default 30
+	CredentialFormat   string // TOOLMESH_CREDENTIAL_FORMAT: dotenv (default) or json
+	CredentialJSONPath string // TOOLMESH_CREDENTIAL_JSON_PATH: dot path to the object holding the values (json only)
 
 	// Prometheus metrics endpoint (served on a separate listener so the
 	// scraper does not need to traverse the public auth domain).
@@ -286,6 +288,8 @@ func Load() (*Config, error) {
 		CredentialCommand:       envStr("TOOLMESH_CREDENTIAL_COMMAND", ""),
 		CredentialReloadIn:      envStr("TOOLMESH_CREDENTIAL_RELOAD_IN", ""),
 		CredentialTimeout:       envStr("TOOLMESH_CREDENTIAL_COMMAND_TIMEOUT", ""),
+		CredentialFormat:        envStr("TOOLMESH_CREDENTIAL_FORMAT", ""),
+		CredentialJSONPath:      envStr("TOOLMESH_CREDENTIAL_JSON_PATH", ""),
 		GateEvaluators:          envStr("GATE_EVALUATORS", "goja"),
 		MetricsEnabled:          envBool("TOOLMESH_METRICS_ENABLED", true),
 		MetricsBind:             envStr("TOOLMESH_METRICS_BIND", ":9090"),
@@ -529,6 +533,8 @@ func (c *Config) CredentialStoreConfig() map[string]string {
 		credentials.CommandConfigCommand:  c.CredentialCommand,
 		credentials.CommandConfigReloadIn: c.CredentialReloadIn,
 		credentials.CommandConfigTimeout:  c.CredentialTimeout,
+		credentials.CommandConfigFormat:   c.CredentialFormat,
+		credentials.CommandConfigJSONPath: c.CredentialJSONPath,
 	}
 }
 

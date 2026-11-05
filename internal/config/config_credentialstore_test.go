@@ -26,6 +26,8 @@ func TestLoad_CredentialStoreCommandSettings(t *testing.T) {
 	t.Setenv("TOOLMESH_CREDENTIAL_COMMAND", "/usr/local/bin/sops -d --output-type dotenv /run/secrets/toolmesh.env")
 	t.Setenv("TOOLMESH_CREDENTIAL_RELOAD_IN", "300")
 	t.Setenv("TOOLMESH_CREDENTIAL_COMMAND_TIMEOUT", "10")
+	t.Setenv("TOOLMESH_CREDENTIAL_FORMAT", "")
+	t.Setenv("TOOLMESH_CREDENTIAL_JSON_PATH", "")
 
 	cfg, err := Load()
 	if err != nil {
@@ -35,6 +37,8 @@ func TestLoad_CredentialStoreCommandSettings(t *testing.T) {
 		credentials.CommandConfigCommand:  "/usr/local/bin/sops -d --output-type dotenv /run/secrets/toolmesh.env",
 		credentials.CommandConfigReloadIn: "300",
 		credentials.CommandConfigTimeout:  "10",
+		credentials.CommandConfigFormat:   "",
+		credentials.CommandConfigJSONPath: "",
 	}
 	if got := cfg.CredentialStoreConfig(); !reflect.DeepEqual(got, want) {
 		t.Errorf("CredentialStoreConfig() = %q, want %q", got, want)
@@ -45,6 +49,25 @@ func TestLoad_CredentialStoreCommandSettings(t *testing.T) {
 	}
 	if opts.Interval.Seconds() != 300 || opts.Timeout.Seconds() != 10 {
 		t.Errorf("parsed interval %s, timeout %s", opts.Interval, opts.Timeout)
+	}
+}
+
+func TestLoad_CredentialStoreJSONSettings(t *testing.T) {
+	t.Setenv("CREDENTIAL_STORE", "command")
+	t.Setenv("TOOLMESH_CREDENTIAL_COMMAND", "/usr/local/bin/vault kv get -format=json -mount=secret toolmesh")
+	t.Setenv("TOOLMESH_CREDENTIAL_FORMAT", "json")
+	t.Setenv("TOOLMESH_CREDENTIAL_JSON_PATH", "data.data")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	opts, err := credentials.ParseCommandStoreConfig(cfg.CredentialStoreConfig())
+	if err != nil {
+		t.Fatalf("the command store rejects the settings: %v", err)
+	}
+	if opts.Format != credentials.FormatJSON || opts.JSONPath != "data.data" {
+		t.Errorf("format %q, path %q; want json, data.data", opts.Format, opts.JSONPath)
 	}
 }
 

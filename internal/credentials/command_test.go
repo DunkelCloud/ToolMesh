@@ -533,7 +533,7 @@ func TestCommandStore_ConcurrentReaders(t *testing.T) {
 	s.logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	gen := func(i int) map[string]string {
 		v := strconv.Itoa(i)
-		return map[string]string{"CREDENTIAL_GEN_A": v, "CREDENTIAL_GEN_B": v, "OTHER": v}
+		return map[string]string{"CREDENTIAL_GEN_A": v, "CREDENTIAL_GEN_B": v, testOther: v}
 	}
 	s.apply(gen(0), -1)
 
@@ -560,7 +560,7 @@ func TestCommandStore_ConcurrentReaders(t *testing.T) {
 					errs <- err.Error()
 					return
 				}
-				if v, ok := s.LookupKey("OTHER"); !ok || v == "" {
+				if v, ok := s.LookupKey(testOther); !ok || v == "" {
 					errs <- "OTHER missing"
 					return
 				}
@@ -649,11 +649,11 @@ func TestLookupKey(t *testing.T) {
 	}
 
 	s, _ := newTestStore(t, CommandStoreOptions{}, helperSleep)
-	s.apply(map[string]string{"OTHER": "x"}, -1)
+	s.apply(map[string]string{testOther: "x"}, -1)
 	if _, ok := LookupKey(s, "TOOLMESH_LOOKUP_TEST"); ok {
 		t.Error("command store: LookupKey fell back to the environment")
 	}
-	if v, ok := LookupKey(s, "OTHER"); !ok || v != "x" {
+	if v, ok := LookupKey(s, testOther); !ok || v != "x" {
 		t.Errorf("command store: LookupKey = %q, %v", v, ok)
 	}
 }
@@ -696,6 +696,61 @@ func isA[T any](v any) bool {
 	return ok
 }
 
+// TestCommandStore_JSONOutput runs the store on JSON output shaped like
+// `vault kv get -format=json`, selected by the path data.data.
+func TestCommandStore_JSONOutput(t *testing.T) {
+	out := newOutputFile(t, testVaultKV2)
+	s, logs := newTestStore(t, CommandStoreOptions{Format: FormatJSON, JSONPath: testPathKV2}, helperPrint, out.path)
+	s.unit = time.Second
+	ctx := context.Background()
+	if err := s.Load(ctx); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if v, err := s.Get(ctx, "github_token", TenantInfo{}); err != nil || v != testVaultGH {
+		t.Errorf("Get(github_token) = %q, %v", v, err)
+	}
+	if v, ok := s.LookupKey("TOOLMESH_API_KEY"); !ok || v != testVaultTM {
+		t.Errorf("LookupKey(TOOLMESH_API_KEY) = %q, %v", v, ok)
+	}
+	for _, junk := range []string{"request_id", "lease_duration", "created_time", "version"} {
+		if _, ok := s.LookupKey(junk); ok {
+			t.Errorf("metadata %s outside the path became a key", junk)
+		}
+	}
+	if p := time.Duration(s.period.Load()); p != 0 {
+		t.Errorf("period = %s, want 0: no interval and no RELOAD_IN", p)
+	}
+
+	// RELOAD_IN as a JSON number inside the selected object.
+	out.set(`{"data": {"data": {"CREDENTIAL_A": "gen2", "RELOAD_IN": 7}}}`)
+	if err := s.refresh(ctx); err != nil {
+		t.Fatalf("refresh: %v", err)
+	}
+	if got := getA(s); got != testGen2 {
+		t.Errorf("CREDENTIAL_A = %q, want %q", got, testGen2)
+	}
+	if p := time.Duration(s.period.Load()); p != 7*time.Second {
+		t.Errorf("period = %s, want RELOAD_IN 7s", p)
+	}
+	if _, ok := s.LookupKey(ReloadInKey); ok {
+		t.Error("RELOAD_IN must not be stored as a value")
+	}
+
+	// Broken JSON fails the run and keeps the set.
+	out.set(`{"data": {"data": {"CREDENTIAL_A": "gen3"`)
+	if err := s.refresh(ctx); err == nil || !strings.Contains(err.Error(), "not valid JSON") {
+		t.Fatalf("refresh with broken JSON: %v", err)
+	}
+	if got := getA(s); got != testGen2 {
+		t.Errorf("after a failed run CREDENTIAL_A = %q, want the previous %q", got, testGen2)
+	}
+	for _, secret := range []string{testVaultGH, testVaultTM, "deepl-from-vault"} {
+		if strings.Contains(logs.String(), secret) {
+			t.Errorf("log contains the value %q", secret)
+		}
+	}
+}
+
 func TestParseCommandStoreConfig(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -712,6 +767,10 @@ func TestParseCommandStoreConfig(t *testing.T) {
 		{name: "negative reload", cfg: map[string]string{CommandConfigCommand: "x", CommandConfigReloadIn: "-1"}, wantErr: "TOOLMESH_CREDENTIAL_RELOAD_IN"},
 		{name: "timeout zero", cfg: map[string]string{CommandConfigCommand: "x", CommandConfigTimeout: "0"}, wantErr: "at least one second"},
 		{name: "timeout not a number", cfg: map[string]string{CommandConfigCommand: "x", CommandConfigTimeout: "ten"}, wantErr: "TOOLMESH_CREDENTIAL_COMMAND_TIMEOUT"},
+		{name: "json with path", cfg: map[string]string{CommandConfigCommand: "x", CommandConfigFormat: " json ", CommandConfigJSONPath: " data.data "},
+			want: CommandStoreOptions{Command: "x", Timeout: DefaultCommandTimeout, Format: FormatJSON, JSONPath: testPathKV2}},
+		{name: "unknown format", cfg: map[string]string{CommandConfigCommand: "x", CommandConfigFormat: "yaml"}, wantErr: "TOOLMESH_CREDENTIAL_FORMAT must be"},
+		{name: "json path without json", cfg: map[string]string{CommandConfigCommand: "x", CommandConfigJSONPath: testDataKey}, wantErr: "TOOLMESH_CREDENTIAL_JSON_PATH"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

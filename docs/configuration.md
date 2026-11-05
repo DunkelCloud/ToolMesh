@@ -777,9 +777,11 @@ them in memory.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `CREDENTIAL_STORE` | `embedded` | Set to `command` |
-| `TOOLMESH_CREDENTIAL_COMMAND` | *(none)* | Command line that prints the values in dotenv format. Required |
+| `TOOLMESH_CREDENTIAL_COMMAND` | *(none)* | Command line that prints the values. Required |
 | `TOOLMESH_CREDENTIAL_RELOAD_IN` | `0` | Seconds between runs. `0` runs the command only at startup |
 | `TOOLMESH_CREDENTIAL_COMMAND_TIMEOUT` | `30` | Seconds a single run may take |
+| `TOOLMESH_CREDENTIAL_FORMAT` | `dotenv` | Output format: `dotenv` or `json` |
+| `TOOLMESH_CREDENTIAL_JSON_PATH` | *(top level)* | With `json`: dot-separated path to the object that holds the values, e.g. `data.data` |
 
 The settings carry a `TOOLMESH_` prefix because `CREDENTIAL_<NAME>` is the
 namespace of the credentials themselves. Invalid values stop the start.
@@ -797,8 +799,8 @@ A run fails when the command exits with a code other than 0, exceeds the
 timeout, writes more than 1 MiB to stdout, prints no value at all, or prints
 something that does not parse.
 
-**The output.** One `KEY=value` per line, as `sops -d --output-type dotenv`
-writes it and as `.env.example` shows:
+**dotenv output** (the default). One `KEY=value` per line, as
+`sops -d --output-type dotenv` writes it and as `.env.example` shows:
 
 - `#` comment lines and blank lines are skipped, a leading `export ` is
   ignored.
@@ -808,9 +810,27 @@ writes it and as `.env.example` shows:
   escapes `\n`, `\r`, `\t`, `\"`, `\\` and `\$`. Quoted values may span lines.
 - Variables are not expanded. A later line wins over an earlier one.
 
+**JSON output.** With `TOOLMESH_CREDENTIAL_FORMAT=json` the command prints one
+JSON value, as `vault kv get -format=json` and `bao kv get -format=json` do.
+`TOOLMESH_CREDENTIAL_JSON_PATH` selects the object that holds the values:
+`data.data` for a KV version 2 secret of Vault or OpenBao, `data` for version
+1, empty for the top level. Everything outside that object, such as request
+and lease metadata, is ignored.
+
+- Nested objects below the path are flattened: every string, number and
+  boolean becomes a key named after its own member name, however deep it
+  sits. `{"github": {"CREDENTIAL_GITHUB_TOKEN": "..."}}` gives
+  `CREDENTIAL_GITHUB_TOKEN`.
+- Numbers keep their written form. `null` values and arrays are skipped.
+- A member name that is not an environment variable name, or that occurs
+  twice after flattening, fails the run.
+- Vault's `lease_duration` is not used; a KV version 2 secret reports `0`
+  there.
+
 Keys are environment-style names: `CREDENTIAL_<NAME>` for backend credentials,
 and any other name that an `env:` remapping, a `credential_env` entry or one of
-ToolMesh's own secrets (below) refers to. `RELOAD_IN` is reserved.
+ToolMesh's own secrets (below) refers to. `RELOAD_IN` is reserved in both
+formats.
 
 **Where the values stay.** In a map in ToolMesh's memory, never in its
 environment and never in the log. stdout is not logged; stderr is logged at
@@ -818,8 +838,9 @@ environment and never in the log. stdout is not logged; stderr is logged at
 a run adds or drops keys, the log names the keys, not the values.
 
 **Refreshing.** After `TOOLMESH_CREDENTIAL_RELOAD_IN` seconds the command runs
-again. A line `RELOAD_IN=<seconds>` in the output sets the delay until the
-next run instead; `RELOAD_IN=0` ends the refreshing. A successful run replaces
+again. A key `RELOAD_IN` in the output (a line `RELOAD_IN=<seconds>`, or a
+JSON member of that name) sets the delay until the next run instead;
+`RELOAD_IN=0` ends the refreshing. A successful run replaces
 the whole set at once, and keys it no longer prints are gone. A failed run
 keeps the previous set and is retried after 30 seconds, then with a doubling
 delay up to the interval in force. If the first run at startup fails, ToolMesh
@@ -892,11 +913,43 @@ TOOLMESH_CREDENTIAL_COMMAND=/usr/local/bin/sops -d --input-type dotenv --output-
 
 How sops gets its age identity is the operator's decision: a key file mounted
 read-only (`SOPS_AGE_KEY_FILE` is a path, not a secret), a key command, or a
-mechanism that releases the key only at runtime. Do not put the key itself
-into `.env` or `environment:`; it would end up in the container
-configuration like any other value there. Change values with
-`sops secrets/toolmesh.env`; ToolMesh picks them up at its next run or
-restart.
+mechanism that releases the key only at runtime. One such mechanism is
+`ergosumd secret get` of [ergosum](https://github.com/DunkelCloud/ergosum)
+(v0.2.0 or later): it opens a sealed secret only on the machine it is bound
+to, after that machine has passed its checks at its place, so the key is not
+on the disk in plain text either. Do not put the key itself into `.env` or
+`environment:`; it would end up in the container configuration like any
+other value there. Change values with `sops secrets/toolmesh.env`; ToolMesh
+picks them up at its next run or restart.
+
+#### Example: Vault or OpenBao through their proxy
+
+Vault Proxy (`vault proxy`, in OpenBao `bao proxy`) logs in with its
+auto-auth method and adds its token to every request that carries none
+(`use_auto_auth_token`). The command then needs no token of its own, and
+nothing is written to disk:
+
+```bash
+CREDENTIAL_STORE=command
+TOOLMESH_CREDENTIAL_FORMAT=json
+TOOLMESH_CREDENTIAL_JSON_PATH=data.data
+TOOLMESH_CREDENTIAL_COMMAND=/usr/local/bin/vault kv get -format=json -mount=secret toolmesh
+TOOLMESH_CREDENTIAL_RELOAD_IN=300
+VAULT_ADDR=http://127.0.0.1:8100
+```
+
+The KV secret `secret/toolmesh` holds the keys as a dotenv file would
+(`CREDENTIAL_GITHUB_TOKEN`, `TOOLMESH_API_KEY` and so on). Mount the static
+`vault` binary (or `bao`, with `BAO_ADDR`) read-only; the address is not a
+secret. Bind the proxy's listener so that only ToolMesh reaches it, for
+example on loopback in a network namespace shared with the ToolMesh
+container: whoever reaches it acts with the proxy's token.
+
+The proxy's own login needs a credential too. With
+[ergosum](https://github.com/DunkelCloud/ergosum) the machine receives a
+short-lived JWT for the JWT auth method of Vault or OpenBao only after it was
+called back at the places it is bound to, so no long-lived secret such as an
+AppRole secret ID lies on its disk.
 
 #### Example: short-lived tokens
 

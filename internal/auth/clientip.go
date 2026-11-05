@@ -15,34 +15,59 @@
 package auth
 
 import (
+	"log/slog"
 	"net"
 	"net/http"
 	"net/netip"
 	"slices"
 	"strings"
 	"sync/atomic"
+	"time"
 )
 
-// DefaultTrustedProxies are the networks whose X-Forwarded-For header
+// DefaultTrustedProxies are the addresses whose X-Forwarded-For header
 // ClientIP honors unless SetTrustedProxies installs another list: loopback
-// and the private ranges, where a reverse proxy on the same host or in the
-// same Docker network sits. A request from any other address is identified
-// by its connection address alone.
+// only, where a reverse proxy on the same host connects from. A proxy in a
+// container or on another machine has to be listed. Private ranges are not
+// trusted by default: a client on a LAN, or every client of a Docker setup
+// that shows its bridge gateway as the peer, would otherwise choose its own
+// address.
 var DefaultTrustedProxies = []netip.Prefix{
 	netip.MustParsePrefix("127.0.0.0/8"),
 	netip.MustParsePrefix("::1/128"),
-	netip.MustParsePrefix("10.0.0.0/8"),
-	netip.MustParsePrefix("172.16.0.0/12"),
-	netip.MustParsePrefix("192.168.0.0/16"),
-	netip.MustParsePrefix("fc00::/7"),
+}
+
+// untrustedForwardedWarnInterval spaces out the warning about an
+// X-Forwarded-For header from an address that is not a trusted proxy.
+const untrustedForwardedWarnInterval = time.Hour
+
+// lastUntrustedForwardedWarn is the time of the last such warning in Unix
+// nanoseconds; 0 means none yet.
+var lastUntrustedForwardedWarn atomic.Int64
+
+// warnUntrustedForwarded logs, at most once per interval, that a request
+// from remote carried X-Forwarded-For which was ignored. Behind a reverse
+// proxy that is not listed every client shares the proxy's address, and this
+// line is what tells the operator.
+func warnUntrustedForwarded(remote string) {
+	now := time.Now().UnixNano()
+	last := lastUntrustedForwardedWarn.Load()
+	if last != 0 && now-last < int64(untrustedForwardedWarnInterval) {
+		return
+	}
+	if !lastUntrustedForwardedWarn.CompareAndSwap(last, now) {
+		return
+	}
+	slog.Warn("X-Forwarded-For from an address that is not a trusted proxy is ignored; if ToolMesh runs behind a reverse proxy at this address, add the proxy's address to TOOLMESH_TRUSTED_PROXIES, otherwise every client shares its per-address limits",
+		"remote", remote)
 }
 
 // trustedProxies holds the list installed by SetTrustedProxies; nil means
 // DefaultTrustedProxies.
 var trustedProxies atomic.Pointer[[]netip.Prefix]
 
-// SetTrustedProxies sets the networks whose X-Forwarded-For header ClientIP
-// honors (TOOLMESH_TRUSTED_PROXIES). An empty, non-nil list trusts no proxy;
+// SetTrustedProxies sets the proxy addresses whose X-Forwarded-For header
+// ClientIP honors (TOOLMESH_TRUSTED_PROXIES). An empty, non-nil list trusts no proxy;
 // nil restores DefaultTrustedProxies.
 func SetTrustedProxies(prefixes []netip.Prefix) {
 	if prefixes == nil {
@@ -80,11 +105,14 @@ func ClientIP(r *http.Request) string {
 	if err != nil {
 		host = r.RemoteAddr
 	}
+	values := r.Header.Values("X-Forwarded-For")
 	remote, err := netip.ParseAddr(host)
 	if err != nil || !isTrustedProxy(remote) {
+		if len(values) > 0 {
+			warnUntrustedForwarded(host)
+		}
 		return host
 	}
-	values := r.Header.Values("X-Forwarded-For")
 	if len(values) == 0 {
 		return host
 	}

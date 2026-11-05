@@ -142,3 +142,31 @@ func TestBearer_TokenShapedValuesReserveBeforeBcrypt(t *testing.T) {
 		t.Errorf("API key from a throttled address: status %d, want 429", w.Code)
 	}
 }
+
+// TestBearer_ThrottleIgnoresSpoofedForwardedFor pins that a client that is no
+// trusted proxy cannot pick a fresh address per guess with X-Forwarded-For.
+// A Docker bridge gateway address is not trusted by default.
+func TestBearer_ThrottleIgnoresSpoofedForwardedFor(t *testing.T) {
+	cfg := loginTestConfig()
+	cfg.APIKey = testLoginAPIKey
+	cfg.APIKeyMaxFailuresPerIP = 3
+	ts := newLoginTestServer(t, cfg, loginTestOptions{})
+	const gateway = "172.17.0.1:4000"
+	for i := 0; i < cfg.APIKeyMaxFailuresPerIP; i++ {
+		ts.mcpCallFromVia(gateway, fmt.Sprintf("198.51.100.%d", i+1), fmt.Sprintf("Bearer guess-%d", i))
+	}
+	if w := ts.mcpCallFromVia(gateway, "198.51.100.99", "Bearer guess-x"); w.Code != http.StatusTooManyRequests {
+		t.Errorf("guess with a fresh X-Forwarded-For after the limit: status %d, want 429", w.Code)
+	}
+}
+
+func (ts *loginTestServer) mcpCallFromVia(remote, forwardedFor, authorization string) *httptest.ResponseRecorder {
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"ping"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", authorization)
+	req.Header.Set("X-Forwarded-For", forwardedFor)
+	req.RemoteAddr = remote
+	w := httptest.NewRecorder()
+	ts.mux.ServeHTTP(w, req)
+	return w
+}

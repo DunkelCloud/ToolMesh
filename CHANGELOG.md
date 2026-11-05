@@ -33,8 +33,9 @@ for the full narrative and details.
 - Token refresh and access tokens are resolved against the current
   `users.yaml` or single-password owner; removed or disabled users lose
   access. `POST /revoke` (RFC 7009) revokes tokens.
-- `X-Forwarded-For` is honored only from `TOOLMESH_TRUSTED_PROXIES` (default
-  loopback and private ranges).
+- `X-Forwarded-For` is honored only from the proxy addresses in
+  `TOOLMESH_TRUSTED_PROXIES` (default loopback only); a header from any other
+  address is ignored with a warning at most once an hour.
 - SSRF checks treat carrier-grade NAT, benchmarking, documentation,
   multicast, reserved, NAT64 and 6to4 addresses as private.
 - DADL parameters are checked against their declared types before the

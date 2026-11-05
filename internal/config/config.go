@@ -200,10 +200,11 @@ type Config struct {
 	// CORS
 	CORSAllowedOrigins []string // TOOLMESH_CORS_ORIGINS, comma-separated allowlist
 
-	// TrustedProxies lists the networks whose X-Forwarded-For header is
-	// honored when working out a client's address. nil means the default
-	// (loopback and private ranges, see auth.DefaultTrustedProxies); an
-	// empty list ("none") honors no X-Forwarded-For at all.
+	// TrustedProxies lists the reverse proxy addresses whose
+	// X-Forwarded-For header is honored when working out a client's
+	// address. nil means the default (loopback only, see
+	// auth.DefaultTrustedProxies); an empty list ("none") honors no
+	// X-Forwarded-For at all.
 	TrustedProxies []netip.Prefix // TOOLMESH_TRUSTED_PROXIES, comma-separated CIDRs or addresses
 
 	// OAuthRedirectHosts, when non-empty, restricts the redirect_uri hosts an

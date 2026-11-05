@@ -16,7 +16,7 @@ All configuration is done via environment variables. Copy `.env.example` to `.en
 | `TOOLMESH_AUTH_ROLES` | `admin` | Comma-separated roles in simple auth mode |
 | `TOOLMESH_ISSUER` | `https://toolmesh.invalid/` | OAuth issuer URL (must end with `/`). The default is a placeholder on a top-level domain that never resolves: set it to the public URL clients use, or the OAuth metadata and the [`401` challenge of `/mcp`](#unauthenticated-requests) name the wrong host. ToolMesh logs a warning at startup while it is unchanged, and also for `https://toolmesh.io/`, the placeholder earlier versions shipped. |
 | `TOOLMESH_ROOT_REDIRECT` | *(empty)* | Absolute `http(s)` URL that `GET /` redirects to (302). Unset, the site root serves the built-in page explaining that this host is an MCP endpoint. Only `/` is redirected — `/mcp` always serves the page, since a visitor there needs the URL to copy. An invalid value fails startup. |
-| `TOOLMESH_TRUSTED_PROXIES` | *(empty: loopback and private ranges)* | Networks whose `X-Forwarded-For` header is honored, as comma-separated CIDRs or single addresses, or `none`. A request from any other address is identified by its connection address. See [Client address](#client-address). An invalid entry fails startup. |
+| `TOOLMESH_TRUSTED_PROXIES` | *(empty: loopback only)* | Addresses of the reverse proxies whose `X-Forwarded-For` header is honored, as comma-separated addresses or CIDRs, or `none`. List proxies, not client networks. A request from any other address is identified by its connection address. See [Client address](#client-address). An invalid entry fails startup. |
 | `TOOLMESH_DEV` | `false` | Local-development posture. Reports the startup security-posture summary at `INFO` instead of `WARN`. Relaxes no setting on its own — it only changes the log level of that summary. |
 
 ## Login Throttling
@@ -45,14 +45,17 @@ Set a limit to `0` to switch it off; the startup security-posture summary report
 
 ### Client address
 
-The client address is used for the login and API key limits, the registration limit and the `remote` field of the log. ToolMesh takes it from the connection, and from `X-Forwarded-For` only when the connection comes from a trusted proxy (`TOOLMESH_TRUSTED_PROXIES`, by default loopback and the private ranges `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16` and `fc00::/7`). The header is then read from the right: the first entry that is not a trusted proxy itself is the client. When every entry is a trusted proxy, the leftmost one is used. All `X-Forwarded-For` header lines count, not just the first.
+The client address is used for the login and API key limits, the registration limit and the `remote` field of the log. ToolMesh takes it from the connection, and from `X-Forwarded-For` only when the connection comes from a trusted proxy (`TOOLMESH_TRUSTED_PROXIES`, by default loopback only). The header is then read from the right: the first entry that is not a trusted proxy itself is the client. When every entry is a trusted proxy, the leftmost one is used. All `X-Forwarded-For` header lines count, not just the first.
 
-- A request from a public address that sets `X-Forwarded-For` is identified by its connection address; the header is ignored.
-- The proxy closest to ToolMesh must append the real client address to `X-Forwarded-For`, which common reverse proxies do.
-- With the default, a client that connects directly from a private address (a LAN or VPN) can choose the address it is counted under. Where that matters, set `TOOLMESH_TRUSTED_PROXIES` to the address of the reverse proxy alone, for example `172.18.0.5` or the proxy's Docker network.
-- Check the `remote` field of the log for a request from outside. If every connection appears to come from one private address, such as a Docker bridge gateway (rootless Docker, Docker Desktop, or a userland proxy in front of a published port), the default trusts that address and with it any `X-Forwarded-For` a client sends. Set `TOOLMESH_TRUSTED_PROXIES` to the reverse proxy's own address there, or to `none` without a reverse proxy.
-- Behind a proxy on a public address, add that address. `none` honors no `X-Forwarded-For` at all.
-- The startup log names the trusted networks: `X-Forwarded-For honored from ...`.
+`TOOLMESH_TRUSTED_PROXIES` lists the addresses your reverse proxies connect from, not the networks your clients are in: a client whose own address is listed can choose the address it is counted under.
+
+- **Reverse proxy on the same host** (Caddy, nginx, Traefik as a host service): nothing to set.
+- **Reverse proxy in a container** in the same Compose network: list the proxy container's address, or the Compose network if the address changes, for example `TOOLMESH_TRUSTED_PROXIES=172.18.0.0/16`. Only the proxy may share that network with ToolMesh then.
+- **Proxy or CDN on other machines** (a load balancer, Cloudflare): list its addresses or published ranges.
+- **No proxy, ports published directly** with rootful Docker on Linux: nothing to set; Docker keeps the client's source address. With Docker Desktop, rootless Docker or a userland proxy every connection comes from a gateway address instead, so all clients share one address's limits. That fails safe, but a lockout then hits everyone; put a reverse proxy in front, or raise the per-address limits.
+- **Not configured but behind a proxy:** every client is counted under the proxy's address. ToolMesh logs `X-Forwarded-For from an address that is not a trusted proxy is ignored` at `WARN` (at most once an hour, with `remote`) when such a header arrives from an address that is not listed. The `remote` field of the request log shows which address ToolMesh uses.
+- The proxy closest to ToolMesh must append the real client address to `X-Forwarded-For`, which common reverse proxies do. `none` honors no `X-Forwarded-For` at all.
+- The startup log names the trusted addresses: `X-Forwarded-For honored from ...`.
 
 ### Failed API keys
 
@@ -584,7 +587,7 @@ no login: approving takes a signature by the key of an approver's address.
   beyond that the page answers `429` with `Retry-After`. A successful
   approval clears the request's counters. The counters work like those of
   [login throttling](#login-throttling), with the same source address
-  (right-most public address in `X-Forwarded-For`) and in Redis when it is
+  (see [Client address](#client-address)) and in Redis when it is
   connected, but apart from them: refused signatures never use up the login
   limits.
 

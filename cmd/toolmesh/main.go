@@ -416,7 +416,7 @@ func main() {
 	// for the login throttle, registration limit and logs).
 	auth.SetTrustedProxies(cfg.TrustedProxies)
 	if cfg.TrustedProxies == nil {
-		logger.Info("X-Forwarded-For honored from loopback and private networks (default)")
+		logger.Info("X-Forwarded-For honored from loopback only (default); a reverse proxy elsewhere needs TOOLMESH_TRUSTED_PROXIES")
 	} else {
 		proxies := make([]string, 0, len(cfg.TrustedProxies))
 		for _, p := range cfg.TrustedProxies {

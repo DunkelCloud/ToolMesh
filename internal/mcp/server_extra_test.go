@@ -62,7 +62,8 @@ func TestOriginAllowed(t *testing.T) {
 }
 
 func TestClientIP(t *testing.T) {
-	// testIPClaudeAI443 is a private address, i.e. a trusted proxy by default.
+	// Only loopback is a trusted proxy by default.
+	const proxy = "127.0.0.1:5555"
 	tests := []struct {
 		name       string
 		xff        string
@@ -71,12 +72,13 @@ func TestClientIP(t *testing.T) {
 	}{
 		{"no xff fallback to remote", "", "203.0.113.5:443", "203.0.113.5"},
 		{"xff from a public address is ignored", testIP198_51_100_7, "203.0.113.5:443", "203.0.113.5"},
-		{"single public xff behind a trusted proxy", testIP198_51_100_7, testIPClaudeAI443, testIP198_51_100_7},
-		{"trusted hop on the right is skipped", "198.51.100.7, 10.0.0.1", testIPClaudeAI443, testIP198_51_100_7},
-		{"client spoof on the left is ignored", "6.6.6.6, 198.51.100.7", testIPClaudeAI443, testIP198_51_100_7},
-		{"all trusted xff gives the leftmost", "10.0.0.5, 192.168.1.1", testIPClaudeAI443, "10.0.0.5"},
-		{"malformed entries skipped", "garbage, 198.51.100.9", testIPClaudeAI443, "198.51.100.9"},
-		{"loopback proxy", testIP198_51_100_7, "127.0.0.1:5555", testIP198_51_100_7},
+		{"xff from a private address is ignored", testIP198_51_100_7, testIPClaudeAI443, "10.0.0.1"},
+		{"single public xff behind a trusted proxy", testIP198_51_100_7, proxy, testIP198_51_100_7},
+		{"trusted hop on the right is skipped", "198.51.100.7, 127.0.0.2", proxy, testIP198_51_100_7},
+		{"client spoof on the left is ignored", "6.6.6.6, 198.51.100.7", proxy, testIP198_51_100_7},
+		{"private client behind the proxy is the client", "6.6.6.6, 192.168.1.50", proxy, "192.168.1.50"},
+		{"all trusted xff gives the leftmost", "127.0.0.3, 127.0.0.2", proxy, "127.0.0.3"},
+		{"malformed entries skipped", "garbage, 198.51.100.9", proxy, "198.51.100.9"},
 		{"remote addr without port", "", "bare-host", "bare-host"},
 	}
 	for _, tt := range tests {

@@ -115,7 +115,9 @@ func (rl *DCRRateLimiter) Allow(ctx context.Context, ip string) (bool, error) {
 	if rl.rdb == nil {
 		return rl.allowLocal(ip), nil
 	}
-	key := prefixDCRRate + ip
+	// Same unit as the process-local counters: an IPv6 address counts as
+	// its /64.
+	key := prefixDCRRate + normalizeLoginIP(ip)
 	windowSecs := int(dcrRateWindow.Seconds())
 
 	count, err := rateLimitScript.Run(ctx, rl.rdb, []string{key}, windowSecs).Int64()

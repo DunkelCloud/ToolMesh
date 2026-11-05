@@ -106,3 +106,22 @@ func TestLocalDCRRateLimiter_TableIsBounded(t *testing.T) {
 		t.Errorf("table holds %d windows, cap is %d", n, maxLocalDCRWindows)
 	}
 }
+
+// TestDCRRateLimiter_RedisCountsIPv6Per64 pins that the Redis-backed limit
+// counts like the local one: a fresh address in the same /64 is no new
+// client.
+func TestDCRRateLimiter_RedisCountsIPv6Per64(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { _ = rdb.Close() })
+	rl := NewDCRRateLimiter(rdb)
+	ctx := context.Background()
+	for i := 0; i < dcrRateLimit; i++ {
+		if ok, err := rl.Allow(ctx, fmt.Sprintf("2001:db8:5:6::%x", i+1)); err != nil || !ok {
+			t.Fatalf("registration %d refused (%v)", i+1, err)
+		}
+	}
+	if ok, _ := rl.Allow(ctx, "2001:db8:5:6::ffff"); ok {
+		t.Error("a fresh address in the same /64 escaped the Redis-backed limit")
+	}
+}

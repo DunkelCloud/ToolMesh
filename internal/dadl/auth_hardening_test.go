@@ -128,7 +128,7 @@ func TestSessionLoginURL(t *testing.T) {
 		{hardeningBase, ".attacker.example/x", "", true},
 		{hardeningBase, ":9999/x", "", true},
 		{hardeningBase, "login", "", true},
-		{"https://user@api.example.com", hardeningLogin, "", true},
+		{"https://user@api.example.com", hardeningLogin, "https://user@api.example.com/signin", false},
 	}
 	for _, tc := range cases {
 		got, err := sessionLoginURL(tc.base, tc.path)
@@ -166,5 +166,48 @@ func TestRestAuth_SessionLoginStaysOnBaseHost(t *testing.T) {
 	}
 	if hits.Load() != 0 {
 		t.Errorf("login request was sent %d times, want 0", hits.Load())
+	}
+}
+
+// TestSessionLoginURL_Forms pins the login URL rules across bypass attempts
+// and the base_url forms that must keep working, userinfo included.
+func TestSessionLoginURL_Forms(t *testing.T) {
+	const formsLogin = "/login"
+	cases := []struct {
+		name, base, path string
+		wantErr          bool
+		wantURL          string
+	}{
+		// bypass attempts: all must be rejected or stay on the host
+		{"at host", hardeningBase, "@evil.example/login", true, ""},
+		{"dot host", hardeningBase, ".evil.example/login", true, ""},
+		{"port change", hardeningBase, ":8443/login", true, ""},
+		{"backslash host", hardeningBase, "\\evil.example/login", true, ""},
+		{"encoded slashes", hardeningBase, "%2F%2Fevil.example/login", true, ""},
+		{"encoded at", hardeningBase, "%40evil.example/login", true, ""},
+		{"absolute url", hardeningBase, "https://evil.example/login", true, ""},
+		{"double slash stays", hardeningBase, "//evil.example/login", false, "https://api.example.com//evil.example/login"},
+		{"query only stays", hardeningBase, "?next=//evil.example", false, "https://api.example.com?next=//evil.example"},
+		{"fullwidth dot host", hardeningBase, "\uff0eevil.example/login", true, ""},
+		{"base with path, dot segments", "https://api.example.com/v1", "/../admin/login", false, "https://api.example.com/v1/../admin/login"},
+		{"base with path, sibling prefix", "https://api.example.com/v1", "x/login", false, "https://api.example.com/v1x/login"},
+		// regression candidates
+		{"base with userinfo", "https://user:pw@api.example.com", formsLogin, false, "https://user:pw@api.example.com/login"},
+		{"base upper host", "https://API.example.com", formsLogin, false, "https://API.example.com/login"},
+		{"base with trailing slash", "https://api.example.com/", formsLogin, false, "https://api.example.com//login"},
+		{"base with query", "https://api.example.com/?x=1", formsLogin, false, "https://api.example.com/?x=1/login"},
+		{"empty base", "", "https://evil.example/login", true, ""},
+	}
+	for _, c := range cases {
+		got, err := sessionLoginURL(c.base, c.path)
+		if c.wantErr {
+			if err == nil {
+				t.Errorf("%s: sessionLoginURL(%q, %q) = %q, want error", c.name, c.base, c.path, got)
+			}
+			continue
+		}
+		if err != nil || got != c.wantURL {
+			t.Errorf("%s: sessionLoginURL(%q, %q) = %q, %v; want %q", c.name, c.base, c.path, got, err, c.wantURL)
+		}
 	}
 }

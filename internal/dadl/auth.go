@@ -584,7 +584,7 @@ func sessionLoginURL(baseURL, loginPath string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("session login: parse login URL: %w", err)
 	}
-	if u.User != nil || !strings.EqualFold(u.Scheme, base.Scheme) || !strings.EqualFold(u.Host, base.Host) ||
+	if u.User.String() != base.User.String() || !strings.EqualFold(u.Scheme, base.Scheme) || !strings.EqualFold(u.Host, base.Host) ||
 		!strings.HasPrefix(u.Path, base.Path) {
 		return "", fmt.Errorf("session login: login.path %q does not stay on the base_url host %s; it must start with \"/\"", loginPath, base.Host)
 	}

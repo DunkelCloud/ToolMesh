@@ -15,7 +15,10 @@
 // Package credentials provides abstractions for secure credential retrieval.
 package credentials
 
-import "context"
+import (
+	"context"
+	"os"
+)
 
 // TenantInfo identifies the tenant context for credential lookups.
 type TenantInfo struct {
@@ -43,4 +46,33 @@ type PrefixLister interface {
 	// starts with the given prefix. The returned map keys are the full logical
 	// names (without the CREDENTIAL_ env prefix).
 	ListByPrefix(ctx context.Context, prefix string, tenant TenantInfo) (map[string]string, error)
+}
+
+// KeyLookup is an optional interface for credential stores that hold their
+// values under environment-style keys outside the process environment. Keys
+// are the names as the source writes them: CREDENTIAL_<NAME> for backend
+// credentials, and any other name for remapped credentials (env: in
+// backends.yaml), the credential_env of stdio backends and ToolMesh's own
+// secrets. Stores without it leave those values in the process environment.
+type KeyLookup interface {
+	// LookupKey returns the value stored under key and whether the key is
+	// present. An empty value counts as not set for every caller.
+	LookupKey(key string) (string, bool)
+}
+
+// Refresher is an optional interface for credential stores that reload their
+// values in the background.
+type Refresher interface {
+	// Run refreshes the values on the store's schedule until ctx is done.
+	Run(ctx context.Context)
+}
+
+// LookupKey returns the value of an environment-style key from the store when
+// it implements [KeyLookup], and from the process environment otherwise. This
+// keeps the behavior of stores that read the environment unchanged.
+func LookupKey(store CredentialStore, key string) (string, bool) {
+	if l, ok := store.(KeyLookup); ok {
+		return l.LookupKey(key)
+	}
+	return os.LookupEnv(key)
 }

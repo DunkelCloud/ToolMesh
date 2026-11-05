@@ -368,9 +368,11 @@ ToolMesh uses a registry-based extension model inspired by Go's `database/sql` d
 
 | Component | Built-in | Config |
 |-----------|----------|--------|
-| Credential Store | `embedded` | `CREDENTIAL_STORE=<name>` |
+| Credential Store | `embedded`, `command` | `CREDENTIAL_STORE=<name>` |
 | Tool Backend | `mcp`, `rest` (DADL), `echo` | `config/backends.yaml` |
 | Gate Evaluator | `goja` | `GATE_EVALUATORS=<list>` |
+
+The `command` credential store takes the credentials from a command such as a sops decryption and keeps them in memory only, out of the environment that Docker writes into the container configuration on disk; see [docs/configuration.md](docs/configuration.md#command-store).
 
 Enterprise extensions (InfisicalStore, VaultStore, Compliance-LLM, etc.) are planned and will be included via Go build tags: `go build -tags enterprise ./cmd/toolmesh`.
 

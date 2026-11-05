@@ -289,7 +289,7 @@ func TestRESTAdapter_TokenRequestUsesSSRFTransport(t *testing.T) {
 		},
 	}
 	creds := &testCredStore{creds: map[string]string{"cid": "id", redirectTestCredential: redirectTestSecret}}
-	a, err := NewRESTAdapter(spec, creds, slog.Default(), RESTAdapterOptions{})
+	a, err := NewRESTAdapter(spec, creds, slog.Default(), RESTAdapterOptions{Unbound: true})
 	if err != nil {
 		t.Fatal(err)
 	}

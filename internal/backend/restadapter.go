@@ -144,9 +144,13 @@ type RESTAdapterOptions struct {
 	// operator configured no hint.
 	Hint string
 	// Scope binds the backend's credentials and hosts to its backends.yaml
-	// entry (see BackendScope). ToolMesh sets it for every backend it loads;
-	// nil leaves the adapter unbound, for code that builds adapters itself.
+	// entry (see BackendScope). ToolMesh sets it for every backend it loads.
+	// Without Scope the adapter is refused unless Unbound says so.
 	Scope *BackendScope
+	// Unbound builds an adapter without the credential and host binding,
+	// for code that builds a backend outside a configuration, such as
+	// tests. It has no effect when Scope is set.
+	Unbound bool
 	// AuthExpiresAt is the credential expiry the operator recorded in
 	// backends.yaml (health_check.auth_expires_at). Health results carry it
 	// as auth_expires_at when the check response reports none (DADL spec
@@ -156,8 +160,9 @@ type RESTAdapterOptions struct {
 
 // BackendScope is the operator's binding of a REST backend, from its
 // backends.yaml entry: the entry name sets the credential namespace
-// CREDENTIAL_<NAME>_*, Credentials and the env: keys (Env) add names outside
-// it, and AllowedHosts adds hosts besides the base_url host and its
+// (CREDENTIAL_<NAME>_*, divided among all entries by Owners), Credentials
+// and the env: keys (Env) add names outside it, and AllowedHosts adds hosts
+// besides the base_url host and its
 // registrable domain. A DADL that reaches outside is refused at load with a
 // *dadl.ScopeError.
 type BackendScope struct {
@@ -201,6 +206,9 @@ func NewRESTAdapter(spec *dadl.Spec, creds credentials.CredentialStore, logger *
 	// built, and keep the same scopes as a runtime check.
 	var credScope *dadl.CredentialScope
 	var hostScope *dadl.HostScope
+	if opts.Scope == nil && !opts.Unbound {
+		return nil, fmt.Errorf("REST backend %q: no credential and host binding (RESTAdapterOptions.Scope); set Unbound to build it without one", spec.Backend.Name)
+	}
 	if opts.Scope != nil {
 		cs, err := dadl.NewCredentialScope(opts.Scope.EntryName, opts.Scope.Credentials, opts.Scope.Env, opts.Scope.Owners)
 		if err != nil {

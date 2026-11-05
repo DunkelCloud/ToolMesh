@@ -179,7 +179,7 @@ func TestProdAccessPolicy_CompositeChildrenSeeSameAccess(t *testing.T) {
 			},
 		},
 	}
-	adapter, err := backend.NewRESTAdapter(spec, prodAccessCredStore{}, newTestLogger(), backend.RESTAdapterOptions{AllowPrivateURL: true})
+	adapter, err := backend.NewRESTAdapter(spec, prodAccessCredStore{}, newTestLogger(), backend.RESTAdapterOptions{AllowPrivateURL: true, Unbound: true})
 	if err != nil {
 		t.Fatalf("NewRESTAdapter: %v", err)
 	}

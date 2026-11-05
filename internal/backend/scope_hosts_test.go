@@ -35,10 +35,10 @@ func TestRESTAdapter_SchemeDowngrade(t *testing.T) {
 		t.Fatal(err)
 	}
 	store := &testCredStore{creds: map[string]string{"mine_token": "SECRET"}}
-	spec := bindingSpec("mine", "https://"+u.Host+"/api", "http://"+u.Host+"/ping", "mine_token")
+	spec := bindingSpec(scopeEntryName, "https://"+u.Host+"/api", "http://"+u.Host+"/ping", "mine_token")
 
 	opts := testRESTOpts
-	opts.Scope = &BackendScope{EntryName: "mine", Owners: dadl.NewCredentialOwners("mine")}
+	opts.Scope = &BackendScope{EntryName: scopeEntryName, Owners: dadl.NewCredentialOwners(scopeEntryName)}
 	_, err = NewRESTAdapter(spec, store, quietLogger(), opts)
 	var se *dadl.ScopeError
 	if !errors.As(err, &se) {
@@ -53,7 +53,7 @@ func TestRESTAdapter_SchemeDowngrade(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	creds, err := dadl.NewCredentialScope("mine", nil, nil, dadl.NewCredentialOwners("mine"))
+	creds, err := dadl.NewCredentialScope(scopeEntryName, nil, nil, dadl.NewCredentialOwners(scopeEntryName))
 	if err != nil {
 		t.Fatal(err)
 	}

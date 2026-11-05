@@ -22,11 +22,13 @@ import (
 	"github.com/DunkelCloud/ToolMesh/internal/dadl"
 )
 
+// scopeEntryName is the entry name of the binding tests.
+const scopeEntryName = "mine"
+
 // TestNewRESTAdapter_Scope pins that an adapter built with a BackendScope
 // refuses a DADL that reads a credential outside the entry's namespace, and
 // accepts it once the entry allows that credential.
 func TestNewRESTAdapter_Scope(t *testing.T) {
-	const scopeEntryName = "mine"
 	spec := func() *dadl.Spec {
 		return &dadl.Spec{
 			Spec: testDADLSpecURL,

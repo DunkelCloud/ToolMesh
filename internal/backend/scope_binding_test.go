@@ -71,8 +71,8 @@ func TestRESTAdapter_EnvKeyCaseRemaps(t *testing.T) {
 	env := map[string]string{"credential_github_token": "MINE_MAPPED_TOKEN"} //nolint:gosec // variable names, not credentials
 	store := credentials.NewRemappingStore(credentials.NewEmbeddedStore(), env)
 	opts := testRESTOpts
-	opts.Scope = &BackendScope{EntryName: "mine", Env: env}
-	a, err := NewRESTAdapter(bindingSpec("mine", srv.URL, "/ping", "github_token"), store, quietLogger(), opts)
+	opts.Scope = &BackendScope{EntryName: scopeEntryName, Env: env}
+	a, err := NewRESTAdapter(bindingSpec(scopeEntryName, srv.URL, "/ping", "github_token"), store, quietLogger(), opts)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -412,7 +412,7 @@ func newECFixture(t *testing.T) *ecFixture {
 	logger := handlerTestLogger()
 	creds := credentials.NewEmbeddedStore()
 
-	shop, err := backend.NewRESTAdapter(ecSpec(newECAPI(t).URL), creds, logger, backend.RESTAdapterOptions{AllowPrivateURL: true})
+	shop, err := backend.NewRESTAdapter(ecSpec(newECAPI(t).URL), creds, logger, backend.RESTAdapterOptions{AllowPrivateURL: true, Unbound: true})
 	if err != nil {
 		t.Fatalf("NewRESTAdapter: %v", err)
 	}

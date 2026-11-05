@@ -67,7 +67,7 @@ func TestExecuteTool_TypeCheckBeforeGate(t *testing.T) {
 			},
 		},
 	}
-	adapter, err := backend.NewRESTAdapter(spec, nil, slog.Default(), backend.RESTAdapterOptions{AllowPrivateURL: true})
+	adapter, err := backend.NewRESTAdapter(spec, nil, slog.Default(), backend.RESTAdapterOptions{AllowPrivateURL: true, Unbound: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,7 +142,7 @@ func TestExecuteTool_GateSeesEffectiveParams(t *testing.T) {
 			},
 		},
 	}
-	adapter, err := backend.NewRESTAdapter(spec, nil, slog.Default(), backend.RESTAdapterOptions{AllowPrivateURL: true})
+	adapter, err := backend.NewRESTAdapter(spec, nil, slog.Default(), backend.RESTAdapterOptions{AllowPrivateURL: true, Unbound: true})
 	if err != nil {
 		t.Fatal(err)
 	}

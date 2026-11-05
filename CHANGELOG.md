@@ -32,7 +32,7 @@ for the full narrative and details.
   optionally restricts redirect hosts.
 - Token refresh and access tokens are resolved against the current
   `users.yaml` or single-password owner as loaded at startup; after a
-  restart, removed or disabled users lose
+  restart, removed or disabled users, and sessions of a changed password, lose
   access. `POST /revoke` (RFC 7009) revokes tokens.
 - `X-Forwarded-For` is honored only from the proxy addresses in
   `TOOLMESH_TRUSTED_PROXIES` (default loopback only); a header from any other

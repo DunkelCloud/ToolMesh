@@ -31,7 +31,10 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
+
+	"golang.org/x/crypto/scrypt"
 
 	"github.com/DunkelCloud/ToolMesh/internal/auth"
 	"github.com/DunkelCloud/ToolMesh/internal/backend"
@@ -62,6 +65,12 @@ type Server struct {
 	blobStore      *blob.Store
 	uploadLimits   blob.UploadLimits
 	health         HealthReporter
+
+	// ownerFP caches the credential fingerprint of the single-password
+	// owner for the password it was derived from (ownerFPFor).
+	ownerFPMu  sync.Mutex
+	ownerFP    string
+	ownerFPFor string
 }
 
 // HealthReporter supplies the backend health /health reports.
@@ -762,9 +771,11 @@ func (s *Server) checkBearer(r *http.Request, bearer string, slot *bearerSlot) (
 			current := false
 			valid := err == nil && time.Now().Before(ti.ExpiresAt)
 			if valid {
-				if id, current = s.currentIdentity(ti.UserID); !current {
+				id, current = s.currentIdentity(ti.UserID)
+				current = current && id.matches(ti.CredentialFP)
+				if !current {
 					_ = s.tokenStore.DeleteToken(r.Context(), bearer)
-					s.logger.InfoContext(r.Context(), "access token of a user who is no longer configured refused",
+					s.logger.InfoContext(r.Context(), "access token refused: its user is no longer configured or the credential changed",
 						"user", truncateForLog(ti.UserID), logKeyRemote, auth.ClientIP(r))
 				}
 			}
@@ -1379,7 +1390,7 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Authenticate user
-	var userID, companyID, plan string
+	var userID, companyID, plan, credentialFP string
 	var roles []string
 
 	if s.userStore != nil {
@@ -1405,6 +1416,7 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		companyID = user.Company
 		plan = user.Plan
 		roles = user.Roles
+		credentialFP = hashFingerprint(user.PasswordHash)
 	} else {
 		// Legacy single-password mode
 		if !secretsEqual(password, s.cfg.AuthPassword) {
@@ -1417,6 +1429,7 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		companyID = "default"
 		plan = s.cfg.AuthPlan
 		roles = s.cfg.AuthRolesList()
+		credentialFP = s.ownerFingerprint()
 	}
 
 	// The password was right, whatever happens to the auth code below.
@@ -1434,6 +1447,7 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		Plan:          plan,
 		Roles:         roles,
 		ExpiresAt:     time.Now().Add(5 * time.Minute),
+		CredentialFP:  credentialFP,
 	}
 
 	if s.tokenStore != nil {
@@ -1581,6 +1595,7 @@ func (s *Server) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Req
 		CompanyID:        ac.CompanyID,
 		Plan:             ac.Plan,
 		Roles:            ac.Roles,
+		CredentialFP:     ac.CredentialFP,
 		CallerID:         callerID,
 		CallerName:       callerName,
 		Scope:            ac.Scope,
@@ -1648,7 +1663,7 @@ func (s *Server) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request)
 	// takes the current company, plan and roles; a user removed or disabled
 	// since the login gets no new token.
 	id, ok := s.currentIdentity(oldTI.UserID)
-	if !ok {
+	if !ok || !id.matches(oldTI.CredentialFP) {
 		s.metrics.RecordLogin(loginMethodOAuthRefresh, "failure")
 		s.logger.WarnContext(ctx, "refresh refused: user is no longer configured",
 			"user", truncateForLog(oldTI.UserID), "clientId", oldTI.ClientID, logKeyRemote, auth.ClientIP(r))
@@ -1668,6 +1683,7 @@ func (s *Server) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request)
 		CompanyID:        id.companyID,
 		Plan:             id.plan,
 		Roles:            id.roles,
+		CredentialFP:     id.fp,
 		CallerID:         oldTI.CallerID,
 		CallerName:       oldTI.CallerName,
 		Scope:            oldTI.Scope,
@@ -1703,6 +1719,46 @@ type tokenIdentity struct {
 	companyID string
 	plan      string
 	roles     []string
+	// fp fingerprints the user's current credential; a token carrying
+	// another fingerprint was issued for a credential that has changed.
+	fp string
+}
+
+// matches reports whether a token carrying credentialFP may stand for this
+// identity. Tokens from before fingerprints existed carry none and match.
+func (id tokenIdentity) matches(credentialFP string) bool {
+	return credentialFP == "" || credentialFP == id.fp
+}
+
+// credentialFPLen is the length in bytes of a credential fingerprint.
+const credentialFPLen = 8
+
+// hashFingerprint fingerprints a users.yaml password_hash. The bcrypt hash
+// already contains a salt and costs bcrypt to test a guess against, so a
+// short SHA-256 of it reveals nothing useful about the password.
+func hashFingerprint(passwordHash string) string {
+	sum := sha256.Sum256([]byte("toolmesh/credential-fp/v1\x00" + passwordHash))
+	return hex.EncodeToString(sum[:credentialFPLen])
+}
+
+// ownerFingerprint fingerprints TOOLMESH_AUTH_PASSWORD. The password is
+// plain text, so the fingerprint comes from scrypt rather than a fast hash:
+// a copy of the token store must not make guessing the password cheap. It is
+// derived once per password value.
+func (s *Server) ownerFingerprint() string {
+	s.ownerFPMu.Lock()
+	defer s.ownerFPMu.Unlock()
+	if s.ownerFP != "" && s.ownerFPFor == s.cfg.AuthPassword {
+		return s.ownerFP
+	}
+	key, err := scrypt.Key([]byte(s.cfg.AuthPassword), []byte("toolmesh/credential-fp/v1"), 1<<15, 8, 1, credentialFPLen)
+	if err != nil {
+		// Only invalid parameters fail, and these are constant.
+		s.logger.Error("credential fingerprint could not be derived", outcomeError, err)
+		return ""
+	}
+	s.ownerFP, s.ownerFPFor = hex.EncodeToString(key), s.cfg.AuthPassword
+	return s.ownerFP
 }
 
 // currentIdentity resolves userID against the configuration in force now:
@@ -1715,12 +1771,12 @@ func (s *Server) currentIdentity(userID string) (id tokenIdentity, ok bool) {
 		if u == nil {
 			return tokenIdentity{}, false
 		}
-		return tokenIdentity{companyID: u.Company, plan: u.Plan, roles: u.Roles}, true
+		return tokenIdentity{companyID: u.Company, plan: u.Plan, roles: u.Roles, fp: hashFingerprint(u.PasswordHash)}, true
 	}
 	if s.cfg.AuthPassword == "" || userID != s.cfg.AuthUser {
 		return tokenIdentity{}, false
 	}
-	return tokenIdentity{companyID: userDefault, plan: s.cfg.AuthPlan, roles: s.cfg.AuthRolesList()}, true
+	return tokenIdentity{companyID: userDefault, plan: s.cfg.AuthPlan, roles: s.cfg.AuthRolesList(), fp: s.ownerFingerprint()}, true
 }
 
 // handleRevoke implements OAuth 2.0 token revocation (RFC 7009) for the

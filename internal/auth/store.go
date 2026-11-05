@@ -70,6 +70,9 @@ type AuthCode struct {
 	Plan          string    `json:"plan"`
 	Roles         []string  `json:"roles"`
 	ExpiresAt     time.Time `json:"expires_at"`
+	// CredentialFP fingerprints the credential the user logged in with,
+	// carried over into the tokens (see TokenInfo.CredentialFP).
+	CredentialFP string `json:"credential_fp,omitempty"`
 }
 
 // TokenInfo represents an access or refresh token with associated user data.
@@ -86,6 +89,12 @@ type TokenInfo struct {
 	Scope            string    `json:"scope"`
 	ExpiresAt        time.Time `json:"expires_at"`
 	RefreshExpiresAt time.Time `json:"refresh_expires_at,omitempty"`
+	// CredentialFP fingerprints the credential the user logged in with.
+	// When the credential changes, the tokens are no longer honored or
+	// renewed. Empty for tokens issued before the field existed; such a
+	// token is accepted and gets the current fingerprint at its next
+	// refresh.
+	CredentialFP string `json:"credential_fp,omitempty"`
 }
 
 // RefreshExpiry returns the effective expiry time for the refresh token.

@@ -11,6 +11,41 @@ for the full narrative and details.
 
 ## [Unreleased]
 
+### Security
+
+- Composite `api.*` child calls keep their authorization and pre-execution
+  gate after a reload of `backends.yaml`; a REST adapter without that guard
+  refuses child calls.
+- Backend redirects to another origin drop injected credentials, custom
+  headers and the `Referer`, refuse to re-send a request body and are never
+  followed from `https` to `http`.
+- OAuth2 token and session login requests follow no redirects and use the
+  backend's SSRF-safe transport; the session login URL must stay on the
+  `base_url` host.
+- Transport errors name only scheme and host, so a query-injected API key no
+  longer reaches the audit log or tool results.
+- Path parameter values `.` and `..` are refused and joined URLs must keep
+  the scheme, host and path prefix of `base_url`; a colon in the first path
+  segment is no longer read as a URL scheme.
+- The OAuth login page names the redirect host and the self-declared client
+  name and requires a confirmation; `TOOLMESH_OAUTH_REDIRECT_HOSTS`
+  optionally restricts redirect hosts.
+- Token refresh and access tokens are resolved against the current
+  `users.yaml` or single-password owner; removed or disabled users lose
+  access. `POST /revoke` (RFC 7009) revokes tokens.
+- `X-Forwarded-For` is honored only from `TOOLMESH_TRUSTED_PROXIES` (default
+  loopback and private ranges).
+- SSRF checks treat carrier-grade NAT, benchmarking, documentation,
+  multicast, reserved, NAT64 and 6to4 addresses as private.
+- DADL parameters are checked against their declared types before the
+  pre-execution gate.
+- Only the owner can delete a blob.
+- `/register` is rate-limited without Redis, and failed API keys on `/mcp`
+  are throttled per client address.
+- `TOOLMESH_CODE_MAX_CONCURRENT` (default 16) bounds parallel `execute_code`
+  runs.
+- The `TOOLMESH_ISSUER` placeholder is `https://toolmesh.invalid/`.
+
 ### Added
 
 - DADL health checks (spec §4.6) are implemented. A DADL can declare under

@@ -77,12 +77,14 @@ type ToolMetadataLookup interface {
 
 // ParamValidator is implemented by backends that can check a call's
 // arguments against the tool's declaration without executing it. The
-// executor runs it before the pre-execution gate, so gate policies only see
-// arguments that passed the same check the backend applies: a policy that
-// tests a declared boolean is never handed the string "false". A backend
-// that does not own the tool returns nil and leaves the verdict to Execute.
+// executor runs it before the pre-execution gate and continues with the
+// arguments it returns: checked, with declared defaults filled in and
+// numeric strings as numbers. Gate policies thus see what the backend uses:
+// a policy that tests a declared boolean is never handed the string "false",
+// and sees a default the caller left out. A backend that does not own the
+// tool returns params unchanged and leaves the verdict to Execute.
 type ParamValidator interface {
-	ValidateToolParams(toolName string, params map[string]any) error
+	ValidateToolParams(toolName string, params map[string]any) (map[string]any, error)
 }
 
 // ParamErrorResult renders an argument check failure from ParamValidator as

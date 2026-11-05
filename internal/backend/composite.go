@@ -346,23 +346,26 @@ func (c *CompositeBackend) LookupTool(toolName string) (ToolDescriptor, bool) {
 
 // ValidateToolParams implements ParamValidator by routing to the backend that
 // owns toolName, with the same longest-prefix rule as Execute. Backends that
-// do not implement ParamValidator, and names no backend owns, yield nil.
-func (c *CompositeBackend) ValidateToolParams(toolName string, params map[string]any) error {
+// do not implement ParamValidator, and names no backend owns, yield params
+// unchanged.
+func (c *CompositeBackend) ValidateToolParams(toolName string, params map[string]any) (map[string]any, error) {
 	s := c.state.Load()
 	if match, ok := c.longestPrefix(toolName, s); ok && match.isNamed {
 		if pv, ok := match.backend.(ParamValidator); ok {
 			return pv.ValidateToolParams(strings.TrimPrefix(toolName, match.name+"_"), params)
 		}
-		return nil
+		return params, nil
 	}
 	for _, b := range s.passthroughs {
 		if pv, ok := b.(ParamValidator); ok {
-			if err := pv.ValidateToolParams(toolName, params); err != nil {
-				return err
+			out, err := pv.ValidateToolParams(toolName, params)
+			if err != nil {
+				return nil, err
 			}
+			params = out
 		}
 	}
-	return nil
+	return params, nil
 }
 
 // ResolveBackendName reports which backend owns toolName, resolved with the

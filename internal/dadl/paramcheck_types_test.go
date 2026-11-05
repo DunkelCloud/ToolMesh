@@ -29,6 +29,7 @@ const (
 	typesAttrs = "attrs"
 	typesTitle = "title"
 	typesQuery = "query"
+	expLiteral = "1e3"
 )
 
 func TestValidateParams_DeclaredTypes(t *testing.T) {
@@ -62,9 +63,9 @@ func TestValidateParams_DeclaredTypes(t *testing.T) {
 		{"text for number", typesRatio, "abc", false},
 		{"NaN string for number", typesRatio, "NaN", false},
 		{"double sign for integer", typesCount, "-+5", false},
-		{"exponent for integer", typesCount, "1e3", false},
+		{"exponent for integer", typesCount, expLiteral, false},
 		{"padded integer", typesCount, " 5", false},
-		{"exponent for number", typesRatio, "1e3", true},
+		{"exponent for number", typesRatio, expLiteral, true},
 		{"padded number", typesRatio, " 5 ", false},
 		{"hex float for number", typesRatio, "0x1p3", false},
 		{"hex for number", typesRatio, "0x10", false},
@@ -98,5 +99,44 @@ func TestValidateParams_DeclaredTypes(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestNormalizeParams(t *testing.T) {
+	declared := map[string]ParamDef{
+		typesOn:    {Type: jsTypeBoolean, In: testParamBody, Default: false},
+		typesCount: {Type: jsTypeInteger, In: typesQuery},
+		typesRatio: {Type: jsTypeNumber, In: typesQuery, Default: 0.5},
+		typesTitle: {Type: jsTypeString, In: typesQuery},
+		typesAttrs: {Type: jsTypeObject, In: testParamBody, Default: map[string]any{"k": "v"}},
+	}
+	in := map[string]any{typesCount: "+42", typesTitle: "007", typesAttrs: nil}
+	out := NormalizeParams(declared, in)
+	if out[typesOn] != false {
+		t.Errorf("omitted boolean with default: %v", out[typesOn])
+	}
+	if out[typesCount] != float64(42) {
+		t.Errorf("integer string: %v (%T), want 42", out[typesCount], out[typesCount])
+	}
+	if out[typesRatio] != 0.5 {
+		t.Errorf("omitted number with default: %v", out[typesRatio])
+	}
+	if out[typesTitle] != "007" {
+		t.Errorf("string parameter changed: %v", out[typesTitle])
+	}
+	if out[typesAttrs] != nil {
+		t.Errorf("explicit null in the body must stay null: %v", out[typesAttrs])
+	}
+	if _, changed := in[typesOn]; changed {
+		t.Error("NormalizeParams modified its input")
+	}
+
+	big := NormalizeParams(declared, map[string]any{typesCount: "9007199254740993"})
+	if big[typesCount] != "9007199254740993" {
+		t.Errorf("integer beyond 2^53 must stay an exact string: %v", big[typesCount])
+	}
+	num := NormalizeParams(declared, map[string]any{typesRatio: expLiteral})
+	if num[typesRatio] != float64(1000) {
+		t.Errorf("number string: %v", num[typesRatio])
 	}
 }

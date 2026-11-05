@@ -699,7 +699,14 @@ Every `.js` file in the policies directory is a policy; policies run in file
 name order, and a policy rejects a call by throwing. Nested `api.*` calls
 inside a composite go through the pre-execution phase as well. For REST
 backends the parameters a policy sees have passed the check against the
-declared DADL types (see [Requests to REST backends](#requests-to-rest-backends)).
+declared DADL types (see [Requests to REST backends](#requests-to-rest-backends)),
+with declared defaults filled in and numeric strings converted to numbers,
+so a policy sees what the API receives. Write numeric comparisons with
+`Number(ctx.params.x)` anyway: an integer beyond 2^53 stays a string to keep
+it exact. Only top-level parameters are checked; values nested inside an
+object or array parameter arrive as the caller sent them. Tools of MCP
+backends and units are not checked against a declaration: their policies see
+the caller's arguments, which are also what the MCP server receives.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -840,7 +847,7 @@ These rules apply to every REST backend, whatever its `backends.yaml` options:
 - **Token and login requests** (`auth.type: oauth2` and `session`) never follow redirects. They use the same connection rules as tool calls: `allow_private_url` and `tls_skip_verify` apply to them too.
 - **Session login URL.** `login.path` is appended to `base_url` and must stay on the host of `base_url`; it has to start with `/`.
 - **Path parameters.** The values `.` and `..` are refused, and a joined URL that leaves the scheme, host or path prefix of `base_url` is refused before any request is sent. Only a DADL tool path that is itself an absolute `http(s)` URL with a host addresses another host.
-- **Parameter types.** Arguments are checked against the declared DADL types before the [pre-execution gate](#gate-policies) runs: `boolean` takes only `true` or `false`, `integer` a whole number or a string of decimal digits, `number` a number or a numeric string, `array` and `object` their JSON forms. `string` and the file types are passed as given. A mismatch is answered with an `invalid_input` error and never reaches the gate or the API.
+- **Parameter types.** Arguments are checked against the declared DADL types before the [pre-execution gate](#gate-policies) runs: `boolean` takes only `true` or `false`, `integer` a whole number or a string of decimal digits with an optional sign, `number` a number or a plain decimal string, `array` and `object` their JSON forms. `string` and the file types are passed as given. A mismatch is answered with an `invalid_input` error and never reaches the gate or the API. Accepted numeric strings become numbers (an integer beyond 2^53 stays a string), and declared defaults are filled in before the gate, so the gate and the API see the same values.
 - **Error texts.** A transport error names only scheme and host of the request URL, never its path or query, which can hold a query-injected credential. The audit log and the tool result see the same reduced form.
 - **Private addresses.** With `allow_private_url: false` a backend may not resolve to loopback, private, link-local, carrier-grade NAT (`100.64.0.0/10`), documentation, benchmarking (`198.18.0.0/15`), multicast or reserved addresses, nor to a NAT64 (`64:ff9b::/96`) or 6to4 address embedding one of them. `allow_private_url` defaults to `true` for backends in `backends.yaml`, since the operator configures their URLs; the redirect and credential rules above hold either way.
 

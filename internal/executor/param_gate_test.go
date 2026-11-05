@@ -32,7 +32,13 @@ import (
 	"github.com/DunkelCloud/ToolMesh/internal/userctx"
 )
 
-const paramGateIn = "body"
+const (
+	paramGateIn    = "body"
+	paramGateSpec  = "https://dadl.ai/spec/dadl-spec-v0.2.md"
+	paramGateType  = "rest"
+	paramGatePost  = "POST"
+	paramGateLimit = "limit"
+)
 
 // TestExecuteTool_TypeCheckBeforeGate pins that a declared boolean cannot be
 // passed as the string "false" to slip past a policy that blocks false: the
@@ -48,13 +54,13 @@ func TestExecuteTool_TypeCheckBeforeGate(t *testing.T) {
 	defer srv.Close()
 
 	spec := &dadl.Spec{
-		Spec: "https://dadl.ai/spec/dadl-spec-v0.2.md",
+		Spec: paramGateSpec,
 		Backend: dadl.BackendDef{
 			Name:    "shelly-cloud",
-			Type:    "rest",
+			Type:    paramGateType,
 			BaseURL: srv.URL,
 			Tools: map[string]dadl.ToolDef{
-				"set_switch": {Method: "POST", Path: "/switch", Params: map[string]dadl.ParamDef{
+				"set_switch": {Method: paramGatePost, Path: "/switch", Params: map[string]dadl.ParamDef{
 					"id": {Type: "string", In: paramGateIn, Required: true},
 					"on": {Type: "boolean", In: paramGateIn, Required: true},
 				}},
@@ -106,5 +112,73 @@ func TestExecuteTool_TypeCheckBeforeGate(t *testing.T) {
 	}
 	if res := call(true); res.IsError {
 		t.Fatalf("boolean true should pass: %v", res.Content)
+	}
+}
+
+// TestExecuteTool_GateSeesEffectiveParams pins that the gate sees the
+// arguments the API receives: a declared default the caller left out, and a
+// numeric string as the number it is sent as.
+func TestExecuteTool_GateSeesEffectiveParams(t *testing.T) {
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+
+	spec := &dadl.Spec{
+		Spec: paramGateSpec,
+		Backend: dadl.BackendDef{
+			Name: "dev", Type: paramGateType, BaseURL: srv.URL,
+			Tools: map[string]dadl.ToolDef{
+				"set_switch": {Method: paramGatePost, Path: "/switch", Params: map[string]dadl.ParamDef{
+					"id": {Type: "string", In: paramGateIn, Required: true},
+					"on": {Type: "boolean", In: paramGateIn, Default: false},
+				}},
+				"set_limit": {Method: "GET", Path: "/limit", Params: map[string]dadl.ParamDef{
+					paramGateLimit: {Type: "integer", In: "query", Required: true},
+				}},
+			},
+		},
+	}
+	adapter, err := backend.NewRESTAdapter(spec, nil, slog.Default(), backend.RESTAdapterOptions{AllowPrivateURL: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	comp := backend.NewCompositeBackend(map[string]backend.ToolBackend{"dev": adapter})
+	dir := t.TempDir()
+	policy := `if (ctx.phase === "pre" && ctx.params) {
+		if (ctx.tool === "dev_set_switch" && ctx.params.on === false) { throw "off is not allowed by policy"; }
+		if (ctx.tool === "dev_set_limit" && ctx.params.limit === 0) { throw "limit 0 is not allowed by policy"; }
+	}`
+	if err := os.WriteFile(filepath.Join(dir, "p.js"), []byte(policy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	g, err := gate.New(dir, newTestLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	exec := New(nil, nil, comp, gate.NewPipeline([]gate.Evaluator{g}), &recordingAudit{}, 30*time.Second, newTestLogger(), nil, nil)
+	ctx := userctx.WithUserContext(context.Background(), &userctx.UserContext{UserID: testUserID, Authenticated: true})
+
+	for _, c := range []struct {
+		tool   string
+		params map[string]any
+	}{
+		{"dev_set_switch", map[string]any{"id": "d1"}},
+		{"dev_set_limit", map[string]any{paramGateLimit: "0"}},
+		{"dev_set_limit", map[string]any{paramGateLimit: "+0"}},
+	} {
+		res, err := exec.ExecuteTool(ctx, ExecuteToolRequest{ToolName: c.tool, Params: c.params})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !res.IsError || !strings.Contains(resultText(res), "not allowed by policy") {
+			t.Errorf("%s %v: want the policy refusal, got %v", c.tool, c.params, res.Content)
+		}
+	}
+	if n := hits.Load(); n != 0 {
+		t.Errorf("API was called %d times, want 0", n)
 	}
 }

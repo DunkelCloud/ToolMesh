@@ -510,19 +510,25 @@ func (a *RESTAdapter) included(name string) bool {
 }
 
 // ValidateToolParams implements ParamValidator: it checks params against the
-// declaration of the tool or composite toolName with dadl.ValidateParams.
-// Names this adapter does not expose yield nil; Execute reports them.
-func (a *RESTAdapter) ValidateToolParams(toolName string, params map[string]any) error {
+// declaration of the tool or composite toolName with dadl.ValidateParams and
+// returns them normalized by dadl.NormalizeParams. Names this adapter does
+// not expose yield params unchanged; Execute reports them.
+func (a *RESTAdapter) ValidateToolParams(toolName string, params map[string]any) (map[string]any, error) {
 	if !a.included(toolName) {
-		return nil
+		return params, nil
 	}
+	var declared map[string]dadl.ParamDef
 	if comp, ok := a.spec.Backend.Composites[toolName]; ok {
-		return dadl.ValidateParams(toolName, comp.Params, params)
+		declared = comp.Params
+	} else if tool, ok := a.spec.Backend.Tools[toolName]; ok {
+		declared = tool.Params
+	} else {
+		return params, nil
 	}
-	if tool, ok := a.spec.Backend.Tools[toolName]; ok {
-		return dadl.ValidateParams(toolName, tool.Params, params)
+	if err := dadl.ValidateParams(toolName, declared, params); err != nil {
+		return nil, err
 	}
-	return nil
+	return dadl.NormalizeParams(declared, params), nil
 }
 
 // Execute runs a tool by name with the given parameters.
@@ -2045,7 +2051,8 @@ func (a *RESTAdapter) executeComposite(ctx context.Context, name string, comp *d
 		// Check the arguments before the guard runs the pre-execution gate,
 		// as the executor does for a direct call. The failure surfaces
 		// exactly as the same check inside Execute would surface it.
-		if err := a.ValidateToolParams(toolName, toolParams); err != nil {
+		toolParams, err := a.ValidateToolParams(toolName, toolParams)
+		if err != nil {
 			if apiErr := apiErrorFromMetadata(a.paramErrorResult(ctx, toolName, err)); apiErr != nil {
 				return nil, apiErr
 			}

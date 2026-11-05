@@ -333,7 +333,8 @@ func (e *Executor) ExecuteTool(ctx context.Context, req ExecuteToolRequest) (*ba
 	// types: the string "false" for a boolean would otherwise pass a check
 	// for false and still reach the API.
 	if pv, ok := e.backend.(backend.ParamValidator); ok {
-		if err := pv.ValidateToolParams(req.ToolName, req.Params); err != nil {
+		effective, err := pv.ValidateToolParams(req.ToolName, req.Params)
+		if err != nil {
 			e.logger.WarnContext(ctx, "tool call rejected: parameters do not match the declaration",
 				"tool", req.ToolName,
 				"user", uc.UserID,
@@ -345,6 +346,9 @@ func (e *Executor) ExecuteTool(ctx context.Context, req ExecuteToolRequest) (*ba
 			e.recordAudit(ctx, entry)
 			return backend.ParamErrorResult(err), nil
 		}
+		// The gate and the backend see the effective arguments: declared
+		// defaults filled in, numeric strings as numbers.
+		req.Params = effective
 	}
 
 	// Step 3: Pre-execution gate — validate tool + params before calling backend

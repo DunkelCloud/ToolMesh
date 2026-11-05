@@ -206,6 +206,71 @@ func ValidateParams(toolName string, declared map[string]ParamDef, params map[st
 	}
 }
 
+// maxExactInteger is the largest integer a float64, and so a JavaScript
+// number, holds exactly (2^53).
+const maxExactInteger = 1 << 53
+
+// NormalizeParams returns the arguments a call takes effect with, for
+// params that passed ValidateParams: declared defaults are filled in for
+// omitted parameters (and for null values outside the body, as the request
+// builder does), and numeric strings of integer and number parameters
+// become numbers. A gate policy then sees the values the API receives: a
+// default it would otherwise never see, and 0 rather than "0". An integer
+// string beyond 2^53 stays a string, since a number could not hold it
+// exactly. Other values pass unchanged; params itself is not modified.
+func NormalizeParams(declared map[string]ParamDef, params map[string]any) map[string]any {
+	out := make(map[string]any, len(params)+len(declared))
+	for name, val := range params {
+		out[name] = val
+	}
+	for name, def := range declared {
+		val, present := out[name]
+		if def.Default != nil && (!present || (val == nil && def.In != paramInBody)) {
+			out[name] = def.Default
+			continue
+		}
+		if present && val != nil {
+			out[name] = normalizeNumeric(strings.ToLower(def.Type), val)
+		}
+	}
+	return out
+}
+
+// normalizeNumeric converts a numeric string (or json.Number) of an integer
+// or number parameter to a float64 where that is exact.
+func normalizeNumeric(declared string, val any) any {
+	var s string
+	switch v := val.(type) {
+	case string:
+		s = v
+	case json.Number:
+		s = string(v)
+	default:
+		return val
+	}
+	switch declared {
+	case jsTypeInteger:
+		if !isIntegerLiteral(s) {
+			return val
+		}
+		n, err := strconv.ParseInt(s, 10, 64)
+		if err != nil || n > maxExactInteger || n < -maxExactInteger {
+			return val
+		}
+		return float64(n)
+	case jsTypeNumber:
+		if !isDecimalLiteral(s) {
+			return val
+		}
+		f, err := strconv.ParseFloat(s, 64)
+		if err != nil {
+			return val
+		}
+		return f
+	}
+	return val
+}
+
 // valueFitsType reports whether val, a decoded JSON value, fits the declared
 // DADL type. Types without an unambiguous JSON form always fit.
 func valueFitsType(declared string, val any) bool {

@@ -53,7 +53,12 @@ for the full narrative and details.
 - Token refresh and access tokens are resolved against the current
   `users.yaml` or single-password owner as loaded at startup; after a
   restart, removed or disabled users, and sessions of a changed password, lose
-  access. `POST /revoke` (RFC 7009) revokes tokens.
+  access. `POST /revoke` (RFC 7009) revokes tokens. **Upgrade note:** tokens
+  issued before this release carry no credential fingerprint; they are
+  accepted and bound at their next refresh, so they survive a password
+  change made after the upgrade. Revoke suspicious tokens, or clear the
+  stored tokens while ToolMesh is stopped (see the configuration reference,
+  "Tokens from before the upgrade", for the file store and Redis).
 - `X-Forwarded-For` is honored only from the proxy addresses in
   `TOOLMESH_TRUSTED_PROXIES` (default loopback only); a header from any other
   address is ignored with a warning at most once an hour.

@@ -177,3 +177,32 @@ func newLoginTestServerNoClient(t *testing.T, cfg *config.Config) *loginTestServ
 	ts.srv.cfg.OAuthRedirectHosts = hosts
 	return ts
 }
+
+// TestAuthorize_ConsentNeverPreTicked pins that the confirmation is never
+// rendered ticked, also not after a failed attempt. A cross-site POST could
+// otherwise submit confirm_host with a wrong password, and the genuine page
+// would come back with the box already ticked, leaving the victim only the
+// password to type.
+func TestAuthorize_ConsentNeverPreTicked(t *testing.T) {
+	ts := newLoginTestServer(t, loginTestConfig(), loginTestOptions{})
+	clientID := registeredClientID(t, registerClient(t, ts.mux, "x", consentEvilRedirect))
+	form := url.Values{
+		testFormUsername:   {testLoginOwner},
+		testFormPassword:   {"wrong"},
+		oauthClientID:      {clientID},
+		oauthRedirectURI:   {consentEvilRedirect},
+		oauthConfirmHost:   {"evil.example"},
+		oauthState:         {"s1"},
+		oauthCodeChallenge: {testLoginChallenge},
+	}
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/authorize", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	ts.mux.ServeHTTP(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status %d, want 401 for the wrong password", w.Code)
+	}
+	if strings.Contains(w.Body.String(), "checked") {
+		t.Error("the consent checkbox came back ticked")
+	}
+}

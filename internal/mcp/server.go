@@ -1353,8 +1353,7 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	// typing the password alone.
 	form.ClientName = clientDisplayName(client)
 	form.RedirectHost = redirectDisplayHost(form.RedirectURI)
-	form.Confirmed = strings.EqualFold(r.FormValue(oauthConfirmHost), form.RedirectHost)
-	if !form.Confirmed {
+	if !strings.EqualFold(r.FormValue(oauthConfirmHost), form.RedirectHost) {
 		s.loginRejected(r, username, loginReasonConsentMissing)
 		form.Error = "Confirm that you trust " + form.RedirectHost + " before you sign in."
 		s.renderLoginForm(w, http.StatusBadRequest, form)
@@ -1813,7 +1812,7 @@ button:hover{background:#1d4ed8}
 <input type="hidden" name="state" value="{{.State}}">
 <input type="hidden" name="code_challenge" value="{{.CodeChallenge}}">
 <input type="hidden" name="scope" value="{{.Scope}}">
-<label class="confirm"><input type="checkbox" name="confirm_host" value="{{.RedirectHost}}" required{{if .Confirmed}} checked{{end}}> I trust {{.RedirectHost}} with access to my ToolMesh tools</label>
+<label class="confirm"><input type="checkbox" name="confirm_host" value="{{.RedirectHost}}" required> I trust {{.RedirectHost}} with access to my ToolMesh tools</label>
 <input type="text" name="username" placeholder="Username" autofocus>
 <input type="password" name="password" placeholder="Password">
 <button type="submit">Authorize {{.RedirectHost}}</button>
@@ -1837,8 +1836,6 @@ type loginForm struct {
 	// RedirectHost is the host of the redirect_uri, the party that receives
 	// the authorization; the user confirms it explicitly.
 	RedirectHost string
-	// Confirmed keeps the confirmation ticked when the form is shown again.
-	Confirmed bool
 }
 
 // clientDisplayName returns the self-declared client_name of client, cut to

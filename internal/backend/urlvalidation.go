@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"strings"
 	"time"
@@ -43,34 +44,50 @@ func ValidateBaseURL(rawURL string) error {
 		return fmt.Errorf("base_url has no hostname")
 	}
 
-	// Check for obviously private hostnames
-	lower := strings.ToLower(hostname)
-	if lower == hostnameLocalhost || lower == hostnameGoogleMetadata {
-		return fmt.Errorf("base_url points to private hostname %q", hostname)
+	// Resolve and check every address; fail closed on DNS errors, zones and
+	// answers that do not parse.
+	if _, err := resolvePublic(context.Background(), hostname); err != nil {
+		return fmt.Errorf("base_url %q: %w", rawURL, err)
 	}
-
-	// Resolve and check IPs — fail closed on DNS errors.
-	resolver := &net.Resolver{}
-	ips, err := resolver.LookupHost(context.Background(), hostname)
-	if err != nil {
-		return fmt.Errorf("base_url DNS resolution failed for %q (fail closed): %w", hostname, err)
-	}
-
-	for _, ipStr := range ips {
-		ip := net.ParseIP(ipStr)
-		if ip == nil {
-			continue
-		}
-		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
-			return fmt.Errorf("base_url %q resolves to private/loopback address %s", rawURL, ipStr)
-		}
-		// AWS metadata endpoint
-		if ip.Equal(net.ParseIP("169.254.169.254")) {
-			return fmt.Errorf("base_url %q resolves to cloud metadata address %s", rawURL, ipStr)
-		}
-	}
-
 	return nil
+}
+
+// resolvePublic resolves host and returns its addresses when every one of
+// them is a public destination (see IsPrivateIP). It fails closed: on a DNS
+// error, on an answer that does not parse as an address, and on any address
+// with an IPv6 zone. A zoned literal such as "::ffff:127.0.0.1%x" comes back
+// from the resolver unchanged, net.ParseIP rejects it, and the dialer ignores
+// the zone, so a check that skips unparsable answers would let it through.
+func resolvePublic(ctx context.Context, host string) ([]netip.Addr, error) {
+	if strings.Contains(host, "%") {
+		return nil, fmt.Errorf("address %q with an IPv6 zone is not allowed", host)
+	}
+	lower := strings.TrimSuffix(strings.ToLower(host), ".")
+	if lower == hostnameLocalhost || lower == hostnameGoogleMetadata {
+		return nil, fmt.Errorf("private hostname %q is not allowed (private/loopback)", host)
+	}
+	answers, err := net.DefaultResolver.LookupHost(ctx, host)
+	if err != nil {
+		return nil, fmt.Errorf("DNS resolution failed for %q (fail closed): %w", host, err)
+	}
+	if len(answers) == 0 {
+		return nil, fmt.Errorf("DNS resolution returned no address for %q (fail closed)", host)
+	}
+	addrs := make([]netip.Addr, 0, len(answers))
+	for _, s := range answers {
+		a, err := netip.ParseAddr(s)
+		if err != nil {
+			return nil, fmt.Errorf("resolved value %q for %q is no address (fail closed)", s, host)
+		}
+		if a.Zone() != "" {
+			return nil, fmt.Errorf("resolved address %s for %q has an IPv6 zone, not allowed", s, host)
+		}
+		if IsPrivateIP(net.IP(a.AsSlice())) {
+			return nil, fmt.Errorf("%q resolves to private/loopback or reserved address %s", host, s)
+		}
+		addrs = append(addrs, a)
+	}
+	return addrs, nil
 }
 
 // IsPrivateIP returns true if the IP is loopback, private, the unspecified
@@ -120,17 +137,11 @@ func SSRFSafeTransport(timeout time.Duration, allowPrivate, tlsSkipVerify bool) 
 			if err != nil {
 				return nil, fmt.Errorf("ssrf dial: invalid address %q: %w", addr, err)
 			}
-			ips, err := net.DefaultResolver.LookupHost(ctx, host)
+			addrs, err := resolvePublic(ctx, host)
 			if err != nil {
-				return nil, fmt.Errorf("ssrf dial: DNS resolution failed for %q: %w", host, err)
+				return nil, fmt.Errorf("ssrf dial: %w", err)
 			}
-			for _, ipStr := range ips {
-				ip := net.ParseIP(ipStr)
-				if ip != nil && IsPrivateIP(ip) {
-					return nil, fmt.Errorf("ssrf dial: resolved IP %s for %q is private/reserved", ipStr, host)
-				}
-			}
-			return dialer.DialContext(ctx, network, net.JoinHostPort(ips[0], port))
+			return dialer.DialContext(ctx, network, net.JoinHostPort(addrs[0].String(), port))
 		},
 	}
 }
@@ -150,19 +161,8 @@ func newRedirectChecker(allowPrivate bool) func(*http.Request, []*http.Request) 
 		if hostname == "" {
 			return nil
 		}
-		lower := strings.ToLower(hostname)
-		if lower == hostnameLocalhost || lower == hostnameGoogleMetadata {
-			return fmt.Errorf("redirect to private hostname %q blocked", hostname)
-		}
-		ips, err := net.DefaultResolver.LookupHost(req.Context(), hostname)
-		if err != nil {
-			return fmt.Errorf("redirect DNS resolution failed for %q: %w", hostname, err)
-		}
-		for _, ipStr := range ips {
-			ip := net.ParseIP(ipStr)
-			if ip != nil && IsPrivateIP(ip) {
-				return fmt.Errorf("redirect to private IP %s (%q) blocked", ipStr, hostname)
-			}
+		if _, err := resolvePublic(req.Context(), hostname); err != nil {
+			return fmt.Errorf("redirect blocked: %w", err)
 		}
 		return nil
 	}

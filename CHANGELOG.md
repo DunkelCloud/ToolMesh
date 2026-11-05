@@ -11,6 +11,12 @@ for the full narrative and details.
 
 ## [Unreleased]
 
+### Security
+
+- SSRF checks refuse IPv6 addresses with a zone (`[::ffff:127.0.0.1%25x]`),
+  which slipped past the private-address check and reached loopback, private
+  or metadata addresses, and fail closed on DNS answers that do not parse.
+
 ### Added
 
 - DADL health checks (spec §4.6) are implemented. A DADL can declare under

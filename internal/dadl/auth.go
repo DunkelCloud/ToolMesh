@@ -111,6 +111,10 @@ type RestAuth struct {
 	tokenExpiry     time.Time
 	sessionTokens   map[string]string // for session auth: token name → value
 	sessionTokenTTL time.Time         // expiry time for session tokens
+
+	// hostScope, when set, is the set of hosts credentials may be sent to
+	// (SetScope); nil leaves the hosts unbound.
+	hostScope *HostScope
 }
 
 // NewRestAuth creates a RestAuth handler for the given auth configuration.
@@ -162,6 +166,35 @@ func (a *RestAuth) SetTransport(rt http.RoundTripper) {
 	}
 }
 
+// SetScope binds this RestAuth to the scopes of its backend: credentials are
+// read only within creds, and sent, as tool request auth, token request or
+// session login, only to hosts within hosts. The load-time CheckScope makes
+// both checks unreachable for a valid configuration; they stay as a second
+// line. A token URL that a jwt_bearer service-account credential supplies
+// itself (token_uri) is operator data and not checked against hosts. Call
+// SetScope before the first request; nil leaves that side unbound.
+func (a *RestAuth) SetScope(creds *CredentialScope, hosts *HostScope) {
+	if creds != nil {
+		a.creds = &scopedStore{inner: a.creds, scope: creds}
+	}
+	a.hostScope = hosts
+}
+
+// checkHost refuses to send credentials to a host outside the scope.
+func (a *RestAuth) checkHost(rawURL string) error {
+	if a.hostScope == nil {
+		return nil
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("credentials not sent: parse %q: %w", rawURL, err)
+	}
+	if !a.hostScope.Allows(u.Hostname()) {
+		return fmt.Errorf("credentials are not sent to host %s: it is not one of the backend's hosts (allowed_hosts in backends.yaml)", u.Hostname())
+	}
+	return nil
+}
+
 // CookieJar returns the shared cookie jar, or nil if cookie forwarding
 // is not enabled. The RESTAdapter uses this to attach the same jar to
 // its HTTP clients so cookies from login are sent with tool requests.
@@ -174,6 +207,11 @@ func (a *RestAuth) CookieJar() http.CookieJar {
 
 // InjectAuth adds authentication credentials to an HTTP request.
 func (a *RestAuth) InjectAuth(ctx context.Context, req *http.Request) error {
+	if a.config.Type != "" {
+		if err := a.checkHost(req.URL.String()); err != nil {
+			return err
+		}
+	}
 	switch a.config.Type {
 	case authTypeBearer:
 		return a.injectBearer(ctx, req)
@@ -332,6 +370,13 @@ func (a *RestAuth) getOAuth2Token(ctx context.Context) (string, error) {
 	}
 	if data == nil {
 		return "", nil // required credential missing: caller skips the auth header
+	}
+	// A declared token_url must be one of the backend's hosts; a token_uri
+	// taken from a jwt_bearer service-account credential is operator data.
+	if a.config.TokenURL != "" {
+		if err := a.checkHost(tokenURL); err != nil {
+			return "", fmt.Errorf("oauth2 token request: %w", err)
+		}
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "POST", tokenURL, strings.NewReader(data.Encode()))
@@ -512,6 +557,9 @@ func (a *RestAuth) doSessionLogin(ctx context.Context) error {
 	loginURL, err := sessionLoginURL(a.baseURL, a.config.Login.Path)
 	if err != nil {
 		return err
+	}
+	if err := a.checkHost(loginURL); err != nil {
+		return fmt.Errorf("session login: %w", err)
 	}
 
 	// Resolve credential references anywhere in the (possibly nested) login body.

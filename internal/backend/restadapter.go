@@ -1053,7 +1053,12 @@ func checkBodySize(size, limit int64) error {
 // such as dot segments in the DADL path itself.
 func joinURL(baseURL, toolPath string) (string, error) {
 	ref, err := url.Parse(toolPath)
-	if err == nil && isAbsoluteHTTPURL(ref) {
+	if err != nil {
+		// Never fall back to treating an unparsable path as relative: that
+		// would hide a broken DADL path behind a request to the base host.
+		return "", fmt.Errorf("parse tool path %q: %w", toolPath, err)
+	}
+	if isAbsoluteHTTPURL(ref) {
 		return ref.String(), nil
 	}
 	base, err := url.Parse(baseURL)
@@ -1153,7 +1158,11 @@ func (a *RESTAdapter) buildPath(tool *dadl.ToolDef, params map[string]any) (stri
 		}
 		// url.PathEscape keeps "." and "..", and URL resolution would then
 		// turn them into dot segments that walk up the path, e.g.
-		// /projects/{id}/issues with id ".." reaching /issues.
+		// /projects/{id}/issues with id ".." reaching /issues. The value is
+		// refused whatever its position, also where it could not form a
+		// segment of its own ({id}.json); such values are not legitimate
+		// IDs. An encoded slash in a value (a%2F..%2Fb) stays one segment
+		// here; see the DADL docs on proxies that decode %2F.
 		if str == "." || str == ".." {
 			return "", fmt.Errorf("path parameter %q cannot be %q", name, str)
 		}

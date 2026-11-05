@@ -100,6 +100,12 @@ func TestJoinURL(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name:    "unparsable tool path is an error, not a relative path",
+			base:    testBaseURLGitLab,
+			path:    "http://evil.example%2F.example.invalid/v1/x",
+			wantErr: true,
+		},
+		{
 			name: "colon in the first segment is not a scheme",
 			base: testBaseURLGitLab,
 			path: "evil.example:443/issues",

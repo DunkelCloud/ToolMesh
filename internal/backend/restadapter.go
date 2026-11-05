@@ -172,7 +172,11 @@ func NewRESTAdapter(spec *dadl.Spec, creds credentials.CredentialStore, logger *
 	// skipped in both the dialer and redirect handler.
 	transport := SSRFSafeTransport(defaultHTTPTimeout, opts.AllowPrivateURL, opts.TLSSkipVerify)
 	streamTransport := SSRFSafeTransport(defaultStreamingHTTPTimeout, opts.AllowPrivateURL, opts.TLSSkipVerify)
-	redirectCheck := newRedirectChecker(opts.AllowPrivateURL)
+	// Backend requests carry injected credentials (headers or query string), so
+	// their redirects leaving the original origin drop those credentials, never
+	// downgrade to http and never re-send a body. This holds independently of
+	// AllowPrivateURL.
+	redirectCheck := newBackendRedirectChecker(opts.AllowPrivateURL)
 
 	httpClient := &http.Client{
 		Timeout:       defaultHTTPTimeout,

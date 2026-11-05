@@ -135,6 +135,99 @@ func SSRFSafeTransport(timeout time.Duration, allowPrivate, tlsSkipVerify bool) 
 	}
 }
 
+// redirectSafeHeaders lists the request headers that survive a redirect to a
+// different origin. Everything else is removed: injected credentials in
+// Authorization or custom headers (X-API-Key, PRIVATE-TOKEN, session headers),
+// cookies set by hand, header parameters a caller supplied, and the Referer,
+// which Go fills with the previous URL including its query string (and so
+// with a query-injected API key).
+var redirectSafeHeaders = map[string]struct{}{
+	"Accept":            {},
+	"Accept-Encoding":   {},
+	"Accept-Language":   {},
+	"Cache-Control":     {},
+	"If-Modified-Since": {},
+	"If-None-Match":     {},
+	"If-Range":          {},
+	"Range":             {},
+	"User-Agent":        {},
+}
+
+// newBackendRedirectChecker returns the CheckRedirect function for requests to
+// a configured backend. Such requests can carry credentials injected by
+// ToolMesh. Go's client copies every custom header to the redirect target and
+// strips only Authorization and Cookie, and only for some host changes, so an
+// upstream redirect (or an open redirect on the upstream) would otherwise hand
+// an X-API-Key or PRIVATE-TOKEN to a third party.
+//
+// Compared with the origin of the first request, a redirect
+//   - to http from https is refused (no downgrade, whatever the host),
+//   - to the same origin, or from http to https on the same host and default
+//     ports, is followed unchanged,
+//   - to any other origin is refused when it would re-send a request body
+//     (307/308), and otherwise followed with only redirectSafeHeaders kept.
+//
+// The redirect count and private-address checks of newRedirectChecker apply
+// in every case. Error texts name only the target host, never its path or
+// query.
+func newBackendRedirectChecker(allowPrivate bool) func(*http.Request, []*http.Request) error {
+	base := newRedirectChecker(allowPrivate)
+	return func(req *http.Request, via []*http.Request) error {
+		if err := base(req, via); err != nil {
+			return err
+		}
+		if len(via) == 0 || via[0].URL == nil || req.URL == nil {
+			return nil
+		}
+		orig, next := via[0].URL, req.URL
+		if strings.EqualFold(orig.Scheme, urlSchemeHTTPS) && !strings.EqualFold(next.Scheme, urlSchemeHTTPS) {
+			return fmt.Errorf("redirect from https to %s://%s refused: backend requests are never downgraded", next.Scheme, next.Host)
+		}
+		if sameOrigin(orig, next) || isHTTPSUpgrade(orig, next) {
+			return nil
+		}
+		if req.Body != nil && req.Body != http.NoBody {
+			return fmt.Errorf("redirect to %s refused: a request body is not re-sent to another host", next.Host)
+		}
+		for name := range req.Header {
+			if _, keep := redirectSafeHeaders[http.CanonicalHeaderKey(name)]; !keep {
+				delete(req.Header, name)
+			}
+		}
+		return nil
+	}
+}
+
+// effectivePort returns the explicit port of u or the default port of its
+// scheme.
+func effectivePort(u *url.URL) string {
+	if p := u.Port(); p != "" {
+		return p
+	}
+	switch strings.ToLower(u.Scheme) {
+	case urlSchemeHTTPS:
+		return "443"
+	case urlSchemeHTTP:
+		return "80"
+	}
+	return ""
+}
+
+// sameOrigin reports whether a and b share scheme, host and port.
+func sameOrigin(a, b *url.URL) bool {
+	return strings.EqualFold(a.Scheme, b.Scheme) &&
+		strings.EqualFold(a.Hostname(), b.Hostname()) &&
+		effectivePort(a) == effectivePort(b)
+}
+
+// isHTTPSUpgrade reports whether b is the https form of the http URL a on the
+// same host with default ports, the common "http to https" redirect.
+func isHTTPSUpgrade(a, b *url.URL) bool {
+	return strings.EqualFold(a.Scheme, urlSchemeHTTP) && strings.EqualFold(b.Scheme, urlSchemeHTTPS) &&
+		strings.EqualFold(a.Hostname(), b.Hostname()) &&
+		effectivePort(a) == "80" && effectivePort(b) == "443"
+}
+
 // newRedirectChecker returns a CheckRedirect function. When allowPrivate is
 // true, only the redirect count is enforced. Otherwise, redirect targets are
 // also validated against private/loopback addresses.

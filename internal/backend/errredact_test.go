@@ -44,14 +44,14 @@ func TestRESTAdapter_TransportErrorHidesQueryKey(t *testing.T) {
 	addr := ln.Addr().String()
 	_ = ln.Close()
 
-	newAdapter := func(t *testing.T, errs *dadl.ErrorConfig) *RESTAdapter {
+	newAdapter := func(t *testing.T, errs *dadl.ErrorConfig, baseURL string) *RESTAdapter {
 		t.Helper()
 		spec := &dadl.Spec{
 			Spec: testDADLSpecURL,
 			Backend: dadl.BackendDef{
 				Name:    testBackendNameAPI,
 				Type:    transportTypeREST,
-				BaseURL: "http://" + addr,
+				BaseURL: baseURL,
 				Auth: dadl.AuthConfig{
 					Type: redirectTestAuthType, Credential: redirectTestCredential,
 					InjectInto: testParamQuery, QueryParam: "api_key",
@@ -73,7 +73,7 @@ func TestRESTAdapter_TransportErrorHidesQueryKey(t *testing.T) {
 	}
 
 	t.Run("direct error", func(t *testing.T) {
-		a := newAdapter(t, nil)
+		a := newAdapter(t, nil, "http://"+addr)
 		result, err := a.Execute(context.Background(), redirectTestTool, nil)
 		if err == nil {
 			t.Fatalf("expected a transport error, got result %v", result)
@@ -108,8 +108,7 @@ func TestRESTAdapter_TransportErrorHidesQueryKey(t *testing.T) {
 		a := newAdapter(t, &dadl.ErrorConfig{
 			RetryOn:       []int{http.StatusServiceUnavailable},
 			RetryStrategy: &dadl.RetryStrategyConfig{MaxRetries: 1, Backoff: testBackoffFixed, InitialDelay: testDelay1ms},
-		})
-		a.spec.Backend.BaseURL = srv.URL
+		}, srv.URL)
 		result, err := a.Execute(context.Background(), redirectTestTool, nil)
 		if err != nil {
 			t.Fatal(err)

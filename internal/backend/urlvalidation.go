@@ -23,6 +23,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/DunkelCloud/ToolMesh/internal/dadl"
 )
 
 // ValidateBaseURL checks that a base URL does not point to private, loopback,
@@ -158,6 +160,15 @@ func IsPrivateIP(ip net.IP) bool {
 // When tlsSkipVerify is true, TLS certificate validation is disabled (for
 // backends using self-signed certificates).
 func SSRFSafeTransport(timeout time.Duration, allowPrivate, tlsSkipVerify bool) *http.Transport {
+	return guardedTransport(timeout, allowPrivate, nil, tlsSkipVerify)
+}
+
+// guardedTransport returns a transport whose dialer checks the resolved
+// addresses of every destination it is not told to trust: none when
+// allowAll is set, otherwise every "host:port" not in trusted. A trusted
+// destination may resolve to a private address; any other must resolve to
+// public ones only.
+func guardedTransport(timeout time.Duration, allowAll bool, trusted map[string]bool, tlsSkipVerify bool) *http.Transport {
 	dialer := &net.Dialer{Timeout: timeout}
 
 	var tlsConfig *tls.Config
@@ -165,7 +176,7 @@ func SSRFSafeTransport(timeout time.Duration, allowPrivate, tlsSkipVerify bool) 
 		tlsConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec // admin-configured per-backend opt-in
 	}
 
-	if allowPrivate {
+	if allowAll {
 		return &http.Transport{
 			DialContext:     dialer.DialContext,
 			TLSClientConfig: tlsConfig,
@@ -177,6 +188,9 @@ func SSRFSafeTransport(timeout time.Duration, allowPrivate, tlsSkipVerify bool) 
 			host, port, err := net.SplitHostPort(addr)
 			if err != nil {
 				return nil, fmt.Errorf("ssrf dial: invalid address %q: %w", addr, err)
+			}
+			if trusted[destinationKey(host, port)] {
+				return dialer.DialContext(ctx, network, addr)
 			}
 			ips, err := net.DefaultResolver.LookupHost(ctx, host)
 			if err != nil {
@@ -191,6 +205,44 @@ func SSRFSafeTransport(timeout time.Duration, allowPrivate, tlsSkipVerify bool) 
 			return dialer.DialContext(ctx, network, net.JoinHostPort(ips[0], port))
 		},
 	}
+}
+
+// destinationKey normalizes a dial destination for the trusted set.
+func destinationKey(host, port string) string {
+	return net.JoinHostPort(strings.TrimSuffix(strings.ToLower(host), "."), port)
+}
+
+// declaredDestinations lists the "host:port" destinations a backend's
+// configuration names itself: base_url (which backends.yaml url overrides),
+// the OAuth2 token_url, and the hosts of absolute tool paths. With
+// allow_private_url these may resolve to private addresses; a host learned
+// at run time, from a redirect or a URL the server returns, may not.
+func declaredDestinations(spec *dadl.Spec) map[string]bool {
+	out := map[string]bool{}
+	add := func(raw string) {
+		lower := strings.ToLower(raw)
+		if !strings.HasPrefix(lower, urlSchemeHTTP+"://") && !strings.HasPrefix(lower, urlSchemeHTTPS+"://") {
+			return
+		}
+		authority := raw[strings.Index(raw, "://")+3:]
+		if i := strings.IndexAny(authority, "/?#"); i >= 0 {
+			authority = authority[:i]
+		}
+		if strings.Contains(authority, "{") {
+			return // a placeholder in the host is no declared destination
+		}
+		u, err := url.Parse(raw[:strings.Index(raw, "://")+3] + authority)
+		if err != nil || u.Hostname() == "" {
+			return
+		}
+		out[destinationKey(u.Hostname(), effectivePort(u))] = true
+	}
+	add(spec.Backend.BaseURL)
+	add(spec.Backend.Auth.TokenURL)
+	for _, tool := range spec.Backend.Tools {
+		add(tool.Path)
+	}
+	return out
 }
 
 // redirectSafeHeaders lists the request headers that survive a redirect to a

@@ -16,6 +16,7 @@ package backend
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -58,7 +59,10 @@ func (h *headerRecorder) snapshot() (int, http.Header) {
 	return h.hits, h.header
 }
 
-func redirectTestAdapter(t *testing.T, baseURL string, auth dadl.AuthConfig) *RESTAdapter {
+// redirectTestAdapter builds an adapter for baseURL. alsoDeclared names
+// further URLs the configuration declares (as absolute tool paths), so that a
+// redirect to them may reach a private test server.
+func redirectTestAdapter(t *testing.T, baseURL string, auth dadl.AuthConfig, alsoDeclared ...string) *RESTAdapter {
 	t.Helper()
 	spec := &dadl.Spec{
 		Spec: testDADLSpecURL,
@@ -74,6 +78,9 @@ func redirectTestAdapter(t *testing.T, baseURL string, auth dadl.AuthConfig) *RE
 				}},
 			},
 		},
+	}
+	for i, u := range alsoDeclared {
+		spec.Backend.Tools[fmt.Sprintf("declared_%d", i)] = dadl.ToolDef{Method: testMethodGET, Path: u}
 	}
 	creds := &testCredStore{creds: map[string]string{redirectTestCredential: redirectTestSecret}}
 	a, err := NewRESTAdapter(spec, creds, slog.Default(), testRESTOpts)
@@ -107,7 +114,7 @@ func TestRESTAdapter_RedirectDropsCredentialsAcrossOrigins(t *testing.T) {
 			}))
 			defer origin.Close()
 
-			a := redirectTestAdapter(t, origin.URL, tc.auth)
+			a := redirectTestAdapter(t, origin.URL, tc.auth, otherSrv.URL)
 			result, err := a.Execute(context.Background(), redirectTestTool, nil)
 			if err != nil {
 				t.Fatal(err)
@@ -171,7 +178,7 @@ func TestRESTAdapter_RedirectRefusesBodyToOtherOrigin(t *testing.T) {
 	}))
 	defer origin.Close()
 
-	a := redirectTestAdapter(t, origin.URL, dadl.AuthConfig{Type: redirectTestAuthType, Credential: redirectTestCredential, HeaderName: redirectTestHeader})
+	a := redirectTestAdapter(t, origin.URL, dadl.AuthConfig{Type: redirectTestAuthType, Credential: redirectTestCredential, HeaderName: redirectTestHeader}, otherSrv.URL)
 	result, err := a.Execute(context.Background(), "post_thing", map[string]any{"name": "x"})
 	if err == nil && (result == nil || !result.IsError) {
 		t.Fatal("expected a 307 with body to another origin to be refused")

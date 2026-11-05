@@ -170,8 +170,16 @@ func NewRESTAdapter(spec *dadl.Spec, creds credentials.CredentialStore, logger *
 	// Each adapter gets its own transport with SSRF-safe dial hooks (H-4, M-19)
 	// and redirect validation (H-3). When AllowPrivateURL is set, IP checks are
 	// skipped in both the dialer and redirect handler.
-	transport := SSRFSafeTransport(defaultHTTPTimeout, opts.AllowPrivateURL, opts.TLSSkipVerify)
-	streamTransport := SSRFSafeTransport(defaultStreamingHTTPTimeout, opts.AllowPrivateURL, opts.TLSSkipVerify)
+	// With AllowPrivateURL only the destinations the configuration names
+	// (base_url, token_url, absolute tool paths) may resolve to private
+	// addresses; a redirect target or any other host learned at run time is
+	// checked at dial time like without it.
+	var trusted map[string]bool
+	if opts.AllowPrivateURL {
+		trusted = declaredDestinations(spec)
+	}
+	transport := guardedTransport(defaultHTTPTimeout, false, trusted, opts.TLSSkipVerify)
+	streamTransport := guardedTransport(defaultStreamingHTTPTimeout, false, trusted, opts.TLSSkipVerify)
 	// OAuth2 token and session login requests go through the same SSRF-safe
 	// transport (and TLS settings) as tool calls; RestAuth itself refuses
 	// every redirect for them.

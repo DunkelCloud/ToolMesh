@@ -82,17 +82,24 @@ func (c *CompositeBackend) SetLogger(logger *slog.Logger) {
 // The composite remembers the guard and installs it on every backend added
 // afterwards through AddNamed, AddPassthrough or Swap, before that backend
 // becomes reachable. A hot reload therefore never publishes a REST adapter
-// whose composites run without authorization.
+// whose composites run without authorization. Passing nil removes the guard
+// from every backend, as RESTAdapter.SetChildGuard(nil) does for one; their
+// composite child calls are then refused.
 func (c *CompositeBackend) SetChildGuard(g ChildGuard) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.guard = g
 	s := c.state.Load()
+	set := func(b ToolBackend) {
+		if setter, ok := b.(childGuardSetter); ok {
+			setter.SetChildGuard(g)
+		}
+	}
 	for _, b := range s.backends {
-		c.applyGuardLocked(b)
+		set(b)
 	}
 	for _, b := range s.passthroughs {
-		c.applyGuardLocked(b)
+		set(b)
 	}
 }
 

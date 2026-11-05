@@ -133,6 +133,20 @@ func TestRESTAdapter_CompositeChildGuard(t *testing.T) {
 		}
 	})
 
+	t.Run("composite SetChildGuard(nil) removes the guard", func(t *testing.T) {
+		adapter := newAdapter(t)
+		comp := NewCompositeBackend(map[string]ToolBackend{testBackendNameAPI: adapter})
+		comp.SetChildGuard(AllowAllChildGuard{})
+		comp.SetChildGuard(nil)
+		result, err := adapter.Execute(context.Background(), testCompositeCountItems, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !result.IsError {
+			t.Error("after SetChildGuard(nil) the old guard still allowed the child call")
+		}
+	})
+
 	t.Run("no guard refuses child calls (fail closed)", func(t *testing.T) {
 		adapter := newAdapter(t)
 

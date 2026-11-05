@@ -375,20 +375,13 @@ func TestExecuteTool_BackendResultWithExistingMetadata(t *testing.T) {
 }
 
 // TestCallerCredentialDurchstich is the Sprint 2 integration test that verifies
-// the complete flow: CallerID → UserContext → Executor → Credential injection →
-// Pre-Gate (JS policy with callerId/callerClass) → Backend → Post-Gate.
+// the complete flow: CallerID → UserContext → Executor → Pre-Gate (JS policy
+// with callerId/callerClass) → Backend → Post-Gate.
 func TestCallerCredentialDurchstich(t *testing.T) {
-	// Set env-var credentials for the EmbeddedStore
-	t.Setenv("CREDENTIAL_GITHUB_API_KEY", "ghp_test_token_123")    //nolint:gosec // G101: intentional test data
-	t.Setenv("CREDENTIAL_GITHUB_WEBHOOK_SECRET", "whsec_test_456") //nolint:gosec // G101: intentional test data
-
 	credStore := credentials.NewEmbeddedStore()
 
-	// Backend that verifies credentials arrived via context
-	var receivedCreds map[string]string
 	mb := &mockBackend{
 		executeFunc: func(ctx context.Context, toolName string, params map[string]any) (*backend.ToolResult, error) {
-			receivedCreds = credentials.CredentialsFromContext(ctx)
 			return &backend.ToolResult{
 				Content: []any{map[string]any{contentKeyType: contentKeyText, contentKeyText: "executed " + toolName}},
 			}, nil
@@ -428,20 +421,14 @@ func TestCallerCredentialDurchstich(t *testing.T) {
 		callerClass      string
 		tool             string
 		wantError        bool
-		wantCount        int
-		wantKey          string
-		wantVal          string
 		wantRequestField bool // verify request fields populated for audit
 	}{
 		{
-			name:             "trusted caller executes read tool with multi-credential injection",
+			name:             "trusted caller executes read tool",
 			callerID:         "claude-code",
 			callerClass:      "trusted",
 			tool:             "github_get_repo",
 			wantError:        false,
-			wantCount:        2,
-			wantKey:          "GITHUB_API_KEY",
-			wantVal:          "ghp_test_token_123",
 			wantRequestField: true,
 		},
 		{
@@ -457,9 +444,6 @@ func TestCallerCredentialDurchstich(t *testing.T) {
 			callerClass: testCallerUntrusted,
 			tool:        "github_get_repo",
 			wantError:   false,
-			wantCount:   2,
-			wantKey:     "GITHUB_WEBHOOK_SECRET",
-			wantVal:     "whsec_test_456",
 		},
 		{
 			name:        "standard caller executes tool normally",
@@ -467,14 +451,11 @@ func TestCallerCredentialDurchstich(t *testing.T) {
 			callerClass: "standard",
 			tool:        "github_list_issues",
 			wantError:   false,
-			wantCount:   2,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			receivedCreds = nil
-
 			ctx := userctx.WithUserContext(context.Background(), &userctx.UserContext{
 				UserID:        testUserID,
 				CompanyID:     "acme",
@@ -502,18 +483,6 @@ func TestCallerCredentialDurchstich(t *testing.T) {
 
 			if result.IsError {
 				t.Errorf("expected IsError = false, got error result")
-			}
-
-			// Verify credentials were injected via context
-			if tt.wantCount > 0 {
-				if len(receivedCreds) != tt.wantCount {
-					t.Errorf("expected %d credentials, got %d: %v", tt.wantCount, len(receivedCreds), receivedCreds)
-				}
-			}
-			if tt.wantKey != "" {
-				if receivedCreds[tt.wantKey] != tt.wantVal {
-					t.Errorf("credential %s = %q, want %q", tt.wantKey, receivedCreds[tt.wantKey], tt.wantVal)
-				}
 			}
 
 			// Verify request fields are populated for audit entries

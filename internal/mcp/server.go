@@ -1100,6 +1100,10 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: oauthErrInvalidRedURI, oauthErrorDescription: fmt.Sprintf("malformed URI: %s", uri)})
 			return
 		}
+		if msg := redirectURIShapeError(uri, parsed); msg != "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: oauthErrInvalidRedURI, oauthErrorDescription: msg + ": " + uri})
+			return
+		}
 		if isLoopbackRedirect(parsed) {
 			continue // http://localhost is allowed for development
 		}
@@ -1185,6 +1189,9 @@ func (s *Server) passwordLoginConfigured() bool {
 // without a token store) and the reason for a rejection, or "" when the pair
 // is valid.
 func (s *Server) clientForRedirect(ctx context.Context, clientID, redirectURI string) (client *auth.OAuthClient, reason string) {
+	if u, err := url.Parse(redirectURI); err != nil || redirectURIShapeError(redirectURI, u) != "" {
+		return nil, loginReasonInvalidRedirectURI
+	}
 	if !redirectHostAllowed(redirectURI, s.cfg.OAuthRedirectHosts) {
 		return nil, loginReasonRedirectHostDenied
 	}
@@ -1201,6 +1208,29 @@ func (s *Server) clientForRedirect(ctx context.Context, clientID, redirectURI st
 		}
 	}
 	return nil, loginReasonInvalidRedirectURI
+}
+
+// redirectURIShapeError returns why a redirect URI cannot be used, or "".
+// RFC 6749 section 3.1.2 forbids a fragment. An opaque URI such as
+// "https:evil.example/cb" has no host in Go's reading, while a browser
+// treats it as https://evil.example/cb, so the login page could not name
+// the real destination. A host with non-ASCII characters is mapped by the
+// browser (IDNA: "claude.ai\u3002evil.example" becomes
+// "claude.ai.evil.example"), so it would be shown differently from where
+// the browser goes; the ASCII (punycode) form is required instead.
+func redirectURIShapeError(raw string, u *url.URL) string {
+	switch {
+	case strings.Contains(raw, "#"):
+		return "redirect_uri must not contain a fragment"
+	case u.Opaque != "" || u.Host == "":
+		return "redirect_uri must be an absolute URI with a host"
+	}
+	for i := 0; i < len(u.Host); i++ {
+		if u.Host[i] >= 0x80 {
+			return "redirect_uri host must be written in ASCII (punycode)"
+		}
+	}
+	return ""
 }
 
 // isLoopbackRedirect reports whether u is an http redirect URI on a loopback

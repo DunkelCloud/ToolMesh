@@ -206,3 +206,28 @@ func TestAuthorize_ConsentNeverPreTicked(t *testing.T) {
 		t.Error("the consent checkbox came back ticked")
 	}
 }
+
+// TestRegister_RedirectURIShapes pins which redirect URIs can be registered:
+// none whose destination the login page could show differently from where a
+// browser goes.
+func TestRegister_RedirectURIShapes(t *testing.T) {
+	ts := newLoginTestServerNoClient(t, loginTestConfig())
+	cases := []struct {
+		uri  string
+		want int
+	}{
+		{"https://evil.example/cb#frag", http.StatusBadRequest},
+		{"https:evil.example/cb", http.StatusBadRequest},
+		{"https://claude.ai\u3002evil.example/cb", http.StatusBadRequest},
+		{"https://cl\u00e4ude.example/cb", http.StatusBadRequest},
+		{"https://xn--cude-loa.example/cb", http.StatusCreated},
+		{"https://claude.ai/api/mcp/auth_callback", http.StatusCreated},
+		{"http://localhost:33418/callback", http.StatusCreated},
+	}
+	for _, tc := range cases {
+		ts.redis.FlushAll()
+		if w := registerClient(t, ts.mux, "x", tc.uri); w.Code != tc.want {
+			t.Errorf("register %q: status %d, want %d", tc.uri, w.Code, tc.want)
+		}
+	}
+}

@@ -50,6 +50,10 @@ const maxCodeCalls = 50
 // (committees, batch evals) is not capped below the backends' own timeouts.
 const codeTimeout = 120 * time.Second
 
+// codeSlotWait is how long a run waits for a free slot when the concurrency
+// limit (SetMaxConcurrent) is reached before it is refused.
+const codeSlotWait = 10 * time.Second
+
 // Keys of per-call entries in the wire-format result array. A successful
 // call is echoed in full as {tool, result} only when the script does not
 // return a value (or include_results is set); otherwise it is compacted to
@@ -77,6 +81,13 @@ type CodeRunner struct {
 	coercer         *tsdef.Coercer
 	logger          *slog.Logger
 	timeout         time.Duration // wall-clock budget for one Execute; 0 → codeTimeout
+	// slots bounds the runs in progress; nil means no bound. Each run holds
+	// its own goja runtime, and goja has no memory limit, so this bound,
+	// together with the timeout, the call cap and the stack cap, is what
+	// keeps parallel scripts from exhausting the process memory.
+	slots chan struct{}
+	// slotWait overrides codeSlotWait; 0 uses the default.
+	slotWait time.Duration
 	// hints delivers a backend's first-use hint alongside the call that
 	// triggered it. Set by NewHandler to the handler's own notifier so both
 	// surfaces share one ledger; nil is valid and emits nothing.
@@ -116,6 +127,40 @@ func (r *CodeRunner) SetTimeout(d time.Duration) {
 		return
 	}
 	r.timeout = d
+}
+
+// SetMaxConcurrent bounds the execute_code runs in progress at once. A run
+// that finds every slot taken waits up to codeSlotWait for one and is then
+// refused with an error result. n <= 0 removes the bound. Call it before the
+// runner handles requests.
+func (r *CodeRunner) SetMaxConcurrent(n int) {
+	if n <= 0 {
+		r.slots = nil
+		return
+	}
+	r.slots = make(chan struct{}, n)
+}
+
+// acquireSlot takes a run slot and returns the function that frees it.
+func (r *CodeRunner) acquireSlot(ctx context.Context) (release func(), err error) {
+	slots := r.slots
+	if slots == nil {
+		return func() {}, nil
+	}
+	wait := r.slotWait
+	if wait <= 0 {
+		wait = codeSlotWait
+	}
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case slots <- struct{}{}:
+		return func() { <-slots }, nil
+	case <-ctx.Done():
+		return nil, fmt.Errorf("execute_code: no free run slot: %w", ctx.Err())
+	case <-timer.C:
+		return nil, fmt.Errorf("execute_code: %d runs are already in progress, the limit of this server; try again shortly", cap(slots))
+	}
 }
 
 // NewCodeRunner creates a CodeRunner with the given name mapping and executor.
@@ -192,6 +237,19 @@ func (r *CodeRunner) ExecuteWithOptions(ctx context.Context, code string, opts E
 			}},
 		}, nil
 	}
+
+	release, err := r.acquireSlot(ctx)
+	if err != nil {
+		r.logger.WarnContext(ctx, "execute_code refused", outcomeError, err)
+		return &backend.ToolResult{
+			IsError: true,
+			Content: []any{map[string]any{
+				contentKeyType: contentKeyText,
+				contentKeyText: err.Error(),
+			}},
+		}, nil
+	}
+	defer release()
 
 	timeout := r.timeout
 	if timeout <= 0 {

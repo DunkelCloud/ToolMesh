@@ -428,6 +428,7 @@ func main() {
 	// Initialize MCP handler and server
 	mcpHandler := mcp.NewHandler(exec, compositeBackend, coercer, rawTS, metricsReg, logger, cfg.DebugTools)
 	mcpHandler.SetCodeTimeout(time.Duration(cfg.CodeTimeout) * time.Second)
+	mcpHandler.SetCodeMaxConcurrent(cfg.CodeMaxConcurrent)
 	mcpHandler.SetBlobStore(blobStore, blob.DefaultUploadLimits())
 	mcpServer := mcp.NewServer(mcpHandler, cfg, logger, tokenStore, userStore, apiKeyStore, rateLimiter, callerClasses, metricsReg)
 	mcpServer.SetBlobStore(blobStore, blob.DefaultUploadLimits())

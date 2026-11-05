@@ -37,6 +37,8 @@ const maxLoginFailureWindow = 30 * 24 * 60 * 60
 
 // Lifetimes of OAuth clients from Dynamic Client Registration, in seconds.
 const (
+	// defaultCodeMaxConcurrent bounds parallel execute_code runs.
+	defaultCodeMaxConcurrent = 16
 	// defaultDCRClientTTL keeps a client that never obtained a token for a day.
 	defaultDCRClientTTL = 24 * 60 * 60
 	// minDCRClientTTL leaves time for registration, login and code exchange.
@@ -107,6 +109,11 @@ type Config struct {
 	// should be >= the slowest backend timeout times the calls chained in one
 	// run. TOOLMESH_CODE_TIMEOUT, default 120.
 	CodeTimeout int
+
+	// CodeMaxConcurrent bounds the execute_code runs in progress at once;
+	// 0 removes the bound. Each run holds a JavaScript runtime without a
+	// memory limit of its own. TOOLMESH_CODE_MAX_CONCURRENT, default 16.
+	CodeMaxConcurrent int
 
 	// Authorization. AuthzMode is "embedded" (default), "external" or
 	// "disabled" (TOOLMESH_AUTHZ_MODE; the deprecated OPENFGA_MODE maps onto
@@ -328,6 +335,14 @@ func Load() (*Config, error) {
 	if err := cfg.loadTrustedProxies(); err != nil {
 		return nil, err
 	}
+	codeMax, err := envIntStrict("TOOLMESH_CODE_MAX_CONCURRENT", defaultCodeMaxConcurrent)
+	if err != nil {
+		return nil, err
+	}
+	if codeMax < 0 {
+		return nil, fmt.Errorf("invalid TOOLMESH_CODE_MAX_CONCURRENT: %d (must be 0 for no limit, or positive)", codeMax)
+	}
+	cfg.CodeMaxConcurrent = codeMax
 
 	// Fail fast on a typo here: the value only ever surfaces as a Location
 	// header on the site root, where a silently-ignored setting would look

@@ -17,7 +17,9 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -975,5 +977,48 @@ func TestCodeRunner_Compact_KeepsDispatchErrors(t *testing.T) {
 	}
 	if _, hasErr := results[0][outcomeError]; !hasErr {
 		t.Errorf("expected %q key on dispatch-error entry, got: %v", outcomeError, results[0])
+	}
+}
+
+// TestCodeRunner_MaxConcurrent pins that execute_code runs beyond the
+// configured bound are refused after the slot wait instead of piling up.
+func TestCodeRunner_MaxConcurrent(t *testing.T) {
+	entered := make(chan struct{})
+	unblock := make(chan struct{})
+	var once sync.Once
+	mb := &codeRunnerTestBackend{
+		handler: func(toolName string, _ map[string]any) (*backend.ToolResult, error) {
+			once.Do(func() { close(entered) })
+			<-unblock
+			return &backend.ToolResult{
+				Content: []any{map[string]any{contentKeyType: contentKeyText, contentKeyText: toolName}},
+			}, nil
+		},
+	}
+	runner := newTestCodeRunner(t, mb)
+	runner.SetMaxConcurrent(1)
+	runner.slotWait = 50 * time.Millisecond
+
+	first := make(chan *backend.ToolResult, 1)
+	go func() {
+		res, _ := runner.Execute(testCtx(), `await toolmesh.test_foo(); return 1;`)
+		first <- res
+	}()
+	<-entered
+
+	res, err := runner.Execute(testCtx(), `return 2;`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.IsError || !strings.Contains(fmt.Sprint(res.Content), "already in progress") {
+		t.Fatalf("second run while the only slot is taken: want refusal, got %v", res.Content)
+	}
+
+	close(unblock)
+	if r := <-first; r == nil || r.IsError {
+		t.Fatalf("first run failed: %v", r)
+	}
+	if res, err := runner.Execute(testCtx(), `return 3;`); err != nil || res.IsError {
+		t.Fatalf("run after the slot was freed: %v %v", err, res)
 	}
 }

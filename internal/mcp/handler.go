@@ -137,6 +137,14 @@ func (h *Handler) SetCodeTimeout(d time.Duration) {
 	}
 }
 
+// SetCodeMaxConcurrent bounds the execute_code runs in progress at once
+// (TOOLMESH_CODE_MAX_CONCURRENT). n <= 0 removes the bound.
+func (h *Handler) SetCodeMaxConcurrent(n int) {
+	if h.codeRunner != nil {
+		h.codeRunner.SetMaxConcurrent(n)
+	}
+}
+
 // isBuiltinTool reports whether a tool name is dispatched directly by the
 // handler instead of through the executor.
 func (h *Handler) isBuiltinTool(name string) bool {

@@ -328,6 +328,25 @@ func (e *Executor) ExecuteTool(ctx context.Context, req ExecuteToolRequest) (*ba
 		}
 	}
 
+	// Step 2b: Argument check against the tool's declaration, before the
+	// pre-execution gate. A policy then only sees arguments of the declared
+	// types: the string "false" for a boolean would otherwise pass a check
+	// for false and still reach the API.
+	if pv, ok := e.backend.(backend.ParamValidator); ok {
+		if err := pv.ValidateToolParams(req.ToolName, req.Params); err != nil {
+			e.logger.WarnContext(ctx, "tool call rejected: parameters do not match the declaration",
+				"tool", req.ToolName,
+				"user", uc.UserID,
+				"error", err,
+			)
+			entry.DurationMs = time.Since(start).Milliseconds()
+			entry.Status = statusError
+			entry.Error = err.Error()
+			e.recordAudit(ctx, entry)
+			return backend.ParamErrorResult(err), nil
+		}
+	}
+
 	// Step 3: Pre-execution gate — validate tool + params before calling backend
 	if e.gate != nil {
 		e.logger.DebugContext(ctx, "gate pre-execution start", "tool", req.ToolName)

@@ -94,7 +94,7 @@ func TestRESTAdapter_RedirectDropsCredentialsAcrossOrigins(t *testing.T) {
 	}{
 		{"custom header", dadl.AuthConfig{Type: redirectTestAuthType, Credential: redirectTestCredential, HeaderName: redirectTestHeader}},
 		{"bearer with custom header", dadl.AuthConfig{Type: "bearer", Credential: redirectTestCredential, HeaderName: "X-Auth"}},
-		{"query parameter", dadl.AuthConfig{Type: redirectTestAuthType, Credential: redirectTestCredential, InjectInto: "query", QueryParam: "api_key"}},
+		{"query parameter", dadl.AuthConfig{Type: redirectTestAuthType, Credential: redirectTestCredential, InjectInto: testParamQuery, QueryParam: "api_key"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

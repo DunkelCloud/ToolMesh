@@ -108,6 +108,31 @@ func TestRESTAdapter_CompositeChildGuard(t *testing.T) {
 		}
 	})
 
+	t.Run("arguments are checked before the guard", func(t *testing.T) {
+		adapter := newAdapter(t)
+		adapter.spec.Backend.Tools[testToolListItems] = dadl.ToolDef{
+			Method: testMethodGET, Path: testPathItems,
+			Params: map[string]dadl.ParamDef{"flag": {Type: schemaTypeBoolean, In: testParamQuery}},
+		}
+		adapter.spec.Backend.Composites[testCompositeCountItems] = dadl.CompositeDef{
+			Code:    `const items = await api.list_items({flag: "false"}); return items.length;`,
+			Timeout: "5s",
+		}
+		guard := &recordingChildGuard{}
+		adapter.SetChildGuard(guard)
+
+		result, err := adapter.Execute(context.Background(), testCompositeCountItems, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !result.IsError || !strings.Contains(redactResultText(t, result), "must be boolean") {
+			t.Fatalf("expected a type error from the child call, got %v", result.Content)
+		}
+		if len(guard.seen) != 0 {
+			t.Errorf("guard (and its gate) saw the badly typed child call: %v", guard.seen)
+		}
+	})
+
 	t.Run("no guard refuses child calls (fail closed)", func(t *testing.T) {
 		adapter := newAdapter(t)
 

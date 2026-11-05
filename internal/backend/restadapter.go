@@ -501,6 +501,22 @@ func (a *RESTAdapter) included(name string) bool {
 	return a.includeTools[name]
 }
 
+// ValidateToolParams implements ParamValidator: it checks params against the
+// declaration of the tool or composite toolName with dadl.ValidateParams.
+// Names this adapter does not expose yield nil; Execute reports them.
+func (a *RESTAdapter) ValidateToolParams(toolName string, params map[string]any) error {
+	if !a.included(toolName) {
+		return nil
+	}
+	if comp, ok := a.spec.Backend.Composites[toolName]; ok {
+		return dadl.ValidateParams(toolName, comp.Params, params)
+	}
+	if tool, ok := a.spec.Backend.Tools[toolName]; ok {
+		return dadl.ValidateParams(toolName, tool.Params, params)
+	}
+	return nil
+}
+
 // Execute runs a tool by name with the given parameters.
 // If the tool is a composite, it is executed in a sandboxed goja runtime.
 func (a *RESTAdapter) Execute(ctx context.Context, toolName string, params map[string]any) (*ToolResult, error) {
@@ -1474,6 +1490,12 @@ func (a *RESTAdapter) effectiveErrorConfig(tool *dadl.ToolDef) *dadl.ErrorConfig
 // downstream consumers can branch on the semantic code without re-parsing
 // the text form.
 func (a *RESTAdapter) apiErrorResult(err error) *ToolResult {
+	return errorToolResult(err)
+}
+
+// errorToolResult builds the error ToolResult for err, carrying the §8.2
+// fields of a dadl.APIError in the metadata.
+func errorToolResult(err error) *ToolResult {
 	result := &ToolResult{
 		Content: []any{textContent(fmt.Sprintf("Error: %s", err))},
 		IsError: true,
@@ -2012,6 +2034,15 @@ func (a *RESTAdapter) executeComposite(ctx context.Context, name string, comp *d
 		// canonical "<backend>_<tool>" name. Fail closed: a missing guard or a
 		// guard error aborts the child (and the composite).
 		canonical := a.spec.Backend.Name + "_" + toolName
+		// Check the arguments before the guard runs the pre-execution gate,
+		// as the executor does for a direct call. The failure surfaces
+		// exactly as the same check inside Execute would surface it.
+		if err := a.ValidateToolParams(toolName, toolParams); err != nil {
+			if apiErr := apiErrorFromMetadata(a.paramErrorResult(ctx, toolName, err)); apiErr != nil {
+				return nil, apiErr
+			}
+			return nil, err
+		}
 		ref := a.childGuard.Load()
 		if ref == nil {
 			return nil, fmt.Errorf("composite child call %s refused: no authorization guard installed", canonical)

@@ -15,9 +15,13 @@
 package dadl
 
 import (
+	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
+	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -56,6 +60,11 @@ type ParamError struct {
 	// name, where one is close enough to be worth naming. Not every entry in
 	// Unknown has one.
 	Suggestions map[string]string
+	// WrongType maps a supplied argument to the declared type its value does
+	// not have (see [ValidateParams] for which types are checked).
+	WrongType map[string]string
+	// gotType names the JSON type each WrongType value actually has.
+	gotType map[string]string
 
 	// declared renders the tool's full parameter set into the message.
 	declared []string
@@ -76,6 +85,14 @@ func (e *ParamError) Error() string {
 	}
 	for _, name := range e.MissingRequired {
 		parts = append(parts, fmt.Sprintf("missing required parameter %q", name))
+	}
+	wrong := make([]string, 0, len(e.WrongType))
+	for name := range e.WrongType {
+		wrong = append(wrong, name)
+	}
+	sort.Strings(wrong)
+	for _, name := range wrong {
+		parts = append(parts, fmt.Sprintf("parameter %q must be %s, got %s", name, e.WrongType[name], e.gotType[name]))
 	}
 
 	msg := fmt.Sprintf("tool %q: %s", e.Tool, strings.Join(parts, "; "))
@@ -114,6 +131,13 @@ func (e *ParamError) Unwrap() error {
 //   - Every required parameter must be supplied. `in: path` counts as
 //     required (the URL cannot be built without it), matching the input
 //     schema advertised to clients.
+//   - A supplied, non-null value must fit its declared type where the JSON
+//     form is unambiguous: boolean takes only true or false, integer a
+//     whole JSON number or a string of decimal digits (large IDs), number a
+//     JSON number or a numeric string, array a JSON array and object a JSON
+//     object. string and the file types are passed as given. The check runs
+//     before the gate, so a policy that tests a boolean for false cannot be
+//     passed with the string "false".
 //
 // A parameter counts as supplied when the key is present; an explicit nil
 // counts only for `in: body`, where JSON null is a distinct instruction
@@ -138,7 +162,20 @@ func ValidateParams(toolName string, declared map[string]ParamDef, params map[st
 		}
 	}
 
-	if len(unknown) == 0 && len(missing) == 0 {
+	wrongType := map[string]string{}
+	gotType := map[string]string{}
+	for name, val := range params {
+		def, ok := declared[name]
+		if !ok || val == nil {
+			continue
+		}
+		if want := strings.ToLower(def.Type); !valueFitsType(want, val) {
+			wrongType[name] = want
+			gotType[name] = jsonTypeName(val)
+		}
+	}
+
+	if len(unknown) == 0 && len(missing) == 0 && len(wrongType) == 0 {
 		return nil
 	}
 	sort.Strings(unknown)
@@ -162,8 +199,113 @@ func ValidateParams(toolName string, declared map[string]ParamDef, params map[st
 		Unknown:         unknown,
 		MissingRequired: missing,
 		Suggestions:     suggestions,
+		WrongType:       wrongType,
+		gotType:         gotType,
 		declared:        describeParams(declared, names),
 	}
+}
+
+// valueFitsType reports whether val, a decoded JSON value, fits the declared
+// DADL type. Types without an unambiguous JSON form always fit.
+func valueFitsType(declared string, val any) bool {
+	switch declared {
+	case jsTypeBoolean:
+		_, ok := val.(bool)
+		return ok
+	case jsTypeInteger:
+		switch v := val.(type) {
+		case string:
+			return isIntegerLiteral(v)
+		case json.Number:
+			return isIntegerLiteral(string(v))
+		}
+		return isWholeNumber(val)
+	case jsTypeNumber:
+		switch v := val.(type) {
+		case string:
+			f, err := strconv.ParseFloat(strings.TrimSpace(v), 64)
+			return err == nil && !math.IsNaN(f) && !math.IsInf(f, 0)
+		case json.Number:
+			_, err := v.Float64()
+			return err == nil
+		}
+		return isNumeric(val)
+	case jsTypeArray:
+		return isList(val)
+	case jsTypeObject:
+		return isMap(val)
+	}
+	return true
+}
+
+// isIntegerLiteral reports whether s is an optionally signed run of decimal
+// digits.
+func isIntegerLiteral(s string) bool {
+	s = strings.TrimPrefix(strings.TrimPrefix(s, "-"), "+")
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// isNumeric reports whether val is a Go numeric value.
+func isNumeric(val any) bool {
+	switch val.(type) {
+	case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, float32, float64:
+		return true
+	}
+	return false
+}
+
+// isWholeNumber reports whether val is a numeric value without a fraction.
+func isWholeNumber(val any) bool {
+	var f float64
+	switch v := val.(type) {
+	case float64:
+		f = v
+	case float32:
+		f = float64(v)
+	default:
+		return isNumeric(val)
+	}
+	return !math.IsNaN(f) && !math.IsInf(f, 0) && f == math.Trunc(f)
+}
+
+// isList reports whether val is a slice or array.
+func isList(val any) bool {
+	k := reflect.ValueOf(val).Kind()
+	return k == reflect.Slice || k == reflect.Array
+}
+
+// isMap reports whether val is a map.
+func isMap(val any) bool {
+	return reflect.ValueOf(val).Kind() == reflect.Map
+}
+
+// jsonTypeName names the JSON type of a decoded value for error messages.
+func jsonTypeName(val any) string {
+	switch val.(type) {
+	case bool:
+		return jsTypeBoolean
+	case string:
+		return jsTypeString
+	case json.Number:
+		return jsTypeNumber
+	}
+	switch {
+	case isNumeric(val):
+		return jsTypeNumber
+	case isList(val):
+		return jsTypeArray
+	case isMap(val):
+		return jsTypeObject
+	}
+	return fmt.Sprintf("%T", val)
 }
 
 // paramSupplied reports whether a required parameter has a value the request

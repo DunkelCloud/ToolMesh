@@ -359,7 +359,7 @@ func main() {
 	if cfg.RedisURL != "" && cfg.RedisURL != "none" {
 		redisOpts, err := redis.ParseURL(cfg.RedisURL)
 		if err != nil {
-			logger.Warn("failed to parse Redis URL, using file-only token store", "error", err)
+			logger.Warn("failed to parse Redis URL, using file-only token store", "error", redisURLError(err))
 		} else {
 			rdb := redis.NewClient(redisOpts)
 			defer func() { _ = rdb.Close() }()

@@ -96,6 +96,11 @@ for the full narrative and details.
   request view (`GET /approve/<id>/request`) carries `ttl_max`, and
   `ttl_choices` runs from the shortest to the longest.
 
+### Fixed
+
+- A `REDIS_URL` that does not parse no longer puts the URL, and with it a
+  password, into the log; the warning names only what is wrong with it.
+
 ## [0.5.0] - 2026-10-23
 
 **Behavior change:** authorization is on by default. ToolMesh runs OpenFGA

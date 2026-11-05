@@ -14,13 +14,22 @@ for the full narrative and details.
 ### Security
 
 - **Upgrade note:** REST backends are bound to their `backends.yaml` entry.
-  A DADL reads only `CREDENTIAL_<ENTRY>_*` (plus the entry's `env:` and new
-  `credentials:` list) and sends credentials, token requests and session
-  logins only to its `base_url` host, that host's registrable domain and the
-  entry's new `allowed_hosts:` list. A backend whose DADL reaches further is
-  refused at load, with the exact lines to add in the log; the other
-  backends keep running. REST entries need a `name`. After upgrading, check
-  the log for `backend refused`.
+  A DADL reads only the credentials of its entry's namespace
+  `CREDENTIAL_<ENTRY>_*` (a name belongs to the configured entry with the
+  longest matching namespace, so `github` does not read the credentials of
+  `github-enterprise`), plus the entry's `env:` and new `credentials:` list.
+  It sends credentials, token requests and session logins only to its
+  `base_url` host and port, the other hosts of that host's registrable
+  domain on the default port, and the entry's new `allowed_hosts:` list
+  (`host`, `*.domain`, optionally `:port`); with an https `base_url`, over
+  https only. A backend whose DADL reaches further is refused at load, with
+  the exact lines to add in the log; the other backends keep running. REST
+  entries need a `name`. DADLs with credential names other than letters,
+  digits and `_`, or with a parameter default `credential:<name>`, are
+  refused at parse. After upgrading, check the log for `backend refused`.
+- `env:` keys of a backend are read in upper case by both the credential
+  binding and the remapping; before, a key in another case widened what the
+  backend could read without remapping the read.
 - With `allow_private_url`, private addresses stay reachable only for the
   destinations the configuration names (`base_url`, `token_url`, absolute
   tool paths), not for redirect targets.

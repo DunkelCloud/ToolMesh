@@ -134,7 +134,11 @@ const (
 
 	// Paths that are also named in responses: the MCP endpoint and the
 	// well-known prefix of the protected resource metadata (RFC 9728).
-	pathMCP               = "/mcp"
+	pathMCP    = "/mcp"
+	pathRevoke = "/revoke"
+	// tokenAuthMethodNone is the only client authentication method: clients
+	// registered here are public clients.
+	tokenAuthMethodNone   = "none"
 	pathProtectedResource = "/.well-known/oauth-protected-resource"
 
 	// Answer to a request whose credential could not be checked right now,

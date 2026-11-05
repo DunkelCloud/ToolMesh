@@ -126,6 +126,7 @@ func (s *Server) SetupRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/register", s.cors(s.handleRegister))
 	mux.HandleFunc("/authorize", s.cors(s.handleAuthorize))
 	mux.HandleFunc("/token", s.cors(s.handleToken))
+	mux.HandleFunc(pathRevoke, s.cors(s.handleRevoke))
 	mux.HandleFunc("/health", s.cors(s.handleHealth))
 	if s.blobStore != nil {
 		mux.HandleFunc("/files/upload", s.cors(s.handleFileUpload))
@@ -601,6 +602,8 @@ func (s *Server) authenticate(r *http.Request) (*userctx.UserContext, error) {
 	// Which methods the bearer was checked against, so that a credential no
 	// method accepts is counted as a failure of one that could have.
 	var checkedAPIKey, checkedOAuth, expiredToken bool
+	// revokedUser is set for a valid token whose user is no longer configured.
+	var revokedUser bool
 	// unchecked is set when a method could not look at the bearer at all.
 	var unchecked error
 
@@ -636,8 +639,22 @@ func (s *Server) authenticate(r *http.Request) (*userctx.UserContext, error) {
 		// different is not a credential anymore.
 		if s.tokenStore != nil && s.passwordLoginConfigured() {
 			ti, err := s.tokenStore.GetToken(r.Context(), bearer)
+			// The identity a token stands for is resolved against the
+			// configuration in force now: a user removed or disabled since
+			// the login loses access at once, and changed roles or plans
+			// apply to tokens already issued.
+			var id tokenIdentity
+			current := false
+			valid := err == nil && time.Now().Before(ti.ExpiresAt)
+			if valid {
+				if id, current = s.currentIdentity(ti.UserID); !current {
+					_ = s.tokenStore.DeleteToken(r.Context(), bearer)
+					s.logger.InfoContext(r.Context(), "access token of a user who is no longer configured refused",
+						"user", truncateForLog(ti.UserID), logKeyRemote, auth.ClientIP(r))
+				}
+			}
 			switch {
-			case err == nil && time.Now().Before(ti.ExpiresAt):
+			case current:
 				callerID := ti.CallerID
 				if callerID == "" {
 					callerID = ti.ClientID
@@ -645,14 +662,18 @@ func (s *Server) authenticate(r *http.Request) (*userctx.UserContext, error) {
 				s.metrics.RecordLogin(loginMethodOAuthBearer, "success")
 				return &userctx.UserContext{
 					UserID:        ti.UserID,
-					CompanyID:     ti.CompanyID,
-					Roles:         ti.Roles,
-					Plan:          ti.Plan,
+					CompanyID:     id.companyID,
+					Roles:         id.roles,
+					Plan:          id.plan,
 					Authenticated: true,
 					CallerID:      callerID,
 					CallerName:    ti.CallerName,
 					CallerClass:   s.callerClasses.Resolve(callerID),
 				}, nil
+			case valid:
+				// A valid token of a user who is gone: not accepted.
+				checkedOAuth = true
+				revokedUser = true
 			case err == nil:
 				checkedOAuth = true
 				expiredToken = true
@@ -668,7 +689,7 @@ func (s *Server) authenticate(r *http.Request) (*userctx.UserContext, error) {
 
 		// 4. API keys from apikeys.yaml that are not in the index yet. A
 		// value the token store knows as an expired token is not a key.
-		if s.apiKeys != nil && !expiredToken {
+		if s.apiKeys != nil && !expiredToken && !revokedUser {
 			entry, err := s.apiKeys.Verify(r.Context(), bearer)
 			switch {
 			case err != nil:
@@ -852,15 +873,17 @@ func extractBearer(r *http.Request) string {
 func (s *Server) handleOAuthMetadata(w http.ResponseWriter, _ *http.Request) {
 	iss := strings.TrimRight(s.cfg.Issuer, "/")
 	writeJSON(w, http.StatusOK, map[string]any{
-		"issuer":                                iss + "/",
-		"authorization_endpoint":                iss + "/authorize",
-		"token_endpoint":                        iss + "/token",
-		"registration_endpoint":                 iss + "/register",
-		"response_types_supported":              []string{oauthCode},
-		"grant_types_supported":                 []string{oauthGrantAuthCode, oauthRefreshToken},
-		"code_challenge_methods_supported":      []string{"S256"},
-		"token_endpoint_auth_methods_supported": []string{"none"},
-		"scopes_supported":                      []string{clientClaudeAI},
+		"issuer":                 iss + "/",
+		"authorization_endpoint": iss + "/authorize",
+		"token_endpoint":         iss + "/token",
+		"registration_endpoint":  iss + "/register",
+		"revocation_endpoint":    iss + pathRevoke,
+		"revocation_endpoint_auth_methods_supported": []string{tokenAuthMethodNone},
+		"response_types_supported":                   []string{oauthCode},
+		"grant_types_supported":                      []string{oauthGrantAuthCode, oauthRefreshToken},
+		"code_challenge_methods_supported":           []string{"S256"},
+		"token_endpoint_auth_methods_supported":      []string{"none"},
+		"scopes_supported":                           []string{clientClaudeAI},
 	})
 }
 
@@ -981,7 +1004,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		oauthClientID:                clientID,
 		"client_secret":              clientSecret,
 		"redirect_uris":              req.RedirectURIs,
-		"token_endpoint_auth_method": "none",
+		"token_endpoint_auth_method": tokenAuthMethodNone,
 	})
 }
 
@@ -1498,6 +1521,18 @@ func (s *Server) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request)
 	// Delete old access token
 	_ = s.tokenStore.DeleteToken(ctx, oldTI.AccessToken)
 
+	// Renewal re-checks the user against the configuration in force now and
+	// takes the current company, plan and roles; a user removed or disabled
+	// since the login gets no new token.
+	id, ok := s.currentIdentity(oldTI.UserID)
+	if !ok {
+		s.metrics.RecordLogin(loginMethodOAuthRefresh, "failure")
+		s.logger.WarnContext(ctx, "refresh refused: user is no longer configured",
+			"user", truncateForLog(oldTI.UserID), "clientId", oldTI.ClientID, logKeyRemote, auth.ClientIP(r))
+		writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: invalidGrantError})
+		return
+	}
+
 	newAccessToken := generateID()
 	newRefreshToken := generateID()
 
@@ -1507,9 +1542,9 @@ func (s *Server) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request)
 		RefreshToken:     newRefreshToken,
 		ClientID:         oldTI.ClientID,
 		UserID:           oldTI.UserID,
-		CompanyID:        oldTI.CompanyID,
-		Plan:             oldTI.Plan,
-		Roles:            oldTI.Roles,
+		CompanyID:        id.companyID,
+		Plan:             id.plan,
+		Roles:            id.roles,
 		CallerID:         oldTI.CallerID,
 		CallerName:       oldTI.CallerName,
 		Scope:            oldTI.Scope,
@@ -1537,6 +1572,79 @@ func (s *Server) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request)
 		oauthRefreshToken: newRefreshToken,
 		oauthScope:        oldTI.Scope,
 	})
+}
+
+// tokenIdentity is what an OAuth token grants under the configuration in
+// force now.
+type tokenIdentity struct {
+	companyID string
+	plan      string
+	roles     []string
+}
+
+// currentIdentity resolves userID against the configuration in force now:
+// users.yaml when it is loaded, the single-password owner otherwise. ok is
+// false when the user no longer exists or can no longer log in, so tokens
+// issued to it are neither renewed nor honored.
+func (s *Server) currentIdentity(userID string) (id tokenIdentity, ok bool) {
+	if s.userStore != nil {
+		u := s.userStore.Lookup(userID)
+		if u == nil {
+			return tokenIdentity{}, false
+		}
+		return tokenIdentity{companyID: u.Company, plan: u.Plan, roles: u.Roles}, true
+	}
+	if s.cfg.AuthPassword == "" || userID != s.cfg.AuthUser {
+		return tokenIdentity{}, false
+	}
+	return tokenIdentity{companyID: userDefault, plan: s.cfg.AuthPlan, roles: s.cfg.AuthRolesList()}, true
+}
+
+// handleRevoke implements OAuth 2.0 token revocation (RFC 7009) for the
+// access and refresh tokens issued here. Holding a token is enough to revoke
+// it: the clients are public (token_endpoint_auth_method none), and revoking
+// only takes access away. Revoking either token of a pair revokes both. The
+// answer is 200 whether or not the token was known (RFC 7009 section 2.2).
+func (s *Server) handleRevoke(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1 MB limit
+	if err := r.ParseForm(); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: oauthErrInvalidReq})
+		return
+	}
+	token := r.PostFormValue("token")
+	if token == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: oauthErrInvalidReq, oauthErrorDescription: "token is required"})
+		return
+	}
+	if s.tokenStore != nil {
+		s.revokeToken(r, token)
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
+// revokeToken removes token, as access or refresh token, together with the
+// other token of its pair.
+func (s *Server) revokeToken(r *http.Request, token string) {
+	ctx := r.Context()
+	if ti, err := s.tokenStore.GetToken(ctx, token); err == nil {
+		_ = s.tokenStore.DeleteToken(ctx, ti.AccessToken)
+		if ti.RefreshToken != "" {
+			_, _ = s.tokenStore.ConsumeRefreshToken(ctx, ti.RefreshToken)
+		}
+		s.logger.InfoContext(ctx, "oauth token revoked", "kind", "access_token", "clientId", ti.ClientID, logKeyRemote, auth.ClientIP(r))
+		return
+	}
+	if ti, err := s.tokenStore.ConsumeRefreshToken(ctx, token); err == nil {
+		if ti.AccessToken != "" {
+			_ = s.tokenStore.DeleteToken(ctx, ti.AccessToken)
+		}
+		s.logger.InfoContext(ctx, "oauth token revoked", "kind", "refresh_token", "clientId", ti.ClientID, logKeyRemote, auth.ClientIP(r))
+	}
 }
 
 // handleHealth reports liveness plus the aggregate backend health. The

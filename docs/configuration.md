@@ -793,7 +793,7 @@ CREDENTIAL_BRAVE_API_KEY=BSA-xxxxx
 | `TOOLMESH_MCP_TIMEOUT` | `120` | HTTP client timeout in seconds for calls to downstream MCP servers |
 | `TOOLMESH_EXEC_TIMEOUT` | `120` | Tool execution timeout in seconds — context deadline for a single backend call. Falls back to `TOOLMESH_ACTIVITY_TIMEOUT` if set (backwards compat). |
 | `TOOLMESH_CODE_TIMEOUT` | `120` | Wall-clock budget in seconds for one `execute_code` run. Bounds a whole orchestration of `toolmesh.*` calls, so set it at least as high as the slowest backend timeout times the number of calls chained in one run (e.g. a committee of slow models). |
-| `TOOLMESH_CODE_MAX_CONCURRENT` | `16` | `execute_code` runs in progress at once; `0` for no limit. A run that finds every slot taken waits up to 10 seconds for one and is then refused with an error result. Must be an integer of `0` or more; anything else stops the server at startup. |
+| `TOOLMESH_CODE_MAX_CONCURRENT` | `16` | `execute_code` runs in progress at once; `0` for no limit. One user may hold at most half of them, rounded up (8 with the default), so a single caller cannot keep every other user waiting; a run beyond that share is refused at once. A run that finds every slot taken waits up to 10 seconds for one and is then refused with an error result. On a deployment with a single user, that user can run half the limit in parallel; raise the limit there if needed. Must be an integer of `0` or more; anything else stops the server at startup. |
 
 Increase these for backends that need more time, e.g. browser-based web fetchers processing heavy pages, or `execute_code` runs that fan out across several slow models:
 

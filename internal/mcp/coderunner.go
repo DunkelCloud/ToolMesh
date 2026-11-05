@@ -88,6 +88,12 @@ type CodeRunner struct {
 	slots chan struct{}
 	// slotWait overrides codeSlotWait; 0 uses the default.
 	slotWait time.Duration
+	// perUserMax is how many slots one user may hold at once: half of
+	// them, rounded up, so one caller cannot starve every other user for
+	// the run timeout. perUser counts the slots each user holds.
+	perUserMax int
+	perUserMu  sync.Mutex
+	perUser    map[string]int
 	// hints delivers a backend's first-use hint alongside the call that
 	// triggered it. Set by NewHandler to the handler's own notifier so both
 	// surfaces share one ledger; nil is valid and emits nothing.
@@ -129,24 +135,49 @@ func (r *CodeRunner) SetTimeout(d time.Duration) {
 	r.timeout = d
 }
 
-// SetMaxConcurrent bounds the execute_code runs in progress at once. A run
-// that finds every slot taken waits up to codeSlotWait for one and is then
-// refused with an error result. n <= 0 removes the bound. Call it before the
-// runner handles requests.
+// SetMaxConcurrent bounds the execute_code runs in progress at once. One
+// user may hold at most half of the slots, rounded up; a run beyond that
+// share is refused at once. A run that finds every slot taken waits up to
+// codeSlotWait for one and is then refused with an error result. n <= 0
+// removes both bounds. Call it before the runner handles requests.
 func (r *CodeRunner) SetMaxConcurrent(n int) {
 	if n <= 0 {
 		r.slots = nil
+		r.perUserMax = 0
 		return
 	}
 	r.slots = make(chan struct{}, n)
+	r.perUserMax = (n + 1) / 2
+	r.perUser = make(map[string]int)
 }
 
-// acquireSlot takes a run slot and returns the function that frees it.
+// acquireSlot takes a run slot for the user of ctx and returns the function
+// that frees it.
 func (r *CodeRunner) acquireSlot(ctx context.Context) (release func(), err error) {
 	slots := r.slots
 	if slots == nil {
 		return func() {}, nil
 	}
+	user := ""
+	if uc := userctx.FromContext(ctx); uc != nil {
+		user = uc.UserID
+	}
+	r.perUserMu.Lock()
+	if r.perUser[user] >= r.perUserMax {
+		r.perUserMu.Unlock()
+		return nil, fmt.Errorf("execute_code: %d of your runs are already in progress, the share one user may hold on this server; try again when one has finished", r.perUserMax)
+	}
+	r.perUser[user]++
+	r.perUserMu.Unlock()
+	giveBack := func() {
+		r.perUserMu.Lock()
+		r.perUser[user]--
+		if r.perUser[user] <= 0 {
+			delete(r.perUser, user)
+		}
+		r.perUserMu.Unlock()
+	}
+
 	wait := r.slotWait
 	if wait <= 0 {
 		wait = codeSlotWait
@@ -155,10 +186,15 @@ func (r *CodeRunner) acquireSlot(ctx context.Context) (release func(), err error
 	defer timer.Stop()
 	select {
 	case slots <- struct{}{}:
-		return func() { <-slots }, nil
+		return func() {
+			<-slots
+			giveBack()
+		}, nil
 	case <-ctx.Done():
+		giveBack()
 		return nil, fmt.Errorf("execute_code: no free run slot: %w", ctx.Err())
 	case <-timer.C:
+		giveBack()
 		return nil, fmt.Errorf("execute_code: %d runs are already in progress, the limit of this server; try again shortly", cap(slots))
 	}
 }

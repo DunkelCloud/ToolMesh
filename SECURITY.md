@@ -58,7 +58,7 @@ ToolMesh follows a security-by-default design:
 - **Typed arguments before the gate:** Parameters of REST tools are checked against their declared DADL types before any policy sees them.
 - **Explicit OAuth consent:** The login page names the host that receives the authorization and requires a confirmation; `TOOLMESH_OAUTH_REDIRECT_HOSTS` can restrict redirect hosts. Token refresh and every access token are resolved against the current user configuration, and `/revoke` revokes tokens (RFC 7009).
 - **Client address from trusted proxies only:** `X-Forwarded-For` is honored only from `TOOLMESH_TRUSTED_PROXIES`; failed API keys and client registrations are limited per address, also without Redis.
-- **Bounded code execution:** `execute_code` runs are limited in time, tool calls, stack depth and number in progress (`TOOLMESH_CODE_MAX_CONCURRENT`).
+- **Bounded code execution:** `execute_code` runs are limited in time, tool calls, stack depth and number in progress (`TOOLMESH_CODE_MAX_CONCURRENT`, at most half of it per user). Known limit: the JavaScript runtime has no memory limit of its own, so a single run can use as much memory as the process may; run ToolMesh with a container memory limit.
 
 ### Startup security posture
 

@@ -1006,7 +1006,7 @@ func TestCodeRunner_MaxConcurrent(t *testing.T) {
 	}()
 	<-entered
 
-	res, err := runner.Execute(testCtx(), `return 2;`)
+	res, err := runner.Execute(otherUserCtx("someone-else"), `return 2;`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1020,5 +1020,44 @@ func TestCodeRunner_MaxConcurrent(t *testing.T) {
 	}
 	if res, err := runner.Execute(testCtx(), `return 3;`); err != nil || res.IsError {
 		t.Fatalf("run after the slot was freed: %v %v", err, res)
+	}
+}
+
+func otherUserCtx(user string) context.Context {
+	return userctx.WithUserContext(context.Background(), &userctx.UserContext{UserID: user, Authenticated: true})
+}
+
+// TestCodeRunner_PerUserShare pins that one user cannot hold every run slot:
+// with two slots a user gets one, and another user still gets the other
+// while the first user's scripts spin.
+func TestCodeRunner_PerUserShare(t *testing.T) {
+	runner := newTestCodeRunner(t, &codeRunnerTestBackend{})
+	runner.SetMaxConcurrent(2)
+	runner.slotWait = 50 * time.Millisecond
+	runner.SetTimeout(time.Second)
+
+	spinning := make(chan struct{})
+	go func() {
+		_, _ = runner.Execute(otherUserCtx("busy"), `for(;;){}`)
+		close(spinning)
+	}()
+	deadline := time.Now().Add(2 * time.Second)
+	for len(runner.slots) == 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	res, err := runner.Execute(otherUserCtx("busy"), `return 1;`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.IsError || !strings.Contains(fmt.Sprint(res.Content), "of your runs are already in progress") {
+		t.Fatalf("second run of the same user: want refusal by the per-user share, got %v", res.Content)
+	}
+	if res, err := runner.Execute(otherUserCtx("victim"), `return 2;`); err != nil || res.IsError {
+		t.Fatalf("another user must still get a slot: %v %v", err, res)
+	}
+	<-spinning
+	if res, err := runner.Execute(otherUserCtx("busy"), `return 3;`); err != nil || res.IsError {
+		t.Fatalf("after the spinning run ended: %v %v", err, res)
 	}
 }

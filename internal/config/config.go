@@ -183,6 +183,10 @@ type Config struct {
 	LoginMaxFailuresPerUser   int // TOOLMESH_LOGIN_MAX_FAILURES_PER_USER, default 20: one account from all addresses
 	LoginMaxFailuresPerIP     int // TOOLMESH_LOGIN_MAX_FAILURES_PER_IP, default 50: one address across all accounts
 	LoginFailureWindow        int // TOOLMESH_LOGIN_FAILURE_WINDOW, default 900
+	// APIKeyMaxFailuresPerIP limits failed bearer credentials (wrong API
+	// keys) on authenticated endpoints from one client address within
+	// LoginFailureWindow; 0 disables it.
+	APIKeyMaxFailuresPerIP int // TOOLMESH_APIKEY_MAX_FAILURES_PER_IP, default 50
 
 	// BcryptMaxConcurrent is how many bcrypt comparisons may run at the same
 	// time across the whole process: password logins (for known and unknown
@@ -405,6 +409,7 @@ func (c *Config) loadLoginThrottle() error {
 		{"TOOLMESH_LOGIN_MAX_FAILURES_PER_USER_IP", 5, &c.LoginMaxFailuresPerUserIP},
 		{"TOOLMESH_LOGIN_MAX_FAILURES_PER_USER", 20, &c.LoginMaxFailuresPerUser},
 		{"TOOLMESH_LOGIN_MAX_FAILURES_PER_IP", 50, &c.LoginMaxFailuresPerIP},
+		{"TOOLMESH_APIKEY_MAX_FAILURES_PER_IP", 50, &c.APIKeyMaxFailuresPerIP},
 	}
 	enabled := false
 	for _, l := range limits {
@@ -561,6 +566,9 @@ func (c *Config) LoginThrottleDisabled() []string {
 	}
 	if c.LoginMaxFailuresPerIP == 0 {
 		off = append(off, "TOOLMESH_LOGIN_MAX_FAILURES_PER_IP")
+	}
+	if c.APIKeyMaxFailuresPerIP == 0 {
+		off = append(off, "TOOLMESH_APIKEY_MAX_FAILURES_PER_IP")
 	}
 	return off
 }

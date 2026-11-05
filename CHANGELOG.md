@@ -41,7 +41,8 @@ for the full narrative and details.
   pre-execution gate.
 - Only the owner can delete a blob.
 - `/register` is rate-limited without Redis, and failed API keys on `/mcp`
-  are throttled per client address.
+  are throttled per client address (`TOOLMESH_APIKEY_MAX_FAILURES_PER_IP`,
+  default 50); a slot is reserved before the key is checked.
 - `TOOLMESH_CODE_MAX_CONCURRENT` (default 16) bounds parallel `execute_code`
   runs.
 - The `TOOLMESH_ISSUER` placeholder is `https://toolmesh.invalid/`.

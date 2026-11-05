@@ -41,6 +41,7 @@ func hardenedConfig() *config.Config {
 		LoginMaxFailuresPerUserIP: 5,
 		LoginMaxFailuresPerUser:   20,
 		LoginMaxFailuresPerIP:     50,
+		APIKeyMaxFailuresPerIP:    50,
 		LoginFailureWindow:        900,
 		FileBrokerEnabled:         true,
 		FileBrokerMaxTotalBytes:   10 << 30,

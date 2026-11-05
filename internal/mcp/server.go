@@ -113,12 +113,12 @@ func (s *Server) UseRedisLoginThrottle(rdb *redis.Client) {
 }
 
 // bearerThrottleConfig limits failed bearer credentials per client address
-// with the per-address limit and window of the password login, in counters
-// of their own. There is no account to count against: a bearer credential
-// names none.
+// (TOOLMESH_APIKEY_MAX_FAILURES_PER_IP) within the window of the password
+// login, in counters of their own. There is no account to count against: a
+// bearer credential names none.
 func bearerThrottleConfig(cfg *config.Config) auth.LoginThrottleConfig {
 	return auth.LoginThrottleConfig{
-		MaxFailuresPerIP: cfg.LoginMaxFailuresPerIP,
+		MaxFailuresPerIP: cfg.APIKeyMaxFailuresPerIP,
 		Window:           time.Duration(cfg.LoginFailureWindow) * time.Second,
 		Namespace:        "bearer",
 	}
@@ -651,6 +651,69 @@ func toolResultToMCP(result *backend.ToolResult) map[string]any {
 func (s *Server) authenticate(r *http.Request) (*userctx.UserContext, error) {
 	bearer := extractBearer(r)
 
+	// Guessing at API keys from one address is throttled like password
+	// logins: a slot is reserved before the credential is looked at, so
+	// concurrent guesses cannot all pass a check made before any of them was
+	// counted. A wrong credential keeps its slot; a right one hands it back.
+	// Values shaped like the access tokens issued here reserve no slot up
+	// front: they cannot be guessed, and expired ones arrive routinely, often
+	// from the shared addresses of hosted clients. They reserve one only
+	// before a bcrypt comparison (see checkBearer).
+	var slot bearerSlot
+	if bearer != "" && !isIssuedTokenShape(bearer) {
+		if err := s.reserveBearerSlot(r, &slot); err != nil {
+			return nil, err
+		}
+	}
+	uc, err := s.checkBearer(r, bearer, &slot)
+	s.settleBearerSlot(r, &slot, uc, err)
+	return uc, err
+}
+
+// bearerSlot is a reservation against the per-address limit of failed bearer
+// credentials.
+type bearerSlot struct {
+	attempt  auth.LoginAttempt
+	reserved bool
+}
+
+// reserveBearerSlot reserves a slot for one bearer check from the request's
+// client address, or returns errBearerThrottled when the address has used up
+// its failed attempts.
+func (s *Server) reserveBearerSlot(r *http.Request, slot *bearerSlot) error {
+	if s.bearerThrottle == nil {
+		return nil
+	}
+	ip := auth.ClientIP(r)
+	a := s.bearerThrottle.Acquire(r.Context(), "", ip)
+	if !a.Allowed {
+		s.logger.InfoContext(r.Context(), "bearer authentication throttled",
+			logKeyRemote, ip, "retry_after", retryAfterSeconds(a.RetryAfter))
+		return &errBearerThrottled{retryAfter: a.RetryAfter}
+	}
+	slot.attempt, slot.reserved = a, true
+	return nil
+}
+
+// settleBearerSlot settles a reservation once the bearer was checked: an
+// accepted credential hands the slot back, one that could not be checked
+// cancels it, and a rejected one keeps it as a failure.
+func (s *Server) settleBearerSlot(r *http.Request, slot *bearerSlot, uc *userctx.UserContext, err error) {
+	if !slot.reserved {
+		return
+	}
+	switch {
+	case err != nil:
+		s.bearerThrottle.Cancel(r.Context(), slot.attempt)
+	case uc != nil && uc.Authenticated:
+		s.bearerThrottle.Success(r.Context(), slot.attempt)
+	}
+}
+
+// checkBearer resolves the bearer credential of r. slot is the throttle
+// reservation; a token-shaped value that reached no verdict by lookup
+// reserves one here before it costs bcrypt comparisons.
+func (s *Server) checkBearer(r *http.Request, bearer string, slot *bearerSlot) (*userctx.UserContext, error) {
 	// Which methods the bearer was checked against, so that a credential no
 	// method accepts is counted as a failure of one that could have.
 	var checkedAPIKey, checkedOAuth, expiredToken bool
@@ -658,18 +721,6 @@ func (s *Server) authenticate(r *http.Request) (*userctx.UserContext, error) {
 	var revokedUser bool
 	// unchecked is set when a method could not look at the bearer at all.
 	var unchecked error
-
-	// Guessing at API keys from one address is throttled like password
-	// logins. Values shaped like the access tokens issued here are exempt:
-	// they cannot be guessed, and expired ones arrive routinely, often from
-	// the shared addresses of hosted clients.
-	if bearer != "" && !isIssuedTokenShape(bearer) {
-		if a := s.bearerThrottle.Blocked("", auth.ClientIP(r)); !a.Allowed {
-			s.logger.InfoContext(r.Context(), "bearer authentication throttled",
-				logKeyRemote, auth.ClientIP(r), "retry_after", retryAfterSeconds(a.RetryAfter))
-			return nil, &errBearerThrottled{retryAfter: a.RetryAfter}
-		}
-	}
 
 	if bearer != "" {
 		// 1. API keys from apikeys.yaml that are in the index.
@@ -753,7 +804,16 @@ func (s *Server) authenticate(r *http.Request) (*userctx.UserContext, error) {
 
 		// 4. API keys from apikeys.yaml that are not in the index yet. A
 		// value the token store knows as an expired token is not a key.
-		if s.apiKeys != nil && !expiredToken && !revokedUser {
+		// A token-shaped value comes here without a reservation. bcrypt
+		// comparisons cost CPU, so it takes a slot now; when its address is
+		// throttled the comparison is skipped and the value is rejected like
+		// any unknown credential, which keeps a client that holds an expired
+		// token able to refresh it.
+		skipComparison := false
+		if s.apiKeys != nil && !expiredToken && !revokedUser && !slot.reserved && s.apiKeys.NeedsComparison() {
+			skipComparison = s.reserveBearerSlot(r, slot) != nil
+		}
+		if s.apiKeys != nil && !expiredToken && !revokedUser && !skipComparison {
 			entry, err := s.apiKeys.Verify(r.Context(), bearer)
 			switch {
 			case err != nil:
@@ -864,9 +924,6 @@ func (s *Server) bearerRejected(r *http.Request, bearer string, checkedAPIKey, c
 		return // no method was in a position to accept it
 	}
 	s.metrics.RecordLogin(method, "failure")
-	if method == loginMethodAPIKey && !tokenShaped {
-		s.bearerThrottle.Fail(r.Context(), "", auth.ClientIP(r))
-	}
 
 	level, reason := slog.LevelWarn, loginReasonUnknownCredential
 	switch {

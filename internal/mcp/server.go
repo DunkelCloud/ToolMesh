@@ -774,7 +774,12 @@ func (s *Server) checkBearer(r *http.Request, bearer string, slot *bearerSlot) (
 				id, current = s.currentIdentity(ti.UserID)
 				current = current && id.matches(ti.CredentialFP)
 				if !current {
+					// The pair ends as a whole: a user who is added again
+					// must log in, not resume the old refresh chain.
 					_ = s.tokenStore.DeleteToken(r.Context(), bearer)
+					if ti.RefreshToken != "" {
+						_, _ = s.tokenStore.ConsumeRefreshToken(r.Context(), ti.RefreshToken)
+					}
 					s.logger.InfoContext(r.Context(), "access token refused: its user is no longer configured or the credential changed",
 						"user", truncateForLog(ti.UserID), logKeyRemote, auth.ClientIP(r))
 				}
@@ -1651,6 +1656,9 @@ func (s *Server) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request)
 	if clientID == "" || clientID != oldTI.ClientID {
 		s.logger.WarnContext(ctx, "client_id mismatch in refresh token grant",
 			"expected", oldTI.ClientID, "got", clientID)
+		// The refresh token was consumed; its access token goes with it,
+		// so the pair ends as a whole.
+		_ = s.tokenStore.DeleteToken(ctx, oldTI.AccessToken)
 		s.metrics.RecordLogin(loginMethodOAuthRefresh, "failure")
 		writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: invalidGrantError})
 		return

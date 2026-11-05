@@ -149,7 +149,7 @@ func TestRefresh_ChecksUsersYAML(t *testing.T) {
 
 	// Removed from users.yaml: no renewal.
 	_, refresh = ts.issuePair(t, refreshTestUser, []string{refreshTestRole})
-	ts.srv.userStore = writeUsers(t, map[string]string{"bob": bcryptHash(t, "pw-bob")})
+	ts.srv.userStore = writeUsers(t, map[string]string{testKitUserBob: bcryptHash(t, "pw-bob")})
 	if w := ts.refreshGrant(refresh); w.Code != http.StatusBadRequest {
 		t.Errorf("refresh for a removed user: status %d, want 400", w.Code)
 	}
@@ -170,7 +170,7 @@ func TestBearer_TokenOfRemovedUserRefused(t *testing.T) {
 	if w := ts.mcpCall("Bearer " + access); w.Code != http.StatusOK {
 		t.Fatalf("token of a configured user: status %d, want 200", w.Code)
 	}
-	ts.srv.userStore = writeUsers(t, map[string]string{"bob": bcryptHash(t, "pw-bob")})
+	ts.srv.userStore = writeUsers(t, map[string]string{testKitUserBob: bcryptHash(t, "pw-bob")})
 	if w := ts.mcpCall("Bearer " + access); w.Code != http.StatusUnauthorized {
 		t.Errorf("token of a removed user: status %d, want 401", w.Code)
 	}
@@ -326,4 +326,40 @@ func TestLogin_TokenCarriesCredentialFingerprint(t *testing.T) {
 	if ac.CredentialFP == "" || ac.CredentialFP != ts.srv.ownerFingerprint() {
 		t.Errorf("auth code fingerprint = %q, want the owner's", ac.CredentialFP)
 	}
+}
+
+// TestTokens_RefusedPairEndsAsAWhole pins that a pair that is refused or
+// misused ends completely: a refused access token takes its refresh token
+// along (a user added again cannot resume the old chain), and a refresh with
+// the wrong client_id takes the access token along.
+func TestTokens_RefusedPairEndsAsAWhole(t *testing.T) {
+	t.Run("removed user", func(t *testing.T) {
+		ts := newLoginTestServer(t, loginTestConfig(), loginTestOptions{users: map[string]string{refreshTestUser: "pw"}})
+		original := ts.srv.userStore
+		access, refresh := ts.issuePair(t, refreshTestUser, nil)
+		ts.srv.userStore = writeUsers(t, map[string]string{testKitUserBob: bcryptHash(t, "pw-bob")})
+		if w := ts.mcpCall("Bearer " + access); w.Code != http.StatusUnauthorized {
+			t.Fatalf("token of a removed user: status %d", w.Code)
+		}
+		ts.srv.userStore = original
+		if w := ts.refreshGrant(refresh); w.Code == http.StatusOK {
+			t.Error("the refresh chain of a removed user revived when the user came back")
+		}
+	})
+
+	t.Run("client_id mismatch", func(t *testing.T) {
+		ts := newLoginTestServer(t, loginTestConfig(), loginTestOptions{})
+		access, refresh := ts.issuePair(t, testLoginOwner, nil)
+		w := ts.token(url.Values{
+			oauthGrantType:    {oauthRefreshToken},
+			oauthRefreshToken: {refresh},
+			oauthClientID:     {"another-client"},
+		})
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("mismatched refresh: status %d, want 400", w.Code)
+		}
+		if w := ts.mcpCall("Bearer " + access); w.Code != http.StatusUnauthorized {
+			t.Errorf("access token after a mismatched refresh: status %d, want 401", w.Code)
+		}
+	})
 }

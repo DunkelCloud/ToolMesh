@@ -141,7 +141,7 @@ func TestCredentialScope_ListForms(t *testing.T) {
 		{"two env keys of one credential", nil, map[string]string{"credential_a": "X", "CREDENTIAL_A": "Y"}},
 	}
 	for _, c := range bad {
-		if _, err := NewCredentialScope("mine", c.allowed, c.env); err == nil {
+		if _, err := NewCredentialScope("mine", c.allowed, c.env, nil); err == nil {
 			t.Errorf("%s: accepted", c.name)
 		}
 	}

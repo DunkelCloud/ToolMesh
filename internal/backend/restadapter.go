@@ -165,6 +165,11 @@ type BackendScope struct {
 	Credentials  []string
 	Env          map[string]string
 	AllowedHosts []string
+	// Owners divides the credential names among all configured entries
+	// (see dadl.CredentialOwners). ToolMesh shares one among all backends
+	// and updates it on every reload. With nil the entry owns no names and
+	// may read only the ones Credentials and Env list.
+	Owners *dadl.CredentialOwners
 }
 
 // NewRESTAdapter creates a RESTAdapter from a parsed DADL spec.
@@ -197,7 +202,7 @@ func NewRESTAdapter(spec *dadl.Spec, creds credentials.CredentialStore, logger *
 	var credScope *dadl.CredentialScope
 	var hostScope *dadl.HostScope
 	if opts.Scope != nil {
-		cs, err := dadl.NewCredentialScope(opts.Scope.EntryName, opts.Scope.Credentials, opts.Scope.Env)
+		cs, err := dadl.NewCredentialScope(opts.Scope.EntryName, opts.Scope.Credentials, opts.Scope.Env, opts.Scope.Owners)
 		if err != nil {
 			return nil, fmt.Errorf("REST backend %q: %w", spec.Backend.Name, err)
 		}

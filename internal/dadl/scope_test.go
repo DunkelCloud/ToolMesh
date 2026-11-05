@@ -182,10 +182,11 @@ func TestCheckScope_SessionLogin(t *testing.T) {
 	}
 }
 
-// credScope is NewCredentialScope for a configuration that must be valid.
+// credScope is NewCredentialScope for a configuration that must be valid,
+// with the entry as the only configured one.
 func credScope(t *testing.T, entry string, allowed []string, env map[string]string) *CredentialScope {
 	t.Helper()
-	s, err := NewCredentialScope(entry, allowed, env)
+	s, err := NewCredentialScope(entry, allowed, env, NewCredentialOwners(entry))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -21,8 +21,11 @@ import (
 	"net/netip"
 	"net/url"
 	"regexp"
+	"slices"
 	"sort"
+	"strconv"
 	"strings"
+	"sync/atomic"
 
 	"golang.org/x/net/publicsuffix"
 	"gopkg.in/yaml.v3"
@@ -54,29 +57,100 @@ func isNoCredential(name string) bool {
 	return strings.EqualFold(strings.TrimSpace(name), NoCredential)
 }
 
+// CredentialOwners divides the credential names among the configured
+// entries: a name belongs to the entry whose namespace is the longest
+// prefix of its key, where the namespace of an entry is its name
+// upper-cased, with "-" as "_", followed by "_". CREDENTIAL_GITHUB_
+// ENTERPRISE_TOKEN therefore belongs to an entry "github-enterprise", not
+// to an entry "github". Every named entry counts, whatever its transport:
+// backends.yaml entries, units and the sub-backends of units. Names whose
+// longest namespace is shared by entries with different spellings
+// ("my-api", "my_api") belong to none of them. Set replaces the entries;
+// every CredentialScope built on the same CredentialOwners sees the change
+// on its next decision, so a hot reload that adds an entry takes its names
+// away from an entry with a shorter namespace at once.
+type CredentialOwners struct {
+	table atomic.Pointer[map[string][]string] // namespace prefix → entry names
+}
+
+// NewCredentialOwners returns the ownership of the credential names among
+// the entries named entryNames.
+func NewCredentialOwners(entryNames ...string) *CredentialOwners {
+	o := &CredentialOwners{}
+	o.Set(entryNames)
+	return o
+}
+
+// Set replaces the entries the credential names are divided among. Empty
+// names are skipped.
+func (o *CredentialOwners) Set(entryNames []string) {
+	t := map[string][]string{}
+	for _, n := range entryNames {
+		n = strings.TrimSpace(n)
+		if n == "" {
+			continue
+		}
+		p := namespacePrefix(n)
+		if !slices.Contains(t[p], n) {
+			t[p] = append(t[p], n)
+		}
+	}
+	for p := range t {
+		sort.Strings(t[p])
+	}
+	o.table.Store(&t)
+}
+
+// owners returns the entries whose namespace is the longest prefix of the
+// credential key k, or nil when no namespace is. A nil CredentialOwners
+// gives no name an owner.
+func (o *CredentialOwners) owners(k string) []string {
+	if o == nil {
+		return nil
+	}
+	tp := o.table.Load()
+	if tp == nil {
+		return nil
+	}
+	best := ""
+	var names []string
+	for p, ns := range *tp {
+		if len(p) > len(best) && strings.HasPrefix(k, p) {
+			best, names = p, ns
+		}
+	}
+	return names
+}
+
+// namespacePrefix is the key prefix of an entry's credential namespace.
+func namespacePrefix(entryName string) string {
+	return strings.ReplaceAll(strings.ToUpper(strings.TrimSpace(entryName)), "-", "_") + "_"
+}
+
 // CredentialScope is the set of credential names a backend may read. It is
-// built from the operator's backends.yaml entry, never from the DADL: the
-// namespace CREDENTIAL_<ENTRY>_*, where ENTRY is the entry name upper-cased
-// with "-" as "_", the names the entry maps with env:, and the names its
-// credentials: list allows. A DADL therefore cannot read the credentials of
-// another backend by naming them.
+// built from the operator's configuration, never from the DADL: the names
+// its entry owns (see CredentialOwners), the names the entry maps with
+// env:, and the names its credentials: list allows. A DADL therefore cannot
+// read the credentials of another backend by naming them.
 type CredentialScope struct {
 	entry  string
-	prefix string
+	owners *CredentialOwners
 	names  map[string]bool
 }
 
-// NewCredentialScope builds the credential scope of the backends.yaml entry
-// entryName. allowed is its credentials: list, env its env: map (keys
-// CREDENTIAL_<NAME>). env: keys are compared in the form
+// NewCredentialScope builds the credential scope of the entry entryName.
+// allowed is its credentials: list, env its env: map (keys
+// CREDENTIAL_<NAME>), and owners the division of the credential names among
+// all configured entries; with nil owners the entry owns no names, and only
+// the listed ones are allowed. env: keys are compared in the form
 // credentials.CanonicalEnvKey gives them, the form the remapping of the
 // entry uses, so a key widens the scope exactly when it remaps the read.
 // An entry of either list that names no credential, and two env: keys of
 // the same credential, are configuration errors.
-func NewCredentialScope(entryName string, allowed []string, env map[string]string) (*CredentialScope, error) {
+func NewCredentialScope(entryName string, allowed []string, env map[string]string, owners *CredentialOwners) (*CredentialScope, error) {
 	s := &CredentialScope{
-		entry:  entryName,
-		prefix: strings.ReplaceAll(strings.ToUpper(entryName), "-", "_") + "_",
+		entry:  strings.TrimSpace(entryName),
+		owners: owners,
 		names:  map[string]bool{},
 	}
 	for _, n := range allowed {
@@ -121,14 +195,45 @@ func validCredentialName(name string) bool {
 	return credentialNameRe.MatchString(name)
 }
 
-// Allows reports whether the backend may read the credential name. A nil
-// scope allows every name.
+// Allows reports whether the backend may read the credential name: it is
+// listed for the entry, or the entry alone owns it. A nil scope allows
+// every name.
 func (s *CredentialScope) Allows(name string) bool {
 	if s == nil {
 		return true
 	}
 	k := credentialKey(name)
-	return validCredentialName(k) && (strings.HasPrefix(k, s.prefix) || s.names[k])
+	if !validCredentialName(k) {
+		return false
+	}
+	if s.names[k] {
+		return true
+	}
+	owners := s.owners.owners(k)
+	return len(owners) == 1 && owners[0] == s.entry
+}
+
+// ownersOf returns the entries that own the credential name, for messages.
+func (s *CredentialScope) ownersOf(name string) []string {
+	if s == nil {
+		return nil
+	}
+	return s.owners.owners(credentialKey(name))
+}
+
+// ownerNote describes whose namespace a credential name is in.
+func ownerNote(owners []string) string {
+	switch len(owners) {
+	case 0:
+		return "in no entry's namespace"
+	case 1:
+		return fmt.Sprintf("in the namespace of entry %q", owners[0])
+	}
+	q := make([]string, len(owners))
+	for i, o := range owners {
+		q[i] = strconv.Quote(o)
+	}
+	return "in the namespace shared by entries " + strings.Join(q, ", ")
 }
 
 // scopedStore refuses reads outside a CredentialScope. The refusal is no
@@ -146,7 +251,8 @@ func (s *scopedStore) Get(ctx context.Context, name string, tenant credentials.T
 		return "", fmt.Errorf("credential %q is the no-secret placeholder: %w", name, credentials.ErrCredentialNotFound)
 	}
 	if !s.scope.Allows(name) {
-		return "", fmt.Errorf("credential %q is not allowed for backend %q: %w", name, s.scope.entry, ErrCredentialOutOfScope)
+		return "", fmt.Errorf("credential %q (%s) is not allowed for backend %q: %w",
+			name, ownerNote(s.scope.ownersOf(name)), s.scope.entry, ErrCredentialOutOfScope)
 	}
 	return s.inner.Get(ctx, name, tenant)
 }
@@ -247,17 +353,36 @@ type ScopeViolation struct {
 	// Host is the entry the allowed_hosts: list needs to allow it, or ""
 	// when only a change to the DADL can.
 	Host string
+	// Owners are the entries whose namespace holds Credential; allowing it
+	// lets this backend read a credential of theirs.
+	Owners []string
 }
 
 // fixLine returns the backends.yaml line that allows v, or "".
 func (v ScopeViolation) fixLine() string {
 	switch {
 	case v.Credential != "":
-		return yamlFlowLine("credentials", []string{v.Credential})
+		return yamlFlowLine("credentials", []string{v.Credential}) + ownerComment([]ScopeViolation{v})
 	case v.Host != "":
 		return yamlFlowLine("allowed_hosts", []string{v.Host})
 	}
 	return ""
+}
+
+// ownerComment returns a YAML comment naming the entries that own the
+// credentials of vs, or "" when no other entry owns one. Entry names are
+// quoted, so the comment stays on its line.
+func ownerComment(vs []ScopeViolation) string {
+	var parts []string
+	for _, v := range vs {
+		if v.Credential != "" && len(v.Owners) > 0 {
+			parts = append(parts, v.Credential+" is "+ownerNote(v.Owners))
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "  # " + strings.Join(parts, "; ")
 }
 
 // yamlFlowLine renders "key: [item, ...]" with the YAML encoder, so every
@@ -301,12 +426,14 @@ func (e *ScopeError) Error() string {
 // Credential and Host fields, never from DADL text.
 func (e *ScopeError) FixLines() []string {
 	var creds, hosts []string
+	var credViolations []ScopeViolation
 	seen := map[string]bool{}
 	for _, v := range e.Violations {
 		switch {
 		case v.Credential != "" && !seen["c:"+v.Credential]:
 			seen["c:"+v.Credential] = true
 			creds = append(creds, v.Credential)
+			credViolations = append(credViolations, v)
 		case v.Host != "" && !seen["h:"+v.Host]:
 			seen["h:"+v.Host] = true
 			hosts = append(hosts, v.Host)
@@ -314,7 +441,7 @@ func (e *ScopeError) FixLines() []string {
 	}
 	var out []string
 	if len(creds) > 0 {
-		out = append(out, yamlFlowLine("credentials", creds))
+		out = append(out, yamlFlowLine("credentials", creds)+ownerComment(credViolations))
 	}
 	if len(hosts) > 0 {
 		out = append(out, yamlFlowLine("allowed_hosts", hosts))
@@ -454,10 +581,12 @@ func CheckScope(spec *Spec, creds *CredentialScope, hosts *HostScope) error {
 			continue
 		}
 		if !creds.Allows(ref.name) {
+			owners := creds.ownersOf(ref.name)
 			violations = append(violations, ScopeViolation{
 				Rule:       RuleCredentialNamespace,
-				What:       fmt.Sprintf("%s %q", ref.where, ref.name),
+				What:       fmt.Sprintf("%s %q (%s)", ref.where, ref.name, ownerNote(owners)),
 				Credential: strings.ToLower(ref.name),
+				Owners:     owners,
 			})
 		}
 	}

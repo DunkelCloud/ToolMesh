@@ -90,7 +90,7 @@ backends:
 	buf := &capturedWriter{}
 	logger := slog.New(slog.NewTextHandler(buf, nil))
 	named := make(map[string]backend.ToolBackend)
-	targets, _ := loadRESTBackendsInto(named, backendsPath, dir, nil, credentials.NewEmbeddedStore(), nil, logger, nil, nil, nil)
+	targets, _ := loadRESTBackendsInto(named, backendsPath, dir, nil, credentials.NewEmbeddedStore(), nil, nil, logger, nil, nil, nil)
 
 	if len(named) != 6 {
 		t.Fatalf("loaded %d backends, want all 6: a health_check problem must not cost the backend", len(named))

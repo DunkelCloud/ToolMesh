@@ -214,6 +214,7 @@ func main() {
 		baseHandler: baseHandler,
 		debugFile:   debugFile,
 		debugSet:    debugSet,
+		owners:      dadl.NewCredentialOwners(),
 	}
 	res, err := buildBackends(ctx, bldCfg)
 	if err != nil {
@@ -240,7 +241,7 @@ func main() {
 	// Load unit-backends. Each unit appears in the composite under its own
 	// name and is indistinguishable from any other backend for authz,
 	// audit and gate purposes. Failed units are logged and skipped.
-	unitAdapters := loadUnits(ctx, cfg.UnitsDir, cfg.DADLDir, credStore, blobStore, compositeBackend, logger)
+	unitAdapters := loadUnits(ctx, cfg.UnitsDir, cfg.DADLDir, credStore, bldCfg.owners, blobStore, compositeBackend, logger)
 	defer func() {
 		for _, a := range unitAdapters {
 			a.Close()
@@ -616,6 +617,10 @@ type buildBackendsConfig struct {
 	baseHandler slog.Handler
 	debugFile   *os.File
 	debugSet    map[string]bool
+	// owners divides the credential names among all configured entries;
+	// buildBackends updates it from the configuration on every (re)load,
+	// and every REST backend, units included, is bound with it.
+	owners *dadl.CredentialOwners
 }
 
 // backendsResult holds the output of buildBackends — the named backend map,
@@ -650,9 +655,14 @@ func buildBackends(ctx context.Context, bc *buildBackendsConfig) (*backendsResul
 		bc.logger.Error("failed to connect MCP backends", "error", err)
 	}
 
+	// Divide the credential names among the entries as configured now, so
+	// an entry added by this reload takes its names away from an entry with
+	// a shorter namespace, also in backends loaded before.
+	bc.owners.Set(credentialOwnerNames(bc.cfg.BackendsConfigPath, bc.cfg.UnitsDir))
+
 	// Build named REST backends from DADL files
 	named := make(map[string]backend.ToolBackend)
-	healthTargets, refused := loadRESTBackendsInto(named, bc.cfg.BackendsConfigPath, bc.cfg.DADLDir, bc.blobStore, bc.credStore, bc.tc, bc.logger, bc.baseHandler, bc.debugFile, bc.debugSet)
+	healthTargets, refused := loadRESTBackendsInto(named, bc.cfg.BackendsConfigPath, bc.cfg.DADLDir, bc.blobStore, bc.credStore, bc.owners, bc.tc, bc.logger, bc.baseHandler, bc.debugFile, bc.debugSet)
 
 	return &backendsResult{
 		named:         named,
@@ -723,7 +733,7 @@ func backendLogger(name string, globalLogger *slog.Logger, stdoutHandler slog.Ha
 // parses their DADL files, and populates the named map. It returns the
 // backends whose DADL declares a health check (spec §4.6) and whose
 // monitoring the operator has not turned off.
-func loadRESTBackendsInto(named map[string]backend.ToolBackend, backendsConfigPath, dadlDir string, blobStore *blob.Store, creds credentials.CredentialStore, tc *telemetry.Collector, logger *slog.Logger, stdoutHandler slog.Handler, debugFile *os.File, debugSet map[string]bool) (healthTargets []health.Target, refused []string) {
+func loadRESTBackendsInto(named map[string]backend.ToolBackend, backendsConfigPath, dadlDir string, blobStore *blob.Store, creds credentials.CredentialStore, owners *dadl.CredentialOwners, tc *telemetry.Collector, logger *slog.Logger, stdoutHandler slog.Handler, debugFile *os.File, debugSet map[string]bool) (healthTargets []health.Target, refused []string) {
 	data, err := os.ReadFile(backendsConfigPath) //nolint:gosec // path from trusted config
 	if err != nil {
 		return nil, nil // no config = no REST backends
@@ -733,6 +743,11 @@ func loadRESTBackendsInto(named map[string]backend.ToolBackend, backendsConfigPa
 	if err := backendsYAMLUnmarshal(data, &cfg); err != nil {
 		logger.Error("failed to parse backends config for REST entries", "error", err)
 		return nil, nil
+	}
+	// Callers without units (tests) pass nil: the entries of this file then
+	// divide the credential names among themselves.
+	if owners == nil {
+		owners = dadl.NewCredentialOwners(backendEntryNames(&cfg)...)
 	}
 
 	// refused names the backends not loaded because their DADL breaks the
@@ -864,6 +879,7 @@ func loadRESTBackendsInto(named map[string]backend.ToolBackend, backendsConfigPa
 				Credentials:  entry.Credentials,
 				Env:          entry.Env,
 				AllowedHosts: entry.AllowedHosts,
+				Owners:       owners,
 			},
 		})
 		var scopeErr *dadl.ScopeError
@@ -938,6 +954,37 @@ func loadRESTBackendsInto(named map[string]backend.ToolBackend, backendsConfigPa
 	return healthTargets, refused
 }
 
+// backendEntryNames returns the names of all entries of cfg, whatever their
+// transport.
+func backendEntryNames(cfg *backend.BackendConfig) []string {
+	names := make([]string, 0, len(cfg.Backends))
+	for _, e := range cfg.Backends {
+		names = append(names, e.Name)
+	}
+	return names
+}
+
+// credentialOwnerNames returns every configured entry name that takes part
+// in the division of the credential names (dadl.CredentialOwners): the
+// names of all backends.yaml entries, whatever their transport, and of
+// every unit and its sub-backend entries.
+func credentialOwnerNames(backendsConfigPath, unitsDir string) []string {
+	var names []string
+	if data, err := os.ReadFile(backendsConfigPath); err == nil { //nolint:gosec // path from trusted config
+		var cfg backend.BackendConfig
+		if backendsYAMLUnmarshal(data, &cfg) == nil {
+			names = backendEntryNames(&cfg)
+		}
+	}
+	if unitsDir != "" {
+		dirs, _ := unit.ScanDir(unitsDir)
+		for _, d := range dirs {
+			names = append(names, unit.EntryNames(d)...)
+		}
+	}
+	return names
+}
+
 // backendsYAMLUnmarshal unmarshals backends YAML config. It shares the strict
 // decoder with the MCP adapter so both readers of backends.yaml reject the
 // same unknown keys — a config that parses for one and fails for the other
@@ -950,7 +997,7 @@ func backendsYAMLUnmarshal(data []byte, cfg *backend.BackendConfig) error {
 // each one to the composite backend under its declared name. Returns the
 // list of MCPAdapter instances owning the per-unit sub-backend sessions so
 // the caller can close them on shutdown.
-func loadUnits(ctx context.Context, unitsDir, dadlDir string, creds credentials.CredentialStore, blobStore *blob.Store, comp *backend.CompositeBackend, logger *slog.Logger) []*backend.MCPAdapter {
+func loadUnits(ctx context.Context, unitsDir, dadlDir string, creds credentials.CredentialStore, owners *dadl.CredentialOwners, blobStore *blob.Store, comp *backend.CompositeBackend, logger *slog.Logger) []*backend.MCPAdapter {
 	dirs, err := unit.ScanDir(unitsDir)
 	if err != nil {
 		logger.Error("failed to scan units dir", "dir", unitsDir, "error", err)
@@ -973,7 +1020,7 @@ func loadUnits(ctx context.Context, unitsDir, dadlDir string, creds credentials.
 
 	adapters := make([]*backend.MCPAdapter, 0, len(dirs))
 	for _, d := range dirs {
-		res, loadErr := unit.LoadUnit(ctx, d, dadlDir, creds, blobStore, logger)
+		res, loadErr := unit.LoadUnit(ctx, d, dadlDir, creds, owners, blobStore, logger)
 		if loadErr != nil {
 			logger.Error("failed to load unit", "dir", d, "error", loadErr)
 			continue

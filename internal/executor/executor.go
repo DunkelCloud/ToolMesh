@@ -33,6 +33,7 @@ import (
 	"github.com/DunkelCloud/ToolMesh/internal/gate"
 	"github.com/DunkelCloud/ToolMesh/internal/metrics"
 	"github.com/DunkelCloud/ToolMesh/internal/telemetry"
+	"github.com/DunkelCloud/ToolMesh/internal/urlredact"
 	"github.com/DunkelCloud/ToolMesh/internal/userctx"
 	"github.com/google/uuid"
 )
@@ -419,13 +420,16 @@ func (e *Executor) ExecuteTool(ctx context.Context, req ExecuteToolRequest) (*ba
 		// A transport error can carry the request URL, and with it a
 		// query-injected credential; never let that reach the audit log or
 		// the caller.
-		err = backend.RedactURLErrors(err)
+		err = urlredact.URLErrors(err)
 		e.logger.DebugContext(ctx, "backend execution failed", "tool", req.ToolName, "error", err)
 		entry.DurationMs = time.Since(start).Milliseconds()
 		entry.Status = statusError
 		entry.Error = err.Error()
 		e.recordAudit(ctx, entry)
 		return nil, fmt.Errorf("backend execution failed for %s: %w", req.ToolName, err)
+	}
+	if result != nil && result.IsError {
+		redactErrorResult(result)
 	}
 	if contentJSON, err := json.Marshal(result.Content); err == nil {
 		e.logger.DebugContext(ctx, "backend execution complete",
@@ -625,6 +629,22 @@ func (e *Executor) resolveCredentials(ctx context.Context, backendPrefix string,
 	}
 
 	return nil
+}
+
+// redactErrorResult removes userinfo, query and fragment from every URL in
+// the text content of an error result. Such a text is often built from an
+// error whose structure is gone (a retry that failed, a token request), and
+// a request URL in it can carry a query-injected credential.
+func redactErrorResult(result *backend.ToolResult) {
+	for _, item := range result.Content {
+		m, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		if text, ok := m[contentKeyText].(string); ok {
+			m[contentKeyText] = urlredact.Text(text)
+		}
+	}
 }
 
 // sensitiveParamNames is the set of parameter name patterns that should be redacted in audit logs.

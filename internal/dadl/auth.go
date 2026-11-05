@@ -33,6 +33,7 @@ import (
 	"golang.org/x/net/publicsuffix"
 
 	"github.com/DunkelCloud/ToolMesh/internal/credentials"
+	"github.com/DunkelCloud/ToolMesh/internal/urlredact"
 )
 
 // resettableJar wraps an http.CookieJar so it can be cleared on re-login
@@ -341,7 +342,7 @@ func (a *RestAuth) getOAuth2Token(ctx context.Context) (string, error) {
 
 	resp, err := a.httpClient.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("oauth2 token request: %w", err)
+		return "", fmt.Errorf("oauth2 token request: %w", urlredact.TransportError(err))
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -535,7 +536,7 @@ func (a *RestAuth) doSessionLogin(ctx context.Context) error {
 
 	resp, err := a.httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("session login request: %w", err)
+		return fmt.Errorf("session login request: %w", urlredact.TransportError(err))
 	}
 	defer func() { _ = resp.Body.Close() }()
 

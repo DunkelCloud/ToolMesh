@@ -583,3 +583,30 @@ func TestCallerCredentialDurchstich_PostGateWithCallerClass(t *testing.T) {
 		t.Error("untrusted caller should be blocked by post-gate")
 	}
 }
+
+// TestExecuteTool_ErrorResultRedactsURLQuery pins that an error result whose
+// text carries a request URL (built from an error, e.g. after a failed
+// retry) reaches the caller without the URL's query.
+func TestExecuteTool_ErrorResultRedactsURLQuery(t *testing.T) {
+	const secret = "query-key-in-result" //nolint:gosec // test fixture, not a credential
+	mb := &mockBackend{
+		executeFunc: func(_ context.Context, _ string, _ map[string]any) (*backend.ToolResult, error) {
+			return &backend.ToolResult{
+				IsError: true,
+				Content: []any{map[string]any{
+					contentKeyType: contentKeyText,
+					contentKeyText: `Error: max retries exceeded: Get "https://api.example.com/v1?api_key=` + secret + `": EOF`,
+				}},
+			}, nil
+		},
+	}
+	exec := New(nil, nil, mb, nil, nil, 30*time.Second, newTestLogger(), nil, nil)
+	ctx := userctx.WithUserContext(context.Background(), &userctx.UserContext{UserID: testUserID, Authenticated: true})
+	res, err := exec.ExecuteTool(ctx, ExecuteToolRequest{ToolName: testToolDirect})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if text := resultText(res); strings.Contains(text, secret) || !strings.Contains(text, "https://api.example.com/v1") {
+		t.Errorf("result text = %q", text)
+	}
+}

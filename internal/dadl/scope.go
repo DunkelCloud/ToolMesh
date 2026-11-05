@@ -787,6 +787,14 @@ func absoluteURLOrigin(raw string) (*url.URL, bool) {
 // session login URL. It returns a *ScopeError listing every violation, or
 // nil. spec.Backend.BaseURL must be the effective base URL.
 func CheckScope(spec *Spec, creds *CredentialScope, hosts *HostScope) error {
+	return CheckScopeOf(spec, creds, hosts, nil)
+}
+
+// CheckScopeOf is CheckScope for a backend that sends requests for some
+// tools only: tools for which reachable reports false are not checked. The
+// caller must make sure no request for them can be sent; nil checks every
+// tool.
+func CheckScopeOf(spec *Spec, creds *CredentialScope, hosts *HostScope, reachable func(tool string) bool) error {
 	var violations []ScopeViolation
 	for _, ref := range staticCredentialRefs(spec.Backend.Auth) {
 		if !validCredentialName(ref.name) {
@@ -825,6 +833,9 @@ func CheckScope(spec *Spec, creds *CredentialScope, hosts *HostScope) error {
 	checkURL("base_url", spec.Backend.BaseURL)
 	checkURL("auth.token_url", spec.Backend.Auth.TokenURL)
 	for name, tool := range spec.Backend.Tools {
+		if reachable != nil && !reachable(name) {
+			continue
+		}
 		checkURL(fmt.Sprintf("tool %q path", name), tool.Path)
 	}
 	if spec.Backend.Health != nil {

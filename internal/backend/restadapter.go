@@ -220,7 +220,17 @@ func NewRESTAdapter(spec *dadl.Spec, creds credentials.CredentialStore, logger *
 			return nil, fmt.Errorf("REST backend %q: %w", spec.Backend.Name, err)
 		}
 		hostScope = hs
-		if err := dadl.CheckScope(spec, credScope, hostScope); err != nil {
+		// Tools outside include_tools are not checked: Execute refuses them,
+		// and composites reach their api.* tools through Execute as well.
+		// The health check tool runs without Execute, so it stays checked.
+		include := buildIncludeSet(spec, opts.IncludeTools, slog.New(slog.DiscardHandler))
+		reachable := func(name string) bool {
+			if include == nil || include[name] {
+				return true
+			}
+			return spec.Backend.Health != nil && spec.Backend.Health.Tool == name
+		}
+		if err := dadl.CheckScopeOf(spec, credScope, hostScope, reachable); err != nil {
 			return nil, err
 		}
 	}

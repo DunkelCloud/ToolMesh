@@ -27,8 +27,12 @@ import (
 	"github.com/DunkelCloud/ToolMesh/internal/dadl"
 )
 
-// bindingTool is the one tool of a bindingSpec.
-const bindingTool = "ping"
+// bindingTool is the one tool of a bindingSpec, bindingPath a path on the
+// backend's host.
+const (
+	bindingTool = "ping"
+	bindingPath = "/ping"
+)
 
 // bindingSpec is a bearer-auth spec with one tool bindingTool at toolPath.
 func bindingSpec(name, baseURL, toolPath, credential string) *dadl.Spec {

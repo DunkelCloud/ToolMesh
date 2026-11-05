@@ -20,6 +20,7 @@ import (
 	"math"
 	"net/http"
 	"reflect"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -223,11 +224,9 @@ func valueFitsType(declared string, val any) bool {
 	case jsTypeNumber:
 		switch v := val.(type) {
 		case string:
-			f, err := strconv.ParseFloat(strings.TrimSpace(v), 64)
-			return err == nil && !math.IsNaN(f) && !math.IsInf(f, 0)
+			return isDecimalLiteral(v)
 		case json.Number:
-			_, err := v.Float64()
-			return err == nil
+			return isDecimalLiteral(string(v))
 		}
 		return isNumeric(val)
 	case jsTypeArray:
@@ -238,19 +237,30 @@ func valueFitsType(declared string, val any) bool {
 	return true
 }
 
+// integerLiteral and decimalLiteral are the only string forms accepted for
+// integer and number parameters: one optional sign and plain decimal
+// digits (RE2's \d is ASCII only), no surrounding space, no hex, no digit
+// separators, no Inf or NaN.
+// Anything looser would pass the check and reach the API as written.
+var (
+	integerLiteral = regexp.MustCompile(`^[+-]?\d+$`)
+	decimalLiteral = regexp.MustCompile(`^[+-]?(\d+(\.\d*)?|\.\d+)([eE][+-]?\d+)?$`)
+)
+
 // isIntegerLiteral reports whether s is an optionally signed run of decimal
 // digits.
 func isIntegerLiteral(s string) bool {
-	s = strings.TrimPrefix(strings.TrimPrefix(s, "-"), "+")
-	if s == "" {
+	return integerLiteral.MatchString(s)
+}
+
+// isDecimalLiteral reports whether s is a plain decimal number that fits a
+// float64.
+func isDecimalLiteral(s string) bool {
+	if !decimalLiteral.MatchString(s) {
 		return false
 	}
-	for i := 0; i < len(s); i++ {
-		if s[i] < '0' || s[i] > '9' {
-			return false
-		}
-	}
-	return true
+	f, err := strconv.ParseFloat(s, 64)
+	return err == nil && !math.IsInf(f, 0)
 }
 
 // isNumeric reports whether val is a Go numeric value.

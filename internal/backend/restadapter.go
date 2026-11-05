@@ -143,11 +143,28 @@ type RESTAdapterOptions struct {
 	// backend.description, which says what the API is; empty means the
 	// operator configured no hint.
 	Hint string
+	// Scope binds the backend's credentials and hosts to its backends.yaml
+	// entry (see BackendScope). ToolMesh sets it for every backend it loads;
+	// nil leaves the adapter unbound, for code that builds adapters itself.
+	Scope *BackendScope
 	// AuthExpiresAt is the credential expiry the operator recorded in
 	// backends.yaml (health_check.auth_expires_at). Health results carry it
 	// as auth_expires_at when the check response reports none (DADL spec
 	// §4.6). Zero means unknown.
 	AuthExpiresAt time.Time
+}
+
+// BackendScope is the operator's binding of a REST backend, from its
+// backends.yaml entry: the entry name sets the credential namespace
+// CREDENTIAL_<NAME>_*, Credentials and the env: keys (Env) add names outside
+// it, and AllowedHosts adds hosts besides the base_url host and its
+// registrable domain. A DADL that reaches outside is refused at load with a
+// *dadl.ScopeError.
+type BackendScope struct {
+	EntryName    string
+	Credentials  []string
+	Env          map[string]string
+	AllowedHosts []string
 }
 
 // NewRESTAdapter creates a RESTAdapter from a parsed DADL spec.
@@ -174,7 +191,25 @@ func NewRESTAdapter(spec *dadl.Spec, creds credentials.CredentialStore, logger *
 		}
 	}
 
+	// Credential and host binding: refuse a DADL that names credentials or
+	// hosts outside what the backends.yaml entry allows, before anything is
+	// built, and keep the same scopes as a runtime check.
+	var credScope *dadl.CredentialScope
+	var hostScope *dadl.HostScope
+	if opts.Scope != nil {
+		credScope = dadl.NewCredentialScope(opts.Scope.EntryName, opts.Scope.Credentials, opts.Scope.Env)
+		hs, err := dadl.NewHostScope(spec.Backend.BaseURL, opts.Scope.AllowedHosts)
+		if err != nil {
+			return nil, fmt.Errorf("REST backend %q: %w", spec.Backend.Name, err)
+		}
+		hostScope = hs
+		if err := dadl.CheckScope(spec, credScope, hostScope); err != nil {
+			return nil, err
+		}
+	}
+
 	auth := dadl.NewRestAuth(spec.Backend.Auth, spec.Backend.BaseURL, creds, logger)
+	auth.SetScope(credScope, hostScope)
 
 	// Each adapter gets its own transport with SSRF-safe dial hooks (H-4, M-19)
 	// and redirect validation (H-3). When AllowPrivateURL is set, IP checks are

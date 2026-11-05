@@ -225,6 +225,14 @@ func loadRESTSubBackend(
 		TLSSkipVerify:       entry.TLSSkipVerify,
 		ExposeTools:         entry.ExposeTools,
 		Hint:                entry.Hint,
+		// The sub-backend is bound like a backends.yaml entry: its
+		// unit.yaml entry name sets the credential namespace.
+		Scope: &backend.BackendScope{
+			EntryName:    entry.Name,
+			Credentials:  entry.Credentials,
+			Env:          entry.Env,
+			AllowedHosts: entry.AllowedHosts,
+		},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("build REST adapter: %w", err)

@@ -79,8 +79,16 @@ type BackendEntry struct {
 	TLSSkipVerify   bool              `yaml:"tls_skip_verify"`   // accept invalid/self-signed TLS certificates
 	Options         map[string]string `yaml:"options"`           // backend-specific options (e.g. blob_ttl: "1h")
 	Env             map[string]string `yaml:"env"`               // credential env remapping (DADL name → actual env var)
-	ExposeTools     []string          `yaml:"expose_tools"`      // tool names to also expose as direct top-level MCP tools (in addition to discover_tools)
-	IncludeTools    []string          `yaml:"include_tools"`     // when set, the ONLY tools this backend exposes (restricts the surface); honored for every transport
+	// Credentials lists credential names outside the entry's namespace
+	// (CREDENTIAL_<NAME>_*) that the backend's DADL may read (transport:
+	// rest). Written by the operator; a DADL cannot widen it.
+	Credentials []string `yaml:"credentials"`
+	// AllowedHosts lists hosts besides the base_url host and its
+	// registrable domain that the backend's credentials may be sent to
+	// ("api.example.com" or "*.example.com"; transport: rest).
+	AllowedHosts []string `yaml:"allowed_hosts"`
+	ExposeTools  []string `yaml:"expose_tools"`  // tool names to also expose as direct top-level MCP tools (in addition to discover_tools)
+	IncludeTools []string `yaml:"include_tools"` // when set, the ONLY tools this backend exposes (restricts the surface); honored for every transport
 	// AllowPrivateFileURL permits caller-supplied file_url parameters to resolve
 	// to private/loopback/link-local addresses. Default false (independent of
 	// allow_private_url, which only governs the admin-configured base_url).

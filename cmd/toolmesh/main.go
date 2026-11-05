@@ -17,6 +17,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -563,7 +564,7 @@ func main() {
 	// when TOOLMESH_DEV=true. authConfigured says whether any credential is
 	// configured; without one the MCP server rejects every request.
 	authConfigured := cfg.AuthPassword != "" || cfg.APIKey != "" || userStore != nil || apiKeyStore != nil
-	logSecurityPosture(cfg, authConfigured, authzEngine.openToEveryone(), logger)
+	logSecurityPosture(cfg, authConfigured, authzEngine.openToEveryone(), res.refused, logger)
 	if authConfigured && cfg.IssuerIsPlaceholder() {
 		logger.Warn("TOOLMESH_ISSUER is still the placeholder from .env.example: the OAuth metadata, the 401 challenge of /mcp and file-broker URLs name that host instead of this instance, so clients that are not given a credential up front cannot sign in. Set it to the public URL clients use",
 			"issuer", cfg.Issuer)
@@ -625,6 +626,9 @@ type backendsResult struct {
 	passthroughs  []backend.ToolBackend
 	mcpAdapter    *backend.MCPAdapter
 	healthTargets []health.Target
+	// refused names the REST backends not loaded because of the
+	// credential and host binding.
+	refused []string
 }
 
 // buildBackends creates all MCP and REST backends from backends.yaml and DADL
@@ -648,13 +652,14 @@ func buildBackends(ctx context.Context, bc *buildBackendsConfig) (*backendsResul
 
 	// Build named REST backends from DADL files
 	named := make(map[string]backend.ToolBackend)
-	healthTargets := loadRESTBackendsInto(named, bc.cfg.BackendsConfigPath, bc.cfg.DADLDir, bc.blobStore, bc.credStore, bc.tc, bc.logger, bc.baseHandler, bc.debugFile, bc.debugSet)
+	healthTargets, refused := loadRESTBackendsInto(named, bc.cfg.BackendsConfigPath, bc.cfg.DADLDir, bc.blobStore, bc.credStore, bc.tc, bc.logger, bc.baseHandler, bc.debugFile, bc.debugSet)
 
 	return &backendsResult{
 		named:         named,
 		passthroughs:  []backend.ToolBackend{mcpAdapter},
 		mcpAdapter:    mcpAdapter,
 		healthTargets: healthTargets,
+		refused:       refused,
 	}, nil
 }
 
@@ -718,19 +723,20 @@ func backendLogger(name string, globalLogger *slog.Logger, stdoutHandler slog.Ha
 // parses their DADL files, and populates the named map. It returns the
 // backends whose DADL declares a health check (spec §4.6) and whose
 // monitoring the operator has not turned off.
-func loadRESTBackendsInto(named map[string]backend.ToolBackend, backendsConfigPath, dadlDir string, blobStore *blob.Store, creds credentials.CredentialStore, tc *telemetry.Collector, logger *slog.Logger, stdoutHandler slog.Handler, debugFile *os.File, debugSet map[string]bool) []health.Target {
+func loadRESTBackendsInto(named map[string]backend.ToolBackend, backendsConfigPath, dadlDir string, blobStore *blob.Store, creds credentials.CredentialStore, tc *telemetry.Collector, logger *slog.Logger, stdoutHandler slog.Handler, debugFile *os.File, debugSet map[string]bool) (healthTargets []health.Target, refused []string) {
 	data, err := os.ReadFile(backendsConfigPath) //nolint:gosec // path from trusted config
 	if err != nil {
-		return nil // no config = no REST backends
+		return nil, nil // no config = no REST backends
 	}
 
 	var cfg backend.BackendConfig
 	if err := backendsYAMLUnmarshal(data, &cfg); err != nil {
 		logger.Error("failed to parse backends config for REST entries", "error", err)
-		return nil
+		return nil, nil
 	}
 
-	var healthTargets []health.Target
+	// refused names the backends not loaded because their DADL breaks the
+	// credential or host binding, or their entry has no name.
 
 	// Fetch remote spec manifest once (best-effort, non-blocking with 5s timeout)
 	var specManifest *dadl.SpecManifest
@@ -752,6 +758,14 @@ func loadRESTBackendsInto(named map[string]backend.ToolBackend, backendsConfigPa
 		}
 		if entry.DADL == "" {
 			logger.Error("REST backend missing dadl path", "name", entry.Name)
+			continue
+		}
+		// The entry name sets the credential namespace, so it must come from
+		// the operator, not from the DADL.
+		if entry.Name == "" {
+			logger.Error("REST backend refused: the entry has no name, which sets the backend's credential namespace; add name: to the backends.yaml entry",
+				"dadl", entry.DADL)
+			refused = append(refused, "(unnamed: "+entry.DADL+")")
 			continue
 		}
 
@@ -845,7 +859,24 @@ func loadRESTBackendsInto(named map[string]backend.ToolBackend, backendsConfigPa
 			IncludeTools:        entry.IncludeTools,
 			Hint:                entry.Hint,
 			AuthExpiresAt:       healthSettings.AuthExpiresAt,
+			Scope: &backend.BackendScope{
+				EntryName:    entry.Name,
+				Credentials:  entry.Credentials,
+				Env:          entry.Env,
+				AllowedHosts: entry.AllowedHosts,
+			},
 		})
+		var scopeErr *dadl.ScopeError
+		if errors.As(err, &scopeErr) {
+			logger.Error("backend refused: its DADL reaches outside the credentials or hosts allowed for it; the other backends keep running",
+				"name", entry.Name,
+				"dadl", entry.DADL,
+				"error", err,
+				"add_to_backends_yaml_entry", scopeErr.FixLines(),
+			)
+			refused = append(refused, entry.Name)
+			continue
+		}
 		if err != nil {
 			logger.Error("failed to create REST adapter", "name", entry.Name, "error", err)
 			continue
@@ -904,7 +935,7 @@ func loadRESTBackendsInto(named map[string]backend.ToolBackend, backendsConfigPa
 			"health_poll_interval", pollInterval.String(),
 		)
 	}
-	return healthTargets
+	return healthTargets, refused
 }
 
 // backendsYAMLUnmarshal unmarshals backends YAML config. It shares the strict

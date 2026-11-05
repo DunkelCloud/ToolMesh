@@ -134,7 +134,7 @@ func TestLogSecurityPosture(t *testing.T) {
 
 			cfg := hardenedConfig()
 			tt.mutate(cfg)
-			logSecurityPosture(cfg, tt.authConfigured, tt.authzOpen, logger)
+			logSecurityPosture(cfg, tt.authConfigured, tt.authzOpen, nil, logger)
 
 			out := buf.String()
 			if tt.wantLevel != "" && !strings.Contains(out, "\"level\":\""+tt.wantLevel+"\"") {

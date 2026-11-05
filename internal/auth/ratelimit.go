@@ -17,6 +17,7 @@ package auth
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -26,16 +27,76 @@ const (
 	prefixDCRRate = "oauth:dcr:ratelimit:"
 	dcrRateLimit  = 5
 	dcrRateWindow = time.Hour
+
+	// maxLocalDCRWindows caps the process-local table. Source addresses are
+	// attacker-chosen, so the table must not grow without bound.
+	maxLocalDCRWindows = 50_000
 )
 
 // DCRRateLimiter enforces per-IP rate limits on Dynamic Client Registration.
+// It counts in Redis when created with a client, so the limit holds across
+// replicas, and in process memory otherwise (NewLocalDCRRateLimiter).
 type DCRRateLimiter struct {
 	rdb *redis.Client
+
+	mu    sync.Mutex
+	local map[string]dcrWindow
+	now   func() time.Time
 }
 
-// NewDCRRateLimiter creates a new DCR rate limiter.
+// dcrWindow is one source address's registrations in the current window.
+type dcrWindow struct {
+	count   int
+	resetAt time.Time
+}
+
+// NewDCRRateLimiter creates a new DCR rate limiter backed by Redis.
 func NewDCRRateLimiter(rdb *redis.Client) *DCRRateLimiter {
 	return &DCRRateLimiter{rdb: rdb}
+}
+
+// NewLocalDCRRateLimiter creates a DCR rate limiter that counts in process
+// memory, for deployments without Redis. The limit then applies per process.
+func NewLocalDCRRateLimiter() *DCRRateLimiter {
+	return &DCRRateLimiter{local: make(map[string]dcrWindow), now: time.Now}
+}
+
+// allowLocal counts one registration from ip in process memory. An IPv6
+// address counts as its /64, like the login throttle's per-address limit.
+func (rl *DCRRateLimiter) allowLocal(ip string) bool {
+	key := normalizeLoginIP(ip)
+	now := rl.now()
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	w, ok := rl.local[key]
+	if !ok || !now.Before(w.resetAt) {
+		if !ok && len(rl.local) >= maxLocalDCRWindows {
+			rl.evictLocked(now)
+		}
+		w = dcrWindow{resetAt: now.Add(dcrRateWindow)}
+	}
+	w.count++
+	rl.local[key] = w
+	return w.count <= dcrRateLimit
+}
+
+// evictLocked makes room in a full table: expired windows go first, then the
+// one that ends soonest. Callers must hold rl.mu.
+func (rl *DCRRateLimiter) evictLocked(now time.Time) {
+	var oldestKey string
+	var oldest time.Time
+	for k, w := range rl.local {
+		if !now.Before(w.resetAt) {
+			delete(rl.local, k)
+			continue
+		}
+		if oldestKey == "" || w.resetAt.Before(oldest) {
+			oldestKey, oldest = k, w.resetAt
+		}
+	}
+	if len(rl.local) >= maxLocalDCRWindows && oldestKey != "" {
+		delete(rl.local, oldestKey)
+	}
 }
 
 // rateLimitScript atomically increments and sets TTL in a single round-trip.
@@ -51,6 +112,9 @@ var rateLimitScript = redis.NewScript(`
 // Allow checks if the given IP is allowed to perform another DCR registration.
 // Returns true if allowed, false if the rate limit is exceeded.
 func (rl *DCRRateLimiter) Allow(ctx context.Context, ip string) (bool, error) {
+	if rl.rdb == nil {
+		return rl.allowLocal(ip), nil
+	}
 	key := prefixDCRRate + ip
 	windowSecs := int(dcrRateWindow.Seconds())
 

@@ -152,7 +152,7 @@ Both must be plain integers; anything else stops the server at startup.
 - **Clients registered with an earlier version** carry no expiry. They get one with the next token issued to them; one that never obtains a token again stays.
 - **Where it is kept.** In Redis the client's key expires with it; the file store (`oauth-state.json` in the data directory) drops it within 5 minutes of its expiry and does not restore an expired client after a restart.
 
-Registrations are limited to 5 per hour from one client address. The counters live in Redis: without Redis there is no limit, which the startup log reports as `dynamic client registration (/register) is not rate-limited`. When Redis cannot be reached for a check, the registration is allowed rather than refused (fail-open, so that an outage of Redis does not stop new connections) and logged at `WARN` as `dcr rate limit unavailable, registration allowed without limit (fail-open)` with `error` and `remote`.
+Registrations are limited to 5 per hour from one client address (an IPv6 address counts as its /64 when counted in process memory). The counters live in Redis, so the limit holds across replicas. Without Redis they live in process memory and the limit applies per process, which the startup log reports as `dynamic client registration (/register) is rate-limited per process`. When Redis cannot be reached for a check, the registration is allowed rather than refused (fail-open, so that an outage of Redis does not stop new connections) and logged at `WARN` as `dcr rate limit unavailable, registration allowed without limit (fail-open)` with `error` and `remote`.
 
 ## Audit
 

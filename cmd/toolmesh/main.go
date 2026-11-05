@@ -360,7 +360,8 @@ func main() {
 		}
 	}
 	if rateLimiter == nil {
-		logger.Warn("dynamic client registration (/register) is not rate-limited: the limit needs Redis")
+		rateLimiter = auth.NewLocalDCRRateLimiter()
+		logger.Info("dynamic client registration (/register) is rate-limited per process: no Redis to share the limit across replicas")
 	}
 
 	// One bound for every bcrypt comparison in the process: password logins

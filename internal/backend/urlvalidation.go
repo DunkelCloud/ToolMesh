@@ -273,7 +273,8 @@ var redirectSafeHeaders = map[string]struct{}{
 // Compared with the origin of the first request, a redirect
 //   - to http from https is refused (no downgrade, whatever the host),
 //   - to the same origin, or from http to https on the same host and default
-//     ports, is followed unchanged,
+//     ports, is followed unchanged, unless an earlier hop of the chain left
+//     the origin,
 //   - to any other origin is refused when it would re-send a request body
 //     (307/308), and otherwise followed with only redirectSafeHeaders kept.
 //
@@ -293,7 +294,18 @@ func newBackendRedirectChecker(allowPrivate bool) func(*http.Request, []*http.Re
 		if strings.EqualFold(orig.Scheme, urlSchemeHTTPS) && !strings.EqualFold(next.Scheme, urlSchemeHTTPS) {
 			return fmt.Errorf("redirect from https to %s://%s refused: backend requests are never downgraded", next.Scheme, next.Host)
 		}
-		if sameOrigin(orig, next) || isHTTPSUpgrade(orig, next) {
+		// Go rebuilds every hop's headers from the first request, so a
+		// chain that left the origin and comes back (A -> B -> A) would get
+		// the credential again on a path B chose. Once a hop has left the
+		// origin, the rest of the chain is treated as foreign.
+		left := false
+		for _, hop := range via[1:] {
+			if hop.URL != nil && !sameOrigin(orig, hop.URL) && !isHTTPSUpgrade(orig, hop.URL) {
+				left = true
+				break
+			}
+		}
+		if !left && (sameOrigin(orig, next) || isHTTPSUpgrade(orig, next)) {
 			return nil
 		}
 		if req.Body != nil && req.Body != http.NoBody {

@@ -303,3 +303,41 @@ func TestRESTAdapter_TokenRequestUsesSSRFTransport(t *testing.T) {
 		t.Errorf("token endpoint on a private address was contacted %d times", hits)
 	}
 }
+
+// TestRESTAdapter_RedirectBackToOriginStaysStripped pins that a chain that
+// leaves the origin and returns (A -> B -> A) does not get the credential
+// back on the path the third party chose.
+func TestRESTAdapter_RedirectBackToOriginStaysStripped(t *testing.T) {
+	final := &headerRecorder{}
+	var originSrv, otherSrv *httptest.Server
+	originSrv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == redirectTestPath {
+			http.Redirect(w, r, otherSrv.URL+"/hop", http.StatusFound)
+			return
+		}
+		final.ServeHTTP(w, r)
+	}))
+	defer originSrv.Close()
+	otherSrv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, originSrv.URL+"/chosen-by-third-party?op=delete", http.StatusFound)
+	}))
+	defer otherSrv.Close()
+
+	a := redirectTestAdapter(t, originSrv.URL,
+		dadl.AuthConfig{Type: redirectTestAuthType, Credential: redirectTestCredential, HeaderName: redirectTestHeader},
+		otherSrv.URL)
+	result, err := a.Execute(context.Background(), redirectTestTool, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IsError {
+		t.Fatalf("chain refused: %v", result.Content)
+	}
+	hits, h := final.snapshot()
+	if hits != 1 {
+		t.Fatalf("return hop hits = %d, want 1", hits)
+	}
+	if got := h.Get(redirectTestHeader); got != "" {
+		t.Errorf("credential re-attached on the return hop: %q", got)
+	}
+}

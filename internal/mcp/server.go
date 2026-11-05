@@ -1739,7 +1739,7 @@ func (s *Server) handleRevoke(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: oauthErrInvalidReq})
 		return
 	}
-	token := r.PostFormValue("token")
+	token := r.PostFormValue(oauthRevokeToken)
 	if token == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: oauthErrInvalidReq, oauthErrorDescription: "token is required"})
 		return
@@ -1767,6 +1767,17 @@ func (s *Server) revokeToken(r *http.Request, token string) {
 			_ = s.tokenStore.DeleteToken(ctx, ti.AccessToken)
 		}
 		s.logger.InfoContext(ctx, "oauth token revoked", "kind", "refresh_token", "clientId", ti.ClientID, logKeyRemote, auth.ClientIP(r))
+		return
+	}
+	// An access token that expired may be gone from the store while its
+	// refresh token still lives; find the pair through the refresh token.
+	if pl, ok := s.tokenStore.(auth.PairLookup); ok {
+		if rt, err := pl.RefreshTokenOf(ctx, token); err == nil {
+			if ti, err := s.tokenStore.ConsumeRefreshToken(ctx, rt); err == nil {
+				_ = s.tokenStore.DeleteToken(ctx, token)
+				s.logger.InfoContext(ctx, "oauth token revoked", "kind", "expired_access_token", "clientId", ti.ClientID, logKeyRemote, auth.ClientIP(r))
+			}
+		}
 	}
 }
 

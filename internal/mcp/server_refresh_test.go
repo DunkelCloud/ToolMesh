@@ -177,7 +177,7 @@ func TestBearer_TokenOfRemovedUserRefused(t *testing.T) {
 }
 
 func (ts *loginTestServer) revoke(token string) *httptest.ResponseRecorder {
-	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, pathRevoke, strings.NewReader(url.Values{"token": {token}}.Encode()))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, pathRevoke, strings.NewReader(url.Values{oauthRevokeToken: {token}}.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.RemoteAddr = testLoginAddr
 	w := httptest.NewRecorder()

@@ -223,6 +223,23 @@ func (s *FileTokenStore) GetToken(_ context.Context, accessToken string) (*Token
 	return ti, nil
 }
 
+// RefreshTokenOf implements PairLookup: it returns the refresh token issued
+// together with accessToken, whether or not the access token is still
+// stored, or ErrNotFound.
+func (s *FileTokenStore) RefreshTokenOf(_ context.Context, accessToken string) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if ti, ok := s.accessTokens[accessToken]; ok && ti.RefreshToken != "" {
+		return ti.RefreshToken, nil
+	}
+	for rt, ti := range s.refreshTokens {
+		if ti.AccessToken == accessToken {
+			return rt, nil
+		}
+	}
+	return "", ErrNotFound
+}
+
 // DeleteToken removes an access token from the store.
 func (s *FileTokenStore) DeleteToken(_ context.Context, accessToken string) error {
 	s.mu.Lock()

@@ -98,6 +98,14 @@ func (ti *TokenInfo) RefreshExpiry() time.Time {
 	return ti.ExpiresAt
 }
 
+// PairLookup is implemented by token stores that can name the refresh token
+// issued together with an access token even after the access token expired
+// and was dropped. Revocation uses it, so revoking with an expired access
+// token still ends the pair.
+type PairLookup interface {
+	RefreshTokenOf(ctx context.Context, accessToken string) (string, error)
+}
+
 // ErrNotFound is returned when a key does not exist in the store.
 var ErrNotFound = errors.New("not found")
 

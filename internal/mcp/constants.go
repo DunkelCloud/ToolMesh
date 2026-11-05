@@ -110,6 +110,7 @@ const (
 	oauthRedirectURI      = "redirect_uri"
 	oauthState            = "state"
 	oauthConfirmHost      = "confirm_host"
+	oauthRevokeToken      = "token"
 	oauthScope            = "scope"
 	oauthCode             = "code"
 	oauthCodeChallenge    = "code_challenge"

@@ -36,6 +36,10 @@ func TestValidateBaseURL_Rejects(t *testing.T) {
 		{"loopback_ipv6", "http://[::1]/", testPrivateLoopback},
 		{"private_10", "http://10.0.0.1/", testPrivateLoopback},
 		{"aws_metadata", "http://169.254.169.254/", testPrivateLoopback},
+		{"cgnat", "http://100.64.0.1/", testPrivateLoopback},
+		{"benchmarking", "http://198.18.0.1/", testPrivateLoopback},
+		{"nat64_loopback", "http://[64:ff9b::7f00:1]/", testPrivateLoopback},
+		{"this_network", "http://0.0.0.1/", testPrivateLoopback},
 		{"invalid_scheme", "ftp://example.com/", "scheme"},
 		{"no_hostname", "http:///foo", "hostname"},
 		{"dns_failure", "http://this-host-does-not-exist.invalid/", "DNS resolution"},
@@ -70,6 +74,26 @@ func TestIsPrivateIP(t *testing.T) {
 		{"fe80::1", true},
 		{"8.8.8.8", false},
 		{"1.1.1.1", false},
+		{"0.1.2.3", true},
+		{"100.64.0.1", true},
+		{"100.127.255.254", true},
+		{"100.128.0.1", false},
+		{"198.18.0.1", true},
+		{"198.19.255.255", true},
+		{"192.0.0.8", true},
+		{"224.0.0.251", true},
+		{"255.255.255.255", true},
+		{"64:ff9b::a00:1", true},     // NAT64 of 10.0.0.1
+		{"64:ff9b::7f00:1", true},    // NAT64 of 127.0.0.1
+		{"64:ff9b::a9fe:a9fe", true}, // NAT64 of 169.254.169.254
+		{"64:ff9b::808:808", false},  // NAT64 of 8.8.8.8
+		{"64:ff9b:1::a00:1", true},   // local-use NAT64 prefix
+		{"2002:0a00:0001::1", true},  // 6to4 of 10.0.0.1
+		{"2002:0808:0808::1", false}, // 6to4 of 8.8.8.8
+		{"fc00::1", true},
+		{"ff02::1", true},
+		{"2001:db8::1", true},
+		{"2606:4700:4700::1111", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.ip, func(t *testing.T) {

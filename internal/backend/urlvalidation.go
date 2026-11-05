@@ -61,33 +61,91 @@ func ValidateBaseURL(rawURL string) error {
 		if ip == nil {
 			continue
 		}
-		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
-			return fmt.Errorf("base_url %q resolves to private/loopback address %s", rawURL, ipStr)
-		}
-		// AWS metadata endpoint
-		if ip.Equal(net.ParseIP("169.254.169.254")) {
-			return fmt.Errorf("base_url %q resolves to cloud metadata address %s", rawURL, ipStr)
+		if IsPrivateIP(ip) {
+			return fmt.Errorf("base_url %q resolves to private/loopback or reserved address %s", rawURL, ipStr)
 		}
 	}
 
 	return nil
 }
 
-// IsPrivateIP returns true if the IP is loopback, private, the unspecified
-// address, link-local, or a well-known cloud metadata address. The unspecified
-// address (0.0.0.0 / ::) is included because the kernel routes a connection to
-// it to a loopback service, so it must be treated as private. A nil (unparsable)
-// IP is treated as private to fail closed.
+// reservedNets are special-use ranges (RFC 6890 and successors) that are not
+// globally reachable unicast destinations and that net.IP's own predicates
+// do not cover. A backend or file_url target in one of them reaches internal
+// infrastructure, carrier equipment or a translator to such addresses.
+var reservedNets = func() []*net.IPNet {
+	cidrs := []string{
+		"0.0.0.0/8",       // "this network"
+		"100.64.0.0/10",   // shared address space (carrier-grade NAT)
+		"192.0.0.0/24",    // IETF protocol assignments
+		"192.0.2.0/24",    // documentation (TEST-NET-1)
+		"198.18.0.0/15",   // benchmarking
+		"198.51.100.0/24", // documentation (TEST-NET-2)
+		"203.0.113.0/24",  // documentation (TEST-NET-3)
+		"224.0.0.0/4",     // multicast
+		"240.0.0.0/4",     // reserved, includes 255.255.255.255
+		"100::/64",        // discard-only
+		"2001:db8::/32",   // documentation
+		"ff00::/8",        // multicast
+	}
+	out := make([]*net.IPNet, 0, len(cidrs))
+	for _, c := range cidrs {
+		_, n, err := net.ParseCIDR(c)
+		if err == nil {
+			out = append(out, n)
+		}
+	}
+	return out
+}()
+
+// Translation prefixes whose last 32 bits carry an IPv4 address: NAT64
+// (RFC 6052 well-known and local-use prefixes) and 6to4 (2002::/16, where the
+// IPv4 address follows the prefix).
+var (
+	nat64WellKnown = mustCIDR("64:ff9b::/96")
+	nat64Local     = mustCIDR("64:ff9b:1::/48")
+	sixToFour      = mustCIDR("2002::/16")
+)
+
+func mustCIDR(c string) *net.IPNet {
+	_, n, err := net.ParseCIDR(c)
+	if err != nil {
+		panic(err) //nolint:forbidigo // compile-time constant CIDR; cannot fail
+	}
+	return n
+}
+
+// IsPrivateIP returns true if the IP is not a safe destination for a request
+// that the server makes on someone's behalf: loopback, private, the
+// unspecified address, link-local, a well-known cloud metadata address, any
+// special-use range in reservedNets, or an IPv6 translation address (NAT64,
+// 6to4) whose embedded IPv4 address is one of those. The unspecified address
+// (0.0.0.0 / ::) is included because the kernel routes a connection to it to
+// a loopback service. A nil (unparsable) IP is treated as private to fail
+// closed.
 func IsPrivateIP(ip net.IP) bool {
 	if ip == nil {
 		return true
 	}
 	if ip.IsLoopback() || ip.IsPrivate() || ip.IsUnspecified() ||
-		ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+		ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsInterfaceLocalMulticast() {
 		return true
 	}
 	if ip.Equal(net.ParseIP("169.254.169.254")) {
 		return true
+	}
+	for _, n := range reservedNets {
+		if n.Contains(ip) {
+			return true
+		}
+	}
+	if ip.To4() == nil && len(ip) == net.IPv6len {
+		switch {
+		case nat64WellKnown.Contains(ip), nat64Local.Contains(ip):
+			return IsPrivateIP(ip[12:16])
+		case sixToFour.Contains(ip):
+			return IsPrivateIP(ip[2:6])
+		}
 	}
 	return false
 }

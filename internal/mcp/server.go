@@ -153,9 +153,15 @@ func (s *Server) handleFileUpload(w http.ResponseWriter, r *http.Request) {
 // backends (e.g. via a #url handle) without sharing MCP credentials. DELETE is
 // destructive and has no capability use case, so it additionally requires MCP
 // authentication; a party that merely holds a blob ID cannot destroy it.
+//
+// Only the user a blob was created for may delete it.
 func (s *Server) handleBlobs(w http.ResponseWriter, r *http.Request) {
-	if r.Method == http.MethodDelete && !s.requireAuth(w, r) {
-		return
+	if r.Method == http.MethodDelete {
+		user, ok := s.requireUser(w, r)
+		if !ok {
+			return
+		}
+		r = r.WithContext(blob.WithRequester(r.Context(), user.UserID))
 	}
 	s.blobStore.ServeHTTP(w, r)
 }

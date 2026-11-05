@@ -18,6 +18,7 @@
 package blob
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
@@ -252,11 +253,42 @@ func (s *Store) Delete(id string) error {
 	return nil
 }
 
+// ErrNotOwner is returned by DeleteAs when the requester is not the user the
+// blob was created for.
+var ErrNotOwner = errors.New("blob belongs to another user")
+
+// DeleteAs removes a blob on behalf of requester. Only the user the blob was
+// created for (its quota owner) may delete it; a blob created without a user
+// cannot be deleted this way and expires with its TTL.
+func (s *Store) DeleteAs(id, requester string) error {
+	s.mu.RLock()
+	entry, ok := s.blobs[id]
+	s.mu.RUnlock()
+	if !ok {
+		return fmt.Errorf("blob %q not found", id)
+	}
+	if entry.Owner == "" || entry.Owner != requester {
+		return ErrNotOwner
+	}
+	return s.Delete(id)
+}
+
+// requesterKey carries the authenticated user of a DELETE request.
+type requesterKey struct{}
+
+// WithRequester returns a context that names the authenticated user on whose
+// behalf ServeHTTP handles a DELETE.
+func WithRequester(ctx context.Context, userID string) context.Context {
+	return context.WithValue(ctx, requesterKey{}, userID)
+}
+
 // ServeHTTP handles GET/HEAD/DELETE /blobs/{id} requests and performs no
 // authentication itself. GET and HEAD are capability-based: the unguessable
 // blob ID is the only credential, bounded by the TTL. DELETE must be
-// authenticated by the caller before it reaches this handler, as the MCP
-// server's /blobs/ route does.
+// authenticated by the caller before it reaches this handler, which names the
+// user with WithRequester, as the MCP server's /blobs/ route does. Only the
+// blob's owner may delete it; any other DELETE, including one without a
+// requester, is answered like an unknown blob.
 func (s *Store) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead && r.Method != http.MethodDelete {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -270,7 +302,8 @@ func (s *Store) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if r.Method == http.MethodDelete {
-		if err := s.Delete(id); err != nil {
+		requester, _ := r.Context().Value(requesterKey{}).(string)
+		if err := s.DeleteAs(id, requester); err != nil {
 			http.Error(w, "not found", http.StatusNotFound)
 			return
 		}

@@ -432,6 +432,9 @@ func validateTool(name string, tool *ToolDef, defaults *DefaultsConfig) error {
 	if tool.Path == "" {
 		return fmt.Errorf("tool %q: path is required", name)
 	}
+	if err := CheckToolPathAuthority(tool.Path); err != nil {
+		return fmt.Errorf("tool %q: %w", name, err)
+	}
 
 	// Check that path params referenced in the path template are declared in params
 	pathParams := pathParamRe.FindAllStringSubmatch(tool.Path, -1)
@@ -459,6 +462,27 @@ func validateTool(name string, tool *ToolDef, defaults *DefaultsConfig) error {
 	}
 
 	return validateResponse(tool.Response, fmt.Sprintf("tool %q: response", name))
+}
+
+// CheckToolPathAuthority returns an error when an absolute tool path has a
+// {placeholder} in its scheme, host or port. A parameter value there would
+// let the caller choose the host the request goes to, with the backend's
+// credentials; url.PathEscape does not escape "@" or ":", so even a
+// placeholder inside a host name ("{region}.example.com") can turn into
+// userinfo or a port. Placeholders belong in the path and query only.
+func CheckToolPathAuthority(path string) error {
+	i := strings.Index(path, "://")
+	if i < 0 {
+		return nil
+	}
+	authority := path[i+3:]
+	if j := strings.IndexAny(authority, "/?#"); j >= 0 {
+		authority = authority[:j]
+	}
+	if strings.Contains(path[:i], "{") || strings.Contains(authority, "{") {
+		return fmt.Errorf("path %q has a placeholder in its scheme, host or port; only the path and query may hold parameters", path)
+	}
+	return nil
 }
 
 // validateIdempotency checks a tool's idempotency block (spec §6.6): the

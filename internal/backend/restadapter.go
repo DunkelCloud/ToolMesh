@@ -157,6 +157,15 @@ func NewRESTAdapter(spec *dadl.Spec, creds credentials.CredentialStore, logger *
 		return nil, fmt.Errorf("REST backend %q: base_url is required (set in .dadl file or via backends.yaml url field)", spec.Backend.Name)
 	}
 
+	// A placeholder in the host of an absolute tool path would let the caller
+	// pick where the request, with its credentials, goes. dadl.Validate
+	// refuses such paths; specs built in code are checked here as well.
+	for name, tool := range spec.Backend.Tools {
+		if err := dadl.CheckToolPathAuthority(tool.Path); err != nil {
+			return nil, fmt.Errorf("REST backend %q: tool %q: %w", spec.Backend.Name, name, err)
+		}
+	}
+
 	// SSRF protection: validate base_url does not point to private/internal addresses.
 	// Skipped when the admin explicitly allows private URLs (default for local config).
 	if !opts.AllowPrivateURL {

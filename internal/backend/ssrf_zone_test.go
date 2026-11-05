@@ -86,3 +86,19 @@ func TestResolvePublic(t *testing.T) {
 		t.Errorf("resolvePublic(public literal) = %v, %v", addrs, err)
 	}
 }
+
+// TestValidateBaseURL_LocalForms pins the base URL forms that reach the
+// ToolMesh host or internal addresses, written in the ways an attacker may
+// try: zoned, v4-mapped, unspecified, trailing dot, mixed case, metadata.
+func TestValidateBaseURL_LocalForms(t *testing.T) {
+	for _, raw := range []string{
+		"http://[::ffff:127.0.0.1%25zz]/", "http://[fe80::1%25eth0]/", "http://[::1%25lo]:8080/", "http://[fd00::1%25x]/",
+		"http://[::ffff:127.0.0.1]/", "http://[::ffff:7f00:1]/", "http://0.0.0.0/", "http://[::]/",
+		"http://localhost./", "http://LocalHost:8080/", "http://metadata.google.internal./",
+		"http://169.254.169.254/latest/", "http://[::ffff:169.254.169.254]/", "http://foo%25bar.example/",
+	} {
+		if err := ValidateBaseURL(raw); err == nil {
+			t.Errorf("ValidateBaseURL accepted %s", raw)
+		}
+	}
+}

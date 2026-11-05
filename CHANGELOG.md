@@ -16,6 +16,9 @@ for the full narrative and details.
 - SSRF checks refuse IPv6 addresses with a zone (`[::ffff:127.0.0.1%25x]`),
   which slipped past the private-address check and reached loopback, private
   or metadata addresses, and fail closed on DNS answers that do not parse.
+- A backend `base_url` on the unspecified address (`http://0.0.0.0/`,
+  `http://[::]/`) is now refused with `allow_private_url: false`, like
+  loopback: a connection to it reaches a service on the ToolMesh host.
 - The bearer token of MCP backends over HTTP (`api_key_env`) is sent only to
   the origin of the configured `url`, no longer to the target of a redirect.
   MCP-over-HTTP requests stay on that origin: a redirect to another origin

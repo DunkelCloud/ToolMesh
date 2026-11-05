@@ -14,7 +14,7 @@ All configuration is done via environment variables. Copy `.env.example` to `.en
 | `TOOLMESH_AUTH_USER` | `owner` | User identity in simple auth mode (password/single API key) |
 | `TOOLMESH_AUTH_PLAN` | `pro` | Plan in simple auth mode |
 | `TOOLMESH_AUTH_ROLES` | `admin` | Comma-separated roles in simple auth mode |
-| `TOOLMESH_ISSUER` | `https://toolmesh.io/` | OAuth issuer URL (must end with `/`). The default is a placeholder: set it to the public URL clients use, or the OAuth metadata and the [`401` challenge of `/mcp`](#unauthenticated-requests) name the wrong host. ToolMesh logs a warning at startup while it is unchanged. |
+| `TOOLMESH_ISSUER` | `https://toolmesh.invalid/` | OAuth issuer URL (must end with `/`). The default is a placeholder on a top-level domain that never resolves: set it to the public URL clients use, or the OAuth metadata and the [`401` challenge of `/mcp`](#unauthenticated-requests) name the wrong host. ToolMesh logs a warning at startup while it is unchanged, and also for `https://toolmesh.io/`, the placeholder earlier versions shipped. |
 | `TOOLMESH_ROOT_REDIRECT` | *(empty)* | Absolute `http(s)` URL that `GET /` redirects to (302). Unset, the site root serves the built-in page explaining that this host is an MCP endpoint. Only `/` is redirected — `/mcp` always serves the page, since a visitor there needs the URL to copy. An invalid value fails startup. |
 | `TOOLMESH_DEV` | `false` | Local-development posture. Reports the startup security-posture summary at `INFO` instead of `WARN`. Relaxes no setting on its own — it only changes the log level of that summary. |
 

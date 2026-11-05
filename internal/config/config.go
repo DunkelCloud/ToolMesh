@@ -251,7 +251,7 @@ func Load() (*Config, error) {
 		Transport:               envStr("TOOLMESH_TRANSPORT", "http"),
 		AuthPassword:            envStr("TOOLMESH_AUTH_PASSWORD", ""),
 		APIKey:                  envStr("TOOLMESH_API_KEY", ""),
-		Issuer:                  envStr("TOOLMESH_ISSUER", "https://toolmesh.io/"),
+		Issuer:                  envStr("TOOLMESH_ISSUER", placeholderIssuer+"/"),
 		RootRedirect:            envStr("TOOLMESH_ROOT_REDIRECT", ""),
 		AuditStore:              envStr("AUDIT_STORE", "log"),
 		AuditRetentionDays:      envInt("AUDIT_RETENTION_DAYS", 90),
@@ -551,16 +551,24 @@ func (c *Config) LoginThrottleDisabled() []string {
 }
 
 // placeholderIssuer is the TOOLMESH_ISSUER that .env.example ships and that
-// applies when the variable is not set. It is the address of the project's
-// website, not of any ToolMesh instance.
-const placeholderIssuer = "https://toolmesh.io"
+// applies when the variable is not set. The .invalid top-level domain never
+// resolves (RFC 2606), so a placeholder left in place cannot send a client to
+// a real host.
+const placeholderIssuer = "https://toolmesh.invalid"
+
+// legacyPlaceholderIssuer is the placeholder earlier versions shipped, the
+// address of the project's website; .env files copied from them still
+// carry it.
+const legacyPlaceholderIssuer = "https://toolmesh.io"
 
 // IssuerIsPlaceholder reports whether TOOLMESH_ISSUER was left at the value
-// from .env.example. Everything that is built from the issuer then names a
-// host that is not this instance: the OAuth endpoints in the metadata, the
-// metadata URL in the 401 challenge of /mcp, and the URLs of the file broker.
+// from .env.example (or the one earlier versions shipped). Everything that is
+// built from the issuer then names a host that is not this instance: the
+// OAuth endpoints in the metadata, the metadata URL in the 401 challenge of
+// /mcp, and the URLs of the file broker.
 func (c *Config) IssuerIsPlaceholder() bool {
-	return strings.EqualFold(strings.TrimRight(c.Issuer, "/"), placeholderIssuer)
+	issuer := strings.TrimRight(c.Issuer, "/")
+	return strings.EqualFold(issuer, placeholderIssuer) || strings.EqualFold(issuer, legacyPlaceholderIssuer)
 }
 
 // AuthRolesList returns the simple-mode auth roles as a string slice.

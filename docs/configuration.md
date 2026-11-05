@@ -839,6 +839,33 @@ The two limits must be plain integers of bytes, `0` or more; anything else stops
 | `TOOLMESH_BACKENDS_CONFIG` | `/app/config/backends.yaml` | Path to backend configuration YAML |
 | `TOOLMESH_POLICIES_DIR` | `/app/policies` | Path to output gate policy directory |
 
+### Credential and host binding
+
+Every REST backend is bound to its `backends.yaml` entry. The binding comes from the operator's configuration, never from the DADL, so a DADL can neither read the credentials of another backend nor send its own credentials to a host the operator did not agree to.
+
+- **Credentials.** A backend reads only `CREDENTIAL_<NAME>_*`, where `<NAME>` is its entry `name` upper-cased with `-` as `_` (entry `shelly-cloud`: `CREDENTIAL_SHELLY_CLOUD_*`), plus the names its `env:` maps and the names in its `credentials:` list. The entry needs a `name`; an entry without one is refused.
+- **Hosts.** Credentials, OAuth2 token requests and session logins go only to the host of the effective `base_url` (the entry's `url`, or the DADL's `base_url`), to hosts of the same registrable domain by the public suffix list, and to the hosts in the entry's `allowed_hosts:` list (`api.example.com` or `*.example.com`). The public suffix list includes shared hosting domains: `googleapis.com`, for example, is such a suffix, so each Google API host is a domain of its own and needs `allowed_hosts`.
+- **Checked at load.** The credentials the DADL's auth type reads (including `credential:<name>` in a session login body) and the hosts of `token_url`, absolute tool paths, an absolute health check path and the session login URL are checked when the backend is loaded, at startup and on every reload of `backends.yaml`. A backend that breaks the binding is not loaded: an `ERROR` line `backend refused` names it, each violation, and the exact lines to add to its entry (`add_to_backends_yaml_entry`). The other backends keep running and ToolMesh starts; the startup security-posture summary lists the refused backends at `ERROR`. There is no global switch, only these per-entry lines.
+- **Checked again at run time.** The same binding is enforced where credentials are injected and where token and login requests go out. For a configuration that loaded, this never triggers. A `token_uri` that a `jwt_bearer` service-account credential supplies itself is operator data and is not checked.
+- **No secret.** `credential: none` in an auth block is the placeholder of DADLs for APIs without authentication. It is never looked up and needs no binding.
+- **Units.** REST sub-backends of a unit are bound the same way through their `unit.yaml` entries.
+
+Examples of entries that need a line, with the entry named like the DADL:
+
+```yaml
+  - name: shelly-cloud            # reads shelly_auth_key, outside CREDENTIAL_SHELLY_CLOUD_*
+    transport: rest
+    dadl: shelly-cloud.dadl
+    credentials: [shelly_auth_key]
+
+  - name: youtube                 # token_url on oauth2.googleapis.com
+    transport: rest
+    dadl: youtube.dadl
+    allowed_hosts: [oauth2.googleapis.com]
+```
+
+**Upgrading.** After an upgrade, backends whose DADLs read credentials outside their entry's namespace, or use hosts outside the registrable domain of their `base_url`, are refused until these lines are added. Check the log for `backend refused` after the first start, add the lines it names, and the next reload of `backends.yaml` loads them.
+
 ### Requests to REST backends
 
 These rules apply to every REST backend, whatever its `backends.yaml` options:

@@ -20,10 +20,12 @@ import (
 	"fmt"
 	"net/netip"
 	"net/url"
+	"regexp"
 	"sort"
 	"strings"
 
 	"golang.org/x/net/publicsuffix"
+	"gopkg.in/yaml.v3"
 
 	"github.com/DunkelCloud/ToolMesh/internal/credentials"
 )
@@ -92,6 +94,17 @@ func credentialKey(name string) string {
 	return strings.ToUpper(strings.TrimSpace(name))
 }
 
+// credentialNameRe is the form of a credential name: letters, digits and
+// "_", the characters of an environment variable name.
+var credentialNameRe = regexp.MustCompile(`^[A-Za-z0-9_]+$`)
+
+// validCredentialName reports whether name is a credential name. A DADL
+// with any other name is refused at parse, so a name never carries text
+// into an error message or a suggested backends.yaml line.
+func validCredentialName(name string) bool {
+	return credentialNameRe.MatchString(name)
+}
+
 // Allows reports whether the backend may read the credential name. A nil
 // scope allows every name.
 func (s *CredentialScope) Allows(name string) bool {
@@ -99,7 +112,7 @@ func (s *CredentialScope) Allows(name string) bool {
 		return true
 	}
 	k := credentialKey(name)
-	return k != "" && (strings.HasPrefix(k, s.prefix) || s.names[k])
+	return validCredentialName(k) && (strings.HasPrefix(k, s.prefix) || s.names[k])
 }
 
 // scopedStore refuses reads outside a CredentialScope. The refusal is no
@@ -212,9 +225,39 @@ type ScopeViolation struct {
 	Rule string
 	// What names the DADL field and the credential or host.
 	What string
-	// Fix is the backends.yaml line that allows it, or "" when only a
-	// change to the DADL can.
-	Fix string
+	// Credential is the name the entry's credentials: list needs to allow
+	// it, or "" when only a change to the DADL can.
+	Credential string
+	// Host is the entry the allowed_hosts: list needs to allow it, or ""
+	// when only a change to the DADL can.
+	Host string
+}
+
+// fixLine returns the backends.yaml line that allows v, or "".
+func (v ScopeViolation) fixLine() string {
+	switch {
+	case v.Credential != "":
+		return yamlFlowLine("credentials", []string{v.Credential})
+	case v.Host != "":
+		return yamlFlowLine("allowed_hosts", []string{v.Host})
+	}
+	return ""
+}
+
+// yamlFlowLine renders "key: [item, ...]" with the YAML encoder, so every
+// item is quoted where YAML needs it and none can add keys or entries of
+// its own.
+func yamlFlowLine(key string, items []string) string {
+	seq := &yaml.Node{Kind: yaml.SequenceNode, Style: yaml.FlowStyle}
+	for _, it := range items {
+		seq.Content = append(seq.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: it})
+	}
+	doc := &yaml.Node{Kind: yaml.MappingNode, Content: []*yaml.Node{{Kind: yaml.ScalarNode, Tag: "!!str", Value: key}, seq}}
+	out, err := yaml.Marshal(doc)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }
 
 // ScopeError lists every violation of one backend; such a backend is not
@@ -228,8 +271,8 @@ type ScopeError struct {
 func (e *ScopeError) Error() string {
 	parts := make([]string, 0, len(e.Violations))
 	for _, v := range e.Violations {
-		if v.Fix != "" {
-			parts = append(parts, fmt.Sprintf("%s: %s (allow it with `%s` in the backends.yaml entry)", v.Rule, v.What, v.Fix))
+		if fix := v.fixLine(); fix != "" {
+			parts = append(parts, fmt.Sprintf("%s: %s (allow it with `%s` in the backends.yaml entry)", v.Rule, v.What, fix))
 		} else {
 			parts = append(parts, fmt.Sprintf("%s: %s (only a change to the DADL can fix this)", v.Rule, v.What))
 		}
@@ -238,29 +281,27 @@ func (e *ScopeError) Error() string {
 }
 
 // FixLines returns the backends.yaml lines that would allow every violation
-// a line can allow, merged per key.
+// a line can allow, merged per key. They are built from the structured
+// Credential and Host fields, never from DADL text.
 func (e *ScopeError) FixLines() []string {
 	var creds, hosts []string
 	seen := map[string]bool{}
 	for _, v := range e.Violations {
-		if v.Fix == "" || seen[v.Fix] {
-			continue
-		}
-		seen[v.Fix] = true
-		inner := strings.TrimSuffix(v.Fix[strings.Index(v.Fix, "[")+1:], "]")
-		switch v.Rule {
-		case RuleCredentialNamespace:
-			creds = append(creds, inner)
-		case RuleHostBinding:
-			hosts = append(hosts, inner)
+		switch {
+		case v.Credential != "" && !seen["c:"+v.Credential]:
+			seen["c:"+v.Credential] = true
+			creds = append(creds, v.Credential)
+		case v.Host != "" && !seen["h:"+v.Host]:
+			seen["h:"+v.Host] = true
+			hosts = append(hosts, v.Host)
 		}
 	}
 	var out []string
 	if len(creds) > 0 {
-		out = append(out, "credentials: ["+strings.Join(creds, ", ")+"]")
+		out = append(out, yamlFlowLine("credentials", creds))
 	}
 	if len(hosts) > 0 {
-		out = append(out, "allowed_hosts: ["+strings.Join(hosts, ", ")+"]")
+		out = append(out, yamlFlowLine("allowed_hosts", hosts))
 	}
 	return out
 }
@@ -269,6 +310,58 @@ func (e *ScopeError) FixLines() []string {
 type credentialRef struct {
 	where string
 	name  string
+}
+
+// credentialPrefix marks a value that names a credential to substitute:
+// "credential:<name>".
+const credentialPrefix = "credential:" //nolint:gosec // reference marker, not a credential
+
+// walkCredentialRefs calls fn with the name of every "credential:<name>"
+// string in v, at any depth.
+func walkCredentialRefs(v any, fn func(name string)) {
+	switch val := v.(type) {
+	case string:
+		if name, ok := strings.CutPrefix(val, credentialPrefix); ok {
+			fn(name)
+		}
+	case map[string]any:
+		for _, child := range val {
+			walkCredentialRefs(child, fn)
+		}
+	case []any:
+		for _, child := range val {
+			walkCredentialRefs(child, fn)
+		}
+	}
+}
+
+// validateCredentialNames refuses an auth block with a credential name that
+// is not one: every *credential field that is set, and every
+// "credential:<name>" in a session login body, whatever the auth type.
+func validateCredentialNames(auth AuthConfig) error {
+	fields := []credentialRef{
+		{"auth.credential", auth.Credential},
+		{"auth.username_credential", auth.UsernameCredential},
+		{"auth.password_credential", auth.PasswordCredential},
+		{"auth.client_id_credential", auth.ClientIDCredential},
+		{"auth.client_secret_credential", auth.ClientSecretCredential},
+		{"auth.refresh_token_credential", auth.RefreshTokenCredential},
+		{"auth.service_account_credential", auth.ServiceAccountCredential},
+	}
+	if auth.Login != nil {
+		walkCredentialRefs(auth.Login.Body, func(name string) {
+			fields = append(fields, credentialRef{"auth.login.body", name})
+		})
+	}
+	for _, f := range fields {
+		if f.where != "auth.login.body" && f.name == "" {
+			continue
+		}
+		if !validCredentialName(f.name) {
+			return fmt.Errorf("%s %q is not a credential name: use letters, digits and _ only", f.where, f.name)
+		}
+	}
+	return nil
 }
 
 // staticCredentialRefs lists the credential names the runtime reads for the
@@ -298,24 +391,7 @@ func staticCredentialRefs(auth AuthConfig) []credentialRef {
 		add("auth.service_account_credential", auth.ServiceAccountCredential)
 	case authTypeSession:
 		if auth.Login != nil {
-			var walk func(v any)
-			walk = func(v any) {
-				switch val := v.(type) {
-				case string:
-					if name, ok := strings.CutPrefix(val, "credential:"); ok {
-						add("auth.login.body", name)
-					}
-				case map[string]any:
-					for _, child := range val {
-						walk(child)
-					}
-				case []any:
-					for _, child := range val {
-						walk(child)
-					}
-				}
-			}
-			walk(auth.Login.Body)
+			walkCredentialRefs(auth.Login.Body, func(name string) { add("auth.login.body", name) })
 		}
 	}
 	return refs
@@ -353,11 +429,19 @@ func absoluteURLHost(raw string) (string, bool) {
 func CheckScope(spec *Spec, creds *CredentialScope, hosts *HostScope) error {
 	var violations []ScopeViolation
 	for _, ref := range staticCredentialRefs(spec.Backend.Auth) {
-		if !creds.Allows(ref.name) {
+		if !validCredentialName(ref.name) {
+			// Parse refuses such a name; a spec built in code gets here.
 			violations = append(violations, ScopeViolation{
 				Rule: RuleCredentialNamespace,
-				What: fmt.Sprintf("%s %q", ref.where, ref.name),
-				Fix:  fmt.Sprintf("credentials: [%s]", ref.name),
+				What: fmt.Sprintf("%s %q is not a credential name", ref.where, ref.name),
+			})
+			continue
+		}
+		if !creds.Allows(ref.name) {
+			violations = append(violations, ScopeViolation{
+				Rule:       RuleCredentialNamespace,
+				What:       fmt.Sprintf("%s %q", ref.where, ref.name),
+				Credential: strings.ToLower(ref.name),
 			})
 		}
 	}
@@ -369,7 +453,7 @@ func CheckScope(spec *Spec, creds *CredentialScope, hosts *HostScope) error {
 		violations = append(violations, ScopeViolation{
 			Rule: RuleHostBinding,
 			What: fmt.Sprintf("%s host %q", where, host),
-			Fix:  fmt.Sprintf("allowed_hosts: [%s]", normalizeHost(host)),
+			Host: normalizeHost(host),
 		})
 	}
 	checkURL("base_url", spec.Backend.BaseURL)

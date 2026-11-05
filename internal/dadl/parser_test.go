@@ -352,7 +352,7 @@ backend:
   description: "Test API"
   auth:
     type: bearer
-    credential: my-token
+    credential: my_token
     inject_into: header
     header_name: Authorization
     prefix: "Bearer "

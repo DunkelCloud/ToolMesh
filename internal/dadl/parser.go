@@ -348,6 +348,12 @@ func Validate(spec *Spec) error {
 		}
 	}
 
+	// Credential names reach environment variable names, error messages and
+	// suggested backends.yaml lines, so they are plain identifiers.
+	if err := validateCredentialNames(b.Auth); err != nil {
+		return err
+	}
+
 	// Validate default pagination
 	if b.Defaults.Pagination != nil {
 		if err := validatePagination(b.Defaults.Pagination, "defaults.pagination"); err != nil {

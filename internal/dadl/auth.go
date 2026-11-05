@@ -111,8 +111,16 @@ type RestAuth struct {
 }
 
 // NewRestAuth creates a RestAuth handler for the given auth configuration.
+//
+// Token and login requests never follow redirects: they carry client secrets,
+// refresh tokens or login credentials in the body, and a 307/308 would re-send
+// that body to wherever the redirect points. They use Go's default transport
+// until the owner installs its own with SetTransport.
 func NewRestAuth(config AuthConfig, baseURL string, creds credentials.CredentialStore, logger *slog.Logger) *RestAuth {
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := &http.Client{
+		Timeout:       30 * time.Second,
+		CheckRedirect: refuseAuthRedirect,
+	}
 
 	var jar *resettableJar
 	if config.Type == authTypeSession {
@@ -129,6 +137,22 @@ func NewRestAuth(config AuthConfig, baseURL string, creds credentials.Credential
 		httpClient:    client,
 		cookieJar:     jar,
 		sessionTokens: make(map[string]string),
+	}
+}
+
+// refuseAuthRedirect is the CheckRedirect policy for token and login
+// requests: no redirect is followed. The error names only the target host.
+func refuseAuthRedirect(req *http.Request, _ []*http.Request) error {
+	return fmt.Errorf("redirect to %s refused: token and login requests do not follow redirects", req.URL.Host)
+}
+
+// SetTransport sets the transport for token and login requests. The REST
+// adapter passes the transport of its own backend client, so these requests
+// get the same SSRF dial checks and TLS settings as tool calls. Call it before
+// the first request; a nil transport keeps the current one.
+func (a *RestAuth) SetTransport(rt http.RoundTripper) {
+	if rt != nil {
+		a.httpClient.Transport = rt
 	}
 }
 
@@ -479,7 +503,10 @@ func (a *RestAuth) doSessionLogin(ctx context.Context) error {
 		return fmt.Errorf("session auth requires login config")
 	}
 
-	loginURL := a.baseURL + a.config.Login.Path
+	loginURL, err := sessionLoginURL(a.baseURL, a.config.Login.Path)
+	if err != nil {
+		return err
+	}
 
 	// Resolve credential references anywhere in the (possibly nested) login body.
 	// Body is map[string]any, so a JSON-RPC-style login can nest credentials inside
@@ -540,6 +567,28 @@ func (a *RestAuth) doSessionLogin(ctx context.Context) error {
 	a.sessionTokenTTL = time.Now().Add(defaultSessionTTL)
 	a.logger.Info("session login successful", "tokens", len(a.sessionTokens), "ttl", defaultSessionTTL)
 	return nil
+}
+
+// sessionLoginURL appends the login path to the base URL, as the DADL spec
+// describes, and verifies that the result still points at the base URL's
+// scheme and host. Plain concatenation would let a path such as
+// "@attacker.example/x" or ".attacker.example/x" move the login request, and
+// the credentials in its body, to another host when base_url has no path.
+func sessionLoginURL(baseURL, loginPath string) (string, error) {
+	base, err := url.Parse(baseURL)
+	if err != nil {
+		return "", fmt.Errorf("session login: parse base_url: %w", err)
+	}
+	joined := baseURL + loginPath
+	u, err := url.Parse(joined)
+	if err != nil {
+		return "", fmt.Errorf("session login: parse login URL: %w", err)
+	}
+	if u.User != nil || !strings.EqualFold(u.Scheme, base.Scheme) || !strings.EqualFold(u.Host, base.Host) ||
+		!strings.HasPrefix(u.Path, base.Path) {
+		return "", fmt.Errorf("session login: login.path %q does not stay on the base_url host %s; it must start with \"/\"", loginPath, base.Host)
+	}
+	return joined, nil
 }
 
 // resolveLoginCredentials walks a session-login body and replaces any string of

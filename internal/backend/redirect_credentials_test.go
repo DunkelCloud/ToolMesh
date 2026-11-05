@@ -246,3 +246,52 @@ func TestBackendRedirectChecker(t *testing.T) {
 		}
 	})
 }
+
+// TestRESTAdapter_TokenRequestUsesSSRFTransport pins that OAuth2 token
+// requests go through the adapter's SSRF-safe transport: with
+// allow_private_url off, a token_url on a loopback address is not contacted.
+func TestRESTAdapter_TokenRequestUsesSSRFTransport(t *testing.T) {
+	var hits int32
+	var mu sync.Mutex
+	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		mu.Lock()
+		hits++
+		mu.Unlock()
+		w.Header().Set(testHeaderContentType, testContentTypeJSON)
+		_, _ = w.Write([]byte(`{"access_token":"t","expires_in":3600}`))
+	}))
+	defer tokenSrv.Close()
+
+	spec := &dadl.Spec{
+		Spec: testDADLSpecURL,
+		Backend: dadl.BackendDef{
+			Name: testBackendNameAPI,
+			Type: transportTypeREST,
+			// A public IP literal passes base_url validation without DNS.
+			BaseURL: "https://93.184.215.14",
+			Auth: dadl.AuthConfig{
+				Type:                   "oauth2",
+				TokenURL:               tokenSrv.URL + "/token",
+				ClientIDCredential:     "cid",
+				ClientSecretCredential: redirectTestCredential,
+			},
+			Tools: map[string]dadl.ToolDef{
+				"get_thing": {Method: testMethodGET, Path: redirectTestPath},
+			},
+		},
+	}
+	creds := &testCredStore{creds: map[string]string{"cid": "id", redirectTestCredential: redirectTestSecret}}
+	a, err := NewRESTAdapter(spec, creds, slog.Default(), RESTAdapterOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := a.Execute(context.Background(), "get_thing", nil)
+	if err == nil && (result == nil || !result.IsError) {
+		t.Fatal("expected the call to fail: the token endpoint is on a private address")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if hits != 0 {
+		t.Errorf("token endpoint on a private address was contacted %d times", hits)
+	}
+}

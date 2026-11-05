@@ -172,6 +172,10 @@ func NewRESTAdapter(spec *dadl.Spec, creds credentials.CredentialStore, logger *
 	// skipped in both the dialer and redirect handler.
 	transport := SSRFSafeTransport(defaultHTTPTimeout, opts.AllowPrivateURL, opts.TLSSkipVerify)
 	streamTransport := SSRFSafeTransport(defaultStreamingHTTPTimeout, opts.AllowPrivateURL, opts.TLSSkipVerify)
+	// OAuth2 token and session login requests go through the same SSRF-safe
+	// transport (and TLS settings) as tool calls; RestAuth itself refuses
+	// every redirect for them.
+	auth.SetTransport(transport)
 	// Backend requests carry injected credentials (headers or query string), so
 	// their redirects leaving the original origin drop those credentials, never
 	// downgrade to http and never re-send a body. This holds independently of

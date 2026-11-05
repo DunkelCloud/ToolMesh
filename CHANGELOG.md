@@ -13,6 +13,18 @@ for the full narrative and details.
 
 ### Security
 
+- With `allow_private_url`, private addresses stay reachable only for the
+  destinations the configuration names (`base_url`, `token_url`, absolute
+  tool paths), not for redirect targets.
+- A redirect chain that left the origin keeps credentials stripped also on
+  a hop back; tool paths with a placeholder in the host are refused.
+- The login confirmation is never shown pre-ticked; revocation also ends the
+  pair of an expired access token; a password change ends the user's OAuth
+  sessions; redirect URIs with a fragment, without authority or with a
+  non-ASCII host are refused.
+- DADL arguments reach the gate as the API receives them: defaults filled
+  in, numeric strings as numbers, only plain decimal strings accepted.
+
 - Composite `api.*` child calls keep their authorization and pre-execution
   gate after a reload of `backends.yaml`; a REST adapter without that guard
   refuses child calls.

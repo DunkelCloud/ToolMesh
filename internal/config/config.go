@@ -17,6 +17,7 @@ package config
 
 import (
 	"fmt"
+	"net/netip"
 	"net/url"
 	"os"
 	"runtime"
@@ -188,6 +189,12 @@ type Config struct {
 	// CORS
 	CORSAllowedOrigins []string // TOOLMESH_CORS_ORIGINS, comma-separated allowlist
 
+	// TrustedProxies lists the networks whose X-Forwarded-For header is
+	// honored when working out a client's address. nil means the default
+	// (loopback and private ranges, see auth.DefaultTrustedProxies); an
+	// empty list ("none") honors no X-Forwarded-For at all.
+	TrustedProxies []netip.Prefix // TOOLMESH_TRUSTED_PROXIES, comma-separated CIDRs or addresses
+
 	// OAuthRedirectHosts, when non-empty, restricts the redirect_uri hosts an
 	// OAuth client may register at /register and use at /authorize. Entries
 	// are host names ("claude.ai") or "*.example.com" for any subdomain.
@@ -316,6 +323,9 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 	if err := cfg.loadDCRClientTTL(); err != nil {
+		return nil, err
+	}
+	if err := cfg.loadTrustedProxies(); err != nil {
 		return nil, err
 	}
 
@@ -458,6 +468,46 @@ func (c *Config) loadFileBroker() error {
 		}
 		*l.dst = n
 	}
+	return nil
+}
+
+// loadTrustedProxies reads TOOLMESH_TRUSTED_PROXIES: comma-separated CIDRs
+// or single addresses, or "none". Unset leaves TrustedProxies nil, which
+// selects the default networks.
+func (c *Config) loadTrustedProxies() error {
+	raw := strings.TrimSpace(envStr("TOOLMESH_TRUSTED_PROXIES", ""))
+	switch strings.ToLower(raw) {
+	case "":
+		c.TrustedProxies = nil
+		return nil
+	case "none":
+		c.TrustedProxies = []netip.Prefix{}
+		return nil
+	}
+	var out []netip.Prefix
+	for _, item := range strings.Split(raw, ",") {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		if strings.Contains(item, "/") {
+			p, err := netip.ParsePrefix(item)
+			if err != nil {
+				return fmt.Errorf("invalid TOOLMESH_TRUSTED_PROXIES entry %q: %w", item, err)
+			}
+			out = append(out, p.Masked())
+			continue
+		}
+		a, err := netip.ParseAddr(item)
+		if err != nil {
+			return fmt.Errorf("invalid TOOLMESH_TRUSTED_PROXIES entry %q: %w", item, err)
+		}
+		out = append(out, netip.PrefixFrom(a, a.BitLen()))
+	}
+	if out == nil {
+		out = []netip.Prefix{}
+	}
+	c.TrustedProxies = out
 	return nil
 }
 

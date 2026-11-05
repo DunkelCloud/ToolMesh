@@ -411,6 +411,19 @@ func main() {
 		logger.Info("loaded caller-classes config", "path", cfg.CallerClassesConfigPath)
 	}
 
+	// X-Forwarded-For is honored only from these networks (client address
+	// for the login throttle, registration limit and logs).
+	auth.SetTrustedProxies(cfg.TrustedProxies)
+	if cfg.TrustedProxies == nil {
+		logger.Info("X-Forwarded-For honored from loopback and private networks (default)")
+	} else {
+		proxies := make([]string, 0, len(cfg.TrustedProxies))
+		for _, p := range cfg.TrustedProxies {
+			proxies = append(proxies, p.String())
+		}
+		logger.Info("X-Forwarded-For honored from configured proxies", "trusted_proxies", proxies)
+	}
+
 	// Initialize MCP handler and server
 	mcpHandler := mcp.NewHandler(exec, compositeBackend, coercer, rawTS, metricsReg, logger, cfg.DebugTools)
 	mcpHandler.SetCodeTimeout(time.Duration(cfg.CodeTimeout) * time.Second)

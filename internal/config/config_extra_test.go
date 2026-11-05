@@ -15,6 +15,7 @@
 package config
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -42,5 +43,48 @@ func TestEnvInt_Invalid(t *testing.T) {
 	t.Setenv("TEST_INVALID_INT", "not-a-number")
 	if got := envInt("TEST_INVALID_INT", 42); got != 42 {
 		t.Errorf("got %d", got)
+	}
+}
+
+func TestLoad_TrustedProxies(t *testing.T) {
+	cases := []struct {
+		env     string
+		want    []string // nil = default
+		wantErr bool
+	}{
+		{"", nil, false},
+		{"none", []string{}, false},
+		{"10.1.0.0/16, 203.0.113.7", []string{"10.1.0.0/16", "203.0.113.7/32"}, false},
+		{"2001:db8::1", []string{"2001:db8::1/128"}, false},
+		{"10.1.2.3/16", []string{"10.1.0.0/16"}, false},
+		{"not-an-ip", nil, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.env, func(t *testing.T) {
+			t.Setenv("TOOLMESH_TRUSTED_PROXIES", tc.env)
+			cfg, err := Load()
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("expected an error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.want == nil {
+				if cfg.TrustedProxies != nil {
+					t.Errorf("TrustedProxies = %v, want nil (default)", cfg.TrustedProxies)
+				}
+				return
+			}
+			got := make([]string, 0, len(cfg.TrustedProxies))
+			for _, p := range cfg.TrustedProxies {
+				got = append(got, p.String())
+			}
+			if cfg.TrustedProxies == nil || strings.Join(got, ",") != strings.Join(tc.want, ",") {
+				t.Errorf("TrustedProxies = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }

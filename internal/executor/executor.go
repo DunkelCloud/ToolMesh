@@ -393,6 +393,10 @@ func (e *Executor) ExecuteTool(ctx context.Context, req ExecuteToolRequest) (*ba
 
 	result, err := e.backend.Execute(execCtx, req.ToolName, req.Params)
 	if err != nil {
+		// A transport error can carry the request URL, and with it a
+		// query-injected credential; never let that reach the audit log or
+		// the caller.
+		err = backend.RedactURLErrors(err)
 		e.logger.DebugContext(ctx, "backend execution failed", "tool", req.ToolName, "error", err)
 		entry.DurationMs = time.Since(start).Milliseconds()
 		entry.Status = statusError

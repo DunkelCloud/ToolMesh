@@ -727,7 +727,7 @@ func (a *RESTAdapter) Healthy(ctx context.Context) error {
 
 	resp, err := a.httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("health check failed: %w", err)
+		return fmt.Errorf("health check failed: %w", redactTransportError(err))
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -833,7 +833,7 @@ func (a *RESTAdapter) doRequest(ctx context.Context, tool *dadl.ToolDef, params 
 
 	resp, err := a.httpClient.Do(req)
 	if err != nil {
-		return nil, nil, fmt.Errorf("http request: %w", err)
+		return nil, nil, fmt.Errorf("http request: %w", redactTransportError(err))
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -1764,7 +1764,7 @@ func (a *RESTAdapter) doRequestRaw(ctx context.Context, tool *dadl.ToolDef, para
 
 	resp, err := a.streamingHTTPClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("http request: %w", err)
+		return nil, fmt.Errorf("http request: %w", redactTransportError(err))
 	}
 	return resp, nil
 }

@@ -16,9 +16,12 @@ package executor
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -124,6 +127,42 @@ func TestExecuteTool_BackendError(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected error from backend, got nil")
+	}
+}
+
+// TestExecuteTool_BackendErrorRedactsURL pins that a transport error carrying
+// a request URL with a query-injected credential reaches neither the audit
+// entry nor the caller with that URL's query.
+func TestExecuteTool_BackendErrorRedactsURL(t *testing.T) {
+	const secret = "query-key-value" //nolint:gosec // test fixture, not a credential
+	mb := &mockBackend{
+		executeFunc: func(_ context.Context, _ string, _ map[string]any) (*backend.ToolResult, error) {
+			return nil, fmt.Errorf("http request: %w", &url.Error{
+				Op:  "Get",
+				URL: "https://api.example.com/v1/items?api_key=" + secret,
+				Err: errors.New("connection reset by peer"),
+			})
+		},
+	}
+	rec := &recordingAudit{}
+	exec := New(nil, nil, mb, nil, rec, 30*time.Second, newTestLogger(), nil, nil)
+	ctx := userctx.WithUserContext(context.Background(), &userctx.UserContext{
+		UserID:        testUserID,
+		Authenticated: true,
+	})
+
+	_, err := exec.ExecuteTool(ctx, ExecuteToolRequest{ToolName: testToolDirect})
+	if err == nil {
+		t.Fatal("expected error from backend, got nil")
+	}
+	if strings.Contains(err.Error(), secret) {
+		t.Errorf("returned error contains the credential: %v", err)
+	}
+	if strings.Contains(rec.last.Error, secret) {
+		t.Errorf("audit entry contains the credential: %s", rec.last.Error)
+	}
+	if !strings.Contains(rec.last.Error, "https://api.example.com") {
+		t.Errorf("audit entry should keep the backend origin: %s", rec.last.Error)
 	}
 }
 

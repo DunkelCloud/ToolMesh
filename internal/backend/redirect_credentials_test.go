@@ -32,6 +32,7 @@ const (
 	redirectTestPath       = "/thing"
 	redirectTestHeader     = "PRIVATE-TOKEN"
 	redirectTestAuthType   = "apikey"
+	redirectTestTool       = "get_thing"
 )
 
 // headerRecorder is an upstream that records the headers of the last request
@@ -67,7 +68,7 @@ func redirectTestAdapter(t *testing.T, baseURL string, auth dadl.AuthConfig) *RE
 			BaseURL: baseURL,
 			Auth:    auth,
 			Tools: map[string]dadl.ToolDef{
-				"get_thing": {Method: testMethodGET, Path: redirectTestPath},
+				redirectTestTool: {Method: testMethodGET, Path: redirectTestPath},
 				"post_thing": {Method: "POST", Path: redirectTestPath, Params: map[string]dadl.ParamDef{
 					"name": {Type: schemaTypeString, In: paramInBody},
 				}},
@@ -107,7 +108,7 @@ func TestRESTAdapter_RedirectDropsCredentialsAcrossOrigins(t *testing.T) {
 			defer origin.Close()
 
 			a := redirectTestAdapter(t, origin.URL, tc.auth)
-			result, err := a.Execute(context.Background(), "get_thing", nil)
+			result, err := a.Execute(context.Background(), redirectTestTool, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -146,7 +147,7 @@ func TestRESTAdapter_RedirectSameOriginKeepsCredential(t *testing.T) {
 	defer srv.Close()
 
 	a := redirectTestAdapter(t, srv.URL, dadl.AuthConfig{Type: redirectTestAuthType, Credential: redirectTestCredential, HeaderName: redirectTestHeader})
-	result, err := a.Execute(context.Background(), "get_thing", nil)
+	result, err := a.Execute(context.Background(), redirectTestTool, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -276,7 +277,7 @@ func TestRESTAdapter_TokenRequestUsesSSRFTransport(t *testing.T) {
 				ClientSecretCredential: redirectTestCredential,
 			},
 			Tools: map[string]dadl.ToolDef{
-				"get_thing": {Method: testMethodGET, Path: redirectTestPath},
+				redirectTestTool: {Method: testMethodGET, Path: redirectTestPath},
 			},
 		},
 	}
@@ -285,7 +286,7 @@ func TestRESTAdapter_TokenRequestUsesSSRFTransport(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := a.Execute(context.Background(), "get_thing", nil)
+	result, err := a.Execute(context.Background(), redirectTestTool, nil)
 	if err == nil && (result == nil || !result.IsError) {
 		t.Fatal("expected the call to fail: the token endpoint is on a private address")
 	}

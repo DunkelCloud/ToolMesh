@@ -86,8 +86,10 @@ var reservedNets = func() []*net.IPNet {
 		"203.0.113.0/24",  // documentation (TEST-NET-3)
 		"224.0.0.0/4",     // multicast
 		"240.0.0.0/4",     // reserved, includes 255.255.255.255
+		"::/96",           // deprecated IPv4-compatible addresses (::a.b.c.d)
 		"100::/64",        // discard-only
 		"2001:db8::/32",   // documentation
+		"fec0::/10",       // deprecated site-local
 		"ff00::/8",        // multicast
 	}
 	out := make([]*net.IPNet, 0, len(cidrs))

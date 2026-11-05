@@ -20,6 +20,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -209,5 +210,19 @@ func TestSessionLoginURL_Forms(t *testing.T) {
 		if err != nil || got != c.wantURL {
 			t.Errorf("%s: sessionLoginURL(%q, %q) = %q, %v; want %q", c.name, c.base, c.path, got, err, c.wantURL)
 		}
+	}
+}
+
+// TestRestAuth_CookieJarRefusesPublicSuffixCookies pins that a login
+// response cannot set a cookie for a whole public suffix, which the jar would
+// then send to every other host under it.
+func TestRestAuth_CookieJarRefusesPublicSuffixCookies(t *testing.T) {
+	auth := NewRestAuth(AuthConfig{Type: authTypeSession}, "https://api.example.co.uk", mapCreds{}, slog.Default())
+	jar := auth.CookieJar()
+	from, _ := url.Parse("https://api.example.co.uk/login")
+	jar.SetCookies(from, []*http.Cookie{{Name: "session", Value: "s", Domain: "co.uk", Path: "/"}}) //nolint:gosec // test cookie, attributes irrelevant
+	other, _ := url.Parse("https://unrelated.co.uk/")
+	if got := jar.Cookies(other); len(got) != 0 {
+		t.Errorf("cookie for the public suffix co.uk reached another host: %v", got)
 	}
 }

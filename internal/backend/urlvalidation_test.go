@@ -94,6 +94,10 @@ func TestIsPrivateIP(t *testing.T) {
 		{"ff02::1", true},
 		{"2001:db8::1", true},
 		{"2606:4700:4700::1111", false},
+		{"::10.0.0.1", true},  // IPv4-compatible
+		{"::127.0.0.1", true}, // IPv4-compatible
+		{"::8.8.8.8", true},   // IPv4-compatible, never a valid destination
+		{"fec0::1", true},     // site-local
 	}
 	for _, tt := range tests {
 		t.Run(tt.ip, func(t *testing.T) {

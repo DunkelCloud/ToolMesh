@@ -30,6 +30,8 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/net/publicsuffix"
+
 	"github.com/DunkelCloud/ToolMesh/internal/credentials"
 )
 
@@ -58,7 +60,7 @@ func (r *resettableJar) Cookies(u *url.URL) []*http.Cookie {
 func (r *resettableJar) Reset() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.jar, _ = cookiejar.New(nil)
+	r.jar, _ = cookiejar.New(&cookiejar.Options{PublicSuffixList: publicsuffix.List})
 }
 
 // AuthConfig.Type values.
@@ -124,7 +126,10 @@ func NewRestAuth(config AuthConfig, baseURL string, creds credentials.Credential
 
 	var jar *resettableJar
 	if config.Type == authTypeSession {
-		inner, _ := cookiejar.New(nil)
+		// The public suffix list keeps a login response from setting a
+		// cookie for a whole public suffix (e.g. ".co.uk"), which the
+		// jar would then send to every host under it.
+		inner, _ := cookiejar.New(&cookiejar.Options{PublicSuffixList: publicsuffix.List})
 		jar = &resettableJar{jar: inner}
 		client.Jar = jar
 	}

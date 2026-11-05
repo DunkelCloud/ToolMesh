@@ -189,8 +189,8 @@ func (a *RestAuth) checkHost(rawURL string) error {
 	if err != nil {
 		return fmt.Errorf("credentials not sent: parse %q: %w", rawURL, err)
 	}
-	if !a.hostScope.Allows(u.Hostname()) {
-		return fmt.Errorf("credentials are not sent to host %s: it is not one of the backend's hosts (allowed_hosts in backends.yaml)", u.Hostname())
+	if d := a.hostScope.check(u.Scheme, u.Hostname(), u.Port()); !d.ok {
+		return fmt.Errorf("credentials are not sent to %s://%s: %s (allowed_hosts in backends.yaml)", u.Scheme, u.Host, d.reason)
 	}
 	return nil
 }

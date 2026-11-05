@@ -262,68 +262,249 @@ func (s *scopedStore) Healthy(ctx context.Context) error {
 	return s.inner.Healthy(ctx)
 }
 
-// HostScope is the set of hosts a backend's credentials may be sent to:
-// the host of the effective base_url, every host of its registrable domain
-// (eTLD+1 by the public suffix list), and the hosts of the backends.yaml
-// entry's allowed_hosts: list ("api.example.com" or "*.example.com"). The
-// effective base_url is the backends.yaml url when the entry sets one.
+// HostScope is the set of destinations a backend's credentials may be sent
+// to. The effective base_url (the backends.yaml url when the entry sets
+// one) decides:
+//   - its host, on its port only;
+//   - the other hosts of its registrable domain (eTLD+1 by the public
+//     suffix list), on the default port of the scheme only;
+//   - the entries of the backends.yaml allowed_hosts: list: "host",
+//     "*.domain" (any depth below it) or "[ipv6]", on the default port of
+//     the scheme, or with ":port" on that port only;
+//   - with an https base_url, https only: no credential leaves over http.
 type HostScope struct {
-	hosts     map[string]bool
-	domains   map[string]bool
-	wildcards []string // ".example.com" for "*.example.com"
+	httpsOnly bool
+	baseHost  string
+	basePort  string
+	domain    string // registrable domain of baseHost, "" for none
+	rules     []hostRule
+}
+
+// hostRule is one allowed_hosts: entry.
+type hostRule struct {
+	host     string // canonical host; for a wildcard the suffix with its dot
+	wildcard bool
+	port     string // "" for the default port of the scheme
+}
+
+// matches reports whether the canonical host h is the rule's host.
+func (r hostRule) matches(h string) bool {
+	if r.wildcard {
+		return strings.HasSuffix(h, r.host)
+	}
+	return h == r.host
+}
+
+// Schemes a credential may be sent with.
+const (
+	schemeHTTP  = "http"
+	schemeHTTPS = "https"
+)
+
+// defaultPort returns the port a URL of scheme uses without one, or "" for
+// a scheme credentials are never sent with.
+func defaultPort(scheme string) string {
+	switch scheme {
+	case schemeHTTPS:
+		return "443"
+	case schemeHTTP:
+		return "80"
+	}
+	return ""
 }
 
 // NewHostScope builds the host scope for a backend whose effective base URL
-// is baseURL; allowed is the entry's allowed_hosts: list.
+// is baseURL; allowed is the entry's allowed_hosts: list. An allowed_hosts
+// entry that is not a host, "*.domain" or one of them with ":port" is a
+// configuration error: a scheme, a path or other text would otherwise match
+// no destination, silently.
 func NewHostScope(baseURL string, allowed []string) (*HostScope, error) {
 	u, err := url.Parse(baseURL)
 	if err != nil || u.Hostname() == "" {
 		return nil, fmt.Errorf("base_url %q has no host", baseURL)
 	}
-	s := &HostScope{hosts: map[string]bool{}, domains: map[string]bool{}}
-	base := normalizeHost(u.Hostname())
-	s.hosts[base] = true
-	if d := registrableDomain(base); d != "" {
-		s.domains[d] = true
+	scheme := strings.ToLower(u.Scheme)
+	if defaultPort(scheme) == "" {
+		return nil, fmt.Errorf("base_url %q is not an http or https URL", baseURL)
 	}
+	s := &HostScope{
+		httpsOnly: scheme == schemeHTTPS,
+		baseHost:  canonicalHost(u.Hostname()),
+		basePort:  u.Port(),
+	}
+	if s.basePort == "" {
+		s.basePort = defaultPort(scheme)
+	}
+	s.domain = registrableDomain(s.baseHost)
 	for _, a := range allowed {
-		a = normalizeHost(strings.TrimSpace(a))
-		if suffix, ok := strings.CutPrefix(a, "*."); ok && suffix != "" {
-			s.wildcards = append(s.wildcards, "."+suffix)
-			continue
+		r, err := parseAllowedHost(a)
+		if err != nil {
+			return nil, err
 		}
-		if a != "" {
-			s.hosts[a] = true
-		}
+		s.rules = append(s.rules, r)
 	}
 	return s, nil
 }
 
-// Allows reports whether credentials may be sent to host. A nil scope
-// allows every host.
-func (s *HostScope) Allows(host string) bool {
+// hostLabelRe is one label of a host name.
+var hostLabelRe = regexp.MustCompile(`^[a-z0-9_]([a-z0-9_-]*[a-z0-9_])?$`)
+
+// parseAllowedHost parses one allowed_hosts: entry: "host", "*.domain",
+// "[ipv6]" or a bare IPv6 address, each but the last optionally with
+// ":port".
+func parseAllowedHost(entry string) (hostRule, error) {
+	bad := func(why string) (hostRule, error) {
+		return hostRule{}, fmt.Errorf("allowed_hosts: entry %q %s: write a host name, *.domain or either with :port", entry, why)
+	}
+	host := strings.TrimSpace(entry)
+	switch {
+	case host == "":
+		return bad("is empty")
+	case strings.Contains(host, "://"):
+		return bad("has a scheme")
+	case strings.ContainsAny(host, "/?#@%\\ \t"):
+		return bad("is not a host")
+	}
+	var r hostRule
+	if rest, ok := strings.CutPrefix(host, "*."); ok {
+		r.wildcard, host = true, rest
+	}
+	switch {
+	case strings.HasPrefix(host, "["):
+		end := strings.Index(host, "]")
+		if end < 0 {
+			return bad("is not a host")
+		}
+		if rest := host[end+1:]; rest != "" {
+			p, ok := strings.CutPrefix(rest, ":")
+			if !ok {
+				return bad("is not a host")
+			}
+			r.port = p
+		}
+		host = host[1:end]
+		if _, err := netip.ParseAddr(host); err != nil {
+			return bad("is not an IP address in brackets")
+		}
+	case strings.Count(host, ":") == 1:
+		host, r.port, _ = strings.Cut(host, ":")
+	case strings.Count(host, ":") > 1:
+		if _, err := netip.ParseAddr(host); err != nil {
+			return bad("is not a host")
+		}
+	}
+	if r.port != "" {
+		if n, err := strconv.Atoi(r.port); err != nil || n < 1 || n > 65535 || strconv.Itoa(n) != r.port {
+			return bad("has an invalid port")
+		}
+	}
+	host = canonicalHost(host)
+	if _, err := netip.ParseAddr(host); err == nil {
+		if r.wildcard {
+			return bad("puts a wildcard on an IP address")
+		}
+	} else {
+		for _, label := range strings.Split(host, ".") {
+			if !hostLabelRe.MatchString(label) {
+				return bad("is not a host name")
+			}
+		}
+	}
+	r.host = host
+	if r.wildcard {
+		r.host = "." + host
+	}
+	return r, nil
+}
+
+// hostDecision is the verdict of a HostScope on one destination.
+type hostDecision struct {
+	ok bool
+	// reason says why credentials may not go there.
+	reason string
+	// allow is the allowed_hosts: entry that would allow it, or "" when
+	// none can (a downgrade to http, a scheme other than http(s)).
+	allow string
+}
+
+// check decides whether credentials may be sent to scheme://host:port; port
+// "" is the default port of scheme. A nil scope allows everything.
+func (s *HostScope) check(scheme, host, port string) hostDecision {
+	if s == nil {
+		return hostDecision{ok: true}
+	}
+	scheme = strings.ToLower(scheme)
+	dp := defaultPort(scheme)
+	if dp == "" {
+		return hostDecision{reason: fmt.Sprintf("scheme %q is not http or https", scheme)}
+	}
+	if s.httpsOnly && scheme != schemeHTTPS {
+		return hostDecision{reason: "it uses http while base_url uses https"}
+	}
+	h := canonicalHost(host)
+	if h == "" {
+		return hostDecision{reason: "it has no host"}
+	}
+	p := port
+	if p == "" {
+		p = dp
+	}
+	if h == s.baseHost && p == s.basePort {
+		return hostDecision{ok: true}
+	}
+	for _, r := range s.rules {
+		if r.matches(h) && (r.port == p || (r.port == "" && p == dp)) {
+			return hostDecision{ok: true}
+		}
+	}
+	sameDomain := s.domain != "" && registrableDomain(h) == s.domain
+	if h != s.baseHost && sameDomain && p == dp {
+		return hostDecision{ok: true}
+	}
+	allow := hostEntry(h, p, dp)
+	if h == s.baseHost || sameDomain {
+		return hostDecision{reason: fmt.Sprintf("port %s of host %q is not the backend's port", p, h), allow: allow}
+	}
+	return hostDecision{reason: fmt.Sprintf("host %q is outside the backend's hosts", h), allow: allow}
+}
+
+// hostEntry is the allowed_hosts: entry for host h on port p.
+func hostEntry(h, p, defaultP string) string {
+	if strings.Contains(h, ":") {
+		h = "[" + h + "]"
+	}
+	if p != defaultP {
+		return h + ":" + p
+	}
+	return h
+}
+
+// Allows reports whether credentials may be sent to the URL raw. A nil
+// scope allows every URL.
+func (s *HostScope) Allows(raw string) bool {
 	if s == nil {
 		return true
 	}
-	h := normalizeHost(host)
-	if h == "" {
+	u, err := url.Parse(raw)
+	if err != nil {
 		return false
 	}
-	if s.hosts[h] {
-		return true
-	}
-	for _, w := range s.wildcards {
-		if strings.HasSuffix(h, w) {
-			return true
-		}
-	}
-	d := registrableDomain(h)
-	return d != "" && s.domains[d]
+	return s.check(u.Scheme, u.Hostname(), u.Port()).ok
 }
 
 // normalizeHost lower-cases a host name and drops a trailing dot.
 func normalizeHost(h string) string {
 	return strings.TrimSuffix(strings.ToLower(h), ".")
+}
+
+// canonicalHost is normalizeHost, and for an IP address its canonical
+// text, so every spelling of one address compares equal.
+func canonicalHost(h string) string {
+	h = normalizeHost(h)
+	if addr, err := netip.ParseAddr(h); err == nil {
+		return addr.String()
+	}
+	return h
 }
 
 // registrableDomain returns the eTLD+1 of a host name, or "" for an IP
@@ -540,17 +721,17 @@ func staticCredentialRefs(auth AuthConfig) []credentialRef {
 	return refs
 }
 
-// absoluteURLHost returns the host of raw when it is an absolute http(s)
-// URL, judged by its "scheme://authority" part alone so that placeholders
-// in the path do not matter.
-func absoluteURLHost(raw string) (string, bool) {
+// absoluteURLOrigin returns the scheme and authority of raw when it is an
+// absolute http(s) URL, judged by its "scheme://authority" part alone so
+// that placeholders in the path do not matter.
+func absoluteURLOrigin(raw string) (*url.URL, bool) {
 	i := strings.Index(raw, "://")
 	if i < 0 {
-		return "", false
+		return nil, false
 	}
 	scheme := strings.ToLower(raw[:i])
-	if scheme != "http" && scheme != "https" {
-		return "", false
+	if defaultPort(scheme) == "" {
+		return nil, false
 	}
 	authority := raw[i+3:]
 	if j := strings.IndexAny(authority, "/?#"); j >= 0 {
@@ -558,9 +739,9 @@ func absoluteURLHost(raw string) (string, bool) {
 	}
 	u, err := url.Parse(scheme + "://" + authority)
 	if err != nil || u.Hostname() == "" {
-		return "", false
+		return nil, false
 	}
-	return u.Hostname(), true
+	return u, true
 }
 
 // CheckScope checks everything the DADL names statically against the
@@ -591,14 +772,18 @@ func CheckScope(spec *Spec, creds *CredentialScope, hosts *HostScope) error {
 		}
 	}
 	checkURL := func(where, raw string) {
-		host, ok := absoluteURLHost(raw)
-		if !ok || hosts.Allows(host) {
+		u, ok := absoluteURLOrigin(raw)
+		if !ok {
+			return
+		}
+		d := hosts.check(u.Scheme, u.Hostname(), u.Port())
+		if d.ok {
 			return
 		}
 		violations = append(violations, ScopeViolation{
 			Rule: RuleHostBinding,
-			What: fmt.Sprintf("%s host %q", where, host),
-			Host: normalizeHost(host),
+			What: fmt.Sprintf("%s %s://%s: %s", where, u.Scheme, u.Host, d.reason),
+			Host: d.allow,
 		})
 	}
 	checkURL("base_url", spec.Backend.BaseURL)

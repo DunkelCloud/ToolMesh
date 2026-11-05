@@ -76,7 +76,7 @@ func TestHostScope(t *testing.T) {
 		{"", false},
 	}
 	for _, c := range cases {
-		if got := s.Allows(c.host); got != c.want {
+		if got := s.Allows("https://" + c.host + "/x"); got != c.want {
 			t.Errorf("Allows(%q) = %v, want %v", c.host, got, c.want)
 		}
 	}
@@ -86,7 +86,7 @@ func TestHostScope(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !ip.Allows("10.0.0.5") || ip.Allows("192.168.0.5") || ip.Allows("10.0.0.6") {
+	if !ip.Allows("http://10.0.0.5:8080/x") || ip.Allows("http://192.168.0.5:8080/x") || ip.Allows("http://10.0.0.6:8080/x") {
 		t.Error("IP base_url: only the address itself may be allowed")
 	}
 	// googleapis.com is a public suffix (private section of the list): its
@@ -95,7 +95,7 @@ func TestHostScope(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if g.Allows("places.googleapis.com") {
+	if g.Allows("https://places.googleapis.com/") {
 		t.Error("places.googleapis.com must need an allowed_hosts entry")
 	}
 	// A private public-suffix entry (herokuapp.com) separates its tenants.
@@ -103,7 +103,7 @@ func TestHostScope(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if tenant.Allows("theirs.herokuapp.com") {
+	if tenant.Allows("https://theirs.herokuapp.com/") {
 		t.Error("another tenant of a public suffix must not be allowed")
 	}
 }

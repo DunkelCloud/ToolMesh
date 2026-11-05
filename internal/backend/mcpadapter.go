@@ -23,6 +23,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"strconv"
@@ -319,7 +320,10 @@ func (a *MCPAdapter) createTransport(ctx context.Context, entry BackendEntry) (m
 }
 
 func (a *MCPAdapter) createHTTPTransport(ctx context.Context, entry BackendEntry) (mcp.Transport, error) {
-	httpClient := &http.Client{Timeout: envDuration("TOOLMESH_MCP_TIMEOUT", 120*time.Second)}
+	httpClient := &http.Client{
+		Timeout:       envDuration("TOOLMESH_MCP_TIMEOUT", 120*time.Second),
+		CheckRedirect: mcpRedirectPolicy,
+	}
 
 	// Inject API key as Bearer token if configured
 	if entry.APIKeyEnv != "" {
@@ -327,9 +331,14 @@ func (a *MCPAdapter) createHTTPTransport(ctx context.Context, entry BackendEntry
 		if err != nil {
 			return nil, fmt.Errorf("credential lookup for %s: %w", entry.APIKeyEnv, err)
 		}
+		origin, err := url.Parse(entry.URL)
+		if err != nil {
+			return nil, fmt.Errorf("parse MCP backend URL %q: %w", entry.URL, err)
+		}
 		httpClient.Transport = &bearerTransport{
-			base:  http.DefaultTransport,
-			token: apiKey,
+			base:   http.DefaultTransport,
+			token:  apiKey,
+			origin: origin,
 		}
 	}
 
@@ -798,15 +807,70 @@ func envDuration(key string, fallback time.Duration) time.Duration {
 	return fallback
 }
 
-// bearerTransport injects an Authorization header into HTTP requests.
+// bearerTransport injects an Authorization header into HTTP requests to the
+// configured MCP endpoint. It sits below the http.Client redirect logic, so
+// Go's own header stripping on redirects never sees the header; the
+// transport therefore adds it only for requests to the origin of the
+// configured endpoint (scheme, host and port, or the https form of an http
+// endpoint on the same host), never to a host a redirect or a server-sent
+// endpoint URL names.
 type bearerTransport struct {
-	base  http.RoundTripper
-	token string
+	base   http.RoundTripper
+	token  string
+	origin *url.URL
 }
 
-// RoundTrip implements http.RoundTripper by adding a Bearer token header.
+// RoundTrip implements http.RoundTripper by adding a Bearer token header
+// for requests to the endpoint's origin.
 func (t *bearerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if !onEndpointOrigin(t.origin, req.URL) {
+		return t.base.RoundTrip(req)
+	}
 	req = req.Clone(req.Context())
 	req.Header.Set("Authorization", "Bearer "+t.token)
 	return t.base.RoundTrip(req)
+}
+
+// mcpSchemeHTTPS is the https scheme name for the endpoint origin checks.
+const mcpSchemeHTTPS = "https"
+
+// onEndpointOrigin reports whether u is on the origin of the MCP endpoint:
+// the same scheme, host and port, or the https form of an http endpoint on
+// the same host with default ports.
+func onEndpointOrigin(endpoint, u *url.URL) bool {
+	if endpoint == nil || u == nil || !strings.EqualFold(endpoint.Hostname(), u.Hostname()) {
+		return false
+	}
+	ep, up := mcpEndpointPort(endpoint), mcpEndpointPort(u)
+	if strings.EqualFold(endpoint.Scheme, u.Scheme) {
+		return ep == up
+	}
+	return strings.EqualFold(endpoint.Scheme, urlSchemeHTTP) && strings.EqualFold(u.Scheme, mcpSchemeHTTPS) && ep == "80" && up == "443"
+}
+
+// mcpEndpointPort returns the explicit port of u or its scheme's default.
+func mcpEndpointPort(u *url.URL) string {
+	if p := u.Port(); p != "" {
+		return p
+	}
+	switch strings.ToLower(u.Scheme) {
+	case mcpSchemeHTTPS:
+		return "443"
+	case urlSchemeHTTP:
+		return "80"
+	}
+	return ""
+}
+
+// mcpRedirectPolicy bounds redirects of MCP-over-HTTP requests: at most 10
+// hops, and never from https to http. The backend token stays bound to the
+// endpoint origin by bearerTransport whatever the redirects.
+func mcpRedirectPolicy(req *http.Request, via []*http.Request) error {
+	if len(via) >= 10 {
+		return fmt.Errorf("stopped after 10 redirects")
+	}
+	if len(via) > 0 && strings.EqualFold(via[0].URL.Scheme, mcpSchemeHTTPS) && !strings.EqualFold(req.URL.Scheme, mcpSchemeHTTPS) {
+		return fmt.Errorf("redirect from https to %s://%s refused", req.URL.Scheme, req.URL.Host)
+	}
+	return nil
 }

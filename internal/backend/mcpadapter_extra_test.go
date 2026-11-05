@@ -20,6 +20,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 	"time"
 
@@ -178,7 +179,8 @@ func TestBearerTransport_RoundTrip(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	bt := &bearerTransport{base: http.DefaultTransport, token: "secret"}
+	endpoint, _ := url.Parse(srv.URL + "/mcp")
+	bt := &bearerTransport{base: http.DefaultTransport, token: "secret", origin: endpoint}
 	client := &http.Client{Transport: bt}
 	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, srv.URL, nil)
 	resp, err := client.Do(req)

@@ -16,6 +16,9 @@ for the full narrative and details.
 - SSRF checks refuse IPv6 addresses with a zone (`[::ffff:127.0.0.1%25x]`),
   which slipped past the private-address check and reached loopback, private
   or metadata addresses, and fail closed on DNS answers that do not parse.
+- The bearer token of MCP backends over HTTP (`api_key_env`) is sent only to
+  the origin of the configured `url`, no longer to the target of a redirect;
+  redirects from https to http are refused.
 
 ### Added
 

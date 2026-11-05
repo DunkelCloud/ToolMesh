@@ -1008,18 +1008,22 @@ func checkBodySize(size, limit int64) error {
 }
 
 // joinURL combines a backend base URL with a tool path using RFC 3986
-// reference resolution. If toolPath is itself an absolute URL (e.g. a tool
-// hosted on a different host than the base, like Google Maps vs. Places API),
-// it is returned as-is. Otherwise the base is treated as a directory and the
-// tool path as relative to it, so a base with a path prefix
+// reference resolution. If toolPath is itself an absolute http(s) URL with a
+// host (e.g. a tool hosted on a different host than the base, like Google Maps
+// vs. Places API), it is returned as-is. Otherwise the base is treated as a
+// directory and the tool path as relative to it, so a base with a path prefix
 // (e.g. "https://gitlab.example.com/api/v4") is preserved when combined with
 // a tool path like "/projects".
+//
+// A relative tool path can never leave the base URL: the result must keep the
+// base's scheme, host and path prefix. buildPath escapes "/" in parameter
+// values and rejects "." and "..", and the "./" prefix below stops a colon in
+// the first segment (a value like "evil.example:443") from being read as a
+// URL scheme (RFC 3986 section 4.2). The final check catches anything else,
+// such as dot segments in the DADL path itself.
 func joinURL(baseURL, toolPath string) (string, error) {
 	ref, err := url.Parse(toolPath)
-	if err != nil {
-		return "", fmt.Errorf("parse tool path %q: %w", toolPath, err)
-	}
-	if ref.IsAbs() {
+	if err == nil && isAbsoluteHTTPURL(ref) {
 		return ref.String(), nil
 	}
 	base, err := url.Parse(baseURL)
@@ -1032,11 +1036,27 @@ func joinURL(baseURL, toolPath string) (string, error) {
 			base.RawPath += "/"
 		}
 	}
-	relRef, err := url.Parse(strings.TrimPrefix(toolPath, "/"))
+	relRef, err := url.Parse("./" + strings.TrimPrefix(toolPath, "/"))
 	if err != nil {
 		return "", fmt.Errorf("parse tool path %q: %w", toolPath, err)
 	}
-	return base.ResolveReference(relRef).String(), nil
+	resolved := base.ResolveReference(relRef)
+	if !strings.EqualFold(resolved.Scheme, base.Scheme) || !strings.EqualFold(resolved.Host, base.Host) ||
+		!strings.HasPrefix(resolved.EscapedPath(), base.EscapedPath()) {
+		return "", fmt.Errorf("tool path %q resolves outside the base URL path %q", toolPath, base.EscapedPath())
+	}
+	return resolved.String(), nil
+}
+
+// isAbsoluteHTTPURL reports whether u is an absolute http or https URL with a
+// host. Only such a tool path bypasses the base URL; any other scheme-like
+// prefix is treated as part of a relative path.
+func isAbsoluteHTTPURL(u *url.URL) bool {
+	if u == nil || u.Host == "" {
+		return false
+	}
+	s := strings.ToLower(u.Scheme)
+	return s == urlSchemeHTTP || s == urlSchemeHTTPS
 }
 
 // formatScalarParam converts a primitive parameter value to its string form
@@ -1100,6 +1120,12 @@ func (a *RESTAdapter) buildPath(tool *dadl.ToolDef, params map[string]any) (stri
 		str := formatScalarParam(val)
 		if str == "" {
 			return "", fmt.Errorf("path parameter %q cannot be empty", name)
+		}
+		// url.PathEscape keeps "." and "..", and URL resolution would then
+		// turn them into dot segments that walk up the path, e.g.
+		// /projects/{id}/issues with id ".." reaching /issues.
+		if str == "." || str == ".." {
+			return "", fmt.Errorf("path parameter %q cannot be %q", name, str)
 		}
 		path = strings.ReplaceAll(path, "{"+name+"}", url.PathEscape(str))
 	}

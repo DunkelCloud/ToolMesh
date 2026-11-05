@@ -55,11 +55,13 @@ type Server struct {
 	apiKeys       *auth.APIKeyStore
 	rateLimiter   *auth.DCRRateLimiter
 	loginThrottle *auth.LoginThrottle
-	callerClasses *config.CallerClasses
-	metrics       *metrics.Registry
-	blobStore     *blob.Store
-	uploadLimits  blob.UploadLimits
-	health        HealthReporter
+	// bearerThrottle limits failed bearer credentials per client address.
+	bearerThrottle *auth.LoginThrottle
+	callerClasses  *config.CallerClasses
+	metrics        *metrics.Registry
+	blobStore      *blob.Store
+	uploadLimits   blob.UploadLimits
+	health         HealthReporter
 }
 
 // HealthReporter supplies the backend health /health reports.
@@ -88,16 +90,17 @@ func NewServer(handler *Handler, cfg *config.Config, logger *slog.Logger, tokenS
 		logger.Warn("TOOLMESH_CORS_ORIGINS not set: CORS will reflect any origin (open policy)")
 	}
 	return &Server{
-		handler:       handler,
-		cfg:           cfg,
-		logger:        logger,
-		tokenStore:    tokenStore,
-		userStore:     userStore,
-		apiKeys:       apiKeys,
-		rateLimiter:   rateLimiter,
-		loginThrottle: auth.NewLoginThrottle(loginThrottleConfig(cfg), nil, logger),
-		callerClasses: callerClasses,
-		metrics:       m,
+		handler:        handler,
+		cfg:            cfg,
+		logger:         logger,
+		tokenStore:     tokenStore,
+		userStore:      userStore,
+		apiKeys:        apiKeys,
+		rateLimiter:    rateLimiter,
+		loginThrottle:  auth.NewLoginThrottle(loginThrottleConfig(cfg), nil, logger),
+		bearerThrottle: auth.NewLoginThrottle(bearerThrottleConfig(cfg), nil, logger),
+		callerClasses:  callerClasses,
+		metrics:        m,
 	}
 }
 
@@ -106,6 +109,41 @@ func NewServer(handler *Handler, cfg *config.Config, logger *slog.Logger, tokenS
 // restarts. Call it before the server starts handling requests.
 func (s *Server) UseRedisLoginThrottle(rdb *redis.Client) {
 	s.loginThrottle = auth.NewLoginThrottle(loginThrottleConfig(s.cfg), rdb, s.logger)
+	s.bearerThrottle = auth.NewLoginThrottle(bearerThrottleConfig(s.cfg), rdb, s.logger)
+}
+
+// bearerThrottleConfig limits failed bearer credentials per client address
+// with the per-address limit and window of the password login, in counters
+// of their own. There is no account to count against: a bearer credential
+// names none.
+func bearerThrottleConfig(cfg *config.Config) auth.LoginThrottleConfig {
+	return auth.LoginThrottleConfig{
+		MaxFailuresPerIP: cfg.LoginMaxFailuresPerIP,
+		Window:           time.Duration(cfg.LoginFailureWindow) * time.Second,
+		Namespace:        "bearer",
+	}
+}
+
+// errBearerThrottled is returned by authenticate when the client address has
+// used up its failed bearer attempts.
+type errBearerThrottled struct {
+	retryAfter time.Duration
+}
+
+func (e *errBearerThrottled) Error() string {
+	return "too many failed authentication attempts"
+}
+
+// writeThrottled answers a request refused by the bearer throttle and
+// reports whether err was such a refusal.
+func writeThrottled(w http.ResponseWriter, err error, body func(msg string)) bool {
+	var throttled *errBearerThrottled
+	if !errors.As(err, &throttled) {
+		return false
+	}
+	w.Header().Set("Retry-After", strconv.Itoa(retryAfterSeconds(throttled.retryAfter)))
+	body("Too many failed authentication attempts. Try again in " + humanWait(retryAfterSeconds(throttled.retryAfter)) + ".")
+	return true
 }
 
 func loginThrottleConfig(cfg *config.Config) auth.LoginThrottleConfig {
@@ -179,6 +217,9 @@ func (s *Server) requireAuth(w http.ResponseWriter, r *http.Request) bool {
 // is. The user is nil exactly when ok is false.
 func (s *Server) requireUser(w http.ResponseWriter, r *http.Request) (user *userctx.UserContext, ok bool) {
 	user, err := s.authenticate(r)
+	if writeThrottled(w, err, func(msg string) { http.Error(w, msg, http.StatusTooManyRequests) }) {
+		return nil, false
+	}
 	if err != nil {
 		w.Header().Set("Retry-After", authUnavailableRetryAfter)
 		http.Error(w, msgAuthUnavailable, http.StatusServiceUnavailable)
@@ -292,6 +333,11 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 
 	// Authenticate
 	uc, err := s.authenticate(r)
+	if writeThrottled(w, err, func(msg string) {
+		writeJSON(w, http.StatusTooManyRequests, jsonRPCErrorEnvelope(nil, -32000, msg))
+	}) {
+		return
+	}
 	if err != nil {
 		// The credential was not judged, so this is not a 401: a client told
 		// that its token is invalid would throw the token away.
@@ -613,6 +659,18 @@ func (s *Server) authenticate(r *http.Request) (*userctx.UserContext, error) {
 	// unchecked is set when a method could not look at the bearer at all.
 	var unchecked error
 
+	// Guessing at API keys from one address is throttled like password
+	// logins. Values shaped like the access tokens issued here are exempt:
+	// they cannot be guessed, and expired ones arrive routinely, often from
+	// the shared addresses of hosted clients.
+	if bearer != "" && !isIssuedTokenShape(bearer) {
+		if a := s.bearerThrottle.Blocked("", auth.ClientIP(r)); !a.Allowed {
+			s.logger.InfoContext(r.Context(), "bearer authentication throttled",
+				logKeyRemote, auth.ClientIP(r), "retry_after", retryAfterSeconds(a.RetryAfter))
+			return nil, &errBearerThrottled{retryAfter: a.RetryAfter}
+		}
+	}
+
 	if bearer != "" {
 		// 1. API keys from apikeys.yaml that are in the index.
 		if s.apiKeys != nil {
@@ -806,6 +864,9 @@ func (s *Server) bearerRejected(r *http.Request, bearer string, checkedAPIKey, c
 		return // no method was in a position to accept it
 	}
 	s.metrics.RecordLogin(method, "failure")
+	if method == loginMethodAPIKey && !tokenShaped {
+		s.bearerThrottle.Fail(r.Context(), "", auth.ClientIP(r))
+	}
 
 	level, reason := slog.LevelWarn, loginReasonUnknownCredential
 	switch {

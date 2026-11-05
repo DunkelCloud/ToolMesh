@@ -238,6 +238,41 @@ func (t *LoginThrottle) Acquire(ctx context.Context, account, ip string) LoginAt
 	return LoginAttempt{Allowed: true, counters: counters}
 }
 
+// Blocked reports whether an attempt for account from ip would be refused
+// now, judged from the process-local counters alone: it charges nothing and
+// makes no Redis call, so it suits a hot path that verifies first and only
+// charges failures (Fail). A nil throttle blocks nothing. The local counters mirror every decision Redis
+// made for this process, so failures this process charged are seen even when
+// the counters live in Redis.
+func (t *LoginThrottle) Blocked(account, ip string) LoginAttempt {
+	if t == nil {
+		return LoginAttempt{Allowed: true}
+	}
+	counters := t.counters(account, ip)
+	if len(counters) == 0 {
+		return LoginAttempt{Allowed: true}
+	}
+	now := t.now()
+	t.local.mu.Lock()
+	defer t.local.mu.Unlock()
+	for _, c := range counters {
+		if e, ok := t.local.live(c.key, now); ok && e.count >= c.limit {
+			return LoginAttempt{Scope: c.scope, RetryAfter: e.expires.Sub(now)}
+		}
+	}
+	return LoginAttempt{Allowed: true}
+}
+
+// Fail charges one failed attempt for account from ip. It is Acquire for a
+// caller that has already verified the credential and refuses blocked
+// sources up front with Blocked; the slot is never handed back.
+func (t *LoginThrottle) Fail(ctx context.Context, account, ip string) {
+	if t == nil {
+		return
+	}
+	_ = t.Acquire(ctx, account, ip)
+}
+
 // Success hands back the slot of an attempt whose password was correct: the
 // account's counters are cleared and the address gets its slot back — only
 // that one slot, so logging in with one account does not erase the failures

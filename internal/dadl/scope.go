@@ -659,6 +659,42 @@ func walkCredentialRefs(v any, fn func(name string)) {
 	}
 }
 
+// walkStrings calls fn with every string in v, at any depth.
+func walkStrings(v any, fn func(string)) {
+	switch val := v.(type) {
+	case string:
+		fn(val)
+	case map[string]any:
+		for _, child := range val {
+			walkStrings(child, fn)
+		}
+	case []any:
+		for _, child := range val {
+			walkStrings(child, fn)
+		}
+	}
+}
+
+// refuseCredentialDefaults refuses a parameter default that names a
+// credential ("credential:<name>", in any case, at any depth). The runtime
+// resolves credential references only in the auth block, so such a default
+// would reach the API as written; resolving it would let the DADL choose a
+// credential where the binding does not look.
+func refuseCredentialDefaults(where string, params map[string]ParamDef) error {
+	for pname, p := range params {
+		found := false
+		walkStrings(p.Default, func(s string) {
+			if strings.HasPrefix(strings.ToLower(strings.TrimSpace(s)), credentialPrefix) {
+				found = true
+			}
+		})
+		if found {
+			return fmt.Errorf("%s: parameter %q: a default may not name a credential (%q): defaults are sent as written; credentials come from the auth block", where, pname, credentialPrefix+"...")
+		}
+	}
+	return nil
+}
+
 // validateCredentialNames refuses an auth block with a credential name that
 // is not one: every *credential field that is set, and every
 // "credential:<name>" in a session login body, whatever the auth type.

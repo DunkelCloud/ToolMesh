@@ -455,6 +455,10 @@ func validateTool(name string, tool *ToolDef, defaults *DefaultsConfig) error {
 		}
 	}
 
+	if err := refuseCredentialDefaults(fmt.Sprintf("tool %q", name), tool.Params); err != nil {
+		return err
+	}
+
 	if err := validateFileURLParams(name, tool); err != nil {
 		return err
 	}
@@ -650,6 +654,9 @@ func validateComposite(name string, comp *CompositeDef, tools map[string]ToolDef
 	}
 	if strings.TrimSpace(comp.Code) == "" {
 		return fmt.Errorf("composite %q: code must not be empty", name)
+	}
+	if err := refuseCredentialDefaults(fmt.Sprintf("composite %q", name), comp.Params); err != nil {
+		return err
 	}
 
 	// Validate timeout

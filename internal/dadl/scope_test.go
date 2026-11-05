@@ -24,6 +24,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+
+	"github.com/DunkelCloud/ToolMesh/internal/credentials"
 )
 
 const (
@@ -242,3 +244,44 @@ func TestRestAuth_ScopeAtRuntime(t *testing.T) {
 		}
 	})
 }
+
+// TestScope_NoCredentialPlaceholder pins that "credential: none", the
+// placeholder of DADLs for APIs without authentication, passes the binding
+// and is never looked up: the call goes out without auth as before.
+func TestScope_NoCredentialPlaceholder(t *testing.T) {
+	spec := &Spec{Backend: BackendDef{
+		Name: "hackernews", BaseURL: "https://hacker-news.firebaseio.com/v0",
+		Auth:  AuthConfig{Type: authTypeAPIKey, Credential: NoCredential, InjectInto: authInjectQuery, QueryParam: "key"},
+		Tools: map[string]ToolDef{"top": {Method: httpMethodGET, Path: "/topstories.json"}},
+	}}
+	creds := NewCredentialScope("hackernews", nil, nil)
+	hosts, err := NewHostScope(spec.Backend.BaseURL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := CheckScope(spec, creds, hosts); err != nil {
+		t.Fatalf("CheckScope: %v", err)
+	}
+
+	looked := false
+	store := lookupRecorder{onGet: func() { looked = true }}
+	a := NewRestAuth(spec.Backend.Auth, spec.Backend.BaseURL, store, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	a.SetScope(creds, hosts)
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, spec.Backend.BaseURL+"/topstories.json", nil)
+	if err := a.InjectAuth(context.Background(), req); err != nil {
+		t.Fatalf("InjectAuth: %v", err)
+	}
+	if looked || req.URL.RawQuery != "" {
+		t.Errorf("placeholder was looked up (%v) or injected (%q)", looked, req.URL.RawQuery)
+	}
+}
+
+// lookupRecorder is a CredentialStore that reports every lookup.
+type lookupRecorder struct{ onGet func() }
+
+func (l lookupRecorder) Get(context.Context, string, credentials.TenantInfo) (string, error) {
+	l.onGet()
+	return "secret-from-store", nil
+}
+
+func (l lookupRecorder) Healthy(context.Context) error { return nil }

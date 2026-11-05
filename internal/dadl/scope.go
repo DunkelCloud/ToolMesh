@@ -42,6 +42,16 @@ const (
 // outside its CredentialScope.
 var ErrCredentialOutOfScope = errors.New("credential outside the backend's scope")
 
+// NoCredential is the credential name DADLs of APIs without authentication
+// use in their required auth block ("credential: none"). It names no
+// secret: it is never looked up and needs no binding.
+const NoCredential = "none"
+
+// isNoCredential reports whether name is the NoCredential placeholder.
+func isNoCredential(name string) bool {
+	return strings.EqualFold(strings.TrimSpace(name), NoCredential)
+}
+
 // CredentialScope is the set of credential names a backend may read. It is
 // built from the operator's backends.yaml entry, never from the DADL: the
 // namespace CREDENTIAL_<ENTRY>_*, where ENTRY is the entry name upper-cased
@@ -99,8 +109,13 @@ type scopedStore struct {
 	scope *CredentialScope
 }
 
-// Get implements credentials.CredentialStore.
+// Get implements credentials.CredentialStore. The NoCredential placeholder
+// is answered as not found without a lookup, so such a call goes out without
+// auth as it always has.
 func (s *scopedStore) Get(ctx context.Context, name string, tenant credentials.TenantInfo) (string, error) {
+	if isNoCredential(name) {
+		return "", fmt.Errorf("credential %q is the no-secret placeholder: %w", name, credentials.ErrCredentialNotFound)
+	}
 	if !s.scope.Allows(name) {
 		return "", fmt.Errorf("credential %q is not allowed for backend %q: %w", name, s.scope.entry, ErrCredentialOutOfScope)
 	}
@@ -262,7 +277,7 @@ type credentialRef struct {
 func staticCredentialRefs(auth AuthConfig) []credentialRef {
 	var refs []credentialRef
 	add := func(where, name string) {
-		if strings.TrimSpace(name) != "" {
+		if strings.TrimSpace(name) != "" && !isNoCredential(name) {
 			refs = append(refs, credentialRef{where: where, name: name})
 		}
 	}

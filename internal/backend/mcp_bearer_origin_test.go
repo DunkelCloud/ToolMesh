@@ -55,10 +55,12 @@ func TestBearerTransport_OnlyToEndpointOrigin(t *testing.T) {
 	defer origin.Close()
 
 	endpoint, _ := url.Parse(origin.URL + "/mcp")
+	// Go's default redirect policy on purpose: this test pins that the
+	// transport itself withholds the token from another host, whatever the
+	// redirect policy lets through (mcpRedirectPolicy refuses such hops).
 	client := &http.Client{
-		Timeout:       5 * time.Second,
-		CheckRedirect: mcpRedirectPolicy,
-		Transport:     &bearerTransport{base: http.DefaultTransport, token: "mcp-backend-token", origin: endpoint}, //nolint:gosec // test fixture token
+		Timeout:   5 * time.Second,
+		Transport: &bearerTransport{base: http.DefaultTransport, token: "mcp-backend-token", origin: endpoint}, //nolint:gosec // test fixture token
 	}
 	for _, path := range []string{"/mcp", "/other-path"} {
 		req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, origin.URL+path, http.NoBody)
@@ -92,7 +94,13 @@ func TestMCPRedirectPolicy(t *testing.T) {
 		t.Error("https to http redirect was allowed")
 	}
 	if err := mcpRedirectPolicy(mk("https://mcp.example.com/other"), via); err != nil {
-		t.Errorf("same-scheme redirect refused: %v", err)
+		t.Errorf("same-origin redirect refused: %v", err)
+	}
+	if err := mcpRedirectPolicy(mk("https://other.example.com/mcp"), via); err == nil {
+		t.Error("redirect to another host was allowed")
+	}
+	if err := mcpRedirectPolicy(mk("https://mcp.example.com/x"), []*http.Request{mk("http://mcp.example.com/mcp")}); err != nil {
+		t.Errorf("http to https upgrade on the same host refused: %v", err)
 	}
 	for _, c := range []struct {
 		endpoint, u string

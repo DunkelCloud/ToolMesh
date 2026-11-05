@@ -320,9 +320,19 @@ func (a *MCPAdapter) createTransport(ctx context.Context, entry BackendEntry) (m
 }
 
 func (a *MCPAdapter) createHTTPTransport(ctx context.Context, entry BackendEntry) (mcp.Transport, error) {
+	origin, err := url.Parse(entry.URL)
+	if err != nil {
+		return nil, fmt.Errorf("parse MCP backend URL %q: %w", entry.URL, err)
+	}
+	// Every request of this client stays on the origin of the configured
+	// endpoint: a redirect elsewhere is refused (mcpRedirectPolicy), and so
+	// is a request to another origin from any other source, such as the
+	// endpoint event of a legacy SSE server. Otherwise Go would carry the
+	// Mcp-Session-Id header, and on 307/308 the JSON-RPC body, to that host.
 	httpClient := &http.Client{
 		Timeout:       envDuration("TOOLMESH_MCP_TIMEOUT", 120*time.Second),
 		CheckRedirect: mcpRedirectPolicy,
+		Transport:     &originLockTransport{base: http.DefaultTransport, origin: origin},
 	}
 
 	// Inject API key as Bearer token if configured
@@ -331,12 +341,8 @@ func (a *MCPAdapter) createHTTPTransport(ctx context.Context, entry BackendEntry
 		if err != nil {
 			return nil, fmt.Errorf("credential lookup for %s: %w", entry.APIKeyEnv, err)
 		}
-		origin, err := url.Parse(entry.URL)
-		if err != nil {
-			return nil, fmt.Errorf("parse MCP backend URL %q: %w", entry.URL, err)
-		}
 		httpClient.Transport = &bearerTransport{
-			base:   http.DefaultTransport,
+			base:   httpClient.Transport,
 			token:  apiKey,
 			origin: origin,
 		}
@@ -863,14 +869,36 @@ func mcpEndpointPort(u *url.URL) string {
 }
 
 // mcpRedirectPolicy bounds redirects of MCP-over-HTTP requests: at most 10
-// hops, and never from https to http. The backend token stays bound to the
-// endpoint origin by bearerTransport whatever the redirects.
+// hops, and only within the origin of the first request (same scheme, host
+// and port, or from http to https on the same host with default ports). A
+// redirect to another origin, or from https to http, is refused rather than
+// followed without the token: Go would still send the Mcp-Session-Id header
+// and, on 307/308, the JSON-RPC body there.
 func mcpRedirectPolicy(req *http.Request, via []*http.Request) error {
 	if len(via) >= 10 {
 		return fmt.Errorf("stopped after 10 redirects")
 	}
-	if len(via) > 0 && strings.EqualFold(via[0].URL.Scheme, mcpSchemeHTTPS) && !strings.EqualFold(req.URL.Scheme, mcpSchemeHTTPS) {
-		return fmt.Errorf("redirect from https to %s://%s refused", req.URL.Scheme, req.URL.Host)
+	if len(via) > 0 && !onEndpointOrigin(via[0].URL, req.URL) {
+		return fmt.Errorf("redirect to %s://%s refused: MCP backend requests stay on the origin of the configured url", req.URL.Scheme, req.URL.Host)
 	}
 	return nil
+}
+
+// originLockTransport refuses every request that is not on the origin of
+// the configured MCP endpoint, wherever its URL came from: a redirect, or an
+// endpoint a legacy SSE server announces.
+type originLockTransport struct {
+	base   http.RoundTripper
+	origin *url.URL
+}
+
+// RoundTrip implements http.RoundTripper.
+func (t *originLockTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if !onEndpointOrigin(t.origin, req.URL) {
+		if req.Body != nil {
+			_ = req.Body.Close()
+		}
+		return nil, fmt.Errorf("MCP backend request to %s://%s refused: it is not the origin of the configured url", req.URL.Scheme, req.URL.Host)
+	}
+	return t.base.RoundTrip(req)
 }

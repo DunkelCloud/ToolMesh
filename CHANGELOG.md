@@ -17,8 +17,10 @@ for the full narrative and details.
   which slipped past the private-address check and reached loopback, private
   or metadata addresses, and fail closed on DNS answers that do not parse.
 - The bearer token of MCP backends over HTTP (`api_key_env`) is sent only to
-  the origin of the configured `url`, no longer to the target of a redirect;
-  redirects from https to http are refused.
+  the origin of the configured `url`, no longer to the target of a redirect.
+  MCP-over-HTTP requests stay on that origin: a redirect to another origin
+  (or from https to http) is refused, and so is a message endpoint on
+  another origin announced by a legacy SSE server.
 
 ### Added
 

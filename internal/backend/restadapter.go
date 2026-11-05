@@ -197,7 +197,11 @@ func NewRESTAdapter(spec *dadl.Spec, creds credentials.CredentialStore, logger *
 	var credScope *dadl.CredentialScope
 	var hostScope *dadl.HostScope
 	if opts.Scope != nil {
-		credScope = dadl.NewCredentialScope(opts.Scope.EntryName, opts.Scope.Credentials, opts.Scope.Env)
+		cs, err := dadl.NewCredentialScope(opts.Scope.EntryName, opts.Scope.Credentials, opts.Scope.Env)
+		if err != nil {
+			return nil, fmt.Errorf("REST backend %q: %w", spec.Backend.Name, err)
+		}
+		credScope = cs
 		hs, err := dadl.NewHostScope(spec.Backend.BaseURL, opts.Scope.AllowedHosts)
 		if err != nil {
 			return nil, fmt.Errorf("REST backend %q: %w", spec.Backend.Name, err)

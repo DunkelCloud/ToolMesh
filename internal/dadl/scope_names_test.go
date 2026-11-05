@@ -85,7 +85,7 @@ func TestScopeError_FixLinesFromDADLText(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = CheckScope(spec, NewCredentialScope("mine", nil, nil), hosts)
+	err = CheckScope(spec, credScope(t, "mine", nil, nil), hosts)
 	var se *ScopeError
 	if !errors.As(err, &se) {
 		t.Fatalf("CheckScope = %v, want a *ScopeError", err)
@@ -116,5 +116,33 @@ func TestYAMLFlowLine(t *testing.T) {
 	var keys map[string]any
 	if err := yaml.Unmarshal([]byte(line), &keys); err != nil || len(keys) != 1 {
 		t.Errorf("line %q has keys %v (%v)", line, keys, err)
+	}
+}
+
+// TestCredentialScope_ListForms pins the forms of the credentials: and env:
+// lists: env: keys count in their canonical form, as the remapping reads
+// them, and entries that name no credential are configuration errors.
+func TestCredentialScope_ListForms(t *testing.T) {
+	s := credScope(t, "mine", nil, map[string]string{"credential_github_token": "MY_ENV", "OTHER_VAR": "X"})
+	if !s.Allows("github_token") {
+		t.Error("a lower-case env: key must allow its credential, as it remaps it")
+	}
+	if s.Allows("other_var") {
+		t.Error("an env: key without CREDENTIAL_ must allow nothing")
+	}
+	bad := []struct {
+		name    string
+		allowed []string
+		env     map[string]string
+	}{
+		{"credentials entry with a hyphen", []string{"github-token"}, nil},
+		{"credentials entry with steering text", []string{steeringName}, nil},
+		{"env key with a dot", nil, map[string]string{"CREDENTIAL_A.B": "X"}},
+		{"two env keys of one credential", nil, map[string]string{"credential_a": "X", "CREDENTIAL_A": "Y"}},
+	}
+	for _, c := range bad {
+		if _, err := NewCredentialScope("mine", c.allowed, c.env); err == nil {
+			t.Errorf("%s: accepted", c.name)
+		}
 	}
 }

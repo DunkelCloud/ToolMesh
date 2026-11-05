@@ -68,24 +68,40 @@ type CredentialScope struct {
 
 // NewCredentialScope builds the credential scope of the backends.yaml entry
 // entryName. allowed is its credentials: list, env its env: map (keys
-// CREDENTIAL_<NAME>).
-func NewCredentialScope(entryName string, allowed []string, env map[string]string) *CredentialScope {
+// CREDENTIAL_<NAME>). env: keys are compared in the form
+// credentials.CanonicalEnvKey gives them, the form the remapping of the
+// entry uses, so a key widens the scope exactly when it remaps the read.
+// An entry of either list that names no credential, and two env: keys of
+// the same credential, are configuration errors.
+func NewCredentialScope(entryName string, allowed []string, env map[string]string) (*CredentialScope, error) {
 	s := &CredentialScope{
 		entry:  entryName,
 		prefix: strings.ReplaceAll(strings.ToUpper(entryName), "-", "_") + "_",
 		names:  map[string]bool{},
 	}
 	for _, n := range allowed {
-		if k := credentialKey(n); k != "" {
-			s.names[k] = true
+		k := credentialKey(n)
+		if !validCredentialName(k) {
+			return nil, fmt.Errorf("credentials: entry %q is not a credential name: use letters, digits and _ only", n)
 		}
+		s.names[k] = true
 	}
+	fromEnv := map[string]string{}
 	for k := range env {
-		if name, ok := strings.CutPrefix(strings.ToUpper(strings.TrimSpace(k)), "CREDENTIAL_"); ok && name != "" {
-			s.names[name] = true
+		name, ok := strings.CutPrefix(credentials.CanonicalEnvKey(k), credentials.EnvKeyPrefix)
+		if !ok {
+			continue // no credential key; the remapping never reads it
 		}
+		if !validCredentialName(name) {
+			return nil, fmt.Errorf("env: key %q does not name a credential: use %s<NAME> with letters, digits and _", k, credentials.EnvKeyPrefix)
+		}
+		if other, dup := fromEnv[name]; dup {
+			return nil, fmt.Errorf("env: keys %q and %q name the same credential; keep one", other, k)
+		}
+		fromEnv[name] = k
+		s.names[name] = true
 	}
-	return s
+	return s, nil
 }
 
 // credentialKey is the form a logical credential name takes in its

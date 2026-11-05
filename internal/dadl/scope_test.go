@@ -36,7 +36,7 @@ const (
 )
 
 func TestCredentialScope(t *testing.T) {
-	s := NewCredentialScope(scopeEntry, []string{"shelly_auth_key"}, map[string]string{"CREDENTIAL_LEGACY_KEY": "MY_ENV"})
+	s := credScope(t, scopeEntry, []string{"shelly_auth_key"}, map[string]string{"CREDENTIAL_LEGACY_KEY": "MY_ENV"})
 	cases := []struct {
 		name string
 		want bool
@@ -124,7 +124,7 @@ func TestCheckScope(t *testing.T) {
 			"foreign": {Method: httpMethodGET, Path: "https://evil.example/x/{id}"},
 		},
 	}}
-	creds := NewCredentialScope(scopeEntry, nil, nil)
+	creds := credScope(t, scopeEntry, nil, nil)
 	hosts, err := NewHostScope(scopeBaseURL, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -151,7 +151,7 @@ func TestCheckScope(t *testing.T) {
 	}
 
 	// The fix lines make it pass.
-	creds = NewCredentialScope(scopeEntry, []string{scopeForeignCred}, nil)
+	creds = credScope(t, scopeEntry, []string{scopeForeignCred}, nil)
 	hosts, _ = NewHostScope(scopeBaseURL, []string{"auth.evil.example", "evil.example"})
 	if err := CheckScope(spec, creds, hosts); err != nil {
 		t.Errorf("with the fix lines: %v", err)
@@ -171,7 +171,7 @@ func TestCheckScope_SessionLogin(t *testing.T) {
 			},
 		},
 	}}
-	err := CheckScope(spec, NewCredentialScope(scopeEntry, nil, nil), mustHostScope(t))
+	err := CheckScope(spec, credScope(t, scopeEntry, nil, nil), mustHostScope(t))
 	if err == nil {
 		t.Fatal("expected violations")
 	}
@@ -180,6 +180,16 @@ func TestCheckScope_SessionLogin(t *testing.T) {
 			t.Errorf("error lacks %q: %v", want, err)
 		}
 	}
+}
+
+// credScope is NewCredentialScope for a configuration that must be valid.
+func credScope(t *testing.T, entry string, allowed []string, env map[string]string) *CredentialScope {
+	t.Helper()
+	s, err := NewCredentialScope(entry, allowed, env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s
 }
 
 func mustHostScope(t *testing.T) *HostScope {
@@ -201,7 +211,7 @@ func TestRestAuth_ScopeAtRuntime(t *testing.T) {
 
 	t.Run("credential outside the namespace", func(t *testing.T) {
 		a := NewRestAuth(AuthConfig{Type: authTypeBearer, Credential: scopeForeignCred}, scopeBaseURL, creds, logger)
-		a.SetScope(NewCredentialScope(scopeEntry, nil, nil), mustHostScope(t))
+		a.SetScope(credScope(t, scopeEntry, nil, nil), mustHostScope(t))
 		req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, scopeBaseURL+"/x", nil)
 		err := a.InjectAuth(context.Background(), req)
 		if !errors.Is(err, ErrCredentialOutOfScope) {
@@ -214,7 +224,7 @@ func TestRestAuth_ScopeAtRuntime(t *testing.T) {
 
 	t.Run("request to a foreign host", func(t *testing.T) {
 		a := NewRestAuth(AuthConfig{Type: authTypeBearer, Credential: "shelly_cloud_key"}, scopeBaseURL, creds, logger)
-		a.SetScope(NewCredentialScope(scopeEntry, nil, nil), mustHostScope(t))
+		a.SetScope(credScope(t, scopeEntry, nil, nil), mustHostScope(t))
 		req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://evil.example/x", nil)
 		if err := a.InjectAuth(context.Background(), req); err == nil {
 			t.Fatal("credentials were attached for a foreign host")
@@ -234,7 +244,7 @@ func TestRestAuth_ScopeAtRuntime(t *testing.T) {
 			sent.Add(1)
 			return nil, io.ErrUnexpectedEOF
 		}))
-		a.SetScope(NewCredentialScope(scopeEntry, nil, nil), mustHostScope(t))
+		a.SetScope(credScope(t, scopeEntry, nil, nil), mustHostScope(t))
 		req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, scopeBaseURL+"/x", nil)
 		if err := a.InjectAuth(context.Background(), req); err == nil {
 			t.Fatal("expected the token request to be refused")
@@ -254,7 +264,7 @@ func TestScope_NoCredentialPlaceholder(t *testing.T) {
 		Auth:  AuthConfig{Type: authTypeAPIKey, Credential: NoCredential, InjectInto: authInjectQuery, QueryParam: "key"},
 		Tools: map[string]ToolDef{"top": {Method: httpMethodGET, Path: "/topstories.json"}},
 	}}
-	creds := NewCredentialScope("hackernews", nil, nil)
+	creds := credScope(t, "hackernews", nil, nil)
 	hosts, err := NewHostScope(spec.Backend.BaseURL, nil)
 	if err != nil {
 		t.Fatal(err)

@@ -34,7 +34,7 @@ func TestNewRESTAdapter_Scope(t *testing.T) {
 				Name:    scopeEntryName,
 				Type:    transportTypeREST,
 				BaseURL: "https://api.example.com",
-				Auth:    dadl.AuthConfig{Type: "bearer", Credential: "github_token"},
+				Auth:    dadl.AuthConfig{Type: testTokenBearer, Credential: "github_token"},
 				Tools:   map[string]dadl.ToolDef{"ping": {Method: testMethodGET, Path: "/ping"}},
 			},
 		}

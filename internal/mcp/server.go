@@ -937,11 +937,15 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: oauthErrInvalidRedURI, oauthErrorDescription: fmt.Sprintf("malformed URI: %s", uri)})
 			return
 		}
-		if parsed.Scheme == schemeHTTP && (parsed.Hostname() == "localhost" || parsed.Hostname() == "127.0.0.1" || parsed.Hostname() == "::1") {
+		if isLoopbackRedirect(parsed) {
 			continue // http://localhost is allowed for development
 		}
 		if parsed.Scheme != schemeHTTPS {
 			writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: oauthErrInvalidRedURI, oauthErrorDescription: fmt.Sprintf("redirect_uri must use https scheme: %s", uri)})
+			return
+		}
+		if !redirectHostAllowed(uri, s.cfg.OAuthRedirectHosts) {
+			writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: oauthErrInvalidRedURI, oauthErrorDescription: fmt.Sprintf("redirect_uri host is not allowed on this server: %s", parsed.Host)})
 			return
 		}
 	}
@@ -1011,23 +1015,102 @@ func (s *Server) passwordLoginConfigured() bool {
 	return s.userStore != nil || s.cfg.AuthPassword != ""
 }
 
-// validateClientRedirect checks that clientID is a registered client and
-// redirectURI is one of its redirect URIs. It returns the reason for a
-// rejection, or "" when the pair is valid.
-func (s *Server) validateClientRedirect(ctx context.Context, clientID, redirectURI string) string {
+// clientForRedirect checks that clientID is a registered client, that
+// redirectURI is one of its redirect URIs, and that the redirect host passes
+// the TOOLMESH_OAUTH_REDIRECT_HOSTS allowlist (which also covers clients
+// registered before the allowlist was set). It returns the client (nil
+// without a token store) and the reason for a rejection, or "" when the pair
+// is valid.
+func (s *Server) clientForRedirect(ctx context.Context, clientID, redirectURI string) (client *auth.OAuthClient, reason string) {
+	if !redirectHostAllowed(redirectURI, s.cfg.OAuthRedirectHosts) {
+		return nil, loginReasonRedirectHostDenied
+	}
 	if s.tokenStore == nil {
-		return ""
+		return nil, ""
 	}
-	client, err := s.tokenStore.GetClient(ctx, clientID)
+	registered, err := s.tokenStore.GetClient(ctx, clientID)
 	if err != nil {
-		return loginReasonUnknownClient
+		return nil, loginReasonUnknownClient
 	}
-	for _, uri := range client.RedirectURIs {
+	for _, uri := range registered.RedirectURIs {
 		if uri == redirectURI {
-			return ""
+			return registered, ""
 		}
 	}
-	return loginReasonInvalidRedirectURI
+	return nil, loginReasonInvalidRedirectURI
+}
+
+// isLoopbackRedirect reports whether u is an http redirect URI on a loopback
+// host, as native clients use them (RFC 8252 section 7.3).
+func isLoopbackRedirect(u *url.URL) bool {
+	if u.Scheme != schemeHTTP {
+		return false
+	}
+	switch u.Hostname() {
+	case "localhost", "127.0.0.1", "::1":
+		return true
+	}
+	return false
+}
+
+// redirectHostAllowed reports whether redirectURI may be used under the
+// configured host allowlist. An empty allowlist allows every host; loopback
+// redirect URIs are always allowed. Entries match the host name exactly, or
+// any subdomain when written as "*.example.com".
+func redirectHostAllowed(redirectURI string, allowed []string) bool {
+	if len(allowed) == 0 {
+		return true
+	}
+	u, err := url.Parse(redirectURI)
+	if err != nil {
+		return false
+	}
+	if isLoopbackRedirect(u) {
+		return true
+	}
+	host := strings.ToLower(u.Hostname())
+	if host == "" {
+		return false
+	}
+	for _, entry := range allowed {
+		if suffix, ok := strings.CutPrefix(entry, "*."); ok {
+			if strings.HasSuffix(host, "."+suffix) {
+				return true
+			}
+			continue
+		}
+		if host == entry {
+			return true
+		}
+	}
+	return false
+}
+
+// redirectDisplayHost returns the host (with a non-default port) the login
+// page names as the destination of the authorization: the party that will
+// receive the code and, through it, access on the user's behalf.
+func redirectDisplayHost(redirectURI string) string {
+	u, err := url.Parse(redirectURI)
+	if err != nil || u.Host == "" {
+		return redirectURI
+	}
+	return strings.ToLower(u.Host)
+}
+
+// rejectClientRedirect answers a /authorize request whose client or
+// redirect_uri check failed and reports whether it did.
+func rejectClientRedirect(w http.ResponseWriter, reason string) bool {
+	switch reason {
+	case "":
+		return false
+	case loginReasonUnknownClient:
+		writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: oauthErrInvalidReq, oauthErrorDescription: descUnknownClient})
+	case loginReasonRedirectHostDenied:
+		writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: oauthErrInvalidRedURI, oauthErrorDescription: "redirect_uri host is not allowed on this server"})
+	default:
+		writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: oauthErrInvalidRedURI})
+	}
+	return true
 }
 
 func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
@@ -1055,12 +1138,8 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Validate redirect_uri against registered client before rendering login form
-		switch s.validateClientRedirect(r.Context(), clientID, redirectURI) {
-		case loginReasonUnknownClient:
-			writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: oauthErrInvalidReq, oauthErrorDescription: descUnknownClient})
-			return
-		case loginReasonInvalidRedirectURI:
-			writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: oauthErrInvalidRedURI})
+		client, reason := s.clientForRedirect(r.Context(), clientID, redirectURI)
+		if rejectClientRedirect(w, reason) {
 			return
 		}
 		if !s.passwordLoginConfigured() {
@@ -1068,7 +1147,10 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		s.renderLoginForm(w, http.StatusOK, loginForm{ClientID: clientID, RedirectURI: redirectURI, State: state, CodeChallenge: codeChallenge, Scope: scope})
+		s.renderLoginForm(w, http.StatusOK, loginForm{
+			ClientID: clientID, RedirectURI: redirectURI, State: state, CodeChallenge: codeChallenge, Scope: scope,
+			ClientName: clientDisplayName(client), RedirectHost: redirectDisplayHost(redirectURI),
+		})
 		return
 	}
 
@@ -1102,19 +1184,33 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	// at, so they are logged but are not login failures. The client and its
 	// redirect_uri come first: the password check is not reachable without a
 	// registered client.
-	switch reason := s.validateClientRedirect(r.Context(), form.ClientID, form.RedirectURI); reason {
-	case loginReasonUnknownClient:
+	client, reason := s.clientForRedirect(r.Context(), form.ClientID, form.RedirectURI)
+	if reason != "" {
 		s.loginRejected(r, username, reason)
-		writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: oauthErrInvalidRedURI, oauthErrorDescription: descUnknownClient})
-		return
-	case loginReasonInvalidRedirectURI:
-		s.loginRejected(r, username, reason)
-		writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: oauthErrInvalidRedURI})
+		if reason == loginReasonUnknownClient {
+			writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: oauthErrInvalidRedURI, oauthErrorDescription: descUnknownClient})
+			return
+		}
+		rejectClientRedirect(w, reason)
 		return
 	}
 	if !s.passwordLoginConfigured() {
 		s.loginRejected(r, username, loginReasonPasswordLoginDisabled)
 		writeJSON(w, http.StatusForbidden, map[string]string{outcomeError: oauthErrAccessDenied, oauthErrorDescription: descPasswordLoginDisabled})
+		return
+	}
+
+	// The user must confirm the destination of the authorization. The page
+	// names the redirect host, and the confirmation carries it back, so a
+	// login started from a link the user did not expect is not completed by
+	// typing the password alone.
+	form.ClientName = clientDisplayName(client)
+	form.RedirectHost = redirectDisplayHost(form.RedirectURI)
+	form.Confirmed = strings.EqualFold(r.FormValue(oauthConfirmHost), form.RedirectHost)
+	if !form.Confirmed {
+		s.loginRejected(r, username, loginReasonConsentMissing)
+		form.Error = "Confirm that you trust " + form.RedirectHost + " before you sign in."
+		s.renderLoginForm(w, http.StatusBadRequest, form)
 		return
 	}
 
@@ -1462,10 +1558,22 @@ var loginTmpl = template.Must(template.New("login").Parse(`<!DOCTYPE html>
 input{width:100%;padding:8px;margin:8px 0;box-sizing:border-box}
 button{width:100%;padding:10px;background:#2563eb;color:white;border:none;border-radius:4px;cursor:pointer}
 button:hover{background:#1d4ed8}
-.error{color:#b91c1c}</style></head>
+.error{color:#b91c1c}
+.consent{border:1px solid #d1d5db;border-radius:6px;padding:12px;margin:12px 0}
+.host{font-size:1.4em;font-weight:bold;word-break:break-all;margin:4px 0}
+.note{color:#6b7280;font-size:.9em}
+.confirm{display:block;margin:12px 0}
+.confirm input{width:auto;margin-right:6px}</style></head>
 <body>
 <h2>ToolMesh</h2>
-<p>Enter your credentials to authorize access.</p>
+<div class="consent">
+<p>An application asks for access to your ToolMesh tools.</p>
+<p>After you sign in, access is handed to:</p>
+<p class="host">{{.RedirectHost}}</p>
+<p class="name">Name given by the application: &ldquo;{{if .ClientName}}{{.ClientName}}{{else}}none{{end}}&rdquo;<br>
+<span class="note">The application chose this name itself; ToolMesh has not verified it.</span></p>
+</div>
+<p>Continue only if you started this connection yourself and trust <strong>{{.RedirectHost}}</strong>.</p>
 {{if .Error}}<p class="error" role="alert">{{.Error}}</p>
 {{end}}<form method="POST" action="/authorize">
 <input type="hidden" name="client_id" value="{{.ClientID}}">
@@ -1473,9 +1581,10 @@ button:hover{background:#1d4ed8}
 <input type="hidden" name="state" value="{{.State}}">
 <input type="hidden" name="code_challenge" value="{{.CodeChallenge}}">
 <input type="hidden" name="scope" value="{{.Scope}}">
+<label class="confirm"><input type="checkbox" name="confirm_host" value="{{.RedirectHost}}" required{{if .Confirmed}} checked{{end}}> I trust {{.RedirectHost}} with access to my ToolMesh tools</label>
 <input type="text" name="username" placeholder="Username" autofocus>
 <input type="password" name="password" placeholder="Password">
-<button type="submit">Authorize</button>
+<button type="submit">Authorize {{.RedirectHost}}</button>
 </form>
 </body>
 </html>`))
@@ -1490,6 +1599,27 @@ type loginForm struct {
 	CodeChallenge string
 	Scope         string
 	Error         string
+	// ClientName is the client_name from registration: self-declared by the
+	// client and shown as such, never trusted.
+	ClientName string
+	// RedirectHost is the host of the redirect_uri, the party that receives
+	// the authorization; the user confirms it explicitly.
+	RedirectHost string
+	// Confirmed keeps the confirmation ticked when the form is shown again.
+	Confirmed bool
+}
+
+// clientDisplayName returns the self-declared client_name of client, cut to
+// a length that fits the login page, or "" when there is none.
+func clientDisplayName(client *auth.OAuthClient) string {
+	if client == nil {
+		return ""
+	}
+	name := strings.TrimSpace(client.ClientName)
+	if r := []rune(name); len(r) > 80 {
+		name = string(r[:80]) + "…"
+	}
+	return name
 }
 
 // renderLoginForm writes the login page with the given status. A 401 goes out

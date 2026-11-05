@@ -212,6 +212,7 @@ func TestTokenGrant_ClientIDMismatch(t *testing.T) {
 		testFormPassword:   {"pw"},
 		oauthClientID:      {clientID},
 		oauthRedirectURI:   {"https://example.com/cb"},
+		oauthConfirmHost:   {confirmHostOf("https://example.com/cb")},
 		oauthState:         {"s"},
 		oauthCodeChallenge: {"dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"},
 		oauthScope:         {clientClaudeAI},

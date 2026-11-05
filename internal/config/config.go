@@ -188,6 +188,13 @@ type Config struct {
 	// CORS
 	CORSAllowedOrigins []string // TOOLMESH_CORS_ORIGINS, comma-separated allowlist
 
+	// OAuthRedirectHosts, when non-empty, restricts the redirect_uri hosts an
+	// OAuth client may register at /register and use at /authorize. Entries
+	// are host names ("claude.ai") or "*.example.com" for any subdomain.
+	// Loopback redirect URIs (http://localhost, 127.0.0.1, [::1]) of native
+	// clients are always accepted. Empty accepts any https redirect_uri.
+	OAuthRedirectHosts []string // TOOLMESH_OAUTH_REDIRECT_HOSTS, comma-separated
+
 	// Registry-based provider selection
 	CredentialStore string // registered store name (default: "embedded")
 	GateEvaluators  string // comma-separated evaluator chain (default: "goja")
@@ -279,6 +286,11 @@ func Load() (*Config, error) {
 			if s := strings.TrimSpace(o); s != "" {
 				cfg.CORSAllowedOrigins = append(cfg.CORSAllowedOrigins, s)
 			}
+		}
+	}
+	for _, h := range strings.Split(envStr("TOOLMESH_OAUTH_REDIRECT_HOSTS", ""), ",") {
+		if s := strings.ToLower(strings.TrimSpace(h)); s != "" {
+			cfg.OAuthRedirectHosts = append(cfg.OAuthRedirectHosts, s)
 		}
 	}
 

@@ -168,6 +168,7 @@ func TestRESTAdapter_CompositeCatchesSemanticCode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	a.SetChildGuard(AllowAllChildGuard{})
 	result, err := a.Execute(context.Background(), "find_customer", nil)
 	if err != nil {
 		t.Fatal(err)

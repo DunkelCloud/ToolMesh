@@ -110,6 +110,7 @@ func newParamCheckAdapter(t *testing.T) *RESTAdapter {
 	if err != nil {
 		t.Fatalf("create adapter: %v", err)
 	}
+	adapter.SetChildGuard(AllowAllChildGuard{})
 	return adapter
 }
 

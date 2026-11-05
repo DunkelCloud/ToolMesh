@@ -107,6 +107,60 @@ func TestRESTAdapter_CompositeChildGuard(t *testing.T) {
 			t.Error("expected composite to fail closed when the child guard denies the child call")
 		}
 	})
+
+	t.Run("no guard refuses child calls (fail closed)", func(t *testing.T) {
+		adapter := newAdapter(t)
+
+		result, err := adapter.Execute(context.Background(), testCompositeCountItems, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !result.IsError {
+			t.Fatal("expected composite to fail closed when no child guard is installed")
+		}
+		if text := redactResultText(t, result); !strings.Contains(text, "no authorization guard") {
+			t.Errorf("error = %q, want it to name the missing guard", text)
+		}
+	})
+
+	// The composite remembers the guard and installs it on every backend that
+	// reaches it later. A hot reload of backends.yaml swaps in fresh adapters;
+	// their composites must still be checked.
+	installPaths := []struct {
+		name    string
+		install func(c *CompositeBackend, a *RESTAdapter)
+	}{
+		{"Swap", func(c *CompositeBackend, a *RESTAdapter) {
+			c.Swap(map[string]ToolBackend{testBackendNameAPI: a}, nil)
+		}},
+		{"AddNamed", func(c *CompositeBackend, a *RESTAdapter) {
+			c.AddNamed(testBackendNameAPI, a)
+		}},
+		{"AddPassthrough", func(c *CompositeBackend, a *RESTAdapter) {
+			c.AddPassthrough(a)
+		}},
+	}
+	for _, p := range installPaths {
+		t.Run("guard survives "+p.name, func(t *testing.T) {
+			comp := NewCompositeBackend(map[string]ToolBackend{testBackendNameAPI: newAdapter(t)})
+			guard := &recordingChildGuard{err: errors.New("not authorized")}
+			comp.SetChildGuard(guard)
+
+			fresh := newAdapter(t)
+			p.install(comp, fresh)
+
+			result, err := fresh.Execute(context.Background(), testCompositeCountItems, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !result.IsError {
+				t.Error("a backend installed after SetChildGuard ran its composite without the guard")
+			}
+			if len(guard.seen) != 1 {
+				t.Errorf("guard saw %v, want exactly one child check", guard.seen)
+			}
+		})
+	}
 }
 
 func TestRESTAdapter_ExecuteComposite(t *testing.T) {
@@ -148,6 +202,7 @@ func TestRESTAdapter_ExecuteComposite(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	adapter.SetChildGuard(AllowAllChildGuard{})
 
 	// Composite must appear in ListTools.
 	tools, _ := adapter.ListTools(context.Background())

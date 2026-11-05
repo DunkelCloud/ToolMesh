@@ -68,26 +68,39 @@ type RESTAdapter struct {
 	creds               credentials.CredentialStore
 	logger              *slog.Logger
 	allowedUploadDir    string
-	fileBroker          *FileBrokerClient // nil = use blob store or error
-	blobStore           *blob.Store       // embedded blob store for binary responses
-	blobTTL             time.Duration     // TTL for blob URLs (from backends.yaml options.blob_ttl)
-	exposeTools         []string          // bare tool names to promote as direct MCP tools (from backends.yaml expose_tools)
-	includeTools        map[string]bool   // when non-nil, the only tools/composites this backend exposes (from backends.yaml include_tools)
-	fileURLAllowedHosts map[string]bool   // optional allowlist of lowercase hostnames for caller file_url fetches; nil/empty = no restriction
-	maxBodySizes        map[string]int64  // declared max_body_size string → effective byte ceiling; see resolveMaxBodySizes
-	childGuard          ChildGuard        // authorizes composite child api.* calls; nil = no per-child checks (e.g. standalone/tests)
-	hint                string            // operator guidance from backends.yaml hint:; empty = none configured
-	syntheticHealth     bool              // the DADL's health check is offered as the synthetic health tool (spec §4.6)
-	authExpiresAt       time.Time         // operator-recorded credential expiry from backends.yaml; zero = unknown
+	fileBroker          *FileBrokerClient             // nil = use blob store or error
+	blobStore           *blob.Store                   // embedded blob store for binary responses
+	blobTTL             time.Duration                 // TTL for blob URLs (from backends.yaml options.blob_ttl)
+	exposeTools         []string                      // bare tool names to promote as direct MCP tools (from backends.yaml expose_tools)
+	includeTools        map[string]bool               // when non-nil, the only tools/composites this backend exposes (from backends.yaml include_tools)
+	fileURLAllowedHosts map[string]bool               // optional allowlist of lowercase hostnames for caller file_url fetches; nil/empty = no restriction
+	maxBodySizes        map[string]int64              // declared max_body_size string → effective byte ceiling; see resolveMaxBodySizes
+	childGuard          atomic.Pointer[childGuardRef] // authorizes composite child api.* calls; nil = child calls are refused (fail closed)
+	hint                string                        // operator guidance from backends.yaml hint:; empty = none configured
+	syntheticHealth     bool                          // the DADL's health check is offered as the synthetic health tool (spec §4.6)
+	authExpiresAt       time.Time                     // operator-recorded credential expiry from backends.yaml; zero = unknown
 	healthObserver      atomic.Pointer[HealthObserver]
+}
+
+// childGuardRef boxes a ChildGuard so it can live behind an atomic.Pointer:
+// the guard is installed after construction (and again on hot reload) while
+// composites may already be running.
+type childGuardRef struct {
+	guard ChildGuard
 }
 
 // SetChildGuard installs the guard used to authorize composite child api.*
 // calls. It is wired after construction because the guard (the executor) is
-// built after the adapters. A nil guard leaves child calls unchecked, which
-// preserves behavior for standalone use and tests.
+// built after the adapters. Without a guard every child call is refused, so a
+// composite never runs its api.* calls unchecked by accident; standalone use
+// that intends no per-child checks installs [AllowAllChildGuard] explicitly.
+// Passing nil removes the guard.
 func (a *RESTAdapter) SetChildGuard(g ChildGuard) {
-	a.childGuard = g
+	if g == nil {
+		a.childGuard.Store(nil)
+		return
+	}
+	a.childGuard.Store(&childGuardRef{guard: g})
 }
 
 // RESTAdapterOptions controls per-backend security settings.
@@ -1962,13 +1975,15 @@ func (a *RESTAdapter) executeComposite(ctx context.Context, name string, comp *d
 	executor := func(ctx context.Context, toolName string, toolParams map[string]any) (any, error) {
 		// A child api.* call bypasses the top-level executor pipeline, so apply
 		// the same authorization and pre-execution gate here, keyed on the
-		// canonical "<backend>_<tool>" name. Fail closed: a guard error aborts
-		// the child (and the composite).
-		if a.childGuard != nil {
-			canonical := a.spec.Backend.Name + "_" + toolName
-			if err := a.childGuard.CheckChild(ctx, canonical, toolParams); err != nil {
-				return nil, err
-			}
+		// canonical "<backend>_<tool>" name. Fail closed: a missing guard or a
+		// guard error aborts the child (and the composite).
+		canonical := a.spec.Backend.Name + "_" + toolName
+		ref := a.childGuard.Load()
+		if ref == nil {
+			return nil, fmt.Errorf("composite child call %s refused: no authorization guard installed", canonical)
+		}
+		if err := ref.guard.CheckChild(ctx, canonical, toolParams); err != nil {
+			return nil, err
 		}
 		result, err := a.Execute(ctx, toolName, toolParams)
 		if err != nil {

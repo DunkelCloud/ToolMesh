@@ -39,6 +39,15 @@ type compositeState struct {
 type CompositeBackend struct {
 	state atomic.Pointer[compositeState]
 
+	// mu serializes every mutation (AddNamed, AddPassthrough, Swap,
+	// SetChildGuard) so a backend installed concurrently with SetChildGuard
+	// can never end up published without the guard. Reads stay lock-free.
+	mu sync.Mutex
+	// guard is the ChildGuard installed by SetChildGuard, remembered so that
+	// every backend added later (including hot-reloaded ones) receives it
+	// before it becomes reachable. Guarded by mu.
+	guard ChildGuard
+
 	// logger receives WARN events when bare expose_tools aliases collide
 	// with names reserved by upstream LLM clients (see reserved.go). nil
 	// disables logging entirely. Set via SetLogger after construction.
@@ -69,33 +78,48 @@ func (c *CompositeBackend) SetLogger(logger *slog.Logger) {
 // SetChildGuard propagates a ChildGuard to every child backend that supports
 // one (currently the REST adapters, which run composites). Call it after the
 // executor is built so composite child api.* calls are authorized and gated.
+//
+// The composite remembers the guard and installs it on every backend added
+// afterwards through AddNamed, AddPassthrough or Swap, before that backend
+// becomes reachable. A hot reload therefore never publishes a REST adapter
+// whose composites run without authorization.
 func (c *CompositeBackend) SetChildGuard(g ChildGuard) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.guard = g
 	s := c.state.Load()
 	for _, b := range s.backends {
-		if setter, ok := b.(childGuardSetter); ok {
-			setter.SetChildGuard(g)
-		}
+		c.applyGuardLocked(b)
 	}
 	for _, b := range s.passthroughs {
-		if setter, ok := b.(childGuardSetter); ok {
-			setter.SetChildGuard(g)
-		}
+		c.applyGuardLocked(b)
+	}
+}
+
+// applyGuardLocked installs the remembered guard on b when b supports one.
+// A composite that never had a guard set leaves b untouched, so adapters keep
+// their own fail-closed default. Callers must hold c.mu.
+func (c *CompositeBackend) applyGuardLocked(b ToolBackend) {
+	if c.guard == nil {
+		return
+	}
+	if setter, ok := b.(childGuardSetter); ok {
+		setter.SetChildGuard(c.guard)
 	}
 }
 
 // AddPassthrough adds a backend that manages its own tool name prefixes.
 // Tool calls are delegated to passthrough backends when no named backend matches.
+// A guard installed with SetChildGuard is applied to b before b becomes reachable.
 func (c *CompositeBackend) AddPassthrough(b ToolBackend) {
-	for {
-		old := c.state.Load()
-		next := &compositeState{
-			backends:     old.backends,
-			passthroughs: append(append([]ToolBackend(nil), old.passthroughs...), b),
-		}
-		if c.state.CompareAndSwap(old, next) {
-			return
-		}
-	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.applyGuardLocked(b)
+	old := c.state.Load()
+	c.state.Store(&compositeState{
+		backends:     old.backends,
+		passthroughs: append(append([]ToolBackend(nil), old.passthroughs...), b),
+	})
 }
 
 // Execute routes the tool call to the correct backend based on the name prefix.
@@ -239,29 +263,38 @@ func (c *CompositeBackend) ListTools(ctx context.Context) ([]ToolDescriptor, err
 	return all, nil
 }
 
-// AddNamed adds a named backend after construction.
+// AddNamed adds a named backend after construction. A guard installed with
+// SetChildGuard is applied to b before b becomes reachable.
 func (c *CompositeBackend) AddNamed(name string, b ToolBackend) {
-	for {
-		old := c.state.Load()
-		newMap := make(map[string]ToolBackend, len(old.backends)+1)
-		for k, v := range old.backends {
-			newMap[k] = v
-		}
-		newMap[name] = b
-		next := &compositeState{
-			backends:     newMap,
-			passthroughs: old.passthroughs,
-		}
-		if c.state.CompareAndSwap(old, next) {
-			return
-		}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.applyGuardLocked(b)
+	old := c.state.Load()
+	newMap := make(map[string]ToolBackend, len(old.backends)+1)
+	for k, v := range old.backends {
+		newMap[k] = v
 	}
+	newMap[name] = b
+	c.state.Store(&compositeState{
+		backends:     newMap,
+		passthroughs: old.passthroughs,
+	})
 }
 
 // Swap atomically replaces the entire composite state (named backends and
 // passthroughs) with the provided values. Concurrent readers see either the
 // old or the new state — never a mix. Use this for hot-reload scenarios.
+// A guard installed with SetChildGuard is applied to every new backend before
+// the new state is published.
 func (c *CompositeBackend) Swap(backends map[string]ToolBackend, passthroughs []ToolBackend) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, b := range backends {
+		c.applyGuardLocked(b)
+	}
+	for _, b := range passthroughs {
+		c.applyGuardLocked(b)
+	}
 	c.state.Store(&compositeState{
 		backends:     backends,
 		passthroughs: passthroughs,

@@ -229,6 +229,12 @@ func loadRESTSubBackend(
 	if err != nil {
 		return nil, fmt.Errorf("build REST adapter: %w", err)
 	}
+	// A sub-backend is a private dependency of the unit: the unit call itself
+	// is authorized and gated, and the unit script may call every tool of
+	// this sub-backend directly. Composites of the sub-backend reach no tool
+	// beyond that set, so their child calls need no separate check. The
+	// adapter refuses child calls without a guard, hence the explicit one.
+	rest.SetChildGuard(backend.AllowAllChildGuard{})
 	if blobStore != nil {
 		rest.SetBlobStore(blobStore)
 	}

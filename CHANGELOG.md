@@ -31,7 +31,8 @@ for the full narrative and details.
   name and requires a confirmation; `TOOLMESH_OAUTH_REDIRECT_HOSTS`
   optionally restricts redirect hosts.
 - Token refresh and access tokens are resolved against the current
-  `users.yaml` or single-password owner; removed or disabled users lose
+  `users.yaml` or single-password owner as loaded at startup; after a
+  restart, removed or disabled users lose
   access. `POST /revoke` (RFC 7009) revokes tokens.
 - `X-Forwarded-For` is honored only from the proxy addresses in
   `TOOLMESH_TRUSTED_PROXIES` (default loopback only); a header from any other

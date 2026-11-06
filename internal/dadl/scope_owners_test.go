@@ -47,10 +47,10 @@ func TestCredentialOwners_LongestPrefix(t *testing.T) {
 		entry, name string
 		want        bool
 	}{
-		{ghEntry, "github_token", true},
+		{ghEntry, scopeForeignCred, true},
 		{ghEntry, gheToken, false},
 		{gheEntry, gheToken, true},
-		{gheEntry, "github_token", false},
+		{gheEntry, scopeForeignCred, false},
 		{"s", "s_token", true},
 		{"s", "shelly_cloud_auth_key", false},
 		{"s", "shelly_token", false}, // SHELLY_TOKEN is not in S_, and no entry "shelly" exists

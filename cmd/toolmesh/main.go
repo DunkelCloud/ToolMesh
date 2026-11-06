@@ -658,6 +658,14 @@ func buildBackends(ctx context.Context, bc *buildBackendsConfig) (*backendsResul
 	// Divide the credential names among the entries as configured now, so
 	// an entry added by this reload takes its names away from an entry with
 	// a shorter namespace, also in backends loaded before.
+	//
+	// This runs before the new adapters exist and before Swap, so until the
+	// swap the running adapters decide with the new division. That is safe
+	// both ways: an added entry only takes names away (fail closed), and a
+	// removed entry gives names back only to the entry the new
+	// configuration gives them to anyway, while the removed entry's own
+	// adapter, still running, owns nothing any more. If the rebuild fails,
+	// the running adapters keep the division of the file as written now.
 	bc.owners.Set(credentialOwnerNames(bc.cfg.BackendsConfigPath, bc.cfg.UnitsDir))
 
 	// Build named REST backends from DADL files

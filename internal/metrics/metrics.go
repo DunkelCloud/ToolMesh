@@ -22,6 +22,7 @@
 package metrics
 
 import (
+	"fmt"
 	"net/http"
 	"time"
 
@@ -98,6 +99,9 @@ const metricsNamespace = "toolmesh"
 // labelBackend is the name of the label that carries the backend name.
 const labelBackend = "backend"
 
+// labelResult is the name of the label that carries the result of an event.
+const labelResult = "result"
+
 // New constructs a Registry with all ToolMesh metrics pre-registered.
 func New(opts Options) *Registry {
 	reg := prometheus.NewRegistry()
@@ -106,13 +110,13 @@ func New(opts Options) *Registry {
 		Namespace: metricsNamespace,
 		Name:      "logins_total",
 		Help:      "Authentication events. method=password|oauth_code|oauth_refresh|oauth_bearer|api_key|anonymous, result=success|failure.",
-	}, []string{"method", "result"})
+	}, []string{"method", labelResult})
 
 	toolCalls := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: metricsNamespace,
 		Name:      "tool_calls_total",
 		Help:      "Tool invocations after authentication. result=success|error|denied (denied = blocked by OpenFGA or output gate).",
-	}, []string{labelBackend, "tool", "result"})
+	}, []string{labelBackend, "tool", labelResult})
 
 	toolCallDuration := prometheus.NewHistogramVec(prometheus.HistogramOpts{
 		Namespace: metricsNamespace,
@@ -289,6 +293,60 @@ func (r *Registry) DeleteBackendHealth(backendName string) {
 	r.healthUp.DeleteLabelValues(backendName)
 	r.healthDegraded.DeleteLabelValues(backendName)
 	r.authExpiry.DeleteLabelValues(backendName)
+}
+
+// CredentialStoreRuns is implemented by a credential store that fetches its
+// values by running something, such as the command store.
+type CredentialStoreRuns interface {
+	// RunCounts returns the number of successful and failed runs so far.
+	RunCounts() (successes, failures uint64)
+	// LastSuccess returns the time of the last successful run, zero before it.
+	LastSuccess() time.Time
+}
+
+// WatchCredentialStore exports the runs of a credential store, read at each
+// scrape: toolmesh_credential_store_runs_total{result="success|failure"} and
+// toolmesh_credential_store_last_success_timestamp_seconds. Reading the
+// store's own counters means runs before this call, such as the first run at
+// startup, are counted too. Call it at most once.
+//
+// Safe to call on a nil receiver.
+func (r *Registry) WatchCredentialStore(store CredentialStoreRuns) error {
+	if r == nil || store == nil {
+		return nil
+	}
+	const runsHelp = "Runs of the credential store's command by result. result=success|failure (a failure keeps the previous credentials)."
+	runs := func(result string, pick func(successes, failures uint64) uint64) prometheus.Collector {
+		return prometheus.NewCounterFunc(prometheus.CounterOpts{
+			Namespace:   metricsNamespace,
+			Name:        "credential_store_runs_total",
+			Help:        runsHelp,
+			ConstLabels: prometheus.Labels{labelResult: result},
+		}, func() float64 {
+			return float64(pick(store.RunCounts()))
+		})
+	}
+	lastSuccess := prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+		Namespace: metricsNamespace,
+		Name:      "credential_store_last_success_timestamp_seconds",
+		Help:      "Unix time of the credential store's last successful run, 0 before it.",
+	}, func() float64 {
+		t := store.LastSuccess()
+		if t.IsZero() {
+			return 0
+		}
+		return float64(t.UnixNano()) / float64(time.Second)
+	})
+	for _, c := range []prometheus.Collector{
+		runs("success", func(s, _ uint64) uint64 { return s }),
+		runs("failure", func(_, f uint64) uint64 { return f }),
+		lastSuccess,
+	} {
+		if err := r.reg.Register(c); err != nil {
+			return fmt.Errorf("register credential store metrics: %w", err)
+		}
+	}
+	return nil
 }
 
 // boolGauge maps a bool to a gauge value.

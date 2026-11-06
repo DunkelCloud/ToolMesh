@@ -20,6 +20,10 @@ services:
       # TOOLMESH_METRICS_HOST=0.0.0.0 only if you deliberately scrape from
       # another host and have firewalled the port yourself.
       - "${TOOLMESH_METRICS_HOST:-127.0.0.1}:${TOOLMESH_METRICS_PORT:-9090}:9090"
+    # Every value from .env ends up in the container configuration on disk
+    # (docker inspect shows it). To keep credentials out of it, use the
+    # command credential store: docker-compose.override.yml.example has the
+    # mounts it needs, docs/configuration.md ("Command store") the rest.
     env_file: .env
     environment:
       # Soft heap limit (~75% of mem_limit) so the Go GC throttles allocation

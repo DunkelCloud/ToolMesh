@@ -795,6 +795,14 @@ it read-only into the container, together with whatever it reads. It has to
 run without a libc, as statically linked binaries do. The command inherits
 ToolMesh's environment, which with this store holds no credentials.
 
+In `.env`, put the command line in double quotes. Docker Compose reads the
+file itself (`env_file`), and some of its versions end an unquoted value at
+the first space and then stop at the rest of the line with an error such as
+`unexpected character "-" in variable name`. Compose removes the quotes
+before ToolMesh sees the value. Quotes that the command line itself needs
+go inside single quotes around the whole value:
+`TOOLMESH_CREDENTIAL_COMMAND='/usr/local/bin/helper "a b"'`.
+
 A run fails when the command exits with a code other than 0, exceeds the
 timeout, writes more than 1 MiB to stdout, prints no value at all, or prints
 something that does not parse.
@@ -886,7 +894,11 @@ time() - toolmesh_credential_store_last_success_timestamp_seconds > 7200
 
 #### Example: an encrypted file with sops
 
-sops with age keeps the key names readable and encrypts only the values:
+[sops](https://github.com/getsops/sops) encrypts the values of a dotenv,
+YAML or JSON file and leaves the key names readable, so the file can live in
+git and its diffs stay useful. It takes its keys from
+[age](https://github.com/FiloSottile/age) (a small file-encryption tool), PGP
+or a cloud KMS. With age:
 
 ```bash
 sops --encrypt --age <recipient> --input-type dotenv --output-type dotenv \
@@ -894,7 +906,8 @@ sops --encrypt --age <recipient> --input-type dotenv --output-type dotenv \
 ```
 
 Mount the encrypted file and a static `sops` binary read-only, for example in
-`docker-compose.override.yml`:
+`docker-compose.override.yml` (`docker-compose.override.yml.example` has a
+section to start from, including the mount for an agent's socket):
 
 ```yaml
 services:
@@ -908,19 +921,49 @@ The `.env` then holds no credentials, only the store settings:
 
 ```bash
 CREDENTIAL_STORE=command
-TOOLMESH_CREDENTIAL_COMMAND=/usr/local/bin/sops -d --input-type dotenv --output-type dotenv /run/secrets/toolmesh.env
+TOOLMESH_CREDENTIAL_COMMAND="/usr/local/bin/sops -d --input-type dotenv --output-type dotenv /run/secrets/toolmesh.env"
 ```
 
 How sops gets its age identity is the operator's decision: a key file mounted
-read-only (`SOPS_AGE_KEY_FILE` is a path, not a secret), a key command, or a
-mechanism that releases the key only at runtime. One such mechanism is
-`ergosumd secret get` of [ergosum](https://github.com/DunkelCloud/ergosum)
-(v0.2.0 or later): it opens a sealed secret only on the machine it is bound
-to, after that machine has passed its checks at its place, so the key is not
-on the disk in plain text either. Do not put the key itself into `.env` or
-`environment:`; it would end up in the container configuration like any
-other value there. Change values with `sops secrets/toolmesh.env`; ToolMesh
-picks them up at its next run or restart.
+read-only (`SOPS_AGE_KEY_FILE` is a path, not a secret) or a key command. A
+key file on the host travels with every copy of its disk; the next example
+avoids it. Do not put the key itself into `.env` or `environment:`; it would
+end up in the container configuration like any other value there. Change
+values with `sops secrets/toolmesh.env`; ToolMesh picks them up at its next
+run or restart.
+
+#### Example: credentials sealed to the machine with ergosum
+
+The sops example still needs one secret on the host, its age key, and
+whoever copies the disk, a backup or the VM image copies that key too.
+[ergosum](https://github.com/DunkelCloud/ergosum) (v0.2.0 or later) ties
+that step to the machine instead of to a file: its daemon `ergosumd` seals a
+file so that it opens only after a separate ergosum authority has called the
+machine back where it was registered (its tailnet name, a fixed address, an
+address in a permitted network). Only the sealed file lies on disk, and it
+may sit in backups; a copy running elsewhere opens nothing.
+
+Seal the credentials themselves, in the dotenv format described above, and
+delete the plain file afterwards (`-recovery` adds an age-encrypted way
+back):
+
+```bash
+ergosumd secret create toolmesh -threshold 2 -file /etc/toolmesh/credentials.sealed < credentials.env
+```
+
+Mount `ergosumd` (a static binary), the sealed file and the daemon's secret
+socket into the container; `docker-compose.override.yml.example` has the
+section. Then:
+
+```bash
+CREDENTIAL_STORE=command
+TOOLMESH_CREDENTIAL_COMMAND="/usr/bin/ergosumd secret get -socket /run/ergosum/secret.sock -file /etc/toolmesh/credentials.sealed"
+```
+
+`ergosumd secret get` prints the file as it was sealed, so ToolMesh needs no
+support for ergosum. To change a value, seal a new file. ergosum offers no
+rotation, revocation or audit of access; Vault does, and ergosum can log the
+machine in to Vault as well (next example).
 
 #### Example: Vault or OpenBao through their proxy
 
@@ -933,7 +976,7 @@ nothing is written to disk:
 CREDENTIAL_STORE=command
 TOOLMESH_CREDENTIAL_FORMAT=json
 TOOLMESH_CREDENTIAL_JSON_PATH=data.data
-TOOLMESH_CREDENTIAL_COMMAND=/usr/local/bin/vault kv get -format=json -mount=secret toolmesh
+TOOLMESH_CREDENTIAL_COMMAND="/usr/local/bin/vault kv get -format=json -mount=secret toolmesh"
 TOOLMESH_CREDENTIAL_RELOAD_IN=300
 VAULT_ADDR=http://127.0.0.1:8100
 ```
@@ -945,11 +988,13 @@ secret. Bind the proxy's listener so that only ToolMesh reaches it, for
 example on loopback in a network namespace shared with the ToolMesh
 container: whoever reaches it acts with the proxy's token.
 
-The proxy's own login needs a credential too. With
-[ergosum](https://github.com/DunkelCloud/ergosum) the machine receives a
-short-lived JWT for the JWT auth method of Vault or OpenBao only after it was
-called back at the places it is bound to, so no long-lived secret such as an
-AppRole secret ID lies on its disk.
+The proxy's own login needs a credential too, usually an AppRole secret ID
+on disk. With [ergosum](https://github.com/DunkelCloud/ergosum) it needs
+none: the ergosum daemon keeps a JWT in `/run/ergosum/token`, valid for 30
+minutes and renewed on its own, which it receives only after the machine was
+called back where it was registered. Point the proxy's auto-auth method `jwt`
+at that file with `remove_jwt_after_reading = false`, since the daemon
+replaces it; Vault or OpenBao check the token with their JWT auth method.
 
 #### Example: short-lived tokens
 

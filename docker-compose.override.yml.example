@@ -16,6 +16,30 @@ services:
   #     context: .
   #     dockerfile: Dockerfile
 
+  # --- Command credential store (CREDENTIAL_STORE=command) ---
+  # ToolMesh runs a command that prints the credentials and keeps them in
+  # memory only, so they stay out of .env and out of the container
+  # configuration. See docs/configuration.md, "Command store". The image has
+  # no shell and no libc: mount the statically linked program and everything
+  # it reads. The paths below are examples. If you also build locally
+  # (section above), put both into one toolmesh: entry.
+  #
+  # toolmesh:
+  #   volumes:
+  #     # The program and the encrypted file it decrypts, e.g. sops:
+  #     - /usr/local/bin/sops:/usr/local/bin/sops:ro
+  #     - ./secrets/toolmesh.env:/run/secrets/toolmesh.env:ro
+  #     # The Unix socket of a local agent the program talks to. Long
+  #     # syntax, so that a missing socket stops the start instead of Docker
+  #     # creating an empty directory in its place on the host. An agent that
+  #     # recreates its socket when it restarts needs a restart of ToolMesh
+  #     # as well.
+  #     - type: bind
+  #       source: /run/example-agent/agent.sock
+  #       target: /run/example-agent/agent.sock
+  #       bind:
+  #         create_host_path: false
+
   # --- External OpenFGA server (TOOLMESH_AUTHZ_MODE=external) ---
   # Authorization runs inside ToolMesh by default. Uncomment all three services
   # only to run your own OpenFGA server; see the Authorization section in .env

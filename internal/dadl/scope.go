@@ -265,7 +265,9 @@ func (s *scopedStore) Healthy(ctx context.Context) error {
 // HostScope is the set of destinations a backend's credentials may be sent
 // to. The effective base_url (the backends.yaml url when the entry sets
 // one) decides:
-//   - its host, on its port only;
+//   - its host, on its port only, and for an http base_url on port 80
+//     also its https form on port 443 (the upgrade the redirect checker
+//     follows as well);
 //   - the other hosts of its registrable domain (eTLD+1 by the public
 //     suffix list), on the default port of the scheme only;
 //   - the entries of the backends.yaml allowed_hosts: list: "host",
@@ -450,6 +452,9 @@ func (s *HostScope) check(scheme, host, port string) hostDecision {
 		p = dp
 	}
 	if h == s.baseHost && p == s.basePort {
+		return hostDecision{ok: true}
+	}
+	if h == s.baseHost && !s.httpsOnly && s.basePort == defaultPort(schemeHTTP) && scheme == schemeHTTPS && p == defaultPort(schemeHTTPS) {
 		return hostDecision{ok: true}
 	}
 	for _, r := range s.rules {

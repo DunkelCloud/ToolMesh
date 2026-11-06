@@ -67,14 +67,25 @@ func TestHostScope_SchemeAndPort(t *testing.T) {
 		}
 	}
 
-	// An http base_url may also reach https hosts; its own host on another
-	// port only with an allowed_hosts entry.
+	// An http base_url may also reach https hosts, and its own host over
+	// https on 443 (the upgrade the redirect checker follows too); other
+	// ports of its host only with an allowed_hosts entry.
 	h, err := NewHostScope("http://intranet.example.com", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !h.Allows("http://intranet.example.com/x") || !h.Allows("https://sso.example.com/x") || h.Allows("https://intranet.example.com/x") {
+	if !h.Allows("http://intranet.example.com/x") || !h.Allows("https://sso.example.com/x") || !h.Allows("https://intranet.example.com/x") ||
+		h.Allows("https://intranet.example.com:8443/x") || h.Allows("http://intranet.example.com:8080/x") {
 		t.Error("http base_url: wrong decision")
+	}
+	// The upgrade is the one of the default ports: from port 8080 it is
+	// another origin.
+	h8080, err := NewHostScope("http://intranet.example.com:8080", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h8080.Allows("https://intranet.example.com/x") {
+		t.Error("http base_url on 8080: https on 443 must need an allowed_hosts entry")
 	}
 }
 

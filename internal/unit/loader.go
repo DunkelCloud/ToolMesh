@@ -216,6 +216,7 @@ func loadRESTSubBackend(
 	for _, w := range spec.Warnings {
 		logger.Warn(w, "dadl", dadlPath)
 	}
+	backend.WarnPlainHTTPBase(logger, entry, spec)
 	if entry.URL != "" {
 		spec.Backend.BaseURL = entry.URL
 	}

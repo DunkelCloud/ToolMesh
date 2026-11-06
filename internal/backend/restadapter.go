@@ -406,6 +406,22 @@ func (a *RESTAdapter) effectiveMaxBodySize(tool *dadl.ToolDef) int64 {
 	return maxUploadBytes
 }
 
+// WarnPlainHTTPBase logs a warning when a backend would send credentials
+// over plain http because its DADL chose an http base_url and the entry
+// sets no url of its own. Call it before the entry's url overrides
+// spec.Backend.BaseURL.
+func WarnPlainHTTPBase(logger *slog.Logger, entry BackendEntry, spec *dadl.Spec) {
+	if entry.URL != "" || !spec.Backend.Auth.NamesCredentials() {
+		return
+	}
+	u, err := url.Parse(spec.Backend.BaseURL)
+	if err != nil || !strings.EqualFold(u.Scheme, urlSchemeHTTP) {
+		return
+	}
+	logger.Warn("credentials go out over plain http: the DADL's base_url is http and the backends.yaml entry sets no url; set url: to an https address if the API offers one",
+		"name", entry.Name, "host", u.Host)
+}
+
 // reachableTools reports which tools of spec a backend can send requests
 // for under the include_tools list include. Tools outside it cannot be
 // called: Execute refuses them, and composites reach their api.* tools

@@ -811,6 +811,7 @@ func loadRESTBackendsInto(named map[string]backend.ToolBackend, backendsConfigPa
 		}
 
 		// Override base_url from backends.yaml if provided
+		backend.WarnPlainHTTPBase(logger, entry, spec)
 		if entry.URL != "" {
 			spec.Backend.BaseURL = entry.URL
 		}

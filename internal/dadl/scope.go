@@ -762,6 +762,13 @@ func staticCredentialRefs(auth AuthConfig) []credentialRef {
 	return refs
 }
 
+// NamesCredentials reports whether the auth block reads any credential:
+// the fields of its type that name one, other than the NoCredential
+// placeholder, or a "credential:<name>" in a session login body.
+func (a AuthConfig) NamesCredentials() bool {
+	return len(staticCredentialRefs(a)) > 0
+}
+
 // absoluteURLOrigin returns the scheme and authority of raw when it is an
 // absolute http(s) URL, judged by its "scheme://authority" part alone so
 // that placeholders in the path do not matter.

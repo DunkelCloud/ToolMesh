@@ -1427,6 +1427,13 @@ func (a *RESTAdapter) effectiveErrorConfig(tool *dadl.ToolDef) *dadl.ErrorConfig
 // downstream consumers can branch on the semantic code without re-parsing
 // the text form.
 func (a *RESTAdapter) apiErrorResult(err error) *ToolResult {
+	return apiErrorToolResult(err)
+}
+
+// apiErrorToolResult is apiErrorResult for every adapter: the MCP adapter
+// raises the same parameter errors as the REST adapter and they must look
+// the same to the caller.
+func apiErrorToolResult(err error) *ToolResult {
 	result := &ToolResult{
 		Content: []any{textContent(fmt.Sprintf("Error: %s", err))},
 		IsError: true,

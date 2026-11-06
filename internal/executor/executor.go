@@ -235,7 +235,7 @@ func (e *Executor) ExecuteTool(ctx context.Context, req ExecuteToolRequest) (*ba
 
 	e.logger.DebugContext(ctx, "executor pipeline start",
 		"tool", req.ToolName,
-		"params", sanitizeParams(req.Params),
+		"params", SanitizeParams(req.Params),
 	)
 
 	// Resolve the tool's access classification once. The lookup is best-effort —
@@ -257,7 +257,7 @@ func (e *Executor) ExecuteTool(ctx context.Context, req ExecuteToolRequest) (*ba
 		CallerClass: uc.CallerClass,
 		Tool:        req.ToolName,
 		ToolAccess:  toolAccess,
-		Params:      sanitizeParams(req.Params),
+		Params:      SanitizeParams(req.Params),
 		Backend:     splitToolPrefix(req.ToolName)[0],
 	}
 
@@ -614,8 +614,10 @@ var sensitiveParamNames = map[string]bool{
 	"private_key":   true,
 }
 
-// sanitizeParams returns a copy of params with sensitive values replaced by "[REDACTED]".
-func sanitizeParams(params map[string]any) map[string]any {
+// SanitizeParams returns a copy of params with the values of secret-looking
+// names (password, token, api_key, ...) replaced by "[REDACTED]". It serves
+// the audit trail and every other place a call's arguments are shown.
+func SanitizeParams(params map[string]any) map[string]any {
 	if len(params) == 0 {
 		return params
 	}

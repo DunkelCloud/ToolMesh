@@ -60,6 +60,11 @@ const (
 	resultKeyStatus = "status"
 	resultKeyBytes  = "resultBytes"
 	resultStatusOK  = "ok"
+	// resultKeyParams carries the arguments a failed call was made with,
+	// secrets redacted, so a script with several calls shows which one
+	// failed with what. Successful entries do not carry it: the script
+	// chose those arguments and got what it asked for.
+	resultKeyParams = "params"
 	// resultKeyNotice carries a gateway-level note about the call (currently
 	// a backend's first-use hint). It sits beside the result rather than
 	// inside it — the script consumes the result as data, so a note folded
@@ -213,6 +218,7 @@ func (r *CodeRunner) ExecuteWithOptions(ctx context.Context, code string, opts E
 	// RangeError instead of growing the runtime stack toward an OOM.
 	rt.SetMaxCallStackSize(maxJSCallStackDepth)
 	composite.LockdownRuntime(rt)
+	composite.InstallTextCodecs(rt)
 
 	// Set up console.log
 	consoleObj := rt.NewObject()
@@ -279,8 +285,9 @@ func (r *CodeRunner) ExecuteWithOptions(ctx context.Context, code string, opts E
 					)
 					mu.Lock()
 					results = append(results, map[string]any{
-						logKeyTool:   cn,
-						outcomeError: fmt.Sprintf("coercion failed: %s", err),
+						logKeyTool:      cn,
+						outcomeError:    fmt.Sprintf("coercion failed: %s", err),
+						resultKeyParams: executor.SanitizeParams(toolParams),
 					})
 					failed[failedCall{r.backendLabel(cn), metrics.SwallowedCoercion}] = struct{}{}
 					mu.Unlock()
@@ -302,8 +309,9 @@ func (r *CodeRunner) ExecuteWithOptions(ctx context.Context, code string, opts E
 				)
 				mu.Lock()
 				results = append(results, map[string]any{
-					logKeyTool:   cn,
-					outcomeError: err.Error(),
+					logKeyTool:      cn,
+					outcomeError:    err.Error(),
+					resultKeyParams: executor.SanitizeParams(toolParams),
 				})
 				failed[failedCall{r.backendLabel(cn), metrics.SwallowedDispatch}] = struct{}{}
 				mu.Unlock()
@@ -326,7 +334,8 @@ func (r *CodeRunner) ExecuteWithOptions(ctx context.Context, code string, opts E
 
 			// Collect result for the wire-format output. A first-use backend
 			// hint travels as a sibling key: the script reads the result
-			// itself, so the note must not be inside it.
+			// itself, so the note must not be inside it. So do the
+			// arguments of a failed call.
 			entry := map[string]any{
 				logKeyTool:      cn,
 				resultKeyResult: result,
@@ -334,6 +343,9 @@ func (r *CodeRunner) ExecuteWithOptions(ctx context.Context, code string, opts E
 			if notice := r.hints.noticeFor(ctx, cn); notice != "" {
 				r.logger.InfoContext(ctx, "delivered backend hint on first use", logKeyTool, cn)
 				entry[resultKeyNotice] = notice
+			}
+			if result.IsError {
+				entry[resultKeyParams] = executor.SanitizeParams(toolParams)
 			}
 			mu.Lock()
 			results = append(results, entry)
@@ -374,8 +386,12 @@ func (r *CodeRunner) ExecuteWithOptions(ctx context.Context, code string, opts E
 				}
 			}
 			result := mfn(ctx, params)
+			entry := map[string]any{logKeyTool: mn, resultKeyResult: result}
+			if result == nil || result.IsError {
+				entry[resultKeyParams] = executor.SanitizeParams(params)
+			}
 			mu.Lock()
-			results = append(results, map[string]any{logKeyTool: mn, resultKeyResult: result})
+			results = append(results, entry)
 			if result == nil || result.IsError {
 				failed[failedCall{metricsBackendBuiltin, metrics.SwallowedToolError}] = struct{}{}
 			}

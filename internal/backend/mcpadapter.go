@@ -187,6 +187,18 @@ func (c *backendConn) included(name string) bool {
 	return c.include[name]
 }
 
+// inputSchema returns the input schema discovery recorded for a tool, or
+// nil when the backend does not offer the tool. Callers hold the adapter
+// lock: discovery and reconnect rewrite the list.
+func (c *backendConn) inputSchema(name string) map[string]any {
+	for _, t := range c.tools {
+		if t.Name == name {
+			return t.InputSchema
+		}
+	}
+	return nil
+}
+
 // buildMCPIncludeSet turns an include_tools list into a lookup set, returning
 // nil for an empty list ("no restriction").
 //
@@ -510,6 +522,11 @@ func (a *MCPAdapter) Execute(ctx context.Context, toolName string, params map[st
 		"registeredBackends", registeredNames,
 	)
 	backendName, realTool, conn := a.matchBackend(toolName)
+	// The schema is read under the lock: a reconnect rewrites the tool list.
+	var schema map[string]any
+	if conn != nil {
+		schema = conn.inputSchema(realTool)
+	}
 	a.mu.RUnlock()
 
 	if conn == nil {
@@ -530,6 +547,18 @@ func (a *MCPAdapter) Execute(ctx context.Context, toolName string, params map[st
 
 	if conn.session == nil {
 		return nil, fmt.Errorf("backend %q is not connected", backendName)
+	}
+
+	// Check the arguments against the advertised input schema before the
+	// call leaves ToolMesh, so a wrong name fails the way it does for a
+	// REST tool, with the declared names in the message.
+	if err := validateMCPParams(realTool, schema, params); err != nil {
+		a.logger.WarnContext(ctx, "tool call rejected: arguments do not match the backend's input schema",
+			"backend", backendName,
+			"tool", realTool,
+			"error", err,
+		)
+		return apiErrorToolResult(err), nil
 	}
 
 	a.logger.InfoContext(ctx, "calling tool via MCP",

@@ -24,13 +24,19 @@ import (
 	"github.com/DunkelCloud/ToolMesh/internal/dadl"
 )
 
+// Tools of the reachability tests: one on the backend's host, one elsewhere.
+const (
+	reachNear = "near"
+	reachFar  = "far"
+)
+
 // includeSpec has a tool on the backend's host ("near"), one on a foreign
 // host ("far"), and a composite ("wrap") that calls "far".
 func includeSpec(baseURL string) *dadl.Spec {
 	s := bindingSpec(scopeEntryName, baseURL, "/ping", "mine_token")
 	s.Backend.Tools = map[string]dadl.ToolDef{
-		"near": {Method: testMethodGET, Path: bindingPath},
-		"far":  {Method: testMethodGET, Path: "https://far.elsewhere.example/x"},
+		reachNear: {Method: testMethodGET, Path: bindingPath},
+		reachFar:  {Method: testMethodGET, Path: "https://far.elsewhere.example/x"},
 	}
 	s.Backend.Composites = map[string]dadl.CompositeDef{
 		"wrap": {Description: "Wrap", Code: "return await api.far();"},
@@ -53,7 +59,7 @@ func TestRESTAdapter_IncludeToolsScope(t *testing.T) {
 		t.Fatal("without include_tools the foreign tool must be refused")
 	}
 
-	opts.IncludeTools = []string{"near", "wrap"}
+	opts.IncludeTools = []string{reachNear, "wrap"}
 	a, err := NewRESTAdapter(includeSpec(srv.URL), store, quietLogger(), opts)
 	if err != nil {
 		t.Fatalf("with include_tools [near, wrap]: %v", err)
@@ -61,7 +67,7 @@ func TestRESTAdapter_IncludeToolsScope(t *testing.T) {
 	// Let child calls through the guard, as the authorization of a
 	// permitted caller does, so the call meets Execute.
 	a.SetChildGuard(AllowAllChildGuard{})
-	if _, err := a.Execute(context.Background(), "far", map[string]any{}); err == nil || !strings.Contains(err.Error(), "not found") {
+	if _, err := a.Execute(context.Background(), reachFar, map[string]any{}); err == nil || !strings.Contains(err.Error(), "not found") {
 		t.Errorf("the excluded tool was not refused as unknown: %v", err)
 	}
 	res, err := a.Execute(context.Background(), "wrap", map[string]any{})

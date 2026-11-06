@@ -70,7 +70,7 @@ func TestDeclaredDestinations(t *testing.T) {
 			"placeholder": {Path: "https://{region}.example.invalid/x"},
 		},
 	}}
-	got := declaredDestinations(spec)
+	got := declaredDestinations(spec, nil)
 	for _, want := range []string{"10.0.0.5:8080", "auth.internal:443", "files.internal:443"} {
 		if !got[want] {
 			t.Errorf("declared destinations %v lack %s", got, want)

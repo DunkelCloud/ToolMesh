@@ -216,10 +216,12 @@ func destinationKey(host, port string) string {
 
 // declaredDestinations lists the "host:port" destinations a backend's
 // configuration names itself: base_url (which backends.yaml url overrides),
-// the OAuth2 token_url, and the hosts of absolute tool paths. With
-// allow_private_url these may resolve to private addresses; a host learned
-// at run time, from a redirect or a URL the server returns, may not.
-func declaredDestinations(spec *dadl.Spec) map[string]bool {
+// the OAuth2 token_url, and the hosts of absolute paths of the tools for
+// which reachable reports true (nil: all tools). With allow_private_url
+// these may resolve to private addresses; a host learned at run time, from
+// a redirect or a URL the server returns, may not, and neither may the host
+// of a tool that cannot be called.
+func declaredDestinations(spec *dadl.Spec, reachable func(tool string) bool) map[string]bool {
 	out := map[string]bool{}
 	add := func(raw string) {
 		lower := strings.ToLower(raw)
@@ -241,8 +243,10 @@ func declaredDestinations(spec *dadl.Spec) map[string]bool {
 	}
 	add(spec.Backend.BaseURL)
 	add(spec.Backend.Auth.TokenURL)
-	for _, tool := range spec.Backend.Tools {
-		add(tool.Path)
+	for name, tool := range spec.Backend.Tools {
+		if reachable == nil || reachable(name) {
+			add(tool.Path)
+		}
 	}
 	return out
 }

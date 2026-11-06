@@ -206,6 +206,7 @@ func NewRESTAdapter(spec *dadl.Spec, creds credentials.CredentialStore, logger *
 	// built, and keep the same scopes as a runtime check.
 	var credScope *dadl.CredentialScope
 	var hostScope *dadl.HostScope
+	reachable := reachableTools(spec, opts.IncludeTools)
 	if opts.Scope == nil && !opts.Unbound {
 		return nil, fmt.Errorf("REST backend %q: no credential and host binding (RESTAdapterOptions.Scope); set Unbound to build it without one", spec.Backend.Name)
 	}
@@ -220,16 +221,6 @@ func NewRESTAdapter(spec *dadl.Spec, creds credentials.CredentialStore, logger *
 			return nil, fmt.Errorf("REST backend %q: %w", spec.Backend.Name, err)
 		}
 		hostScope = hs
-		// Tools outside include_tools are not checked: Execute refuses them,
-		// and composites reach their api.* tools through Execute as well.
-		// The health check tool runs without Execute, so it stays checked.
-		include := buildIncludeSet(spec, opts.IncludeTools, slog.New(slog.DiscardHandler))
-		reachable := func(name string) bool {
-			if include == nil || include[name] {
-				return true
-			}
-			return spec.Backend.Health != nil && spec.Backend.Health.Tool == name
-		}
 		if err := dadl.CheckScopeOf(spec, credScope, hostScope, reachable); err != nil {
 			return nil, err
 		}
@@ -242,12 +233,12 @@ func NewRESTAdapter(spec *dadl.Spec, creds credentials.CredentialStore, logger *
 	// and redirect validation (H-3). When AllowPrivateURL is set, IP checks are
 	// skipped in both the dialer and redirect handler.
 	// With AllowPrivateURL only the destinations the configuration names
-	// (base_url, token_url, absolute tool paths) may resolve to private
-	// addresses; a redirect target or any other host learned at run time is
-	// checked at dial time like without it.
+	// (base_url, token_url, absolute paths of tools that can be called) may
+	// resolve to private addresses; a redirect target or any other host
+	// learned at run time is checked at dial time like without it.
 	var trusted map[string]bool
 	if opts.AllowPrivateURL {
-		trusted = declaredDestinations(spec)
+		trusted = declaredDestinations(spec, reachable)
 	}
 	transport := guardedTransport(defaultHTTPTimeout, false, trusted, opts.TLSSkipVerify)
 	streamTransport := guardedTransport(defaultStreamingHTTPTimeout, false, trusted, opts.TLSSkipVerify)
@@ -413,6 +404,21 @@ func (a *RESTAdapter) effectiveMaxBodySize(tool *dadl.ToolDef) int64 {
 	// Unreachable for adapters built by NewRESTAdapter; a hand-constructed
 	// adapter falls back to the ceiling rather than to no limit at all.
 	return maxUploadBytes
+}
+
+// reachableTools reports which tools of spec a backend can send requests
+// for under the include_tools list include. Tools outside it cannot be
+// called: Execute refuses them, and composites reach their api.* tools
+// through Execute as well. The health check tool runs without Execute, so
+// it stays reachable. Without include_tools every tool is reachable.
+func reachableTools(spec *dadl.Spec, include []string) func(tool string) bool {
+	set := buildIncludeSet(spec, include, slog.New(slog.DiscardHandler))
+	return func(name string) bool {
+		if set == nil || set[name] {
+			return true
+		}
+		return spec.Backend.Health != nil && spec.Backend.Health.Tool == name
+	}
 }
 
 // buildIncludeSet validates an include_tools list against the spec and returns

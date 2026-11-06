@@ -31,8 +31,10 @@ import (
 const (
 	hardeningSecret     = "client-secret-value" //nolint:gosec // test fixture, not a credential
 	hardeningSecretName = "csecret"
-	hardeningBase       = "https://api.example.com"
-	hardeningLogin      = "/signin"
+	// formsLogin is the login path of the session tests.
+	formsLogin     = "/login"
+	hardeningBase  = "https://api.example.com"
+	hardeningLogin = "/signin"
 )
 
 // mapCreds is a minimal CredentialStore backed by a map.
@@ -173,7 +175,6 @@ func TestRestAuth_SessionLoginStaysOnBaseHost(t *testing.T) {
 // TestSessionLoginURL_Forms pins the login URL rules across bypass attempts
 // and the base_url forms that must keep working, userinfo included.
 func TestSessionLoginURL_Forms(t *testing.T) {
-	const formsLogin = "/login"
 	cases := []struct {
 		name, base, path string
 		wantErr          bool

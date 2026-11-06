@@ -38,22 +38,51 @@ import (
 
 // resettableJar wraps an http.CookieJar so it can be cleared on re-login
 // without replacing the jar reference held by multiple HTTP clients.
+//
+// A cookie jar keys cookies by host and path only, and Go's client asks it
+// for every redirect hop after CheckRedirect ran. With a host scope set, the
+// jar therefore answers only for destinations the scope allows (scheme,
+// host and port), so a session cookie never follows a redirect to another
+// port or scheme of the same host, and takes no cookies from such a
+// destination either.
 type resettableJar struct {
-	mu  sync.Mutex
-	jar http.CookieJar
+	mu    sync.Mutex
+	jar   http.CookieJar
+	scope *HostScope
 }
 
-// SetCookies implements http.CookieJar.
+// allows reports whether the jar may answer for or store cookies of u.
+// The caller holds r.mu.
+func (r *resettableJar) allows(u *url.URL) bool {
+	return r.scope == nil || r.scope.check(u.Scheme, u.Hostname(), u.Port()).ok
+}
+
+// setScope binds the jar to the backend's host scope; nil unbinds it.
+func (r *resettableJar) setScope(s *HostScope) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.scope = s
+}
+
+// SetCookies implements http.CookieJar. Cookies from a destination outside
+// the host scope are dropped.
 func (r *resettableJar) SetCookies(u *url.URL, cookies []*http.Cookie) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if !r.allows(u) {
+		return
+	}
 	r.jar.SetCookies(u, cookies)
 }
 
-// Cookies implements http.CookieJar.
+// Cookies implements http.CookieJar. A destination outside the host scope
+// gets no cookies.
 func (r *resettableJar) Cookies(u *url.URL) []*http.Cookie {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if !r.allows(u) {
+		return nil
+	}
 	return r.jar.Cookies(u)
 }
 
@@ -178,6 +207,9 @@ func (a *RestAuth) SetScope(creds *CredentialScope, hosts *HostScope) {
 		a.creds = &scopedStore{inner: a.creds, scope: creds}
 	}
 	a.hostScope = hosts
+	if a.cookieJar != nil {
+		a.cookieJar.setScope(hosts)
+	}
 }
 
 // checkHost refuses to send credentials to a host outside the scope.

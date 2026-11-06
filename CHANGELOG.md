@@ -13,6 +13,26 @@ for the full narrative and details.
 
 ### Added
 
+- Credential store `command` (`CREDENTIAL_STORE=command`). ToolMesh runs
+  `TOOLMESH_CREDENTIAL_COMMAND`, for example `sops -d --output-type dotenv`
+  on an encrypted file, and keeps the values it prints in memory only: never
+  in the process environment, which Docker writes into the container
+  configuration on disk, and never in the log. The output is dotenv, or JSON
+  with `TOOLMESH_CREDENTIAL_FORMAT=json`: `TOOLMESH_CREDENTIAL_JSON_PATH`
+  selects the object that holds the values (`data.data` for
+  `vault kv get -format=json` or `bao kv get -format=json`), and nested
+  objects below it are flattened. The command runs without a shell; a failed
+  first run stops the start. `TOOLMESH_CREDENTIAL_RELOAD_IN` refreshes the
+  values on an interval, and a `RELOAD_IN` key in the output sets the next
+  run itself, which suits short-lived tokens. A failed
+  refresh keeps the previous values and retries with backoff. With this store
+  `TOOLMESH_AUTH_PASSWORD`, `TOOLMESH_API_KEY`, `REDIS_URL` and `env:`
+  remappings come from the output too, and stdio backends receive only the
+  variables their new `credential_env` entry in `backends.yaml` names. Two
+  metrics follow the runs: `toolmesh_credential_store_runs_total{result}` and
+  `toolmesh_credential_store_last_success_timestamp_seconds`. The embedded
+  store behaves as before. See `docs/configuration.md`.
+
 - DADL health checks (spec §4.6) are implemented. A DADL can declare under
   `backend.health` the cheapest call that proves the API is reachable and the
   credential works, by referencing a tool or naming an endpoint. ToolMesh runs
@@ -79,6 +99,11 @@ for the full narrative and details.
   hours up to that maximum and one typed in whole minutes or hours; the
   request view (`GET /approve/<id>/request`) carries `ttl_max`, and
   `ttl_choices` runs from the shortest to the longest.
+
+### Fixed
+
+- A `REDIS_URL` that does not parse no longer puts the URL, and with it a
+  password, into the log; the warning names only what is wrong with it.
 
 ## [0.5.0] - 2026-10-23
 

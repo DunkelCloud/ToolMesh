@@ -27,6 +27,10 @@ for the full narrative and details.
   entries need a `name`. DADLs with credential names other than letters,
   digits and `_`, or with a parameter default `credential:<name>`, are
   refused at parse. After upgrading, check the log for `backend refused`.
+- Session cookies of a backend follow its host binding: a redirect to
+  another port or scheme of the base host no longer carries them. A
+  warning at load names entries whose DADL sends credentials over plain
+  http.
 - `env:` keys of a backend are read in upper case by both the credential
   binding and the remapping; before, a key in another case widened what the
   backend could read without remapping the read.

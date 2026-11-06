@@ -53,7 +53,30 @@ for the full narrative and details.
   lists as a relaxed control. Blob files left by a previous run are removed at
   startup; they could no longer be served. See `docs/configuration.md`.
 
+- The `execute_code` sandbox provides `atob`, `btoa`, `TextEncoder` and
+  `TextDecoder` (UTF-8). A base64 payload, such as the content of a GitHub
+  file read, decodes with the usual idiom instead of a hand-written alphabet
+  table. Composites and unit backends get the same four globals.
+
+- A failed call's entry in the `execute_code` result listing carries the
+  arguments the script sent as `params`, with the values of secret-looking
+  names (`password`, `token`, `api_key`, …) redacted, so a script with
+  several calls shows which one failed with what. Successful entries are
+  unchanged.
+
 ### Changed
+
+- A call to an MCP backend is checked against the tool's `inputSchema`
+  before it leaves ToolMesh. An undeclared argument or a missing required
+  one is rejected with the same `invalid_input` error a REST tool raises:
+  it names the argument, the closest declared name where there is one
+  (`topK` for `top_k`) and the declared parameter set. The backend's own
+  error used to come back raw and usually without the accepted names.
+  **Behavior change:** an argument an MCP backend used to drop silently is
+  now an error. A schema that opens its property set on purpose
+  (`additionalProperties` true or a schema, `patternProperties`) keeps
+  accepting undeclared names, and a schema that declares no properties is
+  not checked.
 
 - OAuth clients registered at `/register` expire. A client that never obtains
   a token is forgotten after a day (`TOOLMESH_DCR_CLIENT_TTL`, default

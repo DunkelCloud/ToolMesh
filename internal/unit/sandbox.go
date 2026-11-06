@@ -179,6 +179,7 @@ func newBareRuntime() *goja.Runtime {
 	// RangeError instead of growing the runtime stack toward an OOM.
 	rt.SetMaxCallStackSize(maxJSCallStackDepth)
 	composite.LockdownRuntime(rt)
+	composite.InstallTextCodecs(rt)
 
 	// Minimal console — discards output. Units that need to log should
 	// surface signals via _meta or return values instead.

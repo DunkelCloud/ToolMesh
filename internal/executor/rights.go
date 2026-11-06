@@ -449,7 +449,7 @@ func (e *Executor) AuditRightsQuery(ctx context.Context, params map[string]any, 
 		CallerClass: uc.CallerClass,
 		Tool:        RightsToolName,
 		Backend:     "toolmesh",
-		Params:      sanitizeParams(params),
+		Params:      SanitizeParams(params),
 		DurationMs:  time.Since(start).Milliseconds(),
 		Status:      statusSuccess,
 	}

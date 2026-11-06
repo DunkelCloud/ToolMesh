@@ -60,8 +60,9 @@ func newRuntime(
 	// RangeError instead of growing the runtime stack toward an OOM.
 	rt.SetMaxCallStackSize(maxJSCallStackDepth)
 
-	// Lock down the sandbox first
+	// Lock down the sandbox first, then add the standard text codecs.
 	LockdownRuntime(rt)
+	InstallTextCodecs(rt)
 
 	// Set up params object
 	if params == nil {

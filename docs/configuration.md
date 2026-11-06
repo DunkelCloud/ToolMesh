@@ -646,8 +646,14 @@ and time remaining) and its pending requests (`requests`, each with its
 approval link and fingerprint, so that the link can be handed over later), and
 describes these kits with their warnings.
 
-The answer shows only the tools the caller may call or get through a kit.
-For any other tool it says `denied`, without telling whether the tool exists.
+The built-in tools ToolMesh lists (`discover_tools`, `execute_code`,
+`tell_me_my_rights`, and `request_grant` and `upload_file` where offered) are
+`allowed` in a preflight: ToolMesh runs them itself, without the authorization
+step and the gate policies, and checks every tool that `execute_code` calls
+when it calls it. The answer shows only the tools the caller may call or get
+through a kit. For any other name a preflight says `denied` with the reason
+`unknown tool`, both when no tool has the name and when the caller may not see
+the tool, so that it does not tell whether the tool exists.
 Every call is recorded in the audit trail (tool `tell_me_my_rights`, backend
 `toolmesh`): the answer is the first thing an agent that was taken over would
 look up. In external mode there are no kits, so the verdicts are `allowed` and

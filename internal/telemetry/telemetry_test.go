@@ -274,6 +274,13 @@ func newBatchCollector(t *testing.T, failAt int) *batchCollector {
 	return b
 }
 
+// count returns the number of requests the endpoint received.
+func (b *batchCollector) count() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.requests
+}
+
 func TestSend_SplitsReportIntoBatchesOfAtMost50(t *testing.T) {
 	tests := []struct {
 		backends  int
@@ -544,49 +551,6 @@ func TestRun_ResumesPartialIntervalAfterRestart(t *testing.T) {
 
 	if got < 1 {
 		t.Errorf("expected at least 1 send within 130ms (resumed partial interval), got %d", got)
-	}
-}
-
-// TestRun_FullIntervalWhenNeverSent ensures that a fresh collector without a
-// prior LastSent still waits a full interval before the first send (no
-// spurious immediate fire from the overdue path).
-func TestRun_FullIntervalWhenNeverSent(t *testing.T) {
-	t.Setenv("TELEMETRY_INTERVAL", "500ms")
-
-	var (
-		mu   sync.Mutex
-		hits int
-	)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		mu.Lock()
-		hits++
-		mu.Unlock()
-		w.WriteHeader(http.StatusNoContent)
-	}))
-	defer srv.Close()
-
-	c := New(t.TempDir(), "v1", quietLogger())
-	c.SetEndpoint(srv.URL)
-	c.RegisterBackend("api", "hashA")
-	c.RecordCall("api", true)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		c.Run(ctx)
-	}()
-
-	// At 100ms, there should be no sends yet (full interval is 500ms).
-	time.Sleep(100 * time.Millisecond)
-	mu.Lock()
-	got := hits
-	mu.Unlock()
-	cancel()
-	<-done
-
-	if got != 0 {
-		t.Errorf("expected 0 sends at 100ms into a 500ms interval, got %d", got)
 	}
 }
 

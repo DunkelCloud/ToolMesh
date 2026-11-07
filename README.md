@@ -183,7 +183,7 @@ with `CREDENTIAL_NOTES_API_KEY=...` in `.env`. A local MCP server runs with `tra
 
 ## Telemetry
 
-ToolMesh sends usage statistics once every 24 hours: a random site ID, the SHA-256 hash of each DADL file, the number of tool calls and errors per DADL, the number of MCP server backends and the ToolMesh version. It sends no user IDs, keys, parameters, URLs, host names or request content; the receiving endpoint sees the sender's IP address. To switch it off, set `DO_NOT_SEND_ANONYMOUS_STATISTICS=yes` in `.env`. Details are in [.env.example](.env.example).
+ToolMesh sends usage statistics once every 24 hours, the first time a few minutes after the first start: a random site ID, the SHA-256 hash of each DADL file, the number of tool calls and errors per DADL, the number of MCP server backends and the ToolMesh version. It sends no user IDs, keys, parameters, URLs, host names or request content; the receiving endpoint sees the sender's IP address. To switch it off, set `DO_NOT_SEND_ANONYMOUS_STATISTICS=yes` in `.env`. Details are in [.env.example](.env.example).
 
 ## Connecting clients
 

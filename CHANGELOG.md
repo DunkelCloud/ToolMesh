@@ -102,6 +102,10 @@ for the full narrative and details.
 
 ### Fixed
 
+- The MCP registry entry (`server.json`) declares the `Authorization` header
+  of the remote endpoint, optional and secret, so that registry listings no
+  longer present ToolMesh as needing no authentication. ToolMesh rejects every
+  request without an API key or an OAuth access token.
 - A `REDIS_URL` that does not parse no longer puts the URL, and with it a
   password, into the log; the warning names only what is wrong with it.
 

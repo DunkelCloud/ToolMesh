@@ -21,6 +21,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -265,8 +266,8 @@ func TestRun_RestartLoopKeepsSchedule(t *testing.T) {
 
 // TestRun_UnwritableDataDir starts on a data directory that cannot be
 // written. The start goes through, the report goes out after the start
-// delay, its time is kept in memory for the next one, and the failed writes
-// are not logged as warnings.
+// delay, its time is kept in memory for the next one, and the failed write
+// is logged as a warning that names the changing site ID.
 func TestRun_UnwritableDataDir(t *testing.T) {
 	blocker := filepath.Join(t.TempDir(), "file")
 	if err := os.WriteFile(blocker, nil, 0o600); err != nil {
@@ -305,8 +306,8 @@ func TestRun_UnwritableDataDir(t *testing.T) {
 	if !lastSent.Equal(sentAt) {
 		t.Errorf("last report in memory = %v, want %v", lastSent, sentAt)
 	}
-	if logs.Len() != 0 {
-		t.Errorf("warnings logged for an unwritable data directory:\n%s", logs.String())
+	if !strings.Contains(logs.String(), "level=WARN") || !strings.Contains(logs.String(), "site ID changes on every restart") {
+		t.Errorf("no warning about the changing site ID for an unwritable data directory:\n%s", logs.String())
 	}
 }
 

@@ -483,13 +483,26 @@ func (c *Collector) persistState() {
 	path := filepath.Join(c.dataDir, stateFile)
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, data, 0o644); err != nil { //nolint:gosec // non-sensitive aggregated counters
-		c.logger.Info("telemetry: cannot write state file, keeping the state in memory", "error", err)
+		c.logStateWriteFailure("cannot write state file", err)
 		return
 	}
 	if err := os.Rename(tmp, path); err != nil {
-		c.logger.Info("telemetry: cannot replace state file, keeping the state in memory", "error", err)
+		c.logStateWriteFailure("cannot replace state file", err)
 		_ = os.Remove(tmp)
 	}
+}
+
+// logStateWriteFailure logs a state file that could not be written. With
+// telemetry on it is a warning: the site ID is not kept either, so every
+// restart reports as a new installation. With telemetry off nothing is sent,
+// and the state only keeps the counters.
+func (c *Collector) logStateWriteFailure(what string, err error) {
+	if c.disabled {
+		c.logger.Info("telemetry: "+what+", keeping the state in memory", "error", err)
+		return
+	}
+	c.logger.Warn("telemetry: "+what+"; the site ID changes on every restart until the data directory is writable",
+		"error", err)
 }
 
 // SetEndpoint overrides the telemetry endpoint URL (for testing).

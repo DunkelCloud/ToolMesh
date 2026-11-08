@@ -119,11 +119,11 @@ func TestCheckResponse_SemanticCodes(t *testing.T) {
 		if _, retryable := m.CheckResponse(503, nil); retryable {
 			t.Error("terminal status must not be retryable")
 		}
-		if _, retryable := m.CheckResponse(500, nil); !retryable {
-			t.Error("5xx default must be retryable")
+		if _, retryable := m.CheckResponse(500, nil); retryable {
+			t.Error("5xx in neither list must be terminal (spec §8)")
 		}
 		if _, retryable := m.CheckResponse(404, nil); retryable {
-			t.Error("4xx default must be terminal")
+			t.Error("4xx in neither list must be terminal")
 		}
 	})
 }

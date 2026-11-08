@@ -99,6 +99,13 @@ for the full narrative and details.
   hours up to that maximum and one typed in whole minutes or hours; the
   request view (`GET /approve/<id>/request`) carries `ttl_max`, and
   `ttl_choices` runs from the shortest to the longest.
+- A REST call answered with a status that the DADL lists in neither
+  `errors.retry_on` nor `errors.terminal` is no longer retried, as the DADL
+  spec (§8) requires. Until now every such `5xx`, and a `3xx` that came
+  through, was retried anyway, so leaving a `5xx` out of `retry_on` had no
+  effect. A DADL that wants a `5xx` such as `500` retried lists it in
+  `retry_on`; a tool with its own `errors` block lists its own `retry_on`,
+  because that block replaces the backend defaults.
 
 ### Fixed
 

@@ -115,6 +115,12 @@ for the full narrative and details.
   request without an API key or an OAuth access token.
 - A `REDIS_URL` that does not parse no longer puts the URL, and with it a
   password, into the log; the warning names only what is wrong with it.
+- A new installation sends its first telemetry report one to five minutes
+  after it starts instead of after 24 hours, so installations that restart
+  more often than once a day, for example after updates or on laptops,
+  report at all. A start sends a report only when none has succeeded yet or
+  the last one, kept in `toolmesh.json`, is older than 24 hours; restarts
+  add no reports.
 - Tool calls to a backend whose name contains an underscore, such as
   `web_search`, are attributed to that backend in the audit trail, in
   telemetry and in the metrics `toolmesh_tool_calls_total` and

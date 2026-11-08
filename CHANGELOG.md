@@ -113,6 +113,14 @@ for the full narrative and details.
   a backend `web` or not at all. Dashboards and alerts that select such a
   backend by the shortened `backend` label need its full name now. Tools no
   backend claims are counted under backend `unknown` with their full name.
+- The preflight of `tell_me_my_rights` (`tools: [...]`) reports the built-in
+  tools ToolMesh lists, such as `execute_code`, `discover_tools` and
+  `upload_file`, as `allowed`. It used to call them `denied` because no
+  backend has them, so an agent that checked its rights first, as the tool
+  recommends, gave up on tools it could call. A name that is not a tool the
+  caller can see or get a kit for now has the reason `unknown tool: ...`
+  instead of the wording of a denial; a tool the caller may not see still
+  reads the same as a name no tool has.
 
 ## [0.5.0] - 2026-10-23
 

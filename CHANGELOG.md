@@ -115,6 +115,15 @@ for the full narrative and details.
   request without an API key or an OAuth access token.
 - A `REDIS_URL` that does not parse no longer puts the URL, and with it a
   password, into the log; the warning names only what is wrong with it.
+- Tool calls to a backend whose name contains an underscore, such as
+  `web_search`, are attributed to that backend in the audit trail, in
+  telemetry and in the metrics `toolmesh_tool_calls_total` and
+  `toolmesh_tool_call_duration_seconds`. The backend was taken from the
+  tool name up to the first underscore, so `web_search_query` was recorded
+  as backend `web`, tool `search_query`, and telemetry counted the call for
+  a backend `web` or not at all. Dashboards and alerts that select such a
+  backend by the shortened `backend` label need its full name now. Tools no
+  backend claims are counted under backend `unknown` with their full name.
 - The preflight of `tell_me_my_rights` (`tools: [...]`) reports the built-in
   tools ToolMesh lists, such as `execute_code`, `discover_tools` and
   `upload_file`, as `allowed`. It used to call them `denied` because no

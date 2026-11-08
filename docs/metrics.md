@@ -101,8 +101,8 @@ own right.
 
 | Label     | Values                                                              |
 | --------- | ------------------------------------------------------------------- |
-| `backend` | Backend name (e.g., `hetzner`, `deepl`), `builtin` for `discover_tools`/`execute_code`/`tell_me_my_rights`/`request_grant`, or `unknown` for tools without a backend prefix. |
-| `tool`    | Tool name without the backend prefix, or `*` if `TOOLMESH_METRICS_LABEL_TOOL=false`. |
+| `backend` | Name of the backend the call is routed to, as configured (e.g., `hetzner`, `deepl`, `web_search`), `builtin` for `discover_tools`/`execute_code`/`tell_me_my_rights`/`request_grant`, or `unknown` for tools no backend claims. |
+| `tool`    | Tool name without that backend's prefix (`web_search_query` of backend `web_search` is `query`), the full name for `unknown`, or `*` if `TOOLMESH_METRICS_LABEL_TOOL=false`. |
 | `result`  | `success`, `error`, `denied`                                        |
 
 - `success` — completed without error.

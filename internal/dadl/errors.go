@@ -121,9 +121,11 @@ func (m *ErrorMapper) semanticCode(statusCode int) string {
 }
 
 // CheckResponse examines the HTTP status code and returns:
-// - (nil, false) if the response is successful
+// - (nil, false) if the response is successful (2xx)
 // - (*APIError, true) if the error is retryable (status in retry_on)
-// - (*APIError, false) if the error is terminal (status in terminal, or default for 4xx)
+// - (*APIError, false) for every other status: listed in terminal, or listed
+// in neither retry_on nor terminal (DADL spec §8 — this includes any 5xx the
+// DADL left out of retry_on and a 3xx that surfaces from the transport)
 func (m *ErrorMapper) CheckResponse(statusCode int, body []byte) (err error, retryable bool) {
 	if statusCode >= 200 && statusCode < 300 {
 		return nil, false
@@ -136,22 +138,17 @@ func (m *ErrorMapper) CheckResponse(statusCode int, body []byte) (err error, ret
 		ProviderCode: m.extractProviderCode(body),
 	}
 
-	// Check retryable
+	// Only statuses the DADL lists in retry_on are retried.
 	for _, code := range m.config.RetryOn {
 		if statusCode == code {
 			return apiErr, true
 		}
 	}
 
-	// Check terminal
-	for _, code := range m.config.Terminal {
-		if statusCode == code {
-			return apiErr, false
-		}
-	}
-
-	// Default: 4xx = terminal, 5xx = retryable
-	return apiErr, statusCode >= 500 || statusCode < 400
+	// Everything else is terminal: statuses in terminal, and (spec §8) every
+	// status listed in neither list, whatever its class — a 5xx the DADL left
+	// out of retry_on is not retried.
+	return apiErr, false
 }
 
 // maxErrorMessageLen is the maximum length of error messages passed to clients (M-16).

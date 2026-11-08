@@ -99,9 +99,20 @@ for the full narrative and details.
   hours up to that maximum and one typed in whole minutes or hours; the
   request view (`GET /approve/<id>/request`) carries `ttl_max`, and
   `ttl_choices` runs from the shortest to the longest.
+- A REST call answered with a status that the DADL lists in neither
+  `errors.retry_on` nor `errors.terminal` is no longer retried, as the DADL
+  spec (§8) requires. Until now every such `5xx`, and a `3xx` that came
+  through, was retried anyway, so leaving a `5xx` out of `retry_on` had no
+  effect. A DADL that wants a `5xx` such as `500` retried lists it in
+  `retry_on`; a tool with its own `errors` block lists its own `retry_on`,
+  because that block replaces the backend defaults.
 
 ### Fixed
 
+- The MCP registry entry (`server.json`) declares the `Authorization` header
+  of the remote endpoint, optional and secret, so that registry listings no
+  longer present ToolMesh as needing no authentication. ToolMesh rejects every
+  request without an API key or an OAuth access token.
 - A `REDIS_URL` that does not parse no longer puts the URL, and with it a
   password, into the log; the warning names only what is wrong with it.
 - A new installation sends its first telemetry report one to five minutes
@@ -110,6 +121,15 @@ for the full narrative and details.
   report at all. A start sends a report only when none has succeeded yet or
   the last one, kept in `toolmesh.json`, is older than 24 hours; restarts
   add no reports.
+- Tool calls to a backend whose name contains an underscore, such as
+  `web_search`, are attributed to that backend in the audit trail, in
+  telemetry and in the metrics `toolmesh_tool_calls_total` and
+  `toolmesh_tool_call_duration_seconds`. The backend was taken from the
+  tool name up to the first underscore, so `web_search_query` was recorded
+  as backend `web`, tool `search_query`, and telemetry counted the call for
+  a backend `web` or not at all. Dashboards and alerts that select such a
+  backend by the shortened `backend` label need its full name now. Tools no
+  backend claims are counted under backend `unknown` with their full name.
 - The preflight of `tell_me_my_rights` (`tools: [...]`) reports the built-in
   tools ToolMesh lists, such as `execute_code`, `discover_tools` and
   `upload_file`, as `allowed`. It used to call them `denied` because no

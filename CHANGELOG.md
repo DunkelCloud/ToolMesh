@@ -110,6 +110,14 @@ for the full narrative and details.
   report at all. A start sends a report only when none has succeeded yet or
   the last one, kept in `toolmesh.json`, is older than 24 hours; restarts
   add no reports.
+- The preflight of `tell_me_my_rights` (`tools: [...]`) reports the built-in
+  tools ToolMesh lists, such as `execute_code`, `discover_tools` and
+  `upload_file`, as `allowed`. It used to call them `denied` because no
+  backend has them, so an agent that checked its rights first, as the tool
+  recommends, gave up on tools it could call. A name that is not a tool the
+  caller can see or get a kit for now has the reason `unknown tool: ...`
+  instead of the wording of a denial; a tool the caller may not see still
+  reads the same as a name no tool has.
 
 ## [0.5.0] - 2026-10-23
 

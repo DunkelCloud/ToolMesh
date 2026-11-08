@@ -26,6 +26,7 @@ import (
 	"github.com/DunkelCloud/ToolMesh/internal/audit"
 	"github.com/DunkelCloud/ToolMesh/internal/authz"
 	"github.com/DunkelCloud/ToolMesh/internal/backend"
+	"github.com/DunkelCloud/ToolMesh/internal/blob"
 	"github.com/DunkelCloud/ToolMesh/internal/executor"
 	"github.com/DunkelCloud/ToolMesh/internal/gate"
 	"github.com/DunkelCloud/ToolMesh/internal/userctx"
@@ -187,9 +188,9 @@ func TestTellMeMyRights_Preflight(t *testing.T) {
 	want := map[string]rightsTool{
 		testGraylogSearch:   {Tool: testGraylogSearch, Verdict: executor.VerdictEscalatable, Kits: []string{testKitNetDiag}},
 		testUnifiClients:    {Tool: testUnifiClients, Verdict: executor.VerdictEscalatable, Kits: []string{testKitNetDiag}},
-		testGraylogDelete:   {Tool: testGraylogDelete, Verdict: executor.VerdictDenied, Reason: reasonUnavailable},
-		testVaultFetch:      {Tool: testVaultFetch, Verdict: executor.VerdictDenied, Reason: reasonUnavailable},
-		testUnknownToolName: {Tool: testUnknownToolName, Verdict: executor.VerdictDenied, Reason: reasonUnavailable},
+		testGraylogDelete:   {Tool: testGraylogDelete, Verdict: executor.VerdictDenied, Reason: reasonUnknown},
+		testVaultFetch:      {Tool: testVaultFetch, Verdict: executor.VerdictDenied, Reason: reasonUnknown},
+		testUnknownToolName: {Tool: testUnknownToolName, Verdict: executor.VerdictDenied, Reason: reasonUnknown},
 	}
 	if len(a.Tools) != len(want) {
 		t.Fatalf("tools = %+v, want %d entries", a.Tools, len(want))
@@ -221,6 +222,77 @@ func TestTellMeMyRights_PreflightAllowed(t *testing.T) {
 	a := askRights(t, h, testKitUserOwner, map[string]any{argNameTools: []any{testGraylogDelete}})
 	if len(a.Tools) != 1 || a.Tools[0].Verdict != executor.VerdictAllowed || a.Bundle != nil || len(a.Kits) != 0 {
 		t.Errorf("answer = %+v, want one allowed tool, no bundle, no kits", a)
+	}
+}
+
+// TestTellMeMyRights_PreflightBuiltinTools checks that a built-in tool the
+// handler offers is allowed even to a caller that may call no backend tool,
+// as HandleToolCall dispatches it without the executor, and that a built-in
+// tool it does not offer reads like a name no tool has.
+func TestTellMeMyRights_PreflightBuiltinTools(t *testing.T) {
+	always := []string{toolDiscoverTools, toolExecuteCode, toolTellMeMyRights}
+	tests := []struct {
+		name    string
+		blob    bool // file broker on: upload_file
+		grants  bool // grant service: request_grant while a kit exists
+		noKits  bool // the policy defines no kit
+		debug   bool // debug_echo and debug_generate
+		allowed []string
+	}{
+		{
+			name: "everything offered", blob: true, grants: true, debug: true,
+			allowed: append(slices.Clone(always), toolUploadFile, toolRequestGrant, toolDebugEcho, toolDebugGenerate),
+		},
+		{name: "nothing optional offered", allowed: always},
+		{name: "file broker only", blob: true, allowed: append(slices.Clone(always), toolUploadFile)},
+		{name: "grant service without kits", grants: true, noKits: true, allowed: always},
+		{name: "debug tools only", debug: true, allowed: append(slices.Clone(always), toolDebugEcho, toolDebugGenerate)},
+	}
+	names := []string{
+		toolDiscoverTools, toolExecuteCode, toolTellMeMyRights, toolUploadFile,
+		toolRequestGrant, toolDebugEcho, toolDebugGenerate, testUnknownToolName,
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var s kitSetup
+			if tc.grants {
+				s, _ = newGrantSetup(t)
+			} else {
+				s = newKitSetup(t, nil)
+			}
+			if tc.noKits {
+				if _, err := s.engine.ApplyPolicy(context.Background(), authz.Policy{
+					Grants: []authz.Grant{{User: testKitUserOwner, AllTools: true}},
+				}); err != nil {
+					t.Fatalf("ApplyPolicy: %v", err)
+				}
+			}
+			if tc.blob {
+				store, err := blob.NewStore(t.TempDir(), "http://localhost:8080", newQuietMCPLogger())
+				if err != nil {
+					t.Fatalf("NewStore: %v", err)
+				}
+				s.handler.SetBlobStore(store, blob.DefaultUploadLimits())
+			}
+			s.handler.debugTools = tc.debug
+
+			a := askRights(t, s.handler, testKitUserBob, map[string]any{argNameTools: names})
+			if len(a.Tools) != len(names) {
+				t.Fatalf("tools = %+v, want %d entries", a.Tools, len(names))
+			}
+			for i, got := range a.Tools {
+				want := rightsTool{Tool: names[i], Verdict: executor.VerdictDenied, Reason: reasonUnknown}
+				if slices.Contains(tc.allowed, names[i]) {
+					want = rightsTool{Tool: names[i], Verdict: executor.VerdictAllowed}
+				}
+				if got.Tool != want.Tool || got.Verdict != want.Verdict || got.Reason != want.Reason || len(got.Kits) != 0 {
+					t.Errorf("tool %d = %+v, want %+v", i, got, want)
+				}
+			}
+			if a.Bundle != nil {
+				t.Errorf("bundle = %+v, want none", a.Bundle)
+			}
+		})
 	}
 }
 

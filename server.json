@@ -18,7 +18,15 @@
           "format": "string",
           "placeholder": "toolmesh.example.com"
         }
-      }
+      },
+      "headers": [
+        {
+          "name": "Authorization",
+          "description": "Bearer token: ToolMesh API key or OAuth access token. ToolMesh rejects every request without credentials.",
+          "isRequired": false,
+          "isSecret": true
+        }
+      ]
     }
   ]
 }

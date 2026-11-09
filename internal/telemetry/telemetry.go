@@ -15,6 +15,8 @@
 // Package telemetry implements opt-out usage telemetry for ToolMesh.
 // It collects aggregated DADL usage statistics (call counts, error counts per
 // content-hashed DADL file) and reports them to a central endpoint every 24 hours.
+// A report that is due when ToolMesh starts, because none succeeded yet or
+// the last one is older than 24 hours, goes out a few minutes after the start.
 // Every report carries the installation's site ID: a random UUIDv7 created on
 // the first start with telemetry enabled and kept in the state file, so that
 // reports can be counted per installation instead of per source IP.
@@ -26,6 +28,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"math/rand/v2"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -46,6 +49,13 @@ const (
 	// maxBatchEntries is the largest number of report entries the collector
 	// accepts in one request. Larger reports go out in several requests.
 	maxBatchEntries = 50
+
+	// startDelayMin and startDelayMax bound the random delay of a report that
+	// is due when ToolMesh starts. The delay lets the start settle; its random
+	// part keeps installations that restart together, such as after an
+	// update, from reporting at the same moment.
+	startDelayMin = 1 * time.Minute
+	startDelayMax = 5 * time.Minute
 )
 
 // counterPair tracks calls and errors for a single DADL backend.
@@ -91,6 +101,12 @@ type Collector struct {
 	disabled bool
 	logger   *slog.Logger
 	client   *http.Client
+
+	// The clock, the random delay of a report that is due at start and the
+	// timer of the send loop; tests replace them to drive Run without waiting.
+	now        func() time.Time
+	startDelay func() time.Duration
+	after      func(time.Duration) <-chan time.Time
 }
 
 // New creates a Collector. If DO_NOT_SEND_ANONYMOUS_STATISTICS=yes, sending
@@ -117,6 +133,10 @@ func New(dataDir, version string, logger *slog.Logger) *Collector {
 		disabled: disabled,
 		logger:   logger,
 		client:   &http.Client{Timeout: httpTimeout},
+
+		now:        time.Now,
+		startDelay: randomStartDelay,
+		after:      time.After,
 	}
 
 	if disabled {
@@ -153,6 +173,12 @@ func (c *Collector) ensureSiteID() {
 		"siteID", id.String(),
 		"stateFile", filepath.Join(c.dataDir, stateFile),
 	)
+}
+
+// randomStartDelay returns a random delay between startDelayMin (inclusive)
+// and startDelayMax (exclusive).
+func randomStartDelay() time.Duration {
+	return startDelayMin + rand.N(startDelayMax-startDelayMin) //nolint:gosec // G404: spreads reports over time, nothing secret depends on it
 }
 
 // validSiteID reports whether s is a UUIDv7 in canonical form.
@@ -203,12 +229,16 @@ func (c *Collector) RecordCall(backendName string, success bool) {
 // Run starts the send loop. It blocks until ctx is canceled, at which
 // point it persists the current counters and returns.
 //
-// Scheduling accounts for the persisted LastSent so that containers which
-// restart more often than once per interval still send on schedule:
-//   - Never sent (zero LastSent): first fire after a full interval.
-//   - LastSent older than one interval: send immediately, then schedule normally.
-//   - LastSent within the interval: first fire at (LastSent + interval),
-//     i.e. only the remaining time, not a fresh full interval.
+// The first report of a process is scheduled from the last successful one,
+// which the state file keeps across restarts, so that installations which
+// restart more often than once per interval report on schedule, and a
+// restart neither postpones a report nor adds one:
+//   - No successful report yet, or the last one is at least one interval
+//     old: the report is due and goes out after a random delay of one to
+//     five minutes (at most one interval).
+//   - Otherwise: the report goes out one interval after the last one.
+//
+// After that, a report goes out every interval.
 func (c *Collector) Run(ctx context.Context) {
 	if c.disabled {
 		// Telemetry is opted out, but we still want persistState() to run on
@@ -222,45 +252,38 @@ func (c *Collector) Run(ctx context.Context) {
 	lastSent := c.lastSent
 	c.mu.Unlock()
 
-	var firstDelay time.Duration
-	switch {
-	case lastSent.IsZero():
-		firstDelay = c.interval
-		c.logger.Debug("telemetry: run loop started (no prior send)",
-			"firstSendIn", firstDelay,
-			"interval", c.interval,
-		)
-	case time.Since(lastSent) >= c.interval:
-		age := time.Since(lastSent).Round(time.Second)
-		c.logger.Debug("telemetry: overdue, sending now",
-			"lastSent", lastSent,
-			"interval", c.interval,
-			"age", age,
-		)
-		c.send(ctx)
-		firstDelay = c.interval
-	default:
-		firstDelay = c.interval - time.Since(lastSent)
-		c.logger.Debug("telemetry: run loop started (resuming partial interval)",
-			"firstSendIn", firstDelay.Round(time.Second),
-			"lastSent", lastSent,
-			"interval", c.interval,
-		)
-	}
+	firstDelay := c.firstDelay(lastSent)
+	c.logger.DebugContext(ctx, "telemetry: run loop started",
+		"firstReportIn", firstDelay.Round(time.Second),
+		"lastSent", lastSent,
+		"interval", c.interval,
+	)
 
-	timer := time.NewTimer(firstDelay)
-	defer timer.Stop()
-
+	fire := c.after(firstDelay)
 	for {
 		select {
-		case <-timer.C:
+		case <-fire:
 			c.send(ctx)
-			timer.Reset(c.interval)
+			fire = c.after(c.interval)
 		case <-ctx.Done():
 			c.persistState()
 			return
 		}
 	}
+}
+
+// firstDelay returns how long Run waits before the first report of this
+// process, given the time of the last successful report (zero if none). A
+// last report in the future means the clock went back since; that report
+// counts as due, so that the next one replaces the wrong time.
+func (c *Collector) firstDelay(lastSent time.Time) time.Duration {
+	now := c.now()
+	if !lastSent.IsZero() && !lastSent.After(now) {
+		if next := lastSent.Add(c.interval); next.After(now) {
+			return next.Sub(now)
+		}
+	}
+	return min(c.startDelay(), c.interval)
 }
 
 // send posts the current counters to the telemetry endpoint, in requests of
@@ -294,7 +317,7 @@ func (c *Collector) send(ctx context.Context) {
 	}
 
 	c.mu.Lock()
-	c.lastSent = time.Now().UTC()
+	c.lastSent = c.now().UTC()
 	c.mu.Unlock()
 	c.persistState()
 	c.logger.Info("telemetry: report sent", "entries", len(payload), "requests", requests)
@@ -455,16 +478,31 @@ func (c *Collector) persistState() {
 		return
 	}
 
+	// A data directory that cannot be written leaves the state in memory: the
+	// process keeps reporting on schedule, only a restart starts afresh.
 	path := filepath.Join(c.dataDir, stateFile)
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, data, 0o644); err != nil { //nolint:gosec // non-sensitive aggregated counters
-		c.logger.Warn("telemetry: failed to write state file", "error", err)
+		c.logStateWriteFailure("cannot write state file", err)
 		return
 	}
 	if err := os.Rename(tmp, path); err != nil {
-		c.logger.Warn("telemetry: failed to rename state file", "error", err)
+		c.logStateWriteFailure("cannot replace state file", err)
 		_ = os.Remove(tmp)
 	}
+}
+
+// logStateWriteFailure logs a state file that could not be written. With
+// telemetry on it is a warning: the site ID is not kept either, so every
+// restart reports as a new installation. With telemetry off nothing is sent,
+// and the state only keeps the counters.
+func (c *Collector) logStateWriteFailure(what string, err error) {
+	if c.disabled {
+		c.logger.Info("telemetry: "+what+", keeping the state in memory", "error", err)
+		return
+	}
+	c.logger.Warn("telemetry: "+what+"; the site ID changes on every restart until the data directory is writable",
+		"error", err)
 }
 
 // SetEndpoint overrides the telemetry endpoint URL (for testing).

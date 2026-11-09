@@ -153,6 +153,16 @@ func (h *Handler) isBuiltinTool(name string) bool {
 	return false
 }
 
+// offersBuiltinTool reports whether a tool name is a built-in tool that
+// BuildToolList offers: an isBuiltinTool, except request_grant without a kit
+// to ask for.
+func (h *Handler) offersBuiltinTool(name string) bool {
+	if name == toolRequestGrant {
+		return h.offersRequestGrant()
+	}
+	return h.isBuiltinTool(name)
+}
+
 // HandleToolCall processes a single tool call through the execution pipeline.
 func (h *Handler) HandleToolCall(ctx context.Context, toolName string, params map[string]any) (result *backend.ToolResult, err error) {
 	h.logger.InfoContext(ctx, "handling tool call", logKeyTool, toolName)

@@ -151,13 +151,25 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Initialize credential store via registry
-	credStore, err := credentials.New(cfg.CredentialStore, nil)
+	// Initialize credential store via registry. A store that fetches its
+	// values (command) runs its first fetch here; when that fails, ToolMesh
+	// does not start and the restart policy tries again.
+	credStore, err := credentials.New(cfg.CredentialStore, cfg.CredentialStoreConfig())
 	if err != nil {
 		logger.Error("failed to create credential store", "type", cfg.CredentialStore, "error", err)
 		os.Exit(1) //nolint:gocritic // intentional in main
 	}
 	logger.Info("credential store initialized", "type", cfg.CredentialStore)
+	// A store that keeps its values outside the environment also supplies
+	// ToolMesh's own secrets, once at startup.
+	if src, ok := credStore.(credentials.KeyLookup); ok {
+		if applied := cfg.ApplySecrets(src.LookupKey); len(applied) > 0 {
+			logger.Info("settings taken from the credential store", "names", applied)
+		}
+	}
+	if r, ok := credStore.(credentials.Refresher); ok {
+		go r.Run(ctx)
+	}
 
 	// Load TypeScript tool definitions (canonical source)
 	toolDefs, err := tsdef.LoadDir(cfg.ToolsDir)
@@ -201,6 +213,11 @@ func main() {
 	var metricsReg *metrics.Registry
 	if cfg.MetricsEnabled {
 		metricsReg = metrics.New(metrics.Options{LabelTool: cfg.MetricsLabelTool})
+	}
+	if runs, ok := credStore.(metrics.CredentialStoreRuns); ok {
+		if err := metricsReg.WatchCredentialStore(runs); err != nil {
+			logger.Error("failed to export credential store metrics", "error", err)
+		}
 	}
 
 	// Build backends from backends.yaml (MCP + REST via DADL)
@@ -342,7 +359,7 @@ func main() {
 	if cfg.RedisURL != "" && cfg.RedisURL != "none" {
 		redisOpts, err := redis.ParseURL(cfg.RedisURL)
 		if err != nil {
-			logger.Warn("failed to parse Redis URL, using file-only token store", "error", err)
+			logger.Warn("failed to parse Redis URL, using file-only token store", "error", redisURLError(err))
 		} else {
 			rdb := redis.NewClient(redisOpts)
 			defer func() { _ = rdb.Close() }()

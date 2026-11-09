@@ -92,7 +92,14 @@ The MCPAdapter connects to multiple external MCP servers and aggregates their to
 
 Credentials are injected at execution time within the executor pipeline scope. They never appear in prompts, logs, or model context.
 
-Phase 1 uses an environment-variable-based store (`CREDENTIAL_<NAME>=value`).
+Two stores are built in. `embedded` reads `CREDENTIAL_<NAME>` environment
+variables. `command` runs a configured command (for example a sops
+decryption), keeps the dotenv lines it prints in memory only and refreshes
+them on an interval or when the output asks for it with `RELOAD_IN`. Under
+Docker the environment ends up in the container configuration on disk; the
+`command` store keeps credentials out of it, and stdio backends receive only
+the values their `credential_env` names. See
+[configuration.md](configuration.md#command-store).
 
 ### 6. Gate
 
@@ -161,7 +168,7 @@ toolmesh/
 │   ├── audit/          # Audit store interface + log/sqlite implementations
 │   ├── authz/          # Authorization: embedded OpenFGA, external client, presets, grants
 │   ├── grants/         # Kit requests, approvals and grants (request_grant, /grants)
-│   ├── credentials/    # Credential store interface + EmbeddedStore
+│   ├── credentials/    # Credential store interface, EmbeddedStore, CommandStore
 │   ├── gate/           # Output Gate (goja policy engine)
 │   ├── userctx/        # UserContext propagation
 │   └── config/         # Environment-based configuration
@@ -177,7 +184,7 @@ driver pattern. Three component types are extensible:
 
 | Component | Registry | Built-in | Extension Point |
 |-----------|----------|----------|-----------------|
-| Credential Store | `credentials.Register()` | `embedded` | `CREDENTIAL_STORE=<name>` |
+| Credential Store | `credentials.Register()` | `embedded`, `command` | `CREDENTIAL_STORE=<name>` |
 | Tool Backend | `backend.Register()` | `mcp`, `echo` | `config/backends.yaml` |
 | Output Gate Evaluator | `gate.RegisterEvaluator()` | `goja` | `GATE_EVALUATORS=<list>` |
 

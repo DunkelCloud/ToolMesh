@@ -183,7 +183,7 @@ with `CREDENTIAL_NOTES_API_KEY=...` in `.env`. A local MCP server runs with `tra
 
 ## Telemetry
 
-ToolMesh sends usage statistics once every 24 hours: a random site ID, the SHA-256 hash of each DADL file, the number of tool calls and errors per DADL, the number of MCP server backends and the ToolMesh version. It sends no user IDs, keys, parameters, URLs, host names or request content; the receiving endpoint sees the sender's IP address. To switch it off, set `DO_NOT_SEND_ANONYMOUS_STATISTICS=yes` in `.env`. Details are in [.env.example](.env.example).
+ToolMesh sends usage statistics once every 24 hours, the first time a few minutes after the first start: a random site ID, the SHA-256 hash of each DADL file, the number of tool calls and errors per DADL, the number of MCP server backends and the ToolMesh version. It sends no user IDs, keys, parameters, URLs, host names or request content; the receiving endpoint sees the sender's IP address. To switch it off, set `DO_NOT_SEND_ANONYMOUS_STATISTICS=yes` in `.env`. Details are in [.env.example](.env.example).
 
 ## Connecting clients
 
@@ -283,6 +283,8 @@ An installation upgraded from a version without authorization keeps every tool o
 
 All environment variables are in [docs/configuration.md](docs/configuration.md), among them [audit](docs/configuration.md#audit), [gate policies](docs/configuration.md#gate-policies), [timeouts](docs/configuration.md#timeouts), the [file broker](docs/configuration.md#file-broker), [backend health checks](docs/configuration.md#backend-health-checks) and [logging](docs/configuration.md#logging). Metrics are described in [docs/metrics.md](docs/metrics.md).
 
+With `CREDENTIAL_STORE=command` ToolMesh takes the credentials from a command, such as a sops decryption, and keeps them in memory only, out of the environment that Docker writes into the container configuration on disk; see [docs/configuration.md](docs/configuration.md#command-store).
+
 At startup ToolMesh logs one summary of every control that is still relaxed (missing credential, authorization disabled or open to everyone, open CORS, debug tools, login limits switched off, file broker without quota), each with how to tighten it. The entries are `WARN`; `TOOLMESH_DEV=true` reports them once at `INFO` on a development machine and changes nothing else.
 
 The log level is `info`. At `debug`, ToolMesh logs complete request URLs and payloads, which puts query-string API keys into the log; keep it off in production.
@@ -293,7 +295,7 @@ Prometheus metrics are served on a separate, unauthenticated listener. The Compo
 
 ## Extension model
 
-Credential stores (`embedded`, selected with `CREDENTIAL_STORE`), tool backends (`mcp`, `rest`, `echo`, configured in `config/backends.yaml`) and gate evaluators (`goja`, `GATE_EVALUATORS`) register themselves via `init()`, in the style of Go's `database/sql` drivers. See [docs/architecture.md](docs/architecture.md#extension-model).
+Credential stores (`embedded` and `command`, selected with `CREDENTIAL_STORE`), tool backends (`mcp`, `rest`, `echo`, configured in `config/backends.yaml`) and gate evaluators (`goja`, `GATE_EVALUATORS`) register themselves via `init()`, in the style of Go's `database/sql` drivers. See [docs/architecture.md](docs/architecture.md#extension-model).
 
 ## Building from source
 

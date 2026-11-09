@@ -39,7 +39,7 @@ func (h *recordingHandler) WithGroup(_ string) slog.Handler      { return h }
 
 func TestSanitizeParams(t *testing.T) {
 	const redacted = "[REDACTED]"
-	got := sanitizeParams(map[string]any{
+	got := SanitizeParams(map[string]any{
 		"name":          testUserAlice,
 		paramPassword:   "hunter2",
 		"API_KEY":       "abcd",
@@ -63,7 +63,7 @@ func TestSanitizeParams(t *testing.T) {
 	}
 
 	// Empty params returns input unchanged.
-	if got := sanitizeParams(nil); got != nil {
+	if got := SanitizeParams(nil); got != nil {
 		t.Errorf("nil params = %v, want nil", got)
 	}
 }

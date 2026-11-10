@@ -15,10 +15,13 @@
 package backend
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -210,5 +213,61 @@ func TestRESTAdapter_JQTransform(t *testing.T) {
 	}
 	if result.IsError {
 		t.Errorf("got error: %v", result.Content)
+	}
+}
+
+// TestRESTAdapter_TransformErrorWarnNamesBackendAndTool checks that a jq
+// transform failing at runtime (here on an API that answers an empty list
+// with null) is logged with the backend and tool it belongs to, and that the
+// untransformed body is still returned when no redact list is declared.
+func TestRESTAdapter_TransformErrorWarnNamesBackendAndTool(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set(testHeaderContentType, testContentTypeJSON)
+		_, _ = w.Write([]byte(`null`))
+	}))
+	defer srv.Close()
+
+	spec := &dadl.Spec{
+		Spec: testDADLSpecURL,
+		Backend: dadl.BackendDef{
+			Name: testBackendNameAPI, Type: transportTypeREST, BaseURL: srv.URL,
+			Tools: map[string]dadl.ToolDef{
+				testToolListItems: {
+					Method: testMethodGET, Path: "/",
+					Response: &dadl.ResponseConfig{
+						Transform: "[.[] | .id]",
+					},
+				},
+			},
+		},
+	}
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	a, err := NewRESTAdapter(spec, &testCredStore{}, logger, testRESTOpts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := a.Execute(context.Background(), testToolListItems, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IsError {
+		t.Fatalf("got error result: %v", result.Content)
+	}
+
+	found := false
+	for _, line := range strings.Split(strings.TrimSpace(buf.String()), "\n") {
+		var rec map[string]any
+		if json.Unmarshal([]byte(line), &rec) != nil || rec["msg"] != "response transformation error" {
+			continue
+		}
+		found = true
+		if rec["backend"] != testBackendNameAPI || rec["tool"] != testToolListItems {
+			t.Errorf("warning names backend %v and tool %v, want %q and %q",
+				rec["backend"], rec["tool"], testBackendNameAPI, testToolListItems)
+		}
+	}
+	if !found {
+		t.Fatalf("no transform warning logged; log:\n%s", buf.String())
 	}
 }

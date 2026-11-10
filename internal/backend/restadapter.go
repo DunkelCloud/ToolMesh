@@ -786,7 +786,7 @@ func (a *RESTAdapter) Execute(ctx context.Context, toolName string, params map[s
 	// through the binary handler which stores the bytes and returns a URL
 	respConfig := a.effectiveResponseConfig(&tool)
 	if isBinaryResponse(respConfig) {
-		return a.handleBinaryResponse(ctx, &tool, resp, body, respConfig)
+		return a.handleBinaryResponse(ctx, toolName, resp, body, respConfig)
 	}
 
 	// Handle pagination
@@ -794,7 +794,11 @@ func (a *RESTAdapter) Execute(ctx context.Context, toolName string, params map[s
 	if pagConfig != nil && pagConfig.Behavior == "auto" {
 		body, err = a.paginateResults(ctx, &tool, params, resp, body, pagConfig)
 		if err != nil {
-			a.logger.Warn("pagination error, returning partial results", "error", err)
+			a.logger.WarnContext(ctx, "pagination error, returning partial results",
+				"backend", a.spec.Backend.Name,
+				"tool", toolName,
+				"error", err,
+			)
 		}
 	}
 
@@ -820,7 +824,11 @@ func (a *RESTAdapter) Execute(ctx context.Context, toolName string, params map[s
 			}, nil
 		}
 	} else if err != nil {
-		a.logger.Warn("response transformation error", "error", err)
+		a.logger.WarnContext(ctx, "response transformation error",
+			"backend", a.spec.Backend.Name,
+			"tool", toolName,
+			"error", err,
+		)
 	}
 
 	a.logger.DebugContext(ctx, "REST tool response",
@@ -1699,7 +1707,7 @@ func (a *RESTAdapter) effectiveBlobTTL(rc *dadl.ResponseConfig) time.Duration {
 
 // handleBinaryResponse processes a binary backend response by either uploading
 // to the file broker (if configured) or encoding as a base64 data URL.
-func (a *RESTAdapter) handleBinaryResponse(ctx context.Context, _ *dadl.ToolDef, resp *http.Response, body []byte, respConfig *dadl.ResponseConfig) (*ToolResult, error) {
+func (a *RESTAdapter) handleBinaryResponse(ctx context.Context, toolName string, resp *http.Response, body []byte, respConfig *dadl.ResponseConfig) (*ToolResult, error) {
 	// Determine content type: HTTP response header takes precedence, DADL config as fallback
 	contentType := resp.Header.Get("Content-Type")
 	if contentType == "" {
@@ -1746,6 +1754,8 @@ func (a *RESTAdapter) handleBinaryResponse(ctx context.Context, _ *dadl.ToolDef,
 		result, err := a.fileBroker.Upload(ctx, filename, contentType, bytes.NewReader(body), ttl)
 		if err != nil {
 			a.logger.WarnContext(ctx, "file broker upload failed, falling back to disk",
+				"backend", a.spec.Backend.Name,
+				"tool", toolName,
 				"error", err,
 			)
 			// Fall through to base64

@@ -262,6 +262,11 @@ for the full narrative and details.
   caller can see or get a kit for now has the reason `unknown tool: ...`
   instead of the wording of a denial; a tool the caller may not see still
   reads the same as a name no tool has.
+- The warnings `response transformation error`, `pagination error, returning
+  partial results` and `file broker upload failed, falling back to disk`
+  name the backend and the tool they concern. Before, a failing `transform`
+  of a DADL could only be traced back to its tool through the surrounding
+  log lines.
 
 ## [0.5.0] - 2026-10-23
 

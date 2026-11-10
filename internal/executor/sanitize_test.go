@@ -125,22 +125,5 @@ func containsRecursive(v any, needle string) bool {
 	return false
 }
 
-func TestSplitToolPrefix(t *testing.T) {
-	cases := []struct {
-		in   string
-		want [2]string
-	}{
-		{"github_create_issue", [2]string{"github", "create_issue"}},
-		{"noprefix", [2]string{"", "noprefix"}},
-		{"_leading", [2]string{"", "_leading"}},
-	}
-	for _, c := range cases {
-		got := splitToolPrefix(c.in)
-		if got != c.want {
-			t.Errorf("splitToolPrefix(%q) = %v, want %v", c.in, got, c.want)
-		}
-	}
-}
-
 // Assert backend.ToolResult isn't accidentally imported as unused.
 var _ = backend.ToolResult{}

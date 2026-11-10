@@ -684,14 +684,6 @@ func (e *Executor) authzRequest(uc *userctx.UserContext, toolName, toolAccess st
 	}
 }
 
-// splitToolPrefix extracts the backend prefix from a tool name like "backend_tool".
-func splitToolPrefix(toolName string) [2]string {
-	if idx := strings.Index(toolName, "_"); idx > 0 {
-		return [2]string{toolName[:idx], toolName[idx+1:]}
-	}
-	return [2]string{"", toolName}
-}
-
 // lookupToolAccess resolves the DADL-declared access classification for the
 // given tool, if the underlying backend supports descriptor lookup. Returns
 // an empty string when the backend does not implement ToolMetadataLookup or

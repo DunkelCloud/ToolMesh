@@ -220,3 +220,27 @@ func TestTokenInfo_RefreshExpiry(t *testing.T) {
 		t.Error("RefreshExpiry should fall back to ExpiresAt")
 	}
 }
+
+// TestFileTokenStore_WarmUpKeepsRefreshExpiry pins that the warm-up after a
+// restart neither brings back a refresh token that has expired but was not
+// cleaned up yet nor gives a valid one a fresh lifetime in Redis.
+func TestFileTokenStore_WarmUpKeepsRefreshExpiry(t *testing.T) {
+	ctx := context.Background()
+	fs := newTestFileStore(t)
+	now := time.Now()
+	_ = fs.SaveRefreshToken(ctx, &TokenInfo{RefreshToken: "rt-expired", ExpiresAt: now.Add(-7 * 24 * time.Hour), RefreshExpiresAt: now.Add(-time.Hour)})
+	_ = fs.SaveRefreshToken(ctx, &TokenInfo{RefreshToken: "rt-valid", ExpiresAt: now.Add(-time.Hour), RefreshExpiresAt: now.Add(2 * time.Hour)})
+
+	redisStore, mr := newTestRedis(t)
+	fs.WarmUp(ctx, redisStore)
+
+	if key := prefixRefresh + "rt-expired"; mr.Exists(key) {
+		t.Errorf("expired refresh token copied to Redis with TTL %v", mr.TTL(key))
+	}
+	if _, err := redisStore.ConsumeRefreshToken(ctx, "rt-expired"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("expired refresh token can be consumed from Redis after the warm-up: err = %v", err)
+	}
+	if ttl := mr.TTL(prefixRefresh + "rt-valid"); ttl > 2*time.Hour || ttl < 2*time.Hour-time.Minute {
+		t.Errorf("valid refresh token: TTL in Redis = %v, want its remaining lifetime of about 2h", ttl)
+	}
+}

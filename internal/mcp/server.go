@@ -31,7 +31,10 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
+
+	"golang.org/x/crypto/scrypt"
 
 	"github.com/DunkelCloud/ToolMesh/internal/auth"
 	"github.com/DunkelCloud/ToolMesh/internal/backend"
@@ -55,11 +58,19 @@ type Server struct {
 	apiKeys       *auth.APIKeyStore
 	rateLimiter   *auth.DCRRateLimiter
 	loginThrottle *auth.LoginThrottle
-	callerClasses *config.CallerClasses
-	metrics       *metrics.Registry
-	blobStore     *blob.Store
-	uploadLimits  blob.UploadLimits
-	health        HealthReporter
+	// bearerThrottle limits failed bearer credentials per client address.
+	bearerThrottle *auth.LoginThrottle
+	callerClasses  *config.CallerClasses
+	metrics        *metrics.Registry
+	blobStore      *blob.Store
+	uploadLimits   blob.UploadLimits
+	health         HealthReporter
+
+	// ownerFP caches the credential fingerprint of the single-password
+	// owner for the password it was derived from (ownerFPFor).
+	ownerFPMu  sync.Mutex
+	ownerFP    string
+	ownerFPFor string
 }
 
 // HealthReporter supplies the backend health /health reports.
@@ -88,16 +99,17 @@ func NewServer(handler *Handler, cfg *config.Config, logger *slog.Logger, tokenS
 		logger.Warn("TOOLMESH_CORS_ORIGINS not set: CORS will reflect any origin (open policy)")
 	}
 	return &Server{
-		handler:       handler,
-		cfg:           cfg,
-		logger:        logger,
-		tokenStore:    tokenStore,
-		userStore:     userStore,
-		apiKeys:       apiKeys,
-		rateLimiter:   rateLimiter,
-		loginThrottle: auth.NewLoginThrottle(loginThrottleConfig(cfg), nil, logger),
-		callerClasses: callerClasses,
-		metrics:       m,
+		handler:        handler,
+		cfg:            cfg,
+		logger:         logger,
+		tokenStore:     tokenStore,
+		userStore:      userStore,
+		apiKeys:        apiKeys,
+		rateLimiter:    rateLimiter,
+		loginThrottle:  auth.NewLoginThrottle(loginThrottleConfig(cfg), nil, logger),
+		bearerThrottle: auth.NewLoginThrottle(bearerThrottleConfig(cfg), nil, logger),
+		callerClasses:  callerClasses,
+		metrics:        m,
 	}
 }
 
@@ -106,6 +118,41 @@ func NewServer(handler *Handler, cfg *config.Config, logger *slog.Logger, tokenS
 // restarts. Call it before the server starts handling requests.
 func (s *Server) UseRedisLoginThrottle(rdb *redis.Client) {
 	s.loginThrottle = auth.NewLoginThrottle(loginThrottleConfig(s.cfg), rdb, s.logger)
+	s.bearerThrottle = auth.NewLoginThrottle(bearerThrottleConfig(s.cfg), rdb, s.logger)
+}
+
+// bearerThrottleConfig limits failed bearer credentials per client address
+// (TOOLMESH_APIKEY_MAX_FAILURES_PER_IP) within the window of the password
+// login, in counters of their own. There is no account to count against: a
+// bearer credential names none.
+func bearerThrottleConfig(cfg *config.Config) auth.LoginThrottleConfig {
+	return auth.LoginThrottleConfig{
+		MaxFailuresPerIP: cfg.APIKeyMaxFailuresPerIP,
+		Window:           time.Duration(cfg.LoginFailureWindow) * time.Second,
+		Namespace:        "bearer",
+	}
+}
+
+// errBearerThrottled is returned by authenticate when the client address has
+// used up its failed bearer attempts.
+type errBearerThrottled struct {
+	retryAfter time.Duration
+}
+
+func (e *errBearerThrottled) Error() string {
+	return "too many failed authentication attempts"
+}
+
+// writeThrottled answers a request refused by the bearer throttle and
+// reports whether err was such a refusal.
+func writeThrottled(w http.ResponseWriter, err error, body func(msg string)) bool {
+	var throttled *errBearerThrottled
+	if !errors.As(err, &throttled) {
+		return false
+	}
+	w.Header().Set("Retry-After", strconv.Itoa(retryAfterSeconds(throttled.retryAfter)))
+	body("Too many failed authentication attempts. Try again in " + humanWait(retryAfterSeconds(throttled.retryAfter)) + ".")
+	return true
 }
 
 func loginThrottleConfig(cfg *config.Config) auth.LoginThrottleConfig {
@@ -126,6 +173,7 @@ func (s *Server) SetupRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/register", s.cors(s.handleRegister))
 	mux.HandleFunc("/authorize", s.cors(s.handleAuthorize))
 	mux.HandleFunc("/token", s.cors(s.handleToken))
+	mux.HandleFunc(pathRevoke, s.cors(s.handleRevoke))
 	mux.HandleFunc("/health", s.cors(s.handleHealth))
 	if s.blobStore != nil {
 		mux.HandleFunc("/files/upload", s.cors(s.handleFileUpload))
@@ -152,9 +200,15 @@ func (s *Server) handleFileUpload(w http.ResponseWriter, r *http.Request) {
 // backends (e.g. via a #url handle) without sharing MCP credentials. DELETE is
 // destructive and has no capability use case, so it additionally requires MCP
 // authentication; a party that merely holds a blob ID cannot destroy it.
+//
+// Only the user a blob was created for may delete it.
 func (s *Server) handleBlobs(w http.ResponseWriter, r *http.Request) {
-	if r.Method == http.MethodDelete && !s.requireAuth(w, r) {
-		return
+	if r.Method == http.MethodDelete {
+		user, ok := s.requireUser(w, r)
+		if !ok {
+			return
+		}
+		r = r.WithContext(blob.WithRequester(r.Context(), user.UserID))
 	}
 	s.blobStore.ServeHTTP(w, r)
 }
@@ -172,6 +226,9 @@ func (s *Server) requireAuth(w http.ResponseWriter, r *http.Request) bool {
 // is. The user is nil exactly when ok is false.
 func (s *Server) requireUser(w http.ResponseWriter, r *http.Request) (user *userctx.UserContext, ok bool) {
 	user, err := s.authenticate(r)
+	if writeThrottled(w, err, func(msg string) { http.Error(w, msg, http.StatusTooManyRequests) }) {
+		return nil, false
+	}
 	if err != nil {
 		w.Header().Set("Retry-After", authUnavailableRetryAfter)
 		http.Error(w, msgAuthUnavailable, http.StatusServiceUnavailable)
@@ -285,6 +342,11 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 
 	// Authenticate
 	uc, err := s.authenticate(r)
+	if writeThrottled(w, err, func(msg string) {
+		writeJSON(w, http.StatusTooManyRequests, jsonRPCErrorEnvelope(nil, -32000, msg))
+	}) {
+		return
+	}
 	if err != nil {
 		// The credential was not judged, so this is not a 401: a client told
 		// that its token is invalid would throw the token away.
@@ -598,9 +660,74 @@ func toolResultToMCP(result *backend.ToolResult) map[string]any {
 func (s *Server) authenticate(r *http.Request) (*userctx.UserContext, error) {
 	bearer := extractBearer(r)
 
+	// Guessing at API keys from one address is throttled like password
+	// logins: a slot is reserved before the credential is looked at, so
+	// concurrent guesses cannot all pass a check made before any of them was
+	// counted. A wrong credential keeps its slot; a right one hands it back.
+	// Values shaped like the access tokens issued here reserve no slot up
+	// front: they cannot be guessed, and expired ones arrive routinely, often
+	// from the shared addresses of hosted clients. They reserve one only
+	// before a bcrypt comparison (see checkBearer).
+	var slot bearerSlot
+	if bearer != "" && !isIssuedTokenShape(bearer) {
+		if err := s.reserveBearerSlot(r, &slot); err != nil {
+			return nil, err
+		}
+	}
+	uc, err := s.checkBearer(r, bearer, &slot)
+	s.settleBearerSlot(r, &slot, uc, err)
+	return uc, err
+}
+
+// bearerSlot is a reservation against the per-address limit of failed bearer
+// credentials.
+type bearerSlot struct {
+	attempt  auth.LoginAttempt
+	reserved bool
+}
+
+// reserveBearerSlot reserves a slot for one bearer check from the request's
+// client address, or returns errBearerThrottled when the address has used up
+// its failed attempts.
+func (s *Server) reserveBearerSlot(r *http.Request, slot *bearerSlot) error {
+	if s.bearerThrottle == nil {
+		return nil
+	}
+	ip := auth.ClientIP(r)
+	a := s.bearerThrottle.Acquire(r.Context(), "", ip)
+	if !a.Allowed {
+		s.logger.InfoContext(r.Context(), "bearer authentication throttled",
+			logKeyRemote, ip, "retry_after", retryAfterSeconds(a.RetryAfter))
+		return &errBearerThrottled{retryAfter: a.RetryAfter}
+	}
+	slot.attempt, slot.reserved = a, true
+	return nil
+}
+
+// settleBearerSlot settles a reservation once the bearer was checked: an
+// accepted credential hands the slot back, one that could not be checked
+// cancels it, and a rejected one keeps it as a failure.
+func (s *Server) settleBearerSlot(r *http.Request, slot *bearerSlot, uc *userctx.UserContext, err error) {
+	if !slot.reserved {
+		return
+	}
+	switch {
+	case err != nil:
+		s.bearerThrottle.Cancel(r.Context(), slot.attempt)
+	case uc != nil && uc.Authenticated:
+		s.bearerThrottle.Success(r.Context(), slot.attempt)
+	}
+}
+
+// checkBearer resolves the bearer credential of r. slot is the throttle
+// reservation; a token-shaped value that reached no verdict by lookup
+// reserves one here before it costs bcrypt comparisons.
+func (s *Server) checkBearer(r *http.Request, bearer string, slot *bearerSlot) (*userctx.UserContext, error) {
 	// Which methods the bearer was checked against, so that a credential no
 	// method accepts is counted as a failure of one that could have.
 	var checkedAPIKey, checkedOAuth, expiredToken bool
+	// revokedUser is set for a valid token whose user is no longer configured.
+	var revokedUser bool
 	// unchecked is set when a method could not look at the bearer at all.
 	var unchecked error
 
@@ -636,8 +763,29 @@ func (s *Server) authenticate(r *http.Request) (*userctx.UserContext, error) {
 		// different is not a credential anymore.
 		if s.tokenStore != nil && s.passwordLoginConfigured() {
 			ti, err := s.tokenStore.GetToken(r.Context(), bearer)
+			// The identity a token stands for is resolved against the
+			// configuration in force now: a user removed or disabled since
+			// the login loses access at once, and changed roles or plans
+			// apply to tokens already issued.
+			var id tokenIdentity
+			current := false
+			valid := err == nil && time.Now().Before(ti.ExpiresAt)
+			if valid {
+				id, current = s.currentIdentity(ti.UserID)
+				current = current && id.matches(ti.CredentialFP)
+				if !current {
+					// The pair ends as a whole: a user who is added again
+					// must log in, not resume the old refresh chain.
+					_ = s.tokenStore.DeleteToken(r.Context(), bearer)
+					if ti.RefreshToken != "" {
+						_, _ = s.tokenStore.ConsumeRefreshToken(r.Context(), ti.RefreshToken)
+					}
+					s.logger.InfoContext(r.Context(), "access token refused: its user is no longer configured or the credential changed",
+						"user", truncateForLog(ti.UserID), logKeyRemote, auth.ClientIP(r))
+				}
+			}
 			switch {
-			case err == nil && time.Now().Before(ti.ExpiresAt):
+			case current:
 				callerID := ti.CallerID
 				if callerID == "" {
 					callerID = ti.ClientID
@@ -645,14 +793,18 @@ func (s *Server) authenticate(r *http.Request) (*userctx.UserContext, error) {
 				s.metrics.RecordLogin(loginMethodOAuthBearer, "success")
 				return &userctx.UserContext{
 					UserID:        ti.UserID,
-					CompanyID:     ti.CompanyID,
-					Roles:         ti.Roles,
-					Plan:          ti.Plan,
+					CompanyID:     id.companyID,
+					Roles:         id.roles,
+					Plan:          id.plan,
 					Authenticated: true,
 					CallerID:      callerID,
 					CallerName:    ti.CallerName,
 					CallerClass:   s.callerClasses.Resolve(callerID),
 				}, nil
+			case valid:
+				// A valid token of a user who is gone: not accepted.
+				checkedOAuth = true
+				revokedUser = true
 			case err == nil:
 				checkedOAuth = true
 				expiredToken = true
@@ -668,7 +820,16 @@ func (s *Server) authenticate(r *http.Request) (*userctx.UserContext, error) {
 
 		// 4. API keys from apikeys.yaml that are not in the index yet. A
 		// value the token store knows as an expired token is not a key.
-		if s.apiKeys != nil && !expiredToken {
+		// A token-shaped value comes here without a reservation. bcrypt
+		// comparisons cost CPU, so it takes a slot now; when its address is
+		// throttled the comparison is skipped and the value is rejected like
+		// any unknown credential, which keeps a client that holds an expired
+		// token able to refresh it.
+		skipComparison := false
+		if s.apiKeys != nil && !expiredToken && !revokedUser && !slot.reserved && s.apiKeys.NeedsComparison() {
+			skipComparison = s.reserveBearerSlot(r, slot) != nil
+		}
+		if s.apiKeys != nil && !expiredToken && !revokedUser && !skipComparison {
 			entry, err := s.apiKeys.Verify(r.Context(), bearer)
 			switch {
 			case err != nil:
@@ -852,15 +1013,17 @@ func extractBearer(r *http.Request) string {
 func (s *Server) handleOAuthMetadata(w http.ResponseWriter, _ *http.Request) {
 	iss := strings.TrimRight(s.cfg.Issuer, "/")
 	writeJSON(w, http.StatusOK, map[string]any{
-		"issuer":                                iss + "/",
-		"authorization_endpoint":                iss + "/authorize",
-		"token_endpoint":                        iss + "/token",
-		"registration_endpoint":                 iss + "/register",
-		"response_types_supported":              []string{oauthCode},
-		"grant_types_supported":                 []string{oauthGrantAuthCode, oauthRefreshToken},
-		"code_challenge_methods_supported":      []string{"S256"},
-		"token_endpoint_auth_methods_supported": []string{"none"},
-		"scopes_supported":                      []string{clientClaudeAI},
+		"issuer":                 iss + "/",
+		"authorization_endpoint": iss + "/authorize",
+		"token_endpoint":         iss + "/token",
+		"registration_endpoint":  iss + "/register",
+		"revocation_endpoint":    iss + pathRevoke,
+		"revocation_endpoint_auth_methods_supported": []string{tokenAuthMethodNone},
+		"response_types_supported":                   []string{oauthCode},
+		"grant_types_supported":                      []string{oauthGrantAuthCode, oauthRefreshToken},
+		"code_challenge_methods_supported":           []string{"S256"},
+		"token_endpoint_auth_methods_supported":      []string{"none"},
+		"scopes_supported":                           []string{clientClaudeAI},
 	})
 }
 
@@ -937,11 +1100,19 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: oauthErrInvalidRedURI, oauthErrorDescription: fmt.Sprintf("malformed URI: %s", uri)})
 			return
 		}
-		if parsed.Scheme == schemeHTTP && (parsed.Hostname() == "localhost" || parsed.Hostname() == "127.0.0.1" || parsed.Hostname() == "::1") {
+		if msg := redirectURIShapeError(uri, parsed); msg != "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: oauthErrInvalidRedURI, oauthErrorDescription: msg + ": " + uri})
+			return
+		}
+		if isLoopbackRedirect(parsed) {
 			continue // http://localhost is allowed for development
 		}
 		if parsed.Scheme != schemeHTTPS {
 			writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: oauthErrInvalidRedURI, oauthErrorDescription: fmt.Sprintf("redirect_uri must use https scheme: %s", uri)})
+			return
+		}
+		if !redirectHostAllowed(uri, s.cfg.OAuthRedirectHosts) {
+			writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: oauthErrInvalidRedURI, oauthErrorDescription: fmt.Sprintf("redirect_uri host is not allowed on this server: %s", parsed.Host)})
 			return
 		}
 	}
@@ -977,7 +1148,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		oauthClientID:                clientID,
 		"client_secret":              clientSecret,
 		"redirect_uris":              req.RedirectURIs,
-		"token_endpoint_auth_method": "none",
+		"token_endpoint_auth_method": tokenAuthMethodNone,
 	})
 }
 
@@ -1011,23 +1182,128 @@ func (s *Server) passwordLoginConfigured() bool {
 	return s.userStore != nil || s.cfg.AuthPassword != ""
 }
 
-// validateClientRedirect checks that clientID is a registered client and
-// redirectURI is one of its redirect URIs. It returns the reason for a
-// rejection, or "" when the pair is valid.
-func (s *Server) validateClientRedirect(ctx context.Context, clientID, redirectURI string) string {
+// clientForRedirect checks that clientID is a registered client, that
+// redirectURI is one of its redirect URIs, and that the redirect host passes
+// the TOOLMESH_OAUTH_REDIRECT_HOSTS allowlist (which also covers clients
+// registered before the allowlist was set). It returns the client (nil
+// without a token store) and the reason for a rejection, or "" when the pair
+// is valid.
+func (s *Server) clientForRedirect(ctx context.Context, clientID, redirectURI string) (client *auth.OAuthClient, reason string) {
+	if u, err := url.Parse(redirectURI); err != nil || redirectURIShapeError(redirectURI, u) != "" {
+		return nil, loginReasonInvalidRedirectURI
+	}
+	if !redirectHostAllowed(redirectURI, s.cfg.OAuthRedirectHosts) {
+		return nil, loginReasonRedirectHostDenied
+	}
 	if s.tokenStore == nil {
-		return ""
+		return nil, ""
 	}
-	client, err := s.tokenStore.GetClient(ctx, clientID)
+	registered, err := s.tokenStore.GetClient(ctx, clientID)
 	if err != nil {
-		return loginReasonUnknownClient
+		return nil, loginReasonUnknownClient
 	}
-	for _, uri := range client.RedirectURIs {
+	for _, uri := range registered.RedirectURIs {
 		if uri == redirectURI {
-			return ""
+			return registered, ""
 		}
 	}
-	return loginReasonInvalidRedirectURI
+	return nil, loginReasonInvalidRedirectURI
+}
+
+// redirectURIShapeError returns why a redirect URI cannot be used, or "".
+// RFC 6749 section 3.1.2 forbids a fragment. An opaque URI such as
+// "https:evil.example/cb" has no host in Go's reading, while a browser
+// treats it as https://evil.example/cb, so the login page could not name
+// the real destination. A host with non-ASCII characters is mapped by the
+// browser (IDNA: "claude.ai\u3002evil.example" becomes
+// "claude.ai.evil.example"), so it would be shown differently from where
+// the browser goes; the ASCII (punycode) form is required instead.
+func redirectURIShapeError(raw string, u *url.URL) string {
+	switch {
+	case strings.Contains(raw, "#"):
+		return "redirect_uri must not contain a fragment"
+	case u.Opaque != "" || u.Host == "":
+		return "redirect_uri must be an absolute URI with a host"
+	}
+	for i := 0; i < len(u.Host); i++ {
+		if u.Host[i] >= 0x80 {
+			return "redirect_uri host must be written in ASCII (punycode)"
+		}
+	}
+	return ""
+}
+
+// isLoopbackRedirect reports whether u is an http redirect URI on a loopback
+// host, as native clients use them (RFC 8252 section 7.3).
+func isLoopbackRedirect(u *url.URL) bool {
+	if u.Scheme != schemeHTTP {
+		return false
+	}
+	switch u.Hostname() {
+	case "localhost", "127.0.0.1", "::1":
+		return true
+	}
+	return false
+}
+
+// redirectHostAllowed reports whether redirectURI may be used under the
+// configured host allowlist. An empty allowlist allows every host; loopback
+// redirect URIs are always allowed. Entries match the host name exactly, or
+// any subdomain when written as "*.example.com".
+func redirectHostAllowed(redirectURI string, allowed []string) bool {
+	if len(allowed) == 0 {
+		return true
+	}
+	u, err := url.Parse(redirectURI)
+	if err != nil {
+		return false
+	}
+	if isLoopbackRedirect(u) {
+		return true
+	}
+	host := strings.ToLower(u.Hostname())
+	if host == "" {
+		return false
+	}
+	for _, entry := range allowed {
+		if suffix, ok := strings.CutPrefix(entry, "*."); ok {
+			if strings.HasSuffix(host, "."+suffix) {
+				return true
+			}
+			continue
+		}
+		if host == entry {
+			return true
+		}
+	}
+	return false
+}
+
+// redirectDisplayHost returns the host (with a non-default port) the login
+// page names as the destination of the authorization: the party that will
+// receive the code and, through it, access on the user's behalf.
+func redirectDisplayHost(redirectURI string) string {
+	u, err := url.Parse(redirectURI)
+	if err != nil || u.Host == "" {
+		return redirectURI
+	}
+	return strings.ToLower(u.Host)
+}
+
+// rejectClientRedirect answers a /authorize request whose client or
+// redirect_uri check failed and reports whether it did.
+func rejectClientRedirect(w http.ResponseWriter, reason string) bool {
+	switch reason {
+	case "":
+		return false
+	case loginReasonUnknownClient:
+		writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: oauthErrInvalidReq, oauthErrorDescription: descUnknownClient})
+	case loginReasonRedirectHostDenied:
+		writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: oauthErrInvalidRedURI, oauthErrorDescription: "redirect_uri host is not allowed on this server"})
+	default:
+		writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: oauthErrInvalidRedURI})
+	}
+	return true
 }
 
 func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
@@ -1055,12 +1331,8 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Validate redirect_uri against registered client before rendering login form
-		switch s.validateClientRedirect(r.Context(), clientID, redirectURI) {
-		case loginReasonUnknownClient:
-			writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: oauthErrInvalidReq, oauthErrorDescription: descUnknownClient})
-			return
-		case loginReasonInvalidRedirectURI:
-			writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: oauthErrInvalidRedURI})
+		client, reason := s.clientForRedirect(r.Context(), clientID, redirectURI)
+		if rejectClientRedirect(w, reason) {
 			return
 		}
 		if !s.passwordLoginConfigured() {
@@ -1068,7 +1340,10 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		s.renderLoginForm(w, http.StatusOK, loginForm{ClientID: clientID, RedirectURI: redirectURI, State: state, CodeChallenge: codeChallenge, Scope: scope})
+		s.renderLoginForm(w, http.StatusOK, loginForm{
+			ClientID: clientID, RedirectURI: redirectURI, State: state, CodeChallenge: codeChallenge, Scope: scope,
+			ClientName: clientDisplayName(client), RedirectHost: redirectDisplayHost(redirectURI),
+		})
 		return
 	}
 
@@ -1102,19 +1377,32 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	// at, so they are logged but are not login failures. The client and its
 	// redirect_uri come first: the password check is not reachable without a
 	// registered client.
-	switch reason := s.validateClientRedirect(r.Context(), form.ClientID, form.RedirectURI); reason {
-	case loginReasonUnknownClient:
+	client, reason := s.clientForRedirect(r.Context(), form.ClientID, form.RedirectURI)
+	if reason != "" {
 		s.loginRejected(r, username, reason)
-		writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: oauthErrInvalidRedURI, oauthErrorDescription: descUnknownClient})
-		return
-	case loginReasonInvalidRedirectURI:
-		s.loginRejected(r, username, reason)
-		writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: oauthErrInvalidRedURI})
+		if reason == loginReasonUnknownClient {
+			writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: oauthErrInvalidRedURI, oauthErrorDescription: descUnknownClient})
+			return
+		}
+		rejectClientRedirect(w, reason)
 		return
 	}
 	if !s.passwordLoginConfigured() {
 		s.loginRejected(r, username, loginReasonPasswordLoginDisabled)
 		writeJSON(w, http.StatusForbidden, map[string]string{outcomeError: oauthErrAccessDenied, oauthErrorDescription: descPasswordLoginDisabled})
+		return
+	}
+
+	// The user must confirm the destination of the authorization. The page
+	// names the redirect host, and the confirmation carries it back, so a
+	// login started from a link the user did not expect is not completed by
+	// typing the password alone.
+	form.ClientName = clientDisplayName(client)
+	form.RedirectHost = redirectDisplayHost(form.RedirectURI)
+	if !strings.EqualFold(r.FormValue(oauthConfirmHost), form.RedirectHost) {
+		s.loginRejected(r, username, loginReasonConsentMissing)
+		form.Error = "Confirm that you trust " + form.RedirectHost + " before you sign in."
+		s.renderLoginForm(w, http.StatusBadRequest, form)
 		return
 	}
 
@@ -1137,7 +1425,7 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Authenticate user
-	var userID, companyID, plan string
+	var userID, companyID, plan, credentialFP string
 	var roles []string
 
 	if s.userStore != nil {
@@ -1163,6 +1451,7 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		companyID = user.Company
 		plan = user.Plan
 		roles = user.Roles
+		credentialFP = hashFingerprint(user.PasswordHash)
 	} else {
 		// Legacy single-password mode
 		if !secretsEqual(password, s.cfg.AuthPassword) {
@@ -1175,6 +1464,7 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		companyID = "default"
 		plan = s.cfg.AuthPlan
 		roles = s.cfg.AuthRolesList()
+		credentialFP = s.ownerFingerprint()
 	}
 
 	// The password was right, whatever happens to the auth code below.
@@ -1192,6 +1482,7 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		Plan:          plan,
 		Roles:         roles,
 		ExpiresAt:     time.Now().Add(5 * time.Minute),
+		CredentialFP:  credentialFP,
 	}
 
 	if s.tokenStore != nil {
@@ -1339,6 +1630,7 @@ func (s *Server) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Req
 		CompanyID:        ac.CompanyID,
 		Plan:             ac.Plan,
 		Roles:            ac.Roles,
+		CredentialFP:     ac.CredentialFP,
 		CallerID:         callerID,
 		CallerName:       callerName,
 		Scope:            ac.Scope,
@@ -1390,10 +1682,26 @@ func (s *Server) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	// The record's own expiry decides, not whether the store still holds it:
+	// a store may keep a record past its expiry until its cleanup runs. An
+	// expired refresh token is refused like an unknown one, and its access
+	// token goes with it.
+	if !time.Now().Before(oldTI.RefreshExpiry()) {
+		_ = s.tokenStore.DeleteToken(ctx, oldTI.AccessToken)
+		s.metrics.RecordLogin(loginMethodOAuthRefresh, "failure")
+		s.logger.InfoContext(ctx, "refresh refused: the refresh token has expired",
+			"clientId", oldTI.ClientID, logKeyRemote, auth.ClientIP(r))
+		writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: invalidGrantError})
+		return
+	}
+
 	// Verify client_id matches the refresh token's client (H-7).
 	if clientID == "" || clientID != oldTI.ClientID {
 		s.logger.WarnContext(ctx, "client_id mismatch in refresh token grant",
 			"expected", oldTI.ClientID, "got", clientID)
+		// The refresh token was consumed; its access token goes with it,
+		// so the pair ends as a whole.
+		_ = s.tokenStore.DeleteToken(ctx, oldTI.AccessToken)
 		s.metrics.RecordLogin(loginMethodOAuthRefresh, "failure")
 		writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: invalidGrantError})
 		return
@@ -1401,6 +1709,18 @@ func (s *Server) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request)
 
 	// Delete old access token
 	_ = s.tokenStore.DeleteToken(ctx, oldTI.AccessToken)
+
+	// Renewal re-checks the user against the configuration in force now and
+	// takes the current company, plan and roles; a user removed or disabled
+	// since the login gets no new token.
+	id, ok := s.currentIdentity(oldTI.UserID)
+	if !ok || !id.matches(oldTI.CredentialFP) {
+		s.metrics.RecordLogin(loginMethodOAuthRefresh, "failure")
+		s.logger.WarnContext(ctx, "refresh refused: user is no longer configured",
+			"user", truncateForLog(oldTI.UserID), "clientId", oldTI.ClientID, logKeyRemote, auth.ClientIP(r))
+		writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: invalidGrantError})
+		return
+	}
 
 	newAccessToken := generateID()
 	newRefreshToken := generateID()
@@ -1411,9 +1731,10 @@ func (s *Server) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request)
 		RefreshToken:     newRefreshToken,
 		ClientID:         oldTI.ClientID,
 		UserID:           oldTI.UserID,
-		CompanyID:        oldTI.CompanyID,
-		Plan:             oldTI.Plan,
-		Roles:            oldTI.Roles,
+		CompanyID:        id.companyID,
+		Plan:             id.plan,
+		Roles:            id.roles,
+		CredentialFP:     id.fp,
 		CallerID:         oldTI.CallerID,
 		CallerName:       oldTI.CallerName,
 		Scope:            oldTI.Scope,
@@ -1443,6 +1764,130 @@ func (s *Server) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request)
 	})
 }
 
+// tokenIdentity is what an OAuth token grants under the configuration in
+// force now.
+type tokenIdentity struct {
+	companyID string
+	plan      string
+	roles     []string
+	// fp fingerprints the user's current credential; a token carrying
+	// another fingerprint was issued for a credential that has changed.
+	fp string
+}
+
+// matches reports whether a token carrying credentialFP may stand for this
+// identity. Tokens from before fingerprints existed carry none and match.
+func (id tokenIdentity) matches(credentialFP string) bool {
+	return credentialFP == "" || credentialFP == id.fp
+}
+
+// credentialFPLen is the length in bytes of a credential fingerprint.
+const credentialFPLen = 8
+
+// hashFingerprint fingerprints a users.yaml password_hash. The bcrypt hash
+// already contains a salt and costs bcrypt to test a guess against, so a
+// short SHA-256 of it reveals nothing useful about the password.
+func hashFingerprint(passwordHash string) string {
+	sum := sha256.Sum256([]byte("toolmesh/credential-fp/v1\x00" + passwordHash))
+	return hex.EncodeToString(sum[:credentialFPLen])
+}
+
+// ownerFingerprint fingerprints TOOLMESH_AUTH_PASSWORD. The password is
+// plain text, so the fingerprint comes from scrypt rather than a fast hash:
+// a copy of the token store must not make guessing the password cheap. It is
+// derived once per password value.
+func (s *Server) ownerFingerprint() string {
+	s.ownerFPMu.Lock()
+	defer s.ownerFPMu.Unlock()
+	if s.ownerFP != "" && s.ownerFPFor == s.cfg.AuthPassword {
+		return s.ownerFP
+	}
+	key, err := scrypt.Key([]byte(s.cfg.AuthPassword), []byte("toolmesh/credential-fp/v1"), 1<<15, 8, 1, credentialFPLen)
+	if err != nil {
+		// Only invalid parameters fail, and these are constant.
+		s.logger.Error("credential fingerprint could not be derived", outcomeError, err)
+		return ""
+	}
+	s.ownerFP, s.ownerFPFor = hex.EncodeToString(key), s.cfg.AuthPassword
+	return s.ownerFP
+}
+
+// currentIdentity resolves userID against the configuration in force now:
+// users.yaml when it is loaded, the single-password owner otherwise. ok is
+// false when the user no longer exists or can no longer log in, so tokens
+// issued to it are neither renewed nor honored.
+func (s *Server) currentIdentity(userID string) (id tokenIdentity, ok bool) {
+	if s.userStore != nil {
+		u := s.userStore.Lookup(userID)
+		if u == nil {
+			return tokenIdentity{}, false
+		}
+		return tokenIdentity{companyID: u.Company, plan: u.Plan, roles: u.Roles, fp: hashFingerprint(u.PasswordHash)}, true
+	}
+	if s.cfg.AuthPassword == "" || userID != s.cfg.AuthUser {
+		return tokenIdentity{}, false
+	}
+	return tokenIdentity{companyID: userDefault, plan: s.cfg.AuthPlan, roles: s.cfg.AuthRolesList(), fp: s.ownerFingerprint()}, true
+}
+
+// handleRevoke implements OAuth 2.0 token revocation (RFC 7009) for the
+// access and refresh tokens issued here. Holding a token is enough to revoke
+// it: the clients are public (token_endpoint_auth_method none), and revoking
+// only takes access away. Revoking either token of a pair revokes both. The
+// answer is 200 whether or not the token was known (RFC 7009 section 2.2).
+func (s *Server) handleRevoke(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1 MB limit
+	if err := r.ParseForm(); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: oauthErrInvalidReq})
+		return
+	}
+	token := r.PostFormValue(oauthRevokeToken)
+	if token == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: oauthErrInvalidReq, oauthErrorDescription: "token is required"})
+		return
+	}
+	if s.tokenStore != nil {
+		s.revokeToken(r, token)
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
+// revokeToken removes token, as access or refresh token, together with the
+// other token of its pair.
+func (s *Server) revokeToken(r *http.Request, token string) {
+	ctx := r.Context()
+	if ti, err := s.tokenStore.GetToken(ctx, token); err == nil {
+		_ = s.tokenStore.DeleteToken(ctx, ti.AccessToken)
+		if ti.RefreshToken != "" {
+			_, _ = s.tokenStore.ConsumeRefreshToken(ctx, ti.RefreshToken)
+		}
+		s.logger.InfoContext(ctx, "oauth token revoked", "kind", "access_token", "clientId", ti.ClientID, logKeyRemote, auth.ClientIP(r))
+		return
+	}
+	if ti, err := s.tokenStore.ConsumeRefreshToken(ctx, token); err == nil {
+		if ti.AccessToken != "" {
+			_ = s.tokenStore.DeleteToken(ctx, ti.AccessToken)
+		}
+		s.logger.InfoContext(ctx, "oauth token revoked", "kind", "refresh_token", "clientId", ti.ClientID, logKeyRemote, auth.ClientIP(r))
+		return
+	}
+	// An access token that expired may be gone from the store while its
+	// refresh token still lives; find the pair through the refresh token.
+	if pl, ok := s.tokenStore.(auth.PairLookup); ok {
+		if rt, err := pl.RefreshTokenOf(ctx, token); err == nil {
+			if ti, err := s.tokenStore.ConsumeRefreshToken(ctx, rt); err == nil {
+				_ = s.tokenStore.DeleteToken(ctx, token)
+				s.logger.InfoContext(ctx, "oauth token revoked", "kind", "expired_access_token", "clientId", ti.ClientID, logKeyRemote, auth.ClientIP(r))
+			}
+		}
+	}
+}
+
 // handleHealth reports liveness plus the aggregate backend health. The
 // status code is 200 even when a backend is degraded: the endpoint also
 // serves container liveness probes, and a failing upstream credential is no
@@ -1462,10 +1907,22 @@ var loginTmpl = template.Must(template.New("login").Parse(`<!DOCTYPE html>
 input{width:100%;padding:8px;margin:8px 0;box-sizing:border-box}
 button{width:100%;padding:10px;background:#2563eb;color:white;border:none;border-radius:4px;cursor:pointer}
 button:hover{background:#1d4ed8}
-.error{color:#b91c1c}</style></head>
+.error{color:#b91c1c}
+.consent{border:1px solid #d1d5db;border-radius:6px;padding:12px;margin:12px 0}
+.host{font-size:1.4em;font-weight:bold;word-break:break-all;margin:4px 0}
+.note{color:#6b7280;font-size:.9em}
+.confirm{display:block;margin:12px 0}
+.confirm input{width:auto;margin-right:6px}</style></head>
 <body>
 <h2>ToolMesh</h2>
-<p>Enter your credentials to authorize access.</p>
+<div class="consent">
+<p>An application asks for access to your ToolMesh tools.</p>
+<p>After you sign in, access is handed to:</p>
+<p class="host">{{.RedirectHost}}</p>
+<p class="name">Name given by the application: &ldquo;{{if .ClientName}}{{.ClientName}}{{else}}none{{end}}&rdquo;<br>
+<span class="note">The application chose this name itself; ToolMesh has not verified it.</span></p>
+</div>
+<p>Continue only if you started this connection yourself and trust <strong>{{.RedirectHost}}</strong>.</p>
 {{if .Error}}<p class="error" role="alert">{{.Error}}</p>
 {{end}}<form method="POST" action="/authorize">
 <input type="hidden" name="client_id" value="{{.ClientID}}">
@@ -1473,9 +1930,10 @@ button:hover{background:#1d4ed8}
 <input type="hidden" name="state" value="{{.State}}">
 <input type="hidden" name="code_challenge" value="{{.CodeChallenge}}">
 <input type="hidden" name="scope" value="{{.Scope}}">
+<label class="confirm"><input type="checkbox" name="confirm_host" value="{{.RedirectHost}}" required> I trust {{.RedirectHost}} with access to my ToolMesh tools</label>
 <input type="text" name="username" placeholder="Username" autofocus>
 <input type="password" name="password" placeholder="Password">
-<button type="submit">Authorize</button>
+<button type="submit">Authorize {{.RedirectHost}}</button>
 </form>
 </body>
 </html>`))
@@ -1490,6 +1948,25 @@ type loginForm struct {
 	CodeChallenge string
 	Scope         string
 	Error         string
+	// ClientName is the client_name from registration: self-declared by the
+	// client and shown as such, never trusted.
+	ClientName string
+	// RedirectHost is the host of the redirect_uri, the party that receives
+	// the authorization; the user confirms it explicitly.
+	RedirectHost string
+}
+
+// clientDisplayName returns the self-declared client_name of client, cut to
+// a length that fits the login page, or "" when there is none.
+func clientDisplayName(client *auth.OAuthClient) string {
+	if client == nil {
+		return ""
+	}
+	name := strings.TrimSpace(client.ClientName)
+	if r := []rune(name); len(r) > 80 {
+		name = string(r[:80]) + "…"
+	}
+	return name
 }
 
 // renderLoginForm writes the login page with the given status. A 401 goes out

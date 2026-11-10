@@ -11,6 +11,107 @@ for the full narrative and details.
 
 ## [Unreleased]
 
+### Security
+
+- **Upgrade note:** REST backends are bound to their `backends.yaml` entry.
+  A DADL reads only the credentials of its entry's namespace
+  `CREDENTIAL_<ENTRY>_*` (a name belongs to the configured entry with the
+  longest matching namespace, so `github` does not read the credentials of
+  `github-enterprise`), plus the entry's `env:` and new `credentials:` list.
+  It sends credentials, token requests and session logins only to its
+  `base_url` host and port, the other hosts of that host's registrable
+  domain on the default port, and the entry's new `allowed_hosts:` list
+  (`host`, `*.domain`, optionally `:port`); with an https `base_url`, over
+  https only. A backend whose DADL reaches further is refused at load, with
+  the exact lines to add in the log; the other backends keep running. REST
+  entries need a `name`. DADLs with credential names other than letters,
+  digits and `_`, or with a parameter default `credential:<name>`, are
+  refused at parse. After upgrading, check the log for `backend refused`.
+- Session cookies of a backend follow its host binding: a redirect to
+  another port or scheme of the base host no longer carries them. A
+  warning at load names entries whose DADL sends credentials over plain
+  http.
+- `env:` keys of a backend are read in upper case by both the credential
+  binding and the remapping; before, a key in another case widened what the
+  backend could read without remapping the read.
+- With `allow_private_url`, private addresses stay reachable only for the
+  destinations the configuration names (`base_url`, `token_url`, absolute
+  tool paths), not for redirect targets.
+- A redirect chain that left the origin keeps credentials stripped also on
+  a hop back; tool paths with a placeholder in the host are refused.
+- The login confirmation is never shown pre-ticked; revocation also ends the
+  pair of an expired access token; a password change ends the user's OAuth
+  sessions; redirect URIs with a fragment, without authority or with a
+  non-ASCII host are refused.
+- DADL arguments reach the gate as the API receives them: defaults filled
+  in, numeric strings as numbers, only plain decimal strings accepted.
+
+- Composite `api.*` child calls keep their authorization and pre-execution
+  gate after a reload of `backends.yaml`; a REST adapter without that guard
+  refuses child calls.
+- Backend redirects to another origin drop injected credentials, custom
+  headers and the `Referer`, refuse to re-send a request body and are never
+  followed from `https` to `http`.
+- OAuth2 token and session login requests follow no redirects and use the
+  backend's SSRF-safe transport; the session login URL must stay on the
+  `base_url` host.
+- Transport errors name only scheme and host, so a query-injected API key no
+  longer reaches the audit log or tool results.
+- Path parameter values `.` and `..` are refused and joined URLs must keep
+  the scheme, host and path prefix of `base_url`; a colon in the first path
+  segment is no longer read as a URL scheme.
+- The OAuth login page names the redirect host and the self-declared client
+  name and requires a confirmation; `TOOLMESH_OAUTH_REDIRECT_HOSTS`
+  optionally restricts redirect hosts.
+- Token refresh and access tokens are resolved against the current
+  `users.yaml` or single-password owner as loaded at startup; after a
+  restart, removed or disabled users, and sessions of a changed password, lose
+  access. `POST /revoke` (RFC 7009) revokes tokens. **Upgrade note:** tokens
+  issued before this release carry no credential fingerprint; they are
+  accepted and bound at their next refresh, so they survive a password
+  change made after the upgrade. Revoke suspicious tokens, or clear the
+  stored tokens while ToolMesh is stopped (see the configuration reference,
+  "Tokens from before the upgrade", for the file store and Redis).
+- `X-Forwarded-For` is honored only from the proxy addresses in
+  `TOOLMESH_TRUSTED_PROXIES` (default loopback only); a header from any other
+  address is ignored with a warning at most once an hour.
+- SSRF checks treat carrier-grade NAT, benchmarking, documentation,
+  multicast, reserved, NAT64 and 6to4 addresses as private.
+- DADL parameters are checked against their declared types before the
+  pre-execution gate.
+- Only the owner can delete a blob.
+- `/register` is rate-limited without Redis, and failed API keys on `/mcp`
+  are throttled per client address (`TOOLMESH_APIKEY_MAX_FAILURES_PER_IP`,
+  default 50); a slot is reserved before the key is checked.
+- `TOOLMESH_CODE_MAX_CONCURRENT` (default 16) bounds parallel `execute_code`
+  runs; one user may hold at most half of them.
+- The `TOOLMESH_ISSUER` placeholder is `https://toolmesh.invalid/`.
+- Behind a trusted proxy, `X-Forwarded-For` entries with a port
+  (`203.0.113.7:51234`, `[2001:db8::7]:51234`) or in brackets are read as
+  the client address instead of being skipped; an entry that is no address
+  (`unknown`, empty) ends the walk at the last trusted proxy, so a client
+  cannot choose the address its limits count it under.
+- A number or boolean given for a DADL parameter declared `string` reaches
+  the pre-execution gate as the exact text the API receives, also in a JSON
+  body (`"42"`, not `42`); arrays, objects and other values without a text
+  form are refused for such parameters with `invalid_input`.
+- `file_url_allowed_hosts` applies to every redirect of a `file_url` fetch,
+  not only to the URL the caller passes. If an allowed source redirects to
+  a CDN or storage host, add that host to the list.
+- A refresh token is refused once its seven days are over; the Redis key
+  and the restart warm-up no longer extend its lifetime.
+- SSRF checks refuse IPv6 addresses with a zone (`[::ffff:127.0.0.1%25x]`),
+  which slipped past the private-address check and reached loopback, private
+  or metadata addresses, and fail closed on DNS answers that do not parse.
+- A backend `base_url` on the unspecified address (`http://0.0.0.0/`,
+  `http://[::]/`) is now refused with `allow_private_url: false`, like
+  loopback: a connection to it reaches a service on the ToolMesh host.
+- The bearer token of MCP backends over HTTP (`api_key_env`) is sent only to
+  the origin of the configured `url`, no longer to the target of a redirect.
+  MCP-over-HTTP requests stay on that origin: a redirect to another origin
+  (or from https to http) is refused, and so is a message endpoint on
+  another origin announced by a legacy SSE server.
+
 ### Added
 
 - Credential store `command` (`CREDENTIAL_STORE=command`). ToolMesh runs
@@ -161,6 +262,11 @@ for the full narrative and details.
   caller can see or get a kit for now has the reason `unknown tool: ...`
   instead of the wording of a denial; a tool the caller may not see still
   reads the same as a name no tool has.
+- The warnings `response transformation error`, `pagination error, returning
+  partial results` and `file broker upload failed, falling back to disk`
+  name the backend and the tool they concern. Before, a failing `transform`
+  of a DADL could only be traced back to its tool through the surrounding
+  log lines.
 
 ## [0.5.0] - 2026-10-23
 

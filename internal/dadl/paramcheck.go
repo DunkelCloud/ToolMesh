@@ -15,9 +15,14 @@
 package dadl
 
 import (
+	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
+	"reflect"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -56,6 +61,11 @@ type ParamError struct {
 	// name, where one is close enough to be worth naming. Not every entry in
 	// Unknown has one.
 	Suggestions map[string]string
+	// WrongType maps a supplied argument to the declared type its value does
+	// not have (see [ValidateParams] for which types are checked).
+	WrongType map[string]string
+	// gotType names the JSON type each WrongType value actually has.
+	gotType map[string]string
 
 	// declared renders the tool's full parameter set into the message.
 	declared []string
@@ -76,6 +86,14 @@ func (e *ParamError) Error() string {
 	}
 	for _, name := range e.MissingRequired {
 		parts = append(parts, fmt.Sprintf("missing required parameter %q", name))
+	}
+	wrong := make([]string, 0, len(e.WrongType))
+	for name := range e.WrongType {
+		wrong = append(wrong, name)
+	}
+	sort.Strings(wrong)
+	for _, name := range wrong {
+		parts = append(parts, fmt.Sprintf("parameter %q must be %s, got %s", name, e.WrongType[name], e.gotType[name]))
 	}
 
 	msg := fmt.Sprintf("tool %q: %s", e.Tool, strings.Join(parts, "; "))
@@ -114,6 +132,15 @@ func (e *ParamError) Unwrap() error {
 //   - Every required parameter must be supplied. `in: path` counts as
 //     required (the URL cannot be built without it), matching the input
 //     schema advertised to clients.
+//   - A supplied, non-null value must fit its declared type where the JSON
+//     form is unambiguous: boolean takes only true or false, integer a
+//     whole JSON number or a string of decimal digits (large IDs), number a
+//     JSON number or a numeric string, array a JSON array and object a JSON
+//     object. string takes a string, number or boolean (the request carries
+//     all three as text, see [NormalizeParams]), but no array or object. The
+//     file types are passed as given. The check runs before the gate, so a
+//     policy that tests a boolean for false cannot be passed with the string
+//     "false".
 //
 // A parameter counts as supplied when the key is present; an explicit nil
 // counts only for `in: body`, where JSON null is a distinct instruction
@@ -154,7 +181,20 @@ func validateParams(toolName string, declared map[string]ParamDef, params map[st
 		}
 	}
 
-	if len(unknown) == 0 && len(missing) == 0 {
+	wrongType := map[string]string{}
+	gotType := map[string]string{}
+	for name, val := range params {
+		def, ok := declared[name]
+		if !ok || val == nil {
+			continue
+		}
+		if want := strings.ToLower(def.Type); !valueFitsType(want, val) {
+			wrongType[name] = want
+			gotType[name] = jsonTypeName(val)
+		}
+	}
+
+	if len(unknown) == 0 && len(missing) == 0 && len(wrongType) == 0 {
 		return nil
 	}
 	sort.Strings(unknown)
@@ -178,8 +218,262 @@ func validateParams(toolName string, declared map[string]ParamDef, params map[st
 		Unknown:         unknown,
 		MissingRequired: missing,
 		Suggestions:     suggestions,
+		WrongType:       wrongType,
+		gotType:         gotType,
 		declared:        describeParams(declared, names),
 	}
+}
+
+// maxExactInteger is the largest integer a float64, and so a JavaScript
+// number, holds exactly (2^53).
+const maxExactInteger = 1 << 53
+
+// NormalizeParams returns the arguments a call takes effect with, for
+// params that passed ValidateParams: declared defaults are filled in for
+// omitted parameters (and for null values outside the body, as the request
+// builder does), numeric strings of integer and number parameters become
+// numbers, and numbers and booleans of string parameters become the text
+// the request carries ([FormatScalar]: 42 becomes "42", true "true"). A gate
+// policy then sees the values the API receives: a default it would
+// otherwise never see, 0 rather than "0", and "42" rather than 42. An
+// integer string beyond 2^53 stays a string, since a number could not hold
+// it exactly. Other values pass unchanged; params itself is not modified.
+func NormalizeParams(declared map[string]ParamDef, params map[string]any) map[string]any {
+	out := make(map[string]any, len(params)+len(declared))
+	for name, val := range params {
+		out[name] = val
+	}
+	for name, def := range declared {
+		val, present := out[name]
+		if def.Default != nil && (!present || (val == nil && def.In != paramInBody)) {
+			out[name] = def.Default
+			continue
+		}
+		if !present || val == nil {
+			continue
+		}
+		if want := strings.ToLower(def.Type); want == jsTypeString {
+			out[name] = normalizeString(val)
+		} else {
+			out[name] = normalizeNumeric(want, val)
+		}
+	}
+	return out
+}
+
+// normalizeString converts a number or boolean of a string parameter to the
+// text the request builder sends for it. Path, query, header and form
+// parameters are sent as that text anyway; a JSON body carries the string
+// too, as the declaration says.
+func normalizeString(val any) any {
+	if isScalarNonString(val) {
+		return FormatScalar(val)
+	}
+	return val
+}
+
+// isScalarNonString reports whether val is a boolean or a number, the
+// scalar values other than a string that a string parameter takes.
+func isScalarNonString(val any) bool {
+	switch val.(type) {
+	case bool, json.Number:
+		return true
+	}
+	return isNumeric(val)
+}
+
+// FormatScalar renders a scalar parameter value as the text a request
+// carries for it in a URL path, query string, header or form field, and as
+// the string a string parameter's number or boolean becomes before the
+// gate ([NormalizeParams]). Both use this one function so that a policy
+// sees exactly the text the API receives.
+//
+// JSON unmarshalling decodes every numeric value into float64. Formatting
+// that float64 with fmt.Sprintf("%v", ...) routes through %g, which switches
+// to scientific notation once the value reaches ~1e6, so an integer ID like
+// 1234567 would become "1.234567e+06". strconv.FormatFloat with verb 'f'
+// and precision -1 always produces the shortest exact decimal
+// representation without exponents.
+func FormatScalar(v any) string {
+	switch val := v.(type) {
+	case string:
+		return val
+	case bool:
+		return strconv.FormatBool(val)
+	case float64:
+		return strconv.FormatFloat(val, 'f', -1, 64)
+	case float32:
+		return strconv.FormatFloat(float64(val), 'f', -1, 32)
+	case int:
+		return strconv.Itoa(val)
+	case int32:
+		return strconv.FormatInt(int64(val), 10)
+	case int64:
+		return strconv.FormatInt(val, 10)
+	case uint:
+		return strconv.FormatUint(uint64(val), 10)
+	case uint32:
+		return strconv.FormatUint(uint64(val), 10)
+	case uint64:
+		return strconv.FormatUint(val, 10)
+	case json.Number:
+		return string(val)
+	default:
+		return fmt.Sprintf("%v", v)
+	}
+}
+
+// normalizeNumeric converts a numeric string (or json.Number) of an integer
+// or number parameter to a float64 where that is exact.
+func normalizeNumeric(declared string, val any) any {
+	var s string
+	switch v := val.(type) {
+	case string:
+		s = v
+	case json.Number:
+		s = string(v)
+	default:
+		return val
+	}
+	switch declared {
+	case jsTypeInteger:
+		if !isIntegerLiteral(s) {
+			return val
+		}
+		n, err := strconv.ParseInt(s, 10, 64)
+		if err != nil || n > maxExactInteger || n < -maxExactInteger {
+			return val
+		}
+		return float64(n)
+	case jsTypeNumber:
+		if !isDecimalLiteral(s) {
+			return val
+		}
+		f, err := strconv.ParseFloat(s, 64)
+		if err != nil {
+			return val
+		}
+		return f
+	}
+	return val
+}
+
+// valueFitsType reports whether val, a decoded JSON value, fits the declared
+// DADL type. Types without an unambiguous JSON form always fit.
+func valueFitsType(declared string, val any) bool {
+	switch declared {
+	case jsTypeString:
+		// A number or boolean is taken and becomes text before the gate
+		// (NormalizeParams). An array, object or any other value has no
+		// text form the API would expect.
+		_, isString := val.(string)
+		return isString || isScalarNonString(val)
+	case jsTypeBoolean:
+		_, ok := val.(bool)
+		return ok
+	case jsTypeInteger:
+		switch v := val.(type) {
+		case string:
+			return isIntegerLiteral(v)
+		case json.Number:
+			return isIntegerLiteral(string(v))
+		}
+		return isWholeNumber(val)
+	case jsTypeNumber:
+		switch v := val.(type) {
+		case string:
+			return isDecimalLiteral(v)
+		case json.Number:
+			return isDecimalLiteral(string(v))
+		}
+		return isNumeric(val)
+	case jsTypeArray:
+		return isList(val)
+	case jsTypeObject:
+		return isMap(val)
+	}
+	return true
+}
+
+// integerLiteral and decimalLiteral are the only string forms accepted for
+// integer and number parameters: one optional sign and plain decimal
+// digits (RE2's \d is ASCII only), no surrounding space, no hex, no digit
+// separators, no Inf or NaN.
+// Anything looser would pass the check and reach the API as written.
+var (
+	integerLiteral = regexp.MustCompile(`^[+-]?\d+$`)
+	decimalLiteral = regexp.MustCompile(`^[+-]?(\d+(\.\d*)?|\.\d+)([eE][+-]?\d+)?$`)
+)
+
+// isIntegerLiteral reports whether s is an optionally signed run of decimal
+// digits.
+func isIntegerLiteral(s string) bool {
+	return integerLiteral.MatchString(s)
+}
+
+// isDecimalLiteral reports whether s is a plain decimal number that fits a
+// float64.
+func isDecimalLiteral(s string) bool {
+	if !decimalLiteral.MatchString(s) {
+		return false
+	}
+	f, err := strconv.ParseFloat(s, 64)
+	return err == nil && !math.IsInf(f, 0)
+}
+
+// isNumeric reports whether val is a Go numeric value.
+func isNumeric(val any) bool {
+	switch val.(type) {
+	case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, float32, float64:
+		return true
+	}
+	return false
+}
+
+// isWholeNumber reports whether val is a numeric value without a fraction.
+func isWholeNumber(val any) bool {
+	var f float64
+	switch v := val.(type) {
+	case float64:
+		f = v
+	case float32:
+		f = float64(v)
+	default:
+		return isNumeric(val)
+	}
+	return !math.IsNaN(f) && !math.IsInf(f, 0) && f == math.Trunc(f)
+}
+
+// isList reports whether val is a slice or array.
+func isList(val any) bool {
+	k := reflect.ValueOf(val).Kind()
+	return k == reflect.Slice || k == reflect.Array
+}
+
+// isMap reports whether val is a map.
+func isMap(val any) bool {
+	return reflect.ValueOf(val).Kind() == reflect.Map
+}
+
+// jsonTypeName names the JSON type of a decoded value for error messages.
+func jsonTypeName(val any) string {
+	switch val.(type) {
+	case bool:
+		return jsTypeBoolean
+	case string:
+		return jsTypeString
+	case json.Number:
+		return jsTypeNumber
+	}
+	switch {
+	case isNumeric(val):
+		return jsTypeNumber
+	case isList(val):
+		return jsTypeArray
+	case isMap(val):
+		return jsTypeObject
+	}
+	return fmt.Sprintf("%T", val)
 }
 
 // paramSupplied reports whether a required parameter has a value the request

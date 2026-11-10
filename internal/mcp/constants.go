@@ -93,6 +93,8 @@ const (
 	loginReasonPasswordLoginDisabled = "password_login_disabled"
 	loginReasonUnknownClient         = "unknown_client"
 	loginReasonInvalidRedirectURI    = "invalid_redirect_uri"
+	loginReasonRedirectHostDenied    = "redirect_host_not_allowed"
+	loginReasonConsentMissing        = "consent_not_confirmed"
 	loginReasonUnknownCredential     = "unknown_credential"
 	loginReasonUnknownToken          = "unknown_token"
 	loginReasonExpiredToken          = "expired_token"
@@ -107,6 +109,8 @@ const (
 	oauthClientID         = "client_id"
 	oauthRedirectURI      = "redirect_uri"
 	oauthState            = "state"
+	oauthConfirmHost      = "confirm_host"
+	oauthRevokeToken      = "token"
 	oauthScope            = "scope"
 	oauthCode             = "code"
 	oauthCodeChallenge    = "code_challenge"
@@ -131,7 +135,11 @@ const (
 
 	// Paths that are also named in responses: the MCP endpoint and the
 	// well-known prefix of the protected resource metadata (RFC 9728).
-	pathMCP               = "/mcp"
+	pathMCP    = "/mcp"
+	pathRevoke = "/revoke"
+	// tokenAuthMethodNone is the only client authentication method: clients
+	// registered here are public clients.
+	tokenAuthMethodNone   = "none"
 	pathProtectedResource = "/.well-known/oauth-protected-resource"
 
 	// Answer to a request whose credential could not be checked right now,

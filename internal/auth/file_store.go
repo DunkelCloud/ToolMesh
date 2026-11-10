@@ -223,6 +223,23 @@ func (s *FileTokenStore) GetToken(_ context.Context, accessToken string) (*Token
 	return ti, nil
 }
 
+// RefreshTokenOf implements PairLookup: it returns the refresh token issued
+// together with accessToken, whether or not the access token is still
+// stored, or ErrNotFound.
+func (s *FileTokenStore) RefreshTokenOf(_ context.Context, accessToken string) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if ti, ok := s.accessTokens[accessToken]; ok && ti.RefreshToken != "" {
+		return ti.RefreshToken, nil
+	}
+	for rt, ti := range s.refreshTokens {
+		if ti.AccessToken == accessToken {
+			return rt, nil
+		}
+	}
+	return "", ErrNotFound
+}
+
 // DeleteToken removes an access token from the store.
 func (s *FileTokenStore) DeleteToken(_ context.Context, accessToken string) error {
 	s.mu.Lock()
@@ -260,6 +277,8 @@ func (s *FileTokenStore) ConsumeRefreshToken(_ context.Context, refreshToken str
 // connecting to a Redis instance that may have just restarted and lost
 // its data, so tokens stored in the file store are immediately available
 // in the primary store without waiting for a read-through fallback.
+// Refresh tokens that have expired but were not cleaned up yet are not
+// copied, so a restart cannot bring one back.
 func (s *FileTokenStore) WarmUp(ctx context.Context, dst TokenStore) {
 	s.mu.Lock()
 	now := time.Now()
@@ -275,7 +294,9 @@ func (s *FileTokenStore) WarmUp(ctx context.Context, dst TokenStore) {
 	}
 	refreshTokens := make([]*TokenInfo, 0, len(s.refreshTokens))
 	for _, t := range s.refreshTokens {
-		refreshTokens = append(refreshTokens, t)
+		if t.RefreshExpiry().After(now) {
+			refreshTokens = append(refreshTokens, t)
+		}
 	}
 	s.mu.Unlock()
 

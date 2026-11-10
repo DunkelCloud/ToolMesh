@@ -241,10 +241,11 @@ func (ts *loginTestServer) loginAs(clientID, username, password, remoteAddr stri
 
 func (ts *loginTestServer) loginTo(clientID, redirectURI, username, password, remoteAddr string) *httptest.ResponseRecorder {
 	form := url.Values{
-		"username":         {username},
+		testFormUsername:   {username},
 		testFormPassword:   {password},
 		oauthClientID:      {clientID},
 		oauthRedirectURI:   {redirectURI},
+		oauthConfirmHost:   {confirmHostOf(redirectURI)},
 		oauthState:         {"s1"},
 		oauthCodeChallenge: {testLoginChallenge},
 	}

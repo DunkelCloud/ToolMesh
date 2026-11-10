@@ -56,15 +56,16 @@ func newBlobRouteServer(t *testing.T, cfg *config.Config) (*http.ServeMux, *blob
 // requires MCP authentication.
 func TestBlobRoute_DeleteRequiresAuth(t *testing.T) {
 	const key = "my-secret-key"
-	mux, store := newBlobRouteServer(t, &config.Config{APIKey: key})
+	mux, store := newBlobRouteServer(t, &config.Config{APIKey: key, AuthUser: "owner"})
 
-	putBlob := func() string {
-		id, _, err := store.Put(strings.NewReader("blob body"), "text/plain", time.Hour)
+	putBlobOf := func(owner string) string {
+		id, _, err := store.PutOwned(strings.NewReader("blob body"), "text/plain", "", owner, time.Hour)
 		if err != nil {
 			t.Fatalf("Put: %v", err)
 		}
 		return id
 	}
+	putBlob := func() string { return putBlobOf("owner") }
 
 	do := func(method, id, bearer string) int {
 		req := httptest.NewRequestWithContext(context.Background(), method, "/blobs/"+id, http.NoBody)
@@ -101,6 +102,16 @@ func TestBlobRoute_DeleteRequiresAuth(t *testing.T) {
 		}
 		if _, err := store.Stat(id); err != nil {
 			t.Errorf("blob was deleted despite bad credential: %v", err)
+		}
+	})
+
+	t.Run("DELETE of another user's blob is refused", func(t *testing.T) {
+		id := putBlobOf("someone-else")
+		if code := do(http.MethodDelete, id, key); code != http.StatusNotFound {
+			t.Errorf("DELETE of a foreign blob = %d, want 404", code)
+		}
+		if _, err := store.Stat(id); err != nil {
+			t.Errorf("foreign blob was deleted: %v", err)
 		}
 	})
 

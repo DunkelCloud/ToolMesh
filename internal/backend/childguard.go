@@ -40,3 +40,16 @@ type ChildGuard interface {
 type childGuardSetter interface {
 	SetChildGuard(g ChildGuard)
 }
+
+// AllowAllChildGuard is a ChildGuard that permits every child call. Install it
+// only where the enclosing call already covers every tool a composite can
+// reach: a unit's private REST sub-backend, whose tools the unit script may
+// call directly anyway, or a test that exercises composites in isolation.
+// Never install it on a backend registered in the top-level composite; the
+// executor is the guard there.
+type AllowAllChildGuard struct{}
+
+// CheckChild implements ChildGuard and always returns nil.
+func (AllowAllChildGuard) CheckChild(context.Context, string, map[string]any) error {
+	return nil
+}

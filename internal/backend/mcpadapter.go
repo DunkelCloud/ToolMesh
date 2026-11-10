@@ -23,6 +23,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"sort"
@@ -80,8 +81,16 @@ type BackendEntry struct {
 	TLSSkipVerify   bool              `yaml:"tls_skip_verify"`   // accept invalid/self-signed TLS certificates
 	Options         map[string]string `yaml:"options"`           // backend-specific options (e.g. blob_ttl: "1h")
 	Env             map[string]string `yaml:"env"`               // credential env remapping (DADL name → actual env var)
-	ExposeTools     []string          `yaml:"expose_tools"`      // tool names to also expose as direct top-level MCP tools (in addition to discover_tools)
-	IncludeTools    []string          `yaml:"include_tools"`     // when set, the ONLY tools this backend exposes (restricts the surface); honored for every transport
+	// Credentials lists credential names outside the entry's namespace
+	// (CREDENTIAL_<NAME>_*) that the backend's DADL may read (transport:
+	// rest). Written by the operator; a DADL cannot widen it.
+	Credentials []string `yaml:"credentials"`
+	// AllowedHosts lists hosts besides the base_url host and its
+	// registrable domain that the backend's credentials may be sent to
+	// ("api.example.com" or "*.example.com"; transport: rest).
+	AllowedHosts []string `yaml:"allowed_hosts"`
+	ExposeTools  []string `yaml:"expose_tools"`  // tool names to also expose as direct top-level MCP tools (in addition to discover_tools)
+	IncludeTools []string `yaml:"include_tools"` // when set, the ONLY tools this backend exposes (restricts the surface); honored for every transport
 	// CredentialEnv sets environment variables of a stdio child from the
 	// credential store: variable name in the child → key in the store, e.g.
 	// GITHUB_PERSONAL_ACCESS_TOKEN: CREDENTIAL_GITHUB_TOKEN. The child gets
@@ -95,8 +104,9 @@ type BackendEntry struct {
 	// allow_private_url, which only governs the admin-configured base_url).
 	AllowPrivateFileURL *bool `yaml:"allow_private_file_url"`
 	// FileURLAllowedHosts, when non-empty, restricts caller-supplied file_url
-	// fetches to this exact set of hostnames (case-insensitive). Empty means no
-	// host restriction (only the address-class policy above applies).
+	// fetches, every redirect hop included, to this exact set of hostnames
+	// (case-insensitive). Empty means no host restriction (only the
+	// address-class policy above applies).
 	FileURLAllowedHosts []string `yaml:"file_url_allowed_hosts"`
 	// HealthCheck tunes how ToolMesh monitors the health check the backend's
 	// DADL declares (spec §4.6). nil = a check at startup and on demand, no
@@ -343,7 +353,20 @@ func (a *MCPAdapter) createTransport(ctx context.Context, entry BackendEntry) (m
 }
 
 func (a *MCPAdapter) createHTTPTransport(ctx context.Context, entry BackendEntry) (mcp.Transport, error) {
-	httpClient := &http.Client{Timeout: envDuration("TOOLMESH_MCP_TIMEOUT", 120*time.Second)}
+	origin, err := url.Parse(entry.URL)
+	if err != nil {
+		return nil, fmt.Errorf("parse MCP backend URL %q: %w", entry.URL, err)
+	}
+	// Every request of this client stays on the origin of the configured
+	// endpoint: a redirect elsewhere is refused (mcpRedirectPolicy), and so
+	// is a request to another origin from any other source, such as the
+	// endpoint event of a legacy SSE server. Otherwise Go would carry the
+	// Mcp-Session-Id header, and on 307/308 the JSON-RPC body, to that host.
+	httpClient := &http.Client{
+		Timeout:       envDuration("TOOLMESH_MCP_TIMEOUT", 120*time.Second),
+		CheckRedirect: mcpRedirectPolicy,
+		Transport:     &originLockTransport{base: http.DefaultTransport, origin: origin},
+	}
 
 	// Inject API key as Bearer token if configured
 	if entry.APIKeyEnv != "" {
@@ -352,8 +375,9 @@ func (a *MCPAdapter) createHTTPTransport(ctx context.Context, entry BackendEntry
 			return nil, fmt.Errorf("credential lookup for %s: %w", entry.APIKeyEnv, err)
 		}
 		httpClient.Transport = &bearerTransport{
-			base:  http.DefaultTransport,
-			token: apiKey,
+			base:   httpClient.Transport,
+			token:  apiKey,
+			origin: origin,
 		}
 	}
 
@@ -558,7 +582,7 @@ func (a *MCPAdapter) Execute(ctx context.Context, toolName string, params map[st
 			"tool", realTool,
 			"error", err,
 		)
-		return apiErrorToolResult(err), nil
+		return errorToolResult(err), nil
 	}
 
 	a.logger.InfoContext(ctx, "calling tool via MCP",
@@ -872,15 +896,92 @@ func envDuration(key string, fallback time.Duration) time.Duration {
 	return fallback
 }
 
-// bearerTransport injects an Authorization header into HTTP requests.
+// bearerTransport injects an Authorization header into HTTP requests to the
+// configured MCP endpoint. It sits below the http.Client redirect logic, so
+// Go's own header stripping on redirects never sees the header; the
+// transport therefore adds it only for requests to the origin of the
+// configured endpoint (scheme, host and port, or the https form of an http
+// endpoint on the same host), never to a host a redirect or a server-sent
+// endpoint URL names.
 type bearerTransport struct {
-	base  http.RoundTripper
-	token string
+	base   http.RoundTripper
+	token  string
+	origin *url.URL
 }
 
-// RoundTrip implements http.RoundTripper by adding a Bearer token header.
+// RoundTrip implements http.RoundTripper by adding a Bearer token header
+// for requests to the endpoint's origin.
 func (t *bearerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if !onEndpointOrigin(t.origin, req.URL) {
+		return t.base.RoundTrip(req)
+	}
 	req = req.Clone(req.Context())
 	req.Header.Set("Authorization", "Bearer "+t.token)
+	return t.base.RoundTrip(req)
+}
+
+// mcpSchemeHTTPS is the https scheme name for the endpoint origin checks.
+const mcpSchemeHTTPS = "https"
+
+// onEndpointOrigin reports whether u is on the origin of the MCP endpoint:
+// the same scheme, host and port, or the https form of an http endpoint on
+// the same host with default ports.
+func onEndpointOrigin(endpoint, u *url.URL) bool {
+	if endpoint == nil || u == nil || !strings.EqualFold(endpoint.Hostname(), u.Hostname()) {
+		return false
+	}
+	ep, up := mcpEndpointPort(endpoint), mcpEndpointPort(u)
+	if strings.EqualFold(endpoint.Scheme, u.Scheme) {
+		return ep == up
+	}
+	return strings.EqualFold(endpoint.Scheme, urlSchemeHTTP) && strings.EqualFold(u.Scheme, mcpSchemeHTTPS) && ep == "80" && up == "443"
+}
+
+// mcpEndpointPort returns the explicit port of u or its scheme's default.
+func mcpEndpointPort(u *url.URL) string {
+	if p := u.Port(); p != "" {
+		return p
+	}
+	switch strings.ToLower(u.Scheme) {
+	case mcpSchemeHTTPS:
+		return "443"
+	case urlSchemeHTTP:
+		return "80"
+	}
+	return ""
+}
+
+// mcpRedirectPolicy bounds redirects of MCP-over-HTTP requests: at most 10
+// hops, and only within the origin of the first request (same scheme, host
+// and port, or from http to https on the same host with default ports). A
+// redirect to another origin, or from https to http, is refused rather than
+// followed without the token: Go would still send the Mcp-Session-Id header
+// and, on 307/308, the JSON-RPC body there.
+func mcpRedirectPolicy(req *http.Request, via []*http.Request) error {
+	if len(via) >= 10 {
+		return fmt.Errorf("stopped after 10 redirects")
+	}
+	if len(via) > 0 && !onEndpointOrigin(via[0].URL, req.URL) {
+		return fmt.Errorf("redirect to %s://%s refused: MCP backend requests stay on the origin of the configured url", req.URL.Scheme, req.URL.Host)
+	}
+	return nil
+}
+
+// originLockTransport refuses every request that is not on the origin of
+// the configured MCP endpoint, wherever its URL came from: a redirect, or an
+// endpoint a legacy SSE server announces.
+type originLockTransport struct {
+	base   http.RoundTripper
+	origin *url.URL
+}
+
+// RoundTrip implements http.RoundTripper.
+func (t *originLockTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if !onEndpointOrigin(t.origin, req.URL) {
+		if req.Body != nil {
+			_ = req.Body.Close()
+		}
+		return nil, fmt.Errorf("MCP backend request to %s://%s refused: it is not the origin of the configured url", req.URL.Scheme, req.URL.Host)
+	}
 	return t.base.RoundTrip(req)
 }

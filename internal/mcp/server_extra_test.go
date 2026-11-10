@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"net/url"
 	"strings"
 	"testing"
@@ -61,6 +62,8 @@ func TestOriginAllowed(t *testing.T) {
 }
 
 func TestClientIP(t *testing.T) {
+	// Only loopback is a trusted proxy by default.
+	const proxy = "127.0.0.1:5555"
 	tests := []struct {
 		name       string
 		xff        string
@@ -68,10 +71,14 @@ func TestClientIP(t *testing.T) {
 		want       string
 	}{
 		{"no xff fallback to remote", "", "203.0.113.5:443", "203.0.113.5"},
-		{"single public xff", testIP198_51_100_7, testIPClaudeAI443, testIP198_51_100_7},
-		{"private on right, public on left", "198.51.100.7, 10.0.0.1", testIPClaudeAI443, testIP198_51_100_7},
-		{"all private xff falls back to remote", "10.0.0.1, 192.168.1.1", "203.0.113.8:443", "203.0.113.8"},
-		{"malformed entries skipped", "garbage, 198.51.100.9", testIPClaudeAI443, "198.51.100.9"},
+		{"xff from a public address is ignored", testIP198_51_100_7, "203.0.113.5:443", "203.0.113.5"},
+		{"xff from a private address is ignored", testIP198_51_100_7, testIPClaudeAI443, "10.0.0.1"},
+		{"single public xff behind a trusted proxy", testIP198_51_100_7, proxy, testIP198_51_100_7},
+		{"trusted hop on the right is skipped", "198.51.100.7, 127.0.0.2", proxy, testIP198_51_100_7},
+		{"client spoof on the left is ignored", "6.6.6.6, 198.51.100.7", proxy, testIP198_51_100_7},
+		{"private client behind the proxy is the client", "6.6.6.6, 192.168.1.50", proxy, "192.168.1.50"},
+		{"all trusted xff gives the leftmost", "127.0.0.3, 127.0.0.2", proxy, "127.0.0.3"},
+		{"malformed entries skipped", "garbage, 198.51.100.9", proxy, "198.51.100.9"},
 		{"remote addr without port", "", "bare-host", "bare-host"},
 	}
 	for _, tt := range tests {
@@ -212,6 +219,7 @@ func TestTokenGrant_ClientIDMismatch(t *testing.T) {
 		testFormPassword:   {"pw"},
 		oauthClientID:      {clientID},
 		oauthRedirectURI:   {"https://example.com/cb"},
+		oauthConfirmHost:   {confirmHostOf("https://example.com/cb")},
 		oauthState:         {"s"},
 		oauthCodeChallenge: {"dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"},
 		oauthScope:         {clientClaudeAI},
@@ -293,5 +301,28 @@ func TestAuthorize_MissingPKCE(t *testing.T) {
 	mux.ServeHTTP(w, req)
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400", w.Code)
+	}
+}
+
+func TestClientIP_ConfiguredTrustedProxies(t *testing.T) {
+	t.Cleanup(func() { auth.SetTrustedProxies(nil) })
+	req := func(remote, xff string) *http.Request {
+		r := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
+		r.RemoteAddr = remote
+		r.Header.Set("X-Forwarded-For", xff)
+		return r
+	}
+
+	auth.SetTrustedProxies([]netip.Prefix{netip.MustParsePrefix("203.0.113.1/32")})
+	if got := auth.ClientIP(req("203.0.113.1:443", testIP198_51_100_7)); got != testIP198_51_100_7 {
+		t.Errorf("configured proxy: ClientIP = %q, want %q", got, testIP198_51_100_7)
+	}
+	if got := auth.ClientIP(req(testIPClaudeAI443, testIP198_51_100_7)); got != "10.0.0.1" {
+		t.Errorf("private address outside the configured list: ClientIP = %q, want the remote", got)
+	}
+
+	auth.SetTrustedProxies([]netip.Prefix{})
+	if got := auth.ClientIP(req("127.0.0.1:443", testIP198_51_100_7)); got != "127.0.0.1" {
+		t.Errorf("no trusted proxies: ClientIP = %q, want the remote", got)
 	}
 }

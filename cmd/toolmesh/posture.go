@@ -39,8 +39,14 @@ type relaxedControl struct {
 // they do not become background noise on a developer's machine.
 //
 // authzOpen reports that the authorization in effect lets every authenticated
-// caller invoke every tool.
-func logSecurityPosture(cfg *config.Config, authConfigured, authzOpen bool, logger *slog.Logger) {
+// caller invoke every tool. refused names the backends not loaded because
+// their DADL breaks the credential or host binding; they are reported at
+// ERROR in every posture.
+func logSecurityPosture(cfg *config.Config, authConfigured, authzOpen bool, refused []string, logger *slog.Logger) {
+	if len(refused) > 0 {
+		logger.Error("security posture: backends refused at load because their DADL reaches outside the credentials or hosts allowed for them; see the 'backend refused' lines for the backends.yaml lines that allow it",
+			"backends", refused)
+	}
 	var relaxed []relaxedControl
 
 	if !authConfigured {

@@ -45,6 +45,7 @@ const (
 
 	// OAuth form fixture password value.
 	testFormPassword = "password" //nolint:gosec // test fixture form key, not a credential
+	testFormUsername = "username"
 
 	// Additional fixture identifiers / values reused across tests.
 	testParamLimit        = "limit"
@@ -63,3 +64,9 @@ const (
 	// OAuth client-registration fixture used by /register handler tests.
 	testRegisterBodyExampleCB = `{"redirect_uris": ["https://example.com/cb"], "client_name": "t"}`
 )
+
+// confirmHostOf returns the value the login page asks the user to confirm
+// for redirectURI: its host.
+func confirmHostOf(redirectURI string) string {
+	return redirectDisplayHost(redirectURI)
+}

@@ -52,6 +52,14 @@ ToolMesh follows a security-by-default design:
 - **Bounded password hashing:** The number of bcrypt comparisons running at once is limited for the whole process. API keys are found by lookup and an access token never costs a comparison. Only API key entries that are configured as a bcrypt hash and have not been used since startup are still compared, one request at a time; configuring them with `key_sha256` removes that.
 - **Unauthenticated requests are answered `401`** with a `WWW-Authenticate` challenge on `/mcp`, logged, and counted.
 - **Safe defaults:** Logging defaults to `info` (no request payloads); the unauthenticated metrics port is bound to loopback by the Compose file; caller-supplied `file_url` fetches fail closed against private/internal addresses.
+- **Composite children checked:** Nested `api.*` calls inside a composite go through authorization and the pre-execution gate; a REST adapter without that guard refuses them, also after a reload of `backends.yaml`.
+- **Credentials bound to their backend:** A DADL reads only the credentials in the namespace of its `backends.yaml` entry (the longest matching entry name owns a credential; plus what the entry lists) and sends them only to its `base_url` host and port, its registrable domain and the entry's `allowed_hosts`, over https when `base_url` is https; a DADL that reaches further is refused at load, and every request is checked again.
+- **Credentials stay with their backend:** A redirect to another origin never carries injected credentials or the `Referer`, and is never followed from `https` to `http`; token and login requests follow no redirects and use the backend's connection rules; tool paths and the session login URL cannot leave the host and path of `base_url`.
+- **No secrets in error texts:** Transport errors name only scheme and host of a request, so a query-injected credential reaches neither the audit log nor a tool result.
+- **Typed arguments before the gate:** Parameters of REST tools are checked against their declared DADL types before any policy sees them.
+- **Explicit OAuth consent:** The login page names the host that receives the authorization and requires a confirmation; `TOOLMESH_OAUTH_REDIRECT_HOSTS` can restrict redirect hosts. Token refresh and every access token are resolved against the current user configuration, and `/revoke` revokes tokens (RFC 7009).
+- **Client address from trusted proxies only:** `X-Forwarded-For` is honored only from `TOOLMESH_TRUSTED_PROXIES`; failed API keys and client registrations are limited per address, also without Redis.
+- **Bounded code execution:** `execute_code` runs are limited in time, tool calls, stack depth and number in progress (`TOOLMESH_CODE_MAX_CONCURRENT`, at most half of it per user). Known limit: the JavaScript runtime has no memory limit of its own, so a single run can use as much memory as the process may; run ToolMesh with a container memory limit.
 
 ### Startup security posture
 

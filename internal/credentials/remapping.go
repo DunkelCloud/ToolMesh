@@ -37,20 +37,45 @@ import (
 // store.
 type RemappingStore struct {
 	delegate CredentialStore
-	envMap   map[string]string // CREDENTIAL_X → actual env var name
+	envMap   map[string]string // CanonicalEnvKey(CREDENTIAL_X) → actual env var name
+}
+
+// EnvKeyPrefix starts every env: key that remaps a credential.
+const EnvKeyPrefix = "CREDENTIAL_"
+
+// CanonicalEnvKey returns the form of an env: key that every reader of the
+// env: map compares: trimmed and upper-cased, as the environment variable
+// of a credential is named. The remapping and the credential binding of a
+// backend both use it, so a key that widens what a backend may read is the
+// key that remaps the read.
+func CanonicalEnvKey(key string) string {
+	return strings.ToUpper(strings.TrimSpace(key))
 }
 
 // NewRemappingStore creates a credential store that remaps lookups.
 // The envMap keys are the CREDENTIAL_* environment variable names as written
-// in backends.yaml; the values are the actual environment variable names to
-// read from.
+// in backends.yaml, in any case; the values are the actual environment
+// variable names to read from. Two keys with the same canonical form remap
+// to nothing: a lookup of that credential fails.
 func NewRemappingStore(delegate CredentialStore, envMap map[string]string) *RemappingStore {
-	return &RemappingStore{delegate: delegate, envMap: envMap}
+	m := make(map[string]string, len(envMap))
+	clash := map[string]bool{}
+	for k, v := range envMap {
+		ck := CanonicalEnvKey(k)
+		if _, dup := m[ck]; dup {
+			clash[ck] = true
+		}
+		m[ck] = v
+	}
+	for ck := range clash {
+		m[ck] = ""
+	}
+	return &RemappingStore{delegate: delegate, envMap: m}
 }
 
 // Get retrieves a credential, checking the env remapping first.
 func (r *RemappingStore) Get(ctx context.Context, logicalName string, tenant TenantInfo) (string, error) {
-	envKey := "CREDENTIAL_" + strings.ToUpper(logicalName)
+	envKey := CanonicalEnvKey(EnvKeyPrefix + logicalName)
 	if mapped, ok := r.envMap[envKey]; ok {
 		val, _ := LookupKey(r.delegate, mapped)
 		if val == "" {

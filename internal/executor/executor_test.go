@@ -16,9 +16,12 @@ package executor
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -124,6 +127,42 @@ func TestExecuteTool_BackendError(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected error from backend, got nil")
+	}
+}
+
+// TestExecuteTool_BackendErrorRedactsURL pins that a transport error carrying
+// a request URL with a query-injected credential reaches neither the audit
+// entry nor the caller with that URL's query.
+func TestExecuteTool_BackendErrorRedactsURL(t *testing.T) {
+	const secret = "query-key-value" //nolint:gosec // test fixture, not a credential
+	mb := &mockBackend{
+		executeFunc: func(_ context.Context, _ string, _ map[string]any) (*backend.ToolResult, error) {
+			return nil, fmt.Errorf("http request: %w", &url.Error{
+				Op:  "Get",
+				URL: "https://api.example.com/v1/items?api_key=" + secret,
+				Err: errors.New("connection reset by peer"),
+			})
+		},
+	}
+	rec := &recordingAudit{}
+	exec := New(nil, nil, mb, nil, rec, 30*time.Second, newTestLogger(), nil, nil)
+	ctx := userctx.WithUserContext(context.Background(), &userctx.UserContext{
+		UserID:        testUserID,
+		Authenticated: true,
+	})
+
+	_, err := exec.ExecuteTool(ctx, ExecuteToolRequest{ToolName: testToolDirect})
+	if err == nil {
+		t.Fatal("expected error from backend, got nil")
+	}
+	if strings.Contains(err.Error(), secret) {
+		t.Errorf("returned error contains the credential: %v", err)
+	}
+	if strings.Contains(rec.last.Error, secret) {
+		t.Errorf("audit entry contains the credential: %s", rec.last.Error)
+	}
+	if !strings.Contains(rec.last.Error, "https://api.example.com") {
+		t.Errorf("audit entry should keep the backend origin: %s", rec.last.Error)
 	}
 }
 
@@ -336,20 +375,13 @@ func TestExecuteTool_BackendResultWithExistingMetadata(t *testing.T) {
 }
 
 // TestCallerCredentialDurchstich is the Sprint 2 integration test that verifies
-// the complete flow: CallerID → UserContext → Executor → Credential injection →
-// Pre-Gate (JS policy with callerId/callerClass) → Backend → Post-Gate.
+// the complete flow: CallerID → UserContext → Executor → Pre-Gate (JS policy
+// with callerId/callerClass) → Backend → Post-Gate.
 func TestCallerCredentialDurchstich(t *testing.T) {
-	// Set env-var credentials for the EmbeddedStore
-	t.Setenv("CREDENTIAL_GITHUB_API_KEY", "ghp_test_token_123")    //nolint:gosec // G101: intentional test data
-	t.Setenv("CREDENTIAL_GITHUB_WEBHOOK_SECRET", "whsec_test_456") //nolint:gosec // G101: intentional test data
-
 	credStore := credentials.NewEmbeddedStore()
 
-	// Backend that verifies credentials arrived via context
-	var receivedCreds map[string]string
 	mb := &mockBackend{
 		executeFunc: func(ctx context.Context, toolName string, params map[string]any) (*backend.ToolResult, error) {
-			receivedCreds = credentials.CredentialsFromContext(ctx)
 			return &backend.ToolResult{
 				Content: []any{map[string]any{contentKeyType: contentKeyText, contentKeyText: "executed " + toolName}},
 			}, nil
@@ -389,20 +421,14 @@ func TestCallerCredentialDurchstich(t *testing.T) {
 		callerClass      string
 		tool             string
 		wantError        bool
-		wantCount        int
-		wantKey          string
-		wantVal          string
 		wantRequestField bool // verify request fields populated for audit
 	}{
 		{
-			name:             "trusted caller executes read tool with multi-credential injection",
+			name:             "trusted caller executes read tool",
 			callerID:         "claude-code",
 			callerClass:      "trusted",
 			tool:             "github_get_repo",
 			wantError:        false,
-			wantCount:        2,
-			wantKey:          "GITHUB_API_KEY",
-			wantVal:          "ghp_test_token_123",
 			wantRequestField: true,
 		},
 		{
@@ -418,9 +444,6 @@ func TestCallerCredentialDurchstich(t *testing.T) {
 			callerClass: testCallerUntrusted,
 			tool:        "github_get_repo",
 			wantError:   false,
-			wantCount:   2,
-			wantKey:     "GITHUB_WEBHOOK_SECRET",
-			wantVal:     "whsec_test_456",
 		},
 		{
 			name:        "standard caller executes tool normally",
@@ -428,14 +451,11 @@ func TestCallerCredentialDurchstich(t *testing.T) {
 			callerClass: "standard",
 			tool:        "github_list_issues",
 			wantError:   false,
-			wantCount:   2,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			receivedCreds = nil
-
 			ctx := userctx.WithUserContext(context.Background(), &userctx.UserContext{
 				UserID:        testUserID,
 				CompanyID:     "acme",
@@ -463,18 +483,6 @@ func TestCallerCredentialDurchstich(t *testing.T) {
 
 			if result.IsError {
 				t.Errorf("expected IsError = false, got error result")
-			}
-
-			// Verify credentials were injected via context
-			if tt.wantCount > 0 {
-				if len(receivedCreds) != tt.wantCount {
-					t.Errorf("expected %d credentials, got %d: %v", tt.wantCount, len(receivedCreds), receivedCreds)
-				}
-			}
-			if tt.wantKey != "" {
-				if receivedCreds[tt.wantKey] != tt.wantVal {
-					t.Errorf("credential %s = %q, want %q", tt.wantKey, receivedCreds[tt.wantKey], tt.wantVal)
-				}
 			}
 
 			// Verify request fields are populated for audit entries
@@ -542,5 +550,32 @@ func TestCallerCredentialDurchstich_PostGateWithCallerClass(t *testing.T) {
 	}
 	if !result.IsError {
 		t.Error("untrusted caller should be blocked by post-gate")
+	}
+}
+
+// TestExecuteTool_ErrorResultRedactsURLQuery pins that an error result whose
+// text carries a request URL (built from an error, e.g. after a failed
+// retry) reaches the caller without the URL's query.
+func TestExecuteTool_ErrorResultRedactsURLQuery(t *testing.T) {
+	const secret = "query-key-in-result" //nolint:gosec // test fixture, not a credential
+	mb := &mockBackend{
+		executeFunc: func(_ context.Context, _ string, _ map[string]any) (*backend.ToolResult, error) {
+			return &backend.ToolResult{
+				IsError: true,
+				Content: []any{map[string]any{
+					contentKeyType: contentKeyText,
+					contentKeyText: `Error: max retries exceeded: Get "https://api.example.com/v1?api_key=` + secret + `": EOF`,
+				}},
+			}, nil
+		},
+	}
+	exec := New(nil, nil, mb, nil, nil, 30*time.Second, newTestLogger(), nil, nil)
+	ctx := userctx.WithUserContext(context.Background(), &userctx.UserContext{UserID: testUserID, Authenticated: true})
+	res, err := exec.ExecuteTool(ctx, ExecuteToolRequest{ToolName: testToolDirect})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if text := resultText(res); strings.Contains(text, secret) || !strings.Contains(text, "https://api.example.com/v1") {
+		t.Errorf("result text = %q", text)
 	}
 }

@@ -173,6 +173,24 @@ func (s *UserStore) Authenticate(ctx context.Context, username, password string)
 	return u, nil
 }
 
+// Lookup returns a copy of the configured user with this username, or nil
+// when there is none or its password_hash is not usable, which is how a user
+// is disabled without removing the entry (e.g. password_hash: "!"). It does
+// no password check: token renewal and bearer validation use it to apply the
+// users.yaml in force now to tokens issued earlier.
+func (s *UserStore) Lookup(username string) *UserEntry {
+	if s == nil {
+		return nil
+	}
+	u, ok := s.users[username]
+	if !ok || !usableHash(u.PasswordHash) {
+		return nil
+	}
+	cp := *u
+	cp.Roles = append([]string(nil), u.Roles...)
+	return &cp
+}
+
 // bcryptSalt decodes the salt part of a bcrypt hash, which uses its own
 // base64 alphabet.
 var bcryptSalt = base64.NewEncoding("./ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789").WithPadding(base64.NoPadding)

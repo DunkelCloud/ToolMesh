@@ -36,7 +36,7 @@ func TestLoad_Defaults(t *testing.T) {
 		{"Transport", cfg.Transport, "http"},
 		{"AuthPassword", cfg.AuthPassword, ""},
 		{"APIKey", cfg.APIKey, ""},
-		{"Issuer", cfg.Issuer, "https://toolmesh.io/"},
+		{"Issuer", cfg.Issuer, "https://toolmesh.invalid/"},
 		{"AuditStore", cfg.AuditStore, "log"},
 		{"AuditRetentionDays", cfg.AuditRetentionDays, 90},
 		{"ExecTimeout", cfg.ExecTimeout, 120},

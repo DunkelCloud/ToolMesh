@@ -70,6 +70,9 @@ type AuthCode struct {
 	Plan          string    `json:"plan"`
 	Roles         []string  `json:"roles"`
 	ExpiresAt     time.Time `json:"expires_at"`
+	// CredentialFP fingerprints the credential the user logged in with,
+	// carried over into the tokens (see TokenInfo.CredentialFP).
+	CredentialFP string `json:"credential_fp,omitempty"`
 }
 
 // TokenInfo represents an access or refresh token with associated user data.
@@ -86,6 +89,12 @@ type TokenInfo struct {
 	Scope            string    `json:"scope"`
 	ExpiresAt        time.Time `json:"expires_at"`
 	RefreshExpiresAt time.Time `json:"refresh_expires_at,omitempty"`
+	// CredentialFP fingerprints the credential the user logged in with.
+	// When the credential changes, the tokens are no longer honored or
+	// renewed. Empty for tokens issued before the field existed; such a
+	// token is accepted and gets the current fingerprint at its next
+	// refresh.
+	CredentialFP string `json:"credential_fp,omitempty"`
 }
 
 // RefreshExpiry returns the effective expiry time for the refresh token.
@@ -96,6 +105,14 @@ func (ti *TokenInfo) RefreshExpiry() time.Time {
 		return ti.RefreshExpiresAt
 	}
 	return ti.ExpiresAt
+}
+
+// PairLookup is implemented by token stores that can name the refresh token
+// issued together with an access token even after the access token expired
+// and was dropped. Revocation uses it, so revoking with an expired access
+// token still ends the pair.
+type PairLookup interface {
+	RefreshTokenOf(ctx context.Context, accessToken string) (string, error)
 }
 
 // ErrNotFound is returned when a key does not exist in the store.
@@ -233,13 +250,24 @@ func (s *RedisTokenStore) DeleteToken(ctx context.Context, accessToken string) e
 	return s.rdb.Del(ctx, prefixToken+accessToken).Err()
 }
 
-// SaveRefreshToken stores a refresh token with the configured TTL.
+// SaveRefreshToken stores a refresh token. The key expires with the refresh
+// token (see TokenInfo.RefreshExpiry), so that saving a record again, as the
+// warm-up from the file store does after a restart, never extends its
+// lifetime; a refresh token that has already expired is removed instead. A
+// record without any expiry gets the default lifetime.
 func (s *RedisTokenStore) SaveRefreshToken(ctx context.Context, ti *TokenInfo) error {
+	ttl := ttlRefreshToken
+	if expiry := ti.RefreshExpiry(); !expiry.IsZero() {
+		ttl = time.Until(expiry)
+		if ttl <= 0 {
+			return s.rdb.Del(ctx, prefixRefresh+ti.RefreshToken).Err()
+		}
+	}
 	data, err := json.Marshal(ti) //nolint:gosec // G117: intentional — storing OAuth data in Redis
 	if err != nil {
 		return fmt.Errorf("marshal refresh token: %w", err)
 	}
-	return s.rdb.Set(ctx, prefixRefresh+ti.RefreshToken, data, ttlRefreshToken).Err()
+	return s.rdb.Set(ctx, prefixRefresh+ti.RefreshToken, data, ttl).Err()
 }
 
 // ConsumeRefreshToken atomically retrieves and deletes a refresh token.

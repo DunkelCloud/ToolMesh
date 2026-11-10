@@ -23,6 +23,7 @@ const (
 	envLoginPerUserIP = "TOOLMESH_LOGIN_MAX_FAILURES_PER_USER_IP"
 	envLoginPerUser   = "TOOLMESH_LOGIN_MAX_FAILURES_PER_USER"
 	envLoginPerIP     = "TOOLMESH_LOGIN_MAX_FAILURES_PER_IP"
+	envAPIKeyPerIP    = "TOOLMESH_APIKEY_MAX_FAILURES_PER_IP" //nolint:gosec // variable name, not a credential
 	envLoginWindow    = "TOOLMESH_LOGIN_FAILURE_WINDOW"
 )
 
@@ -97,13 +98,14 @@ func TestLoad_LoginThrottleWindowIgnoredWhenAllLimitsDisabled(t *testing.T) {
 	t.Setenv(envLoginPerUserIP, "0")
 	t.Setenv(envLoginPerUser, "0")
 	t.Setenv(envLoginPerIP, "0")
+	t.Setenv(envAPIKeyPerIP, "0")
 	t.Setenv(envLoginWindow, "0")
 
 	cfg, err := Load()
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if got := len(cfg.LoginThrottleDisabled()); got != 3 {
-		t.Errorf("LoginThrottleDisabled() lists %d limits, want 3", got)
+	if got := len(cfg.LoginThrottleDisabled()); got != 4 {
+		t.Errorf("LoginThrottleDisabled() lists %d limits, want 4", got)
 	}
 }

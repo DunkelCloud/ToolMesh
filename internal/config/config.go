@@ -17,6 +17,7 @@ package config
 
 import (
 	"fmt"
+	"net/netip"
 	"net/url"
 	"os"
 	"runtime"
@@ -38,6 +39,8 @@ const maxLoginFailureWindow = 30 * 24 * 60 * 60
 
 // Lifetimes of OAuth clients from Dynamic Client Registration, in seconds.
 const (
+	// defaultCodeMaxConcurrent bounds parallel execute_code runs.
+	defaultCodeMaxConcurrent = 16
 	// defaultDCRClientTTL keeps a client that never obtained a token for a day.
 	defaultDCRClientTTL = 24 * 60 * 60
 	// minDCRClientTTL leaves time for registration, login and code exchange.
@@ -118,6 +121,11 @@ type Config struct {
 	// run. TOOLMESH_CODE_TIMEOUT, default 120.
 	CodeTimeout int
 
+	// CodeMaxConcurrent bounds the execute_code runs in progress at once;
+	// 0 removes the bound. Each run holds a JavaScript runtime without a
+	// memory limit of its own. TOOLMESH_CODE_MAX_CONCURRENT, default 16.
+	CodeMaxConcurrent int
+
 	// Authorization. AuthzMode is "embedded" (default), "external" or
 	// "disabled" (TOOLMESH_AUTHZ_MODE; the deprecated OPENFGA_MODE maps onto
 	// it when it is not set). AuthzModeSource says which of the two set it,
@@ -186,6 +194,10 @@ type Config struct {
 	LoginMaxFailuresPerUser   int // TOOLMESH_LOGIN_MAX_FAILURES_PER_USER, default 20: one account from all addresses
 	LoginMaxFailuresPerIP     int // TOOLMESH_LOGIN_MAX_FAILURES_PER_IP, default 50: one address across all accounts
 	LoginFailureWindow        int // TOOLMESH_LOGIN_FAILURE_WINDOW, default 900
+	// APIKeyMaxFailuresPerIP limits failed bearer credentials (wrong API
+	// keys) on authenticated endpoints from one client address within
+	// LoginFailureWindow; 0 disables it.
+	APIKeyMaxFailuresPerIP int // TOOLMESH_APIKEY_MAX_FAILURES_PER_IP, default 50
 
 	// BcryptMaxConcurrent is how many bcrypt comparisons may run at the same
 	// time across the whole process: password logins (for known and unknown
@@ -198,6 +210,20 @@ type Config struct {
 
 	// CORS
 	CORSAllowedOrigins []string // TOOLMESH_CORS_ORIGINS, comma-separated allowlist
+
+	// TrustedProxies lists the reverse proxy addresses whose
+	// X-Forwarded-For header is honored when working out a client's
+	// address. nil means the default (loopback only, see
+	// auth.DefaultTrustedProxies); an empty list ("none") honors no
+	// X-Forwarded-For at all.
+	TrustedProxies []netip.Prefix // TOOLMESH_TRUSTED_PROXIES, comma-separated CIDRs or addresses
+
+	// OAuthRedirectHosts, when non-empty, restricts the redirect_uri hosts an
+	// OAuth client may register at /register and use at /authorize. Entries
+	// are host names ("claude.ai") or "*.example.com" for any subdomain.
+	// Loopback redirect URIs (http://localhost, 127.0.0.1, [::1]) of native
+	// clients are always accepted. Empty accepts any https redirect_uri.
+	OAuthRedirectHosts []string // TOOLMESH_OAUTH_REDIRECT_HOSTS, comma-separated
 
 	// Registry-based provider selection
 	CredentialStore string // registered store name (default: "embedded")
@@ -257,7 +283,7 @@ func Load() (*Config, error) {
 		Transport:               envStr("TOOLMESH_TRANSPORT", "http"),
 		AuthPassword:            envStr(envAuthPassword, ""),
 		APIKey:                  envStr(envAPIKey, ""),
-		Issuer:                  envStr("TOOLMESH_ISSUER", "https://toolmesh.io/"),
+		Issuer:                  envStr("TOOLMESH_ISSUER", placeholderIssuer+"/"),
 		RootRedirect:            envStr("TOOLMESH_ROOT_REDIRECT", ""),
 		AuditStore:              envStr("AUDIT_STORE", "log"),
 		AuditRetentionDays:      envInt("AUDIT_RETENTION_DAYS", 90),
@@ -306,6 +332,11 @@ func Load() (*Config, error) {
 			}
 		}
 	}
+	for _, h := range strings.Split(envStr("TOOLMESH_OAUTH_REDIRECT_HOSTS", ""), ",") {
+		if s := strings.ToLower(strings.TrimSpace(h)); s != "" {
+			cfg.OAuthRedirectHosts = append(cfg.OAuthRedirectHosts, s)
+		}
+	}
 
 	if cfg.Transport != "http" && cfg.Transport != "stdio" {
 		return nil, fmt.Errorf("invalid TOOLMESH_TRANSPORT: %q (must be \"http\" or \"stdio\")", cfg.Transport)
@@ -331,6 +362,17 @@ func Load() (*Config, error) {
 	if err := cfg.loadDCRClientTTL(); err != nil {
 		return nil, err
 	}
+	if err := cfg.loadTrustedProxies(); err != nil {
+		return nil, err
+	}
+	codeMax, err := envIntStrict("TOOLMESH_CODE_MAX_CONCURRENT", defaultCodeMaxConcurrent)
+	if err != nil {
+		return nil, err
+	}
+	if codeMax < 0 {
+		return nil, fmt.Errorf("invalid TOOLMESH_CODE_MAX_CONCURRENT: %d (must be 0 for no limit, or positive)", codeMax)
+	}
+	cfg.CodeMaxConcurrent = codeMax
 
 	// Fail fast on a typo here: the value only ever surfaces as a Location
 	// header on the site root, where a silently-ignored setting would look
@@ -393,6 +435,7 @@ func (c *Config) loadLoginThrottle() error {
 		{"TOOLMESH_LOGIN_MAX_FAILURES_PER_USER_IP", 5, &c.LoginMaxFailuresPerUserIP},
 		{"TOOLMESH_LOGIN_MAX_FAILURES_PER_USER", 20, &c.LoginMaxFailuresPerUser},
 		{"TOOLMESH_LOGIN_MAX_FAILURES_PER_IP", 50, &c.LoginMaxFailuresPerIP},
+		{"TOOLMESH_APIKEY_MAX_FAILURES_PER_IP", 50, &c.APIKeyMaxFailuresPerIP},
 	}
 	enabled := false
 	for _, l := range limits {
@@ -474,6 +517,46 @@ func (c *Config) loadFileBroker() error {
 	return nil
 }
 
+// loadTrustedProxies reads TOOLMESH_TRUSTED_PROXIES: comma-separated CIDRs
+// or single addresses, or "none". Unset leaves TrustedProxies nil, which
+// selects the default networks.
+func (c *Config) loadTrustedProxies() error {
+	raw := strings.TrimSpace(envStr("TOOLMESH_TRUSTED_PROXIES", ""))
+	switch strings.ToLower(raw) {
+	case "":
+		c.TrustedProxies = nil
+		return nil
+	case "none":
+		c.TrustedProxies = []netip.Prefix{}
+		return nil
+	}
+	var out []netip.Prefix
+	for _, item := range strings.Split(raw, ",") {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		if strings.Contains(item, "/") {
+			p, err := netip.ParsePrefix(item)
+			if err != nil {
+				return fmt.Errorf("invalid TOOLMESH_TRUSTED_PROXIES entry %q: %w", item, err)
+			}
+			out = append(out, p.Masked())
+			continue
+		}
+		a, err := netip.ParseAddr(item)
+		if err != nil {
+			return fmt.Errorf("invalid TOOLMESH_TRUSTED_PROXIES entry %q: %w", item, err)
+		}
+		out = append(out, netip.PrefixFrom(a, a.BitLen()))
+	}
+	if out == nil {
+		out = []netip.Prefix{}
+	}
+	c.TrustedProxies = out
+	return nil
+}
+
 // loadDCRClientTTL reads the lifetimes of dynamically registered OAuth
 // clients, strictly like the other security limits.
 func (c *Config) loadDCRClientTTL() error {
@@ -510,20 +593,31 @@ func (c *Config) LoginThrottleDisabled() []string {
 	if c.LoginMaxFailuresPerIP == 0 {
 		off = append(off, "TOOLMESH_LOGIN_MAX_FAILURES_PER_IP")
 	}
+	if c.APIKeyMaxFailuresPerIP == 0 {
+		off = append(off, "TOOLMESH_APIKEY_MAX_FAILURES_PER_IP")
+	}
 	return off
 }
 
 // placeholderIssuer is the TOOLMESH_ISSUER that .env.example ships and that
-// applies when the variable is not set. It is the address of the project's
-// website, not of any ToolMesh instance.
-const placeholderIssuer = "https://toolmesh.io"
+// applies when the variable is not set. The .invalid top-level domain never
+// resolves (RFC 2606), so a placeholder left in place cannot send a client to
+// a real host.
+const placeholderIssuer = "https://toolmesh.invalid"
+
+// legacyPlaceholderIssuer is the placeholder earlier versions shipped, the
+// address of the project's website; .env files copied from them still
+// carry it.
+const legacyPlaceholderIssuer = "https://toolmesh.io"
 
 // IssuerIsPlaceholder reports whether TOOLMESH_ISSUER was left at the value
-// from .env.example. Everything that is built from the issuer then names a
-// host that is not this instance: the OAuth endpoints in the metadata, the
-// metadata URL in the 401 challenge of /mcp, and the URLs of the file broker.
+// from .env.example (or the one earlier versions shipped). Everything that is
+// built from the issuer then names a host that is not this instance: the
+// OAuth endpoints in the metadata, the metadata URL in the 401 challenge of
+// /mcp, and the URLs of the file broker.
 func (c *Config) IssuerIsPlaceholder() bool {
-	return strings.EqualFold(strings.TrimRight(c.Issuer, "/"), placeholderIssuer)
+	issuer := strings.TrimRight(c.Issuer, "/")
+	return strings.EqualFold(issuer, placeholderIssuer) || strings.EqualFold(issuer, legacyPlaceholderIssuer)
 }
 
 // CredentialStoreConfig returns the settings handed to the credential store

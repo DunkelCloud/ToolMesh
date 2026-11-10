@@ -21,6 +21,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -30,58 +31,34 @@ import (
 	"github.com/DunkelCloud/ToolMesh/internal/userctx"
 )
 
-// mockCreds is a credential store that returns preset values.
-type mockCreds struct {
-	get    map[string]string
-	listed map[string]string
-	err    error
+// recordingCreds is a credential store that counts every read.
+type recordingCreds struct{ reads atomic.Int32 }
+
+func (r *recordingCreds) Get(context.Context, string, credentials.TenantInfo) (string, error) {
+	r.reads.Add(1)
+	return "store-read", nil
 }
 
-func (m *mockCreds) Get(_ context.Context, name string, _ credentials.TenantInfo) (string, error) {
-	if m.err != nil {
-		return "", m.err
-	}
-	v, ok := m.get[name]
-	if !ok {
-		return "", credentials.ErrCredentialNotFound
-	}
-	return v, nil
+func (r *recordingCreds) ListByPrefix(context.Context, string, credentials.TenantInfo) (map[string]string, error) {
+	r.reads.Add(1)
+	return map[string]string{"GITHUB_TOKEN": "store-list"}, nil
 }
 
-func (m *mockCreds) ListByPrefix(_ context.Context, _ string, _ credentials.TenantInfo) (map[string]string, error) {
-	if m.err != nil {
-		return nil, m.err
+func (r *recordingCreds) Healthy(context.Context) error { return nil }
+
+// TestExecuteTool_ReadsNoCredentials pins that the executor reads no
+// credentials for a call: each backend reads its own, within its credential
+// binding, when it sends a request. A listing by the tool's name prefix
+// would read outside that binding.
+func TestExecuteTool_ReadsNoCredentials(t *testing.T) {
+	store := &recordingCreds{}
+	exec := New(nil, store, &mockBackend{}, nil, nil, time.Second, newTestLogger(), nil, nil)
+	ctx := userctx.WithUserContext(context.Background(), &userctx.UserContext{UserID: "u1", Authenticated: true})
+	if _, err := exec.ExecuteTool(ctx, ExecuteToolRequest{ToolName: "github_list_repos"}); err != nil {
+		t.Fatal(err)
 	}
-	return m.listed, nil
-}
-
-func (m *mockCreds) Healthy(_ context.Context) error { return nil }
-
-func TestResolveCredentials_PrefixLister(t *testing.T) {
-	exec := New(nil, &mockCreds{listed: map[string]string{"GITHUB_TOKEN": "tok"}}, &mockBackend{}, nil, nil, time.Second, newTestLogger(), nil, nil)
-	got := exec.resolveCredentials(context.Background(), "github", credentials.TenantInfo{})
-	if got["GITHUB_TOKEN"] != "tok" {
-		t.Errorf("got %v", got)
-	}
-}
-
-func TestResolveCredentials_Fallback(t *testing.T) {
-	// No prefix match but Get finds a credential.
-	exec := New(nil, &mockCreds{
-		get:    map[string]string{"GITHUB_API_KEY": "fallback-key"},
-		listed: map[string]string{}, // empty prefix listing
-	}, &mockBackend{}, nil, nil, time.Second, newTestLogger(), nil, nil)
-	got := exec.resolveCredentials(context.Background(), "github", credentials.TenantInfo{})
-	if got["GITHUB_API_KEY"] != "fallback-key" {
-		t.Errorf("got %v", got)
-	}
-}
-
-func TestResolveCredentials_NoneFound(t *testing.T) {
-	exec := New(nil, &mockCreds{get: map[string]string{}, listed: map[string]string{}}, &mockBackend{}, nil, nil, time.Second, newTestLogger(), nil, nil)
-	got := exec.resolveCredentials(context.Background(), "github", credentials.TenantInfo{})
-	if got != nil {
-		t.Errorf("expected nil, got %v", got)
+	if n := store.reads.Load(); n != 0 {
+		t.Errorf("the executor read the credential store %d times", n)
 	}
 }
 

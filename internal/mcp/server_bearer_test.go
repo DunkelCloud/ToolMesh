@@ -97,10 +97,11 @@ func (ts *loginTestServer) loginWithin(d time.Duration, username, password strin
 	ctx, cancel := context.WithTimeout(context.Background(), d)
 	defer cancel()
 	form := url.Values{
-		"username":         {username},
+		testFormUsername:   {username},
 		testFormPassword:   {password},
 		oauthClientID:      {ts.clientID},
 		oauthRedirectURI:   {testLoginRedirect},
+		oauthConfirmHost:   {confirmHostOf(testLoginRedirect)},
 		oauthState:         {"s1"},
 		oauthCodeChallenge: {testLoginChallenge},
 	}

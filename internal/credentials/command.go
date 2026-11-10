@@ -426,7 +426,7 @@ func (s *CommandStore) vars() map[string]string {
 
 // Get returns the value of CREDENTIAL_<NAME> from the last successful run.
 func (s *CommandStore) Get(_ context.Context, logicalName string, _ TenantInfo) (string, error) {
-	val := s.vars()["CREDENTIAL_"+strings.ToUpper(logicalName)]
+	val := s.vars()[CanonicalEnvKey(EnvKeyPrefix+logicalName)]
 	if val == "" {
 		return "", fmt.Errorf("credential %q not found: %w", logicalName, ErrCredentialNotFound)
 	}
@@ -436,11 +436,11 @@ func (s *CommandStore) Get(_ context.Context, logicalName string, _ TenantInfo) 
 // ListByPrefix returns all non-empty CREDENTIAL_<PREFIX>* values of the last
 // successful run, keyed by logical name (without CREDENTIAL_).
 func (s *CommandStore) ListByPrefix(_ context.Context, prefix string, _ TenantInfo) (map[string]string, error) {
-	keyPrefix := "CREDENTIAL_" + strings.ToUpper(prefix)
+	keyPrefix := CanonicalEnvKey(EnvKeyPrefix + prefix)
 	result := make(map[string]string)
 	for key, val := range s.vars() {
 		if val != "" && strings.HasPrefix(key, keyPrefix) {
-			result[strings.TrimPrefix(key, "CREDENTIAL_")] = val
+			result[strings.TrimPrefix(key, EnvKeyPrefix)] = val
 		}
 	}
 	return result, nil

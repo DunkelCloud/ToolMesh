@@ -33,6 +33,7 @@ import (
 	"github.com/DunkelCloud/ToolMesh/internal/gate"
 	"github.com/DunkelCloud/ToolMesh/internal/metrics"
 	"github.com/DunkelCloud/ToolMesh/internal/telemetry"
+	"github.com/DunkelCloud/ToolMesh/internal/urlredact"
 	"github.com/DunkelCloud/ToolMesh/internal/userctx"
 	"github.com/google/uuid"
 )
@@ -57,7 +58,6 @@ const paramPassword = "password"
 // Executor orchestrates the full tool execution pipeline.
 type Executor struct {
 	authorizer authz.Authorizer
-	creds      credentials.CredentialStore
 	backend    backend.ToolBackend
 	gate       *gate.Pipeline
 	audit      audit.AuditStore
@@ -163,10 +163,12 @@ func addMetadata(entry *audit.AuditEntry, key, value string) {
 
 // New creates a new Executor with all required dependencies. The metrics
 // registry is optional; pass nil to disable Prometheus instrumentation. A nil
-// authorizer disables authorization (TOOLMESH_AUTHZ_MODE=disabled).
+// authorizer disables authorization (TOOLMESH_AUTHZ_MODE=disabled). The
+// credential store is not used: every backend reads its own credentials,
+// within its credential binding, when it sends a request.
 func New(
 	authorizer authz.Authorizer,
-	creds credentials.CredentialStore,
+	_ credentials.CredentialStore,
 	be backend.ToolBackend,
 	gatePipeline *gate.Pipeline,
 	auditStore audit.AuditStore,
@@ -177,7 +179,6 @@ func New(
 ) *Executor {
 	return &Executor{
 		authorizer: authorizer,
-		creds:      creds,
 		backend:    be,
 		gate:       gatePipeline,
 		audit:      auditStore,
@@ -308,24 +309,28 @@ func (e *Executor) ExecuteTool(ctx context.Context, req ExecuteToolRequest) (*ba
 		}
 	}
 
-	// Step 2: Credential injection via context
-	if e.creds != nil {
-		tenant := credentials.TenantInfo{
-			CompanyID:   uc.CompanyID,
-			UserID:      uc.UserID,
-			CallerID:    uc.CallerID,
-			CallerClass: uc.CallerClass,
+	// Step 2: Argument check against the tool's declaration, before the
+	// pre-execution gate. A policy then only sees arguments of the declared
+	// types: the string "false" for a boolean would otherwise pass a check
+	// for false and still reach the API.
+	if pv, ok := e.backend.(backend.ParamValidator); ok {
+		effective, err := pv.ValidateToolParams(req.ToolName, req.Params)
+		if err != nil {
+			e.logger.WarnContext(ctx, "tool call rejected: parameters do not match the declaration",
+				"tool", req.ToolName,
+				"user", uc.UserID,
+				"error", err,
+			)
+			entry.DurationMs = time.Since(start).Milliseconds()
+			entry.Status = statusError
+			entry.Error = err.Error()
+			e.recordAudit(ctx, entry)
+			return backend.ParamErrorResult(err), nil
 		}
-		if parts := splitToolPrefix(req.ToolName); parts[0] != "" {
-			creds := e.resolveCredentials(ctx, parts[0], tenant)
-			if len(creds) > 0 {
-				ctx = credentials.WithCredentials(ctx, creds)
-				e.logger.InfoContext(ctx, "credentials injected",
-					"backend", parts[0],
-					"count", len(creds),
-				)
-			}
-		}
+		// The gate and the backend see the effective arguments: declared
+		// defaults filled in, numeric strings as numbers, numbers and
+		// booleans of string parameters as the text the request carries.
+		req.Params = effective
 	}
 
 	// Step 3: Pre-execution gate — validate tool + params before calling backend
@@ -393,12 +398,19 @@ func (e *Executor) ExecuteTool(ctx context.Context, req ExecuteToolRequest) (*ba
 
 	result, err := e.backend.Execute(execCtx, req.ToolName, req.Params)
 	if err != nil {
+		// A transport error can carry the request URL, and with it a
+		// query-injected credential; never let that reach the audit log or
+		// the caller.
+		err = urlredact.URLErrors(err)
 		e.logger.DebugContext(ctx, "backend execution failed", "tool", req.ToolName, "error", err)
 		entry.DurationMs = time.Since(start).Milliseconds()
 		entry.Status = statusError
 		entry.Error = err.Error()
 		e.recordAudit(ctx, entry)
 		return nil, fmt.Errorf("backend execution failed for %s: %w", req.ToolName, err)
+	}
+	if result != nil && result.IsError {
+		redactErrorResult(result)
 	}
 	if contentJSON, err := json.Marshal(result.Content); err == nil {
 		e.logger.DebugContext(ctx, "backend execution complete",
@@ -574,32 +586,20 @@ func (e *Executor) recordAudit(ctx context.Context, entry audit.AuditEntry) {
 	}
 }
 
-// resolveCredentials loads all credentials for a backend. It first tries
-// PrefixLister (convention: CREDENTIAL_<BACKEND>_*) to inject multiple
-// credentials per backend. Falls back to a single <BACKEND>_API_KEY lookup.
-func (e *Executor) resolveCredentials(ctx context.Context, backendPrefix string, tenant credentials.TenantInfo) map[string]string {
-	prefix := strings.ToUpper(backendPrefix) + "_"
-
-	// Try prefix-based listing first (e.g. CREDENTIAL_GITHUB_API_KEY, CREDENTIAL_GITHUB_TOKEN)
-	if lister, ok := e.creds.(credentials.PrefixLister); ok {
-		creds, err := lister.ListByPrefix(ctx, prefix, tenant)
-		if err != nil {
-			e.logger.WarnContext(ctx, "credential prefix lookup failed", "prefix", prefix, "error", err)
-		} else if len(creds) > 0 {
-			return creds
+// redactErrorResult removes userinfo, query and fragment from every URL in
+// the text content of an error result. Such a text is often built from an
+// error whose structure is gone (a retry that failed, a token request), and
+// a request URL in it can carry a query-injected credential.
+func redactErrorResult(result *backend.ToolResult) {
+	for _, item := range result.Content {
+		m, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		if text, ok := m[contentKeyText].(string); ok {
+			m[contentKeyText] = urlredact.Text(text)
 		}
 	}
-
-	// Fallback: single <BACKEND>_API_KEY credential
-	credName := strings.ToUpper(backendPrefix) + "_API_KEY"
-	cred, err := e.creds.Get(ctx, credName, tenant)
-	if err != nil {
-		e.logger.DebugContext(ctx, "credential lookup returned no result", "backend", backendPrefix)
-	} else {
-		return map[string]string{credName: cred}
-	}
-
-	return nil
 }
 
 // sensitiveParamNames is the set of parameter name patterns that should be redacted in audit logs.
@@ -683,14 +683,6 @@ func (e *Executor) authzRequest(uc *userctx.UserContext, toolName, toolAccess st
 		Backend:   e.routedBackend(toolName),
 		Access:    toolAccess,
 	}
-}
-
-// splitToolPrefix extracts the backend prefix from a tool name like "backend_tool".
-func splitToolPrefix(toolName string) [2]string {
-	if idx := strings.Index(toolName, "_"); idx > 0 {
-		return [2]string{toolName[:idx], toolName[idx+1:]}
-	}
-	return [2]string{"", toolName}
 }
 
 // lookupToolAccess resolves the DADL-declared access classification for the

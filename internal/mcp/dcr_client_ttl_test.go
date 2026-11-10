@@ -90,6 +90,7 @@ func (f dcrFlow) login(clientID string) *httptest.ResponseRecorder {
 		testFormPassword:   {dcrTestPassword},
 		oauthClientID:      {clientID},
 		oauthRedirectURI:   {dcrTestRedirect},
+		oauthConfirmHost:   {confirmHostOf(dcrTestRedirect)},
 		oauthState:         {"s1"},
 		oauthCodeChallenge: {base64.RawURLEncoding.EncodeToString(sum[:])},
 	}

@@ -45,7 +45,7 @@ Set a limit to `0` to switch it off; the startup security-posture summary report
 
 ### Client address
 
-The client address is used for the login and API key limits, the registration limit and the `remote` field of the log. ToolMesh takes it from the connection, and from `X-Forwarded-For` only when the connection comes from a trusted proxy (`TOOLMESH_TRUSTED_PROXIES`, by default loopback only). The header is then read from the right: the first entry that is not a trusted proxy itself is the client. When every entry is a trusted proxy, the leftmost one is used. All `X-Forwarded-For` header lines count, not just the first.
+The client address is used for the login and API key limits, the registration limit and the `remote` field of the log. ToolMesh takes it from the connection, and from `X-Forwarded-For` only when the connection comes from a trusted proxy (`TOOLMESH_TRUSTED_PROXIES`, by default loopback only). The header is then read from the right: the first entry that is not a trusted proxy itself is the client. When every entry is a trusted proxy, the leftmost one is used. An entry with a port, as some load balancers append it (`203.0.113.7:51234`, `[2001:db8::7]:51234`), counts as its address; an entry that is no address (`unknown`, empty) ends the walk, and the last trusted proxy read so far, at first the connection's peer, is used. All `X-Forwarded-For` header lines count, not just the first.
 
 `TOOLMESH_TRUSTED_PROXIES` lists the addresses your reverse proxies connect from, not the networks your clients are in: a client whose own address is listed can choose the address it is counted under.
 

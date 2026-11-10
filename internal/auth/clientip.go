@@ -93,13 +93,36 @@ func isTrustedProxy(addr netip.Addr) bool {
 	return false
 }
 
+// parseForwardedAddr reads one X-Forwarded-For entry. Besides a bare address
+// it accepts the forms some load balancers append, with a port or brackets:
+// "203.0.113.7:51234", "[2001:db8::7]:51234" and "[2001:db8::7]". It reports
+// false for anything else, such as "unknown" or an empty entry.
+func parseForwardedAddr(entry string) (netip.Addr, bool) {
+	entry = strings.TrimSpace(entry)
+	if ip, err := netip.ParseAddr(entry); err == nil {
+		return ip, true
+	}
+	if ap, err := netip.ParseAddrPort(entry); err == nil {
+		return ap.Addr(), true
+	}
+	if len(entry) > 2 && entry[0] == '[' && entry[len(entry)-1] == ']' {
+		if ip, err := netip.ParseAddr(entry[1 : len(entry)-1]); err == nil && ip.Is6() {
+			return ip, true
+		}
+	}
+	return netip.Addr{}, false
+}
+
 // ClientIP returns the address of the client a request comes from. The
 // X-Forwarded-For header is honored only when the connection itself comes
 // from a trusted proxy; otherwise anyone could choose the address that the
 // login throttle, the registration limit and the logs see. Behind trusted
 // proxies the header is read from the right: the first entry that is not a
 // trusted proxy itself is the client. When every entry is a trusted proxy,
-// the leftmost one is the originating client.
+// the leftmost one is the originating client. An entry may carry a port or
+// brackets. An entry that is no address at all ("unknown", empty) ends the
+// walk at the last trusted hop read so far, the peer at first: everything
+// to its left may have been written by the client.
 func ClientIP(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
@@ -119,9 +142,9 @@ func ClientIP(r *http.Request) string {
 	parts := strings.Split(strings.Join(values, ","), ",")
 	client := host
 	for i := len(parts) - 1; i >= 0; i-- {
-		ip, err := netip.ParseAddr(strings.TrimSpace(parts[i]))
-		if err != nil {
-			continue
+		ip, ok := parseForwardedAddr(parts[i])
+		if !ok {
+			return client
 		}
 		client = ip.Unmap().String()
 		if !isTrustedProxy(ip) {

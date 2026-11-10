@@ -39,7 +39,7 @@ func NewEmbeddedStore() *EmbeddedStore {
 // Get retrieves a credential from environment variables.
 // The logical name is uppercased and looked up as CREDENTIAL_<NAME>.
 func (s *EmbeddedStore) Get(_ context.Context, logicalName string, _ TenantInfo) (string, error) {
-	envKey := "CREDENTIAL_" + strings.ToUpper(logicalName)
+	envKey := CanonicalEnvKey(EnvKeyPrefix + logicalName)
 	val := os.Getenv(envKey)
 	if val == "" {
 		return "", fmt.Errorf("credential %q not found: %w", logicalName, ErrCredentialNotFound)
@@ -50,7 +50,7 @@ func (s *EmbeddedStore) Get(_ context.Context, logicalName string, _ TenantInfo)
 // ListByPrefix returns all credentials whose logical name starts with the given prefix.
 // For EmbeddedStore, it scans environment variables matching CREDENTIAL_<PREFIX>*.
 func (s *EmbeddedStore) ListByPrefix(_ context.Context, prefix string, _ TenantInfo) (map[string]string, error) {
-	envPrefix := "CREDENTIAL_" + strings.ToUpper(prefix)
+	envPrefix := CanonicalEnvKey(EnvKeyPrefix + prefix)
 	result := make(map[string]string)
 	for _, env := range os.Environ() {
 		key, val, ok := strings.Cut(env, "=")
@@ -59,7 +59,7 @@ func (s *EmbeddedStore) ListByPrefix(_ context.Context, prefix string, _ TenantI
 		}
 		if strings.HasPrefix(key, envPrefix) {
 			// Convert env key back to logical name: CREDENTIAL_GITHUB_TOKEN → GITHUB_TOKEN
-			logicalName := strings.TrimPrefix(key, "CREDENTIAL_")
+			logicalName := strings.TrimPrefix(key, EnvKeyPrefix)
 			result[logicalName] = val
 		}
 	}

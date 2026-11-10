@@ -107,6 +107,99 @@ func TestRESTAdapter_CompositeChildGuard(t *testing.T) {
 			t.Error("expected composite to fail closed when the child guard denies the child call")
 		}
 	})
+
+	t.Run("arguments are checked before the guard", func(t *testing.T) {
+		adapter := newAdapter(t)
+		adapter.spec.Backend.Tools[testToolListItems] = dadl.ToolDef{
+			Method: testMethodGET, Path: testPathItems,
+			Params: map[string]dadl.ParamDef{"flag": {Type: schemaTypeBoolean, In: testParamQuery}},
+		}
+		adapter.spec.Backend.Composites[testCompositeCountItems] = dadl.CompositeDef{
+			Code:    `const items = await api.list_items({flag: "false"}); return items.length;`,
+			Timeout: "5s",
+		}
+		guard := &recordingChildGuard{}
+		adapter.SetChildGuard(guard)
+
+		result, err := adapter.Execute(context.Background(), testCompositeCountItems, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !result.IsError || !strings.Contains(redactResultText(t, result), "must be boolean") {
+			t.Fatalf("expected a type error from the child call, got %v", result.Content)
+		}
+		if len(guard.seen) != 0 {
+			t.Errorf("guard (and its gate) saw the badly typed child call: %v", guard.seen)
+		}
+	})
+
+	t.Run("composite SetChildGuard(nil) removes the guard", func(t *testing.T) {
+		adapter := newAdapter(t)
+		comp := NewCompositeBackend(map[string]ToolBackend{testBackendNameAPI: adapter})
+		comp.SetChildGuard(AllowAllChildGuard{})
+		comp.SetChildGuard(nil)
+		result, err := adapter.Execute(context.Background(), testCompositeCountItems, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !result.IsError {
+			t.Error("after SetChildGuard(nil) the old guard still allowed the child call")
+		}
+	})
+
+	t.Run("no guard refuses child calls (fail closed)", func(t *testing.T) {
+		adapter := newAdapter(t)
+
+		result, err := adapter.Execute(context.Background(), testCompositeCountItems, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !result.IsError {
+			t.Fatal("expected composite to fail closed when no child guard is installed")
+		}
+		if text := redactResultText(t, result); !strings.Contains(text, "no authorization guard") {
+			t.Errorf("error = %q, want it to name the missing guard", text)
+		}
+	})
+
+	// The composite remembers the guard and installs it on every backend that
+	// reaches it later. A hot reload of backends.yaml swaps in fresh adapters;
+	// their composites must still be checked.
+	installPaths := []struct {
+		name    string
+		install func(c *CompositeBackend, a *RESTAdapter)
+	}{
+		{"Swap", func(c *CompositeBackend, a *RESTAdapter) {
+			c.Swap(map[string]ToolBackend{testBackendNameAPI: a}, nil)
+		}},
+		{"AddNamed", func(c *CompositeBackend, a *RESTAdapter) {
+			c.AddNamed(testBackendNameAPI, a)
+		}},
+		{"AddPassthrough", func(c *CompositeBackend, a *RESTAdapter) {
+			c.AddPassthrough(a)
+		}},
+	}
+	for _, p := range installPaths {
+		t.Run("guard survives "+p.name, func(t *testing.T) {
+			comp := NewCompositeBackend(map[string]ToolBackend{testBackendNameAPI: newAdapter(t)})
+			guard := &recordingChildGuard{err: errors.New("not authorized")}
+			comp.SetChildGuard(guard)
+
+			fresh := newAdapter(t)
+			p.install(comp, fresh)
+
+			result, err := fresh.Execute(context.Background(), testCompositeCountItems, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !result.IsError {
+				t.Error("a backend installed after SetChildGuard ran its composite without the guard")
+			}
+			if len(guard.seen) != 1 {
+				t.Errorf("guard saw %v, want exactly one child check", guard.seen)
+			}
+		})
+	}
 }
 
 func TestRESTAdapter_ExecuteComposite(t *testing.T) {
@@ -148,6 +241,7 @@ func TestRESTAdapter_ExecuteComposite(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	adapter.SetChildGuard(AllowAllChildGuard{})
 
 	// Composite must appear in ListTools.
 	tools, _ := adapter.ListTools(context.Background())

@@ -59,7 +59,7 @@ backend:
 		t.Fatalf("ParseBytes: %v", err)
 	}
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	adapter, err := NewRESTAdapter(spec, credentials.NewEmbeddedStore(), logger, RESTAdapterOptions{})
+	adapter, err := NewRESTAdapter(spec, credentials.NewEmbeddedStore(), logger, RESTAdapterOptions{Unbound: true})
 	if err != nil {
 		t.Fatalf("NewRESTAdapter: %v", err)
 	}

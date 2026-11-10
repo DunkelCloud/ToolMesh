@@ -19,6 +19,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 
 	"github.com/DunkelCloud/ToolMesh/internal/dadl"
@@ -108,6 +109,76 @@ func TestRESTAdapter_RetryExhausted(t *testing.T) {
 	result, _ := a.Execute(context.Background(), "t", nil)
 	if !result.IsError {
 		t.Error("expected error after retry exhaustion")
+	}
+}
+
+// TestRESTAdapter_RetryOnlyListedStatuses checks DADL spec §8 end to end: a
+// status the DADL lists in neither retry_on nor terminal is terminal, so a
+// 5xx left out of retry_on reaches the backend exactly once, while a listed
+// one is retried.
+func TestRESTAdapter_RetryOnlyListedStatuses(t *testing.T) {
+	tests := []struct {
+		name        string
+		status      int
+		retryOn     []int
+		wantRetried bool
+	}{
+		{name: "503 left out of retry_on", status: http.StatusServiceUnavailable, retryOn: []int{429, 502, 504}, wantRetried: false},
+		{name: "500 without retry_on", status: http.StatusInternalServerError, retryOn: nil, wantRetried: false},
+		{name: "502 in retry_on", status: http.StatusBadGateway, retryOn: []int{429, 502, 504}, wantRetried: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var calls atomic.Int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				calls.Add(1)
+				w.Header().Set(testHeaderContentType, testContentTypeJSON)
+				w.WriteHeader(tt.status)
+				_, _ = w.Write([]byte(`{"message": "down"}`))
+			}))
+			defer srv.Close()
+
+			spec := &dadl.Spec{
+				Spec: testDADLSpecURL,
+				Backend: dadl.BackendDef{
+					Name: testBackendNameAPI, Type: transportTypeREST, BaseURL: srv.URL,
+					Tools: map[string]dadl.ToolDef{
+						"t": {
+							Method: testMethodGET, Path: "/",
+							Errors: &dadl.ErrorConfig{
+								Format:      testJSONFormat,
+								MessagePath: testJSONPathMessage,
+								RetryOn:     tt.retryOn,
+								RetryStrategy: &dadl.RetryStrategyConfig{
+									MaxRetries:   2,
+									InitialDelay: testDelay1ms,
+									Backoff:      testBackoffFixed,
+								},
+							},
+						},
+					},
+				},
+			}
+			a, err := NewRESTAdapter(spec, &testCredStore{}, slog.Default(), testRESTOpts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := a.Execute(context.Background(), "t", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !result.IsError {
+				t.Fatalf("expected an error result, got %v", result.Content)
+			}
+			got := calls.Load()
+			if tt.wantRetried && got < 2 {
+				t.Errorf("backend saw %d request(s), want the status retried", got)
+			}
+			if !tt.wantRetried && got != 1 {
+				t.Errorf("backend saw %d requests, want exactly 1 (no retry)", got)
+			}
+		})
 	}
 }
 

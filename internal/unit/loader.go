@@ -80,6 +80,26 @@ func ScanDir(unitsDir string) ([]string, error) {
 	return out, nil
 }
 
+// EntryNames returns the names of the unit in dir and of its sub-backend
+// entries: the unit's part in the division of the credential names among
+// all configured entries (dadl.CredentialOwners). A unit.yaml that cannot
+// be read contributes no names.
+func EntryNames(dir string) []string {
+	data, err := os.ReadFile(filepath.Join(dir, configFileName)) //nolint:gosec // path from trusted config
+	if err != nil {
+		return nil
+	}
+	var cfg Config
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return nil
+	}
+	names := []string{cfg.Unit}
+	for _, e := range cfg.Backends {
+		names = append(names, e.Name)
+	}
+	return names
+}
+
 // LoadUnit parses one unit directory and returns a ready-to-register
 // Backend along with the MCPAdapter that owns its private MCP sessions.
 // REST sub-backends are wired in-place against blobStore; pass nil for
@@ -92,11 +112,14 @@ func ScanDir(unitsDir string) ([]string, error) {
 // global startup semantics — but a hard parse or wiring failure on a REST
 // entry aborts the unit so a half-wired sandbox is never exposed.
 //
+// owners divides the credential names among all configured entries; the
+// REST sub-backends are bound with it (nil: they own no names).
+//
 // dadlDir is the global DADL directory (TOOLMESH_DADL_DIR). A REST
 // sub-backend whose dadl path is not bundled next to unit.yaml is resolved
 // against it, matching config/backends.yaml. Pass "" to disable that fallback
 // (e.g. in tests with only bundled DADLs).
-func LoadUnit(ctx context.Context, dir, dadlDir string, creds credentials.CredentialStore, blobStore *blob.Store, logger *slog.Logger) (*LoadResult, error) {
+func LoadUnit(ctx context.Context, dir, dadlDir string, creds credentials.CredentialStore, owners *dadl.CredentialOwners, blobStore *blob.Store, logger *slog.Logger) (*LoadResult, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -144,7 +167,7 @@ func LoadUnit(ctx context.Context, dir, dadlDir string, creds credentials.Creden
 		case transportMCPStdio, transportMCPHTTP:
 			subBackends[e.Name] = &mcpSubBackend{adapter: adapter, subName: e.Name}
 		case transportREST:
-			rest, err := loadRESTSubBackend(dir, dadlDir, e, creds, blobStore, logger)
+			rest, err := loadRESTSubBackend(dir, dadlDir, e, creds, owners, blobStore, logger)
 			if err != nil {
 				adapter.Close()
 				return nil, fmt.Errorf("unit %s: sub-backend %q: %w", cfg.Unit, e.Name, err)
@@ -177,6 +200,7 @@ func loadRESTSubBackend(
 	unitDir, dadlDir string,
 	entry backend.BackendEntry,
 	creds credentials.CredentialStore,
+	owners *dadl.CredentialOwners,
 	blobStore *blob.Store,
 	logger *slog.Logger,
 ) (backend.ToolBackend, error) {
@@ -192,6 +216,7 @@ func loadRESTSubBackend(
 	for _, w := range spec.Warnings {
 		logger.Warn(w, "dadl", dadlPath)
 	}
+	backend.WarnPlainHTTPBase(logger, entry, spec)
 	if entry.URL != "" {
 		spec.Backend.BaseURL = entry.URL
 	}
@@ -225,10 +250,25 @@ func loadRESTSubBackend(
 		TLSSkipVerify:       entry.TLSSkipVerify,
 		ExposeTools:         entry.ExposeTools,
 		Hint:                entry.Hint,
+		// The sub-backend is bound like a backends.yaml entry: its
+		// unit.yaml entry name sets the credential namespace.
+		Scope: &backend.BackendScope{
+			EntryName:    entry.Name,
+			Credentials:  entry.Credentials,
+			Env:          entry.Env,
+			AllowedHosts: entry.AllowedHosts,
+			Owners:       owners,
+		},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("build REST adapter: %w", err)
 	}
+	// A sub-backend is a private dependency of the unit: the unit call itself
+	// is authorized and gated, and the unit script may call every tool of
+	// this sub-backend directly. Composites of the sub-backend reach no tool
+	// beyond that set, so their child calls need no separate check. The
+	// adapter refuses child calls without a guard, hence the explicit one.
+	rest.SetChildGuard(backend.AllowAllChildGuard{})
 	if blobStore != nil {
 		rest.SetBlobStore(blobStore)
 	}

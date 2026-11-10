@@ -68,26 +68,39 @@ type RESTAdapter struct {
 	creds               credentials.CredentialStore
 	logger              *slog.Logger
 	allowedUploadDir    string
-	fileBroker          *FileBrokerClient // nil = use blob store or error
-	blobStore           *blob.Store       // embedded blob store for binary responses
-	blobTTL             time.Duration     // TTL for blob URLs (from backends.yaml options.blob_ttl)
-	exposeTools         []string          // bare tool names to promote as direct MCP tools (from backends.yaml expose_tools)
-	includeTools        map[string]bool   // when non-nil, the only tools/composites this backend exposes (from backends.yaml include_tools)
-	fileURLAllowedHosts map[string]bool   // optional allowlist of lowercase hostnames for caller file_url fetches; nil/empty = no restriction
-	maxBodySizes        map[string]int64  // declared max_body_size string → effective byte ceiling; see resolveMaxBodySizes
-	childGuard          ChildGuard        // authorizes composite child api.* calls; nil = no per-child checks (e.g. standalone/tests)
-	hint                string            // operator guidance from backends.yaml hint:; empty = none configured
-	syntheticHealth     bool              // the DADL's health check is offered as the synthetic health tool (spec §4.6)
-	authExpiresAt       time.Time         // operator-recorded credential expiry from backends.yaml; zero = unknown
+	fileBroker          *FileBrokerClient             // nil = use blob store or error
+	blobStore           *blob.Store                   // embedded blob store for binary responses
+	blobTTL             time.Duration                 // TTL for blob URLs (from backends.yaml options.blob_ttl)
+	exposeTools         []string                      // bare tool names to promote as direct MCP tools (from backends.yaml expose_tools)
+	includeTools        map[string]bool               // when non-nil, the only tools/composites this backend exposes (from backends.yaml include_tools)
+	fileURLAllowedHosts map[string]bool               // optional allowlist of lowercase hostnames for caller file_url fetches; nil/empty = no restriction
+	maxBodySizes        map[string]int64              // declared max_body_size string → effective byte ceiling; see resolveMaxBodySizes
+	childGuard          atomic.Pointer[childGuardRef] // authorizes composite child api.* calls; nil = child calls are refused (fail closed)
+	hint                string                        // operator guidance from backends.yaml hint:; empty = none configured
+	syntheticHealth     bool                          // the DADL's health check is offered as the synthetic health tool (spec §4.6)
+	authExpiresAt       time.Time                     // operator-recorded credential expiry from backends.yaml; zero = unknown
 	healthObserver      atomic.Pointer[HealthObserver]
+}
+
+// childGuardRef boxes a ChildGuard so it can live behind an atomic.Pointer:
+// the guard is installed after construction (and again on hot reload) while
+// composites may already be running.
+type childGuardRef struct {
+	guard ChildGuard
 }
 
 // SetChildGuard installs the guard used to authorize composite child api.*
 // calls. It is wired after construction because the guard (the executor) is
-// built after the adapters. A nil guard leaves child calls unchecked, which
-// preserves behavior for standalone use and tests.
+// built after the adapters. Without a guard every child call is refused, so a
+// composite never runs its api.* calls unchecked by accident; standalone use
+// that intends no per-child checks installs [AllowAllChildGuard] explicitly.
+// Passing nil removes the guard.
 func (a *RESTAdapter) SetChildGuard(g ChildGuard) {
-	a.childGuard = g
+	if g == nil {
+		a.childGuard.Store(nil)
+		return
+	}
+	a.childGuard.Store(&childGuardRef{guard: g})
 }
 
 // RESTAdapterOptions controls per-backend security settings.
@@ -130,6 +143,14 @@ type RESTAdapterOptions struct {
 	// backend.description, which says what the API is; empty means the
 	// operator configured no hint.
 	Hint string
+	// Scope binds the backend's credentials and hosts to its backends.yaml
+	// entry (see BackendScope). ToolMesh sets it for every backend it loads.
+	// Without Scope the adapter is refused unless Unbound says so.
+	Scope *BackendScope
+	// Unbound builds an adapter without the credential and host binding,
+	// for code that builds a backend outside a configuration, such as
+	// tests. It has no effect when Scope is set.
+	Unbound bool
 	// AuthExpiresAt is the credential expiry the operator recorded in
 	// backends.yaml (health_check.auth_expires_at). Health results carry it
 	// as auth_expires_at when the check response reports none (DADL spec
@@ -137,11 +158,39 @@ type RESTAdapterOptions struct {
 	AuthExpiresAt time.Time
 }
 
+// BackendScope is the operator's binding of a REST backend, from its
+// backends.yaml entry: the entry name sets the credential namespace
+// (CREDENTIAL_<NAME>_*, divided among all entries by Owners), Credentials
+// and the env: keys (Env) add names outside it, and AllowedHosts adds hosts
+// besides the base_url host and its
+// registrable domain. A DADL that reaches outside is refused at load with a
+// *dadl.ScopeError.
+type BackendScope struct {
+	EntryName    string
+	Credentials  []string
+	Env          map[string]string
+	AllowedHosts []string
+	// Owners divides the credential names among all configured entries
+	// (see dadl.CredentialOwners). ToolMesh shares one among all backends
+	// and updates it on every reload. With nil the entry owns no names and
+	// may read only the ones Credentials and Env list.
+	Owners *dadl.CredentialOwners
+}
+
 // NewRESTAdapter creates a RESTAdapter from a parsed DADL spec.
 // The spec.Backend.BaseURL must be set (either from the .dadl file or overridden via backends.yaml).
 func NewRESTAdapter(spec *dadl.Spec, creds credentials.CredentialStore, logger *slog.Logger, opts RESTAdapterOptions) (*RESTAdapter, error) {
 	if spec.Backend.BaseURL == "" {
 		return nil, fmt.Errorf("REST backend %q: base_url is required (set in .dadl file or via backends.yaml url field)", spec.Backend.Name)
+	}
+
+	// A placeholder in the host of an absolute tool path would let the caller
+	// pick where the request, with its credentials, goes. dadl.Validate
+	// refuses such paths; specs built in code are checked here as well.
+	for name, tool := range spec.Backend.Tools {
+		if err := dadl.CheckToolPathAuthority(tool.Path); err != nil {
+			return nil, fmt.Errorf("REST backend %q: tool %q: %w", spec.Backend.Name, name, err)
+		}
 	}
 
 	// SSRF protection: validate base_url does not point to private/internal addresses.
@@ -152,14 +201,56 @@ func NewRESTAdapter(spec *dadl.Spec, creds credentials.CredentialStore, logger *
 		}
 	}
 
+	// Credential and host binding: refuse a DADL that names credentials or
+	// hosts outside what the backends.yaml entry allows, before anything is
+	// built, and keep the same scopes as a runtime check.
+	var credScope *dadl.CredentialScope
+	var hostScope *dadl.HostScope
+	reachable := reachableTools(spec, opts.IncludeTools)
+	if opts.Scope == nil && !opts.Unbound {
+		return nil, fmt.Errorf("REST backend %q: no credential and host binding (RESTAdapterOptions.Scope); set Unbound to build it without one", spec.Backend.Name)
+	}
+	if opts.Scope != nil {
+		cs, err := dadl.NewCredentialScope(opts.Scope.EntryName, opts.Scope.Credentials, opts.Scope.Env, opts.Scope.Owners)
+		if err != nil {
+			return nil, fmt.Errorf("REST backend %q: %w", spec.Backend.Name, err)
+		}
+		credScope = cs
+		hs, err := dadl.NewHostScope(spec.Backend.BaseURL, opts.Scope.AllowedHosts)
+		if err != nil {
+			return nil, fmt.Errorf("REST backend %q: %w", spec.Backend.Name, err)
+		}
+		hostScope = hs
+		if err := dadl.CheckScopeOf(spec, credScope, hostScope, reachable); err != nil {
+			return nil, err
+		}
+	}
+
 	auth := dadl.NewRestAuth(spec.Backend.Auth, spec.Backend.BaseURL, creds, logger)
+	auth.SetScope(credScope, hostScope)
 
 	// Each adapter gets its own transport with SSRF-safe dial hooks (H-4, M-19)
 	// and redirect validation (H-3). When AllowPrivateURL is set, IP checks are
 	// skipped in both the dialer and redirect handler.
-	transport := SSRFSafeTransport(defaultHTTPTimeout, opts.AllowPrivateURL, opts.TLSSkipVerify)
-	streamTransport := SSRFSafeTransport(defaultStreamingHTTPTimeout, opts.AllowPrivateURL, opts.TLSSkipVerify)
-	redirectCheck := newRedirectChecker(opts.AllowPrivateURL)
+	// With AllowPrivateURL only the destinations the configuration names
+	// (base_url, token_url, absolute paths of tools that can be called) may
+	// resolve to private addresses; a redirect target or any other host
+	// learned at run time is checked at dial time like without it.
+	var trusted map[string]bool
+	if opts.AllowPrivateURL {
+		trusted = declaredDestinations(spec, reachable)
+	}
+	transport := guardedTransport(defaultHTTPTimeout, false, trusted, opts.TLSSkipVerify)
+	streamTransport := guardedTransport(defaultStreamingHTTPTimeout, false, trusted, opts.TLSSkipVerify)
+	// OAuth2 token and session login requests go through the same SSRF-safe
+	// transport (and TLS settings) as tool calls; RestAuth itself refuses
+	// every redirect for them.
+	auth.SetTransport(transport)
+	// Backend requests carry injected credentials (headers or query string), so
+	// their redirects leaving the original origin drop those credentials, never
+	// downgrade to http and never re-send a body. This holds independently of
+	// AllowPrivateURL.
+	redirectCheck := newBackendRedirectChecker(opts.AllowPrivateURL)
 
 	httpClient := &http.Client{
 		Timeout:       defaultHTTPTimeout,
@@ -313,6 +404,37 @@ func (a *RESTAdapter) effectiveMaxBodySize(tool *dadl.ToolDef) int64 {
 	// Unreachable for adapters built by NewRESTAdapter; a hand-constructed
 	// adapter falls back to the ceiling rather than to no limit at all.
 	return maxUploadBytes
+}
+
+// WarnPlainHTTPBase logs a warning when a backend would send credentials
+// over plain http because its DADL chose an http base_url and the entry
+// sets no url of its own. Call it before the entry's url overrides
+// spec.Backend.BaseURL.
+func WarnPlainHTTPBase(logger *slog.Logger, entry BackendEntry, spec *dadl.Spec) {
+	if entry.URL != "" || !spec.Backend.Auth.NamesCredentials() {
+		return
+	}
+	u, err := url.Parse(spec.Backend.BaseURL)
+	if err != nil || !strings.EqualFold(u.Scheme, urlSchemeHTTP) {
+		return
+	}
+	logger.Warn("credentials go out over plain http: the DADL's base_url is http and the backends.yaml entry sets no url; set url: to an https address if the API offers one",
+		"name", entry.Name, "host", u.Host)
+}
+
+// reachableTools reports which tools of spec a backend can send requests
+// for under the include_tools list include. Tools outside it cannot be
+// called: Execute refuses them, and composites reach their api.* tools
+// through Execute as well. The health check tool runs without Execute, so
+// it stays reachable. Without include_tools every tool is reachable.
+func reachableTools(spec *dadl.Spec, include []string) func(tool string) bool {
+	set := buildIncludeSet(spec, include, slog.New(slog.DiscardHandler))
+	return func(name string) bool {
+		if set == nil || set[name] {
+			return true
+		}
+		return spec.Backend.Health != nil && spec.Backend.Health.Tool == name
+	}
 }
 
 // buildIncludeSet validates an include_tools list against the spec and returns
@@ -478,6 +600,28 @@ func (a *RESTAdapter) included(name string) bool {
 		return true
 	}
 	return a.includeTools[name]
+}
+
+// ValidateToolParams implements ParamValidator: it checks params against the
+// declaration of the tool or composite toolName with dadl.ValidateParams and
+// returns them normalized by dadl.NormalizeParams. Names this adapter does
+// not expose yield params unchanged; Execute reports them.
+func (a *RESTAdapter) ValidateToolParams(toolName string, params map[string]any) (map[string]any, error) {
+	if !a.included(toolName) {
+		return params, nil
+	}
+	var declared map[string]dadl.ParamDef
+	if comp, ok := a.spec.Backend.Composites[toolName]; ok {
+		declared = comp.Params
+	} else if tool, ok := a.spec.Backend.Tools[toolName]; ok {
+		declared = tool.Params
+	} else {
+		return params, nil
+	}
+	if err := dadl.ValidateParams(toolName, declared, params); err != nil {
+		return nil, err
+	}
+	return dadl.NormalizeParams(declared, params), nil
 }
 
 // Execute runs a tool by name with the given parameters.
@@ -706,7 +850,7 @@ func (a *RESTAdapter) Healthy(ctx context.Context) error {
 
 	resp, err := a.httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("health check failed: %w", err)
+		return fmt.Errorf("health check failed: %w", redactTransportError(err))
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -812,7 +956,7 @@ func (a *RESTAdapter) doRequest(ctx context.Context, tool *dadl.ToolDef, params 
 
 	resp, err := a.httpClient.Do(req)
 	if err != nil {
-		return nil, nil, fmt.Errorf("http request: %w", err)
+		return nil, nil, fmt.Errorf("http request: %w", redactTransportError(err))
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -987,18 +1131,27 @@ func checkBodySize(size, limit int64) error {
 }
 
 // joinURL combines a backend base URL with a tool path using RFC 3986
-// reference resolution. If toolPath is itself an absolute URL (e.g. a tool
-// hosted on a different host than the base, like Google Maps vs. Places API),
-// it is returned as-is. Otherwise the base is treated as a directory and the
-// tool path as relative to it, so a base with a path prefix
+// reference resolution. If toolPath is itself an absolute http(s) URL with a
+// host (e.g. a tool hosted on a different host than the base, like Google Maps
+// vs. Places API), it is returned as-is. Otherwise the base is treated as a
+// directory and the tool path as relative to it, so a base with a path prefix
 // (e.g. "https://gitlab.example.com/api/v4") is preserved when combined with
 // a tool path like "/projects".
+//
+// A relative tool path can never leave the base URL: the result must keep the
+// base's scheme, host and path prefix. buildPath escapes "/" in parameter
+// values and rejects "." and "..", and the "./" prefix below stops a colon in
+// the first segment (a value like "evil.example:443") from being read as a
+// URL scheme (RFC 3986 section 4.2). The final check catches anything else,
+// such as dot segments in the DADL path itself.
 func joinURL(baseURL, toolPath string) (string, error) {
 	ref, err := url.Parse(toolPath)
 	if err != nil {
+		// Never fall back to treating an unparsable path as relative: that
+		// would hide a broken DADL path behind a request to the base host.
 		return "", fmt.Errorf("parse tool path %q: %w", toolPath, err)
 	}
-	if ref.IsAbs() {
+	if isAbsoluteHTTPURL(ref) {
 		return ref.String(), nil
 	}
 	base, err := url.Parse(baseURL)
@@ -1011,11 +1164,27 @@ func joinURL(baseURL, toolPath string) (string, error) {
 			base.RawPath += "/"
 		}
 	}
-	relRef, err := url.Parse(strings.TrimPrefix(toolPath, "/"))
+	relRef, err := url.Parse("./" + strings.TrimPrefix(toolPath, "/"))
 	if err != nil {
 		return "", fmt.Errorf("parse tool path %q: %w", toolPath, err)
 	}
-	return base.ResolveReference(relRef).String(), nil
+	resolved := base.ResolveReference(relRef)
+	if !strings.EqualFold(resolved.Scheme, base.Scheme) || !strings.EqualFold(resolved.Host, base.Host) ||
+		!strings.HasPrefix(resolved.EscapedPath(), base.EscapedPath()) {
+		return "", fmt.Errorf("tool path %q resolves outside the base URL path %q", toolPath, base.EscapedPath())
+	}
+	return resolved.String(), nil
+}
+
+// isAbsoluteHTTPURL reports whether u is an absolute http or https URL with a
+// host. Only such a tool path bypasses the base URL; any other scheme-like
+// prefix is treated as part of a relative path.
+func isAbsoluteHTTPURL(u *url.URL) bool {
+	if u == nil || u.Host == "" {
+		return false
+	}
+	s := strings.ToLower(u.Scheme)
+	return s == urlSchemeHTTP || s == urlSchemeHTTPS
 }
 
 // formatScalarParam converts a primitive parameter value to its string form
@@ -1079,6 +1248,16 @@ func (a *RESTAdapter) buildPath(tool *dadl.ToolDef, params map[string]any) (stri
 		str := formatScalarParam(val)
 		if str == "" {
 			return "", fmt.Errorf("path parameter %q cannot be empty", name)
+		}
+		// url.PathEscape keeps "." and "..", and URL resolution would then
+		// turn them into dot segments that walk up the path, e.g.
+		// /projects/{id}/issues with id ".." reaching /issues. The value is
+		// refused whatever its position, also where it could not form a
+		// segment of its own ({id}.json); such values are not legitimate
+		// IDs. An encoded slash in a value (a%2F..%2Fb) stays one segment
+		// here; see the DADL docs on proxies that decode %2F.
+		if str == "." || str == ".." {
+			return "", fmt.Errorf("path parameter %q cannot be %q", name, str)
 		}
 		path = strings.ReplaceAll(path, "{"+name+"}", url.PathEscape(str))
 	}
@@ -1427,6 +1606,14 @@ func (a *RESTAdapter) effectiveErrorConfig(tool *dadl.ToolDef) *dadl.ErrorConfig
 // downstream consumers can branch on the semantic code without re-parsing
 // the text form.
 func (a *RESTAdapter) apiErrorResult(err error) *ToolResult {
+	return errorToolResult(err)
+}
+
+// errorToolResult builds the error ToolResult for err, carrying the §8.2
+// fields of a dadl.APIError in the metadata. Every adapter uses it: the MCP
+// adapter raises the same parameter errors as the REST adapter, and they
+// must look the same to the caller.
+func errorToolResult(err error) *ToolResult {
 	result := &ToolResult{
 		Content: []any{textContent(fmt.Sprintf("Error: %s", err))},
 		IsError: true,
@@ -1743,7 +1930,7 @@ func (a *RESTAdapter) doRequestRaw(ctx context.Context, tool *dadl.ToolDef, para
 
 	resp, err := a.streamingHTTPClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("http request: %w", err)
+		return nil, fmt.Errorf("http request: %w", redactTransportError(err))
 	}
 	return resp, nil
 }
@@ -1962,13 +2149,25 @@ func (a *RESTAdapter) executeComposite(ctx context.Context, name string, comp *d
 	executor := func(ctx context.Context, toolName string, toolParams map[string]any) (any, error) {
 		// A child api.* call bypasses the top-level executor pipeline, so apply
 		// the same authorization and pre-execution gate here, keyed on the
-		// canonical "<backend>_<tool>" name. Fail closed: a guard error aborts
-		// the child (and the composite).
-		if a.childGuard != nil {
-			canonical := a.spec.Backend.Name + "_" + toolName
-			if err := a.childGuard.CheckChild(ctx, canonical, toolParams); err != nil {
-				return nil, err
+		// canonical "<backend>_<tool>" name. Fail closed: a missing guard or a
+		// guard error aborts the child (and the composite).
+		canonical := a.spec.Backend.Name + "_" + toolName
+		// Check the arguments before the guard runs the pre-execution gate,
+		// as the executor does for a direct call. The failure surfaces
+		// exactly as the same check inside Execute would surface it.
+		toolParams, err := a.ValidateToolParams(toolName, toolParams)
+		if err != nil {
+			if apiErr := apiErrorFromMetadata(a.paramErrorResult(ctx, toolName, err)); apiErr != nil {
+				return nil, apiErr
 			}
+			return nil, err
+		}
+		ref := a.childGuard.Load()
+		if ref == nil {
+			return nil, fmt.Errorf("composite child call %s refused: no authorization guard installed", canonical)
+		}
+		if err := ref.guard.CheckChild(ctx, canonical, toolParams); err != nil {
+			return nil, err
 		}
 		result, err := a.Execute(ctx, toolName, toolParams)
 		if err != nil {

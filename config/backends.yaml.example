@@ -52,6 +52,12 @@ backends:
   #   transport: stdio
   #   command: "./my-mcp-server"
   #   args: ["--port", "0"]
+  #   # Optional: environment variables for the child from the credential
+  #   # store (variable name in the child: key in the store). The child
+  #   # inherits ToolMesh's environment; with CREDENTIAL_STORE=command that
+  #   # holds no credentials, so these are the only ones it receives.
+  #   credential_env:
+  #     MY_SERVER_TOKEN: CREDENTIAL_MY_SERVER_TOKEN
 
   # REST Proxy via DADL (no MCP server needed)
   # The hackernews DADL ships with ToolMesh and needs no credentials —
@@ -67,6 +73,13 @@ backends:
   #   transport: rest
   #   dadl: vikunja.dadl
   #   url: "https://vikunja.example.com/api/v1"  # overrides base_url in .dadl (optional)
+  #   # The entry name sets the credentials this backend may read:
+  #   # CREDENTIAL_VIKUNJA_* here, unless a longer entry name (vikunja-x)
+  #   # owns part of it. A DADL that reads others, or sends them to a host
+  #   # outside base_url's registrable domain, is refused at load until the
+  #   # entry allows it explicitly (the refusal log names the exact line):
+  #   # credentials: [vikunja_legacy_token]       # names outside the namespace
+  #   # allowed_hosts: [files.vikunja-cdn.example, "*.cdn.example", media.example:8443]
   #   # Optional, for DADLs that declare a health check: how ToolMesh monitors
   #   # it. Without this block the check runs at startup, after a reload and
   #   # every 15 minutes; failures show up on /health and in the metrics.

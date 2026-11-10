@@ -26,6 +26,7 @@ import (
 	"testing"
 
 	"github.com/DunkelCloud/ToolMesh/internal/credentials"
+	"github.com/DunkelCloud/ToolMesh/internal/dadl"
 	"github.com/DunkelCloud/ToolMesh/internal/unit"
 )
 
@@ -92,7 +93,7 @@ func TestDiceUnit_StatisticalDistribution(t *testing.T) {
 	creds := credentials.NewEmbeddedStore()
 
 	ctx := context.Background()
-	res, err := unit.LoadUnit(ctx, unitDir, "", creds, nil, logger)
+	res, err := unit.LoadUnit(ctx, unitDir, "", creds, dadl.NewCredentialOwners(unit.EntryNames(unitDir)...), nil, logger)
 	if err != nil {
 		t.Fatalf("LoadUnit: %v", err)
 	}

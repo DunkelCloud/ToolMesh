@@ -100,3 +100,24 @@ func TestRemappingStore_Healthy(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
+
+// TestRemappingStore_KeyForms pins that env: keys are compared in their
+// canonical form: a key in another case or with spaces remaps the read, and
+// two keys of the same credential remap to nothing, so the read fails
+// instead of picking one of them by map order.
+func TestRemappingStore_KeyForms(t *testing.T) {
+	t.Setenv("CREDENTIAL_GITHUB_TOKEN", "real")
+	t.Setenv("MAPPED_A", "a")
+	t.Setenv("MAPPED_B", "b")
+	ctx := context.Background()
+
+	store := NewRemappingStore(NewEmbeddedStore(), map[string]string{" credential_github_token ": "MAPPED_A"})
+	if v, err := store.Get(ctx, "github_token", TenantInfo{}); err != nil || v != "a" {
+		t.Errorf("lower-case key: Get = %q, %v; want the mapped value", v, err)
+	}
+
+	store = NewRemappingStore(NewEmbeddedStore(), map[string]string{"credential_github_token": "MAPPED_A", "CREDENTIAL_GITHUB_TOKEN": "MAPPED_B"})
+	if v, err := store.Get(ctx, "github_token", TenantInfo{}); err == nil {
+		t.Errorf("two keys of one credential: Get = %q, want an error", v)
+	}
+}

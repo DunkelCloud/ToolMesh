@@ -14,8 +14,9 @@ All configuration is done via environment variables. Copy `.env.example` to `.en
 | `TOOLMESH_AUTH_USER` | `owner` | User identity in simple auth mode (password/single API key) |
 | `TOOLMESH_AUTH_PLAN` | `pro` | Plan in simple auth mode |
 | `TOOLMESH_AUTH_ROLES` | `admin` | Comma-separated roles in simple auth mode |
-| `TOOLMESH_ISSUER` | `https://toolmesh.io/` | OAuth issuer URL (must end with `/`). The default is a placeholder: set it to the public URL clients use, or the OAuth metadata and the [`401` challenge of `/mcp`](#unauthenticated-requests) name the wrong host. ToolMesh logs a warning at startup while it is unchanged. |
+| `TOOLMESH_ISSUER` | `https://toolmesh.invalid/` | OAuth issuer URL (must end with `/`). The default is a placeholder on a top-level domain that never resolves: set it to the public URL clients use, or the OAuth metadata and the [`401` challenge of `/mcp`](#unauthenticated-requests) name the wrong host. ToolMesh logs a warning at startup while it is unchanged, and also for `https://toolmesh.io/`, the placeholder earlier versions shipped. |
 | `TOOLMESH_ROOT_REDIRECT` | *(empty)* | Absolute `http(s)` URL that `GET /` redirects to (302). Unset, the site root serves the built-in page explaining that this host is an MCP endpoint. Only `/` is redirected — `/mcp` always serves the page, since a visitor there needs the URL to copy. An invalid value fails startup. |
+| `TOOLMESH_TRUSTED_PROXIES` | *(empty: loopback only)* | Addresses of the reverse proxies whose `X-Forwarded-For` header is honored, as comma-separated addresses or CIDRs, or `none`. List proxies, not client networks. A request from any other address is identified by its connection address. See [Client address](#client-address). An invalid entry fails startup. |
 | `TOOLMESH_DEV` | `false` | Local-development posture. Reports the startup security-posture summary at `INFO` instead of `WARN`. Relaxes no setting on its own — it only changes the log level of that summary. |
 
 ## Login Throttling
@@ -34,15 +35,37 @@ Set a limit to `0` to switch it off; the startup security-posture summary report
 - **What counts.** A wrong password, for a known and an unknown username alike. An unknown name is counted and locked out exactly like a real one, and costs the same password-hash comparison, so neither the lockout nor the response time shows which accounts exist. (The timing guarantee assumes all hashes in `users.yaml` use the same bcrypt cost; ToolMesh logs a warning at startup if they do not.) Requests that are turned away before the password is looked at — unknown client, unregistered `redirect_uri` — are logged but do not count.
 - **Success.** A successful login clears the account-wide counter and the counter for that account from that address, and gives the address back the one slot the attempt had taken. It does not erase failures the same address ran up before, and a lockout of the same account from a different address runs until its window ends.
 - **Single-password mode.** With `TOOLMESH_AUTH_PASSWORD` there is one account, and the username typed into the form is not part of the credential. Every attempt counts against that account, whatever name was entered.
-- **Scope of a lockout.** Only new password logins are refused. Access and refresh tokens that were already issued keep working, and so do API keys.
+- **Scope of a lockout.** Only new password logins are refused. Access and refresh tokens that were already issued keep working, and so do API keys, which have [a limit of their own](#failed-api-keys).
 - **A login that could not be checked.** If the password comparison cannot be started because the server is at its [limit for password hash comparisons](#password-hash-comparisons), the login is answered `503` with `Retry-After` and the form is shown again. No password was looked at, so this is not a failed login: it is not counted and does not use up any of the limits.
 - **Shared passwords.** If one password is deliberately given to many people — a public demo login, say — the per-account ceiling lets anyone lock all of them out: 20 failed attempts spread over a few addresses refuse every new login for that account until the window ends. For such a deployment set `TOOLMESH_LOGIN_MAX_FAILURES_PER_USER=0` and keep the two per-address limits. The startup security-posture summary then lists that limit as switched off, which is expected here.
 - **Where the counters live.** In Redis when it is connected, so the limits hold across replicas and survive a restart. Otherwise in process memory: per process, and reset by a restart. The startup log line `login throttling configured` shows which applies. If Redis fails while ToolMesh is running, a login that cannot reach it logs the warning `login throttle: Redis unavailable, falling back to process-local counters` and is counted in process memory rather than let through unlimited. A counter that was charged there stays there until its window ends, also after Redis is back, so what was counted during the outage keeps counting. The process-local table holds at most 50,000 counters. When it is full it drops expired counters first, then counters that have not reached their limit, and only if that is not enough, others; it logs `login throttle: process-local counter table is full, dropped live counters` at most once a minute.
 - **Lifting a lockout early.** Delete the counters, e.g. `redis-cli --scan --pattern 'auth:{login}:failures:*' | xargs redis-cli del` (with the shipped Compose file, run `keydb-cli` inside the `keydb` service). Restart ToolMesh instead if it counts in process memory, or if the failures were counted there during a Redis outage.
-- **Client address.** The per-address limits depend on the client address ToolMesh sees: the right-most public address in `X-Forwarded-For`, otherwise the peer address of the connection. Private, loopback and link-local entries in the header are skipped. IPv6 addresses are counted per `/64`. The `remote` field of the request log shows the address ToolMesh uses. For the per-address limits to mean what they say:
-  - The proxy closest to ToolMesh must put the real client address last in `X-Forwarded-For`, and the ToolMesh port must not be reachable around the proxy — a client that connects directly can set the header itself.
-  - If clients reach the proxy from private addresses (a LAN or VPN), the proxy must replace `X-Forwarded-For` with the peer address instead of appending to what the client sent. With an appending proxy such a client can choose the address it is counted under, because its own private address is skipped and the entry before it is used. With a replacing proxy those clients are all counted under the proxy's address.
-  - Where the client address is not available — every request appears to come from the same address — all clients share the per-address counters. Raise or switch off the two per-address limits there and rely on the per-account ceiling. This does not combine with a shared password (above), which needs the per-address limits instead.
+- **Client address.** The per-address limits depend on the client address ToolMesh sees; see [Client address](#client-address). IPv6 addresses are counted per `/64`. Where the client address is not available — every request appears to come from the same address — all clients share the per-address counters. Raise or switch off the two per-address limits there and rely on the per-account ceiling. This does not combine with a shared password (above), which needs the per-address limits instead.
+- **Confirmation of the destination.** The login page names the host of the client's `redirect_uri`, the party that receives the authorization, and the client's self-declared name, marked as not verified. The user has to tick a confirmation for that host. A login without it is refused before the password is looked at and does not count.
+
+### Client address
+
+The client address is used for the login and API key limits, the registration limit and the `remote` field of the log. ToolMesh takes it from the connection, and from `X-Forwarded-For` only when the connection comes from a trusted proxy (`TOOLMESH_TRUSTED_PROXIES`, by default loopback only). The header is then read from the right: the first entry that is not a trusted proxy itself is the client. When every entry is a trusted proxy, the leftmost one is used. All `X-Forwarded-For` header lines count, not just the first.
+
+`TOOLMESH_TRUSTED_PROXIES` lists the addresses your reverse proxies connect from, not the networks your clients are in: a client whose own address is listed can choose the address it is counted under.
+
+- **Reverse proxy on the same host** (Caddy, nginx, Traefik as a host service): nothing to set.
+- **Reverse proxy in a container** in the same Compose network: list the proxy container's address, or the Compose network if the address changes, for example `TOOLMESH_TRUSTED_PROXIES=172.18.0.0/16`. Only the proxy may share that network with ToolMesh then.
+- **Proxy or CDN on other machines** (a load balancer, Cloudflare): list its addresses or published ranges.
+- **No proxy, ports published directly** with rootful Docker on Linux: nothing to set; Docker keeps the client's source address. With Docker Desktop, rootless Docker or a userland proxy every connection comes from a gateway address instead, so all clients share one address's limits. That fails safe, but a lockout then hits everyone; put a reverse proxy in front, or raise the per-address limits.
+- **Not configured but behind a proxy:** every client is counted under the proxy's address. ToolMesh logs `X-Forwarded-For from an address that is not a trusted proxy is ignored` at `WARN` (at most once an hour, with `remote`) when such a header arrives from an address that is not listed. The `remote` field of the request log shows which address ToolMesh uses.
+- The proxy closest to ToolMesh must append the real client address to `X-Forwarded-For`, which common reverse proxies do. `none` honors no `X-Forwarded-For` at all.
+- The startup log names the trusted addresses: `X-Forwarded-For honored from ...`.
+
+### Failed API keys
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `TOOLMESH_APIKEY_MAX_FAILURES_PER_IP` | `50` | Failed bearer credentials from one client address within `TOOLMESH_LOGIN_FAILURE_WINDOW`. `0` switches the limit off, which the startup security-posture summary reports. Parsed strictly like the login limits. |
+
+A bearer credential on `/mcp`, `/files/upload` or `DELETE /blobs/…` reserves a slot against its client address before it is checked, so concurrent guesses cannot all pass before the first failure is counted. A rejected credential keeps the slot, an accepted one hands it back, and one that could not be checked (`503`) is not counted. Once the limit is reached, every bearer credential from that address, the right one included, is answered `429` with `Retry-After` until the window ends, and logged at `INFO` as `bearer authentication throttled`. The counters live in Redis when it is connected, so each API key request then costs two short Redis operations; access tokens cost none.
+
+Values that have the form of an access token issued by this server (64 lowercase hex characters) reserve no slot up front: they cannot be guessed, and expired ones arrive routinely, often from the shared addresses of hosted clients. Such a value takes a slot only when it would be compared with bcrypt against `key_hash`-only entries. When its address is throttled, the comparison is skipped and the value is answered `401` like any unknown credential, so a client with an expired token can still refresh it. An API key of that form (`openssl rand -hex 32` without the recommended `tm_` prefix) is therefore checked against the lookup table without throttling, which is safe only because such a key is random.
 
 ### Failed logins in the log
 
@@ -53,6 +76,8 @@ Every failed password login is logged at `WARN` with the message `login failed` 
 | `invalid_credentials` | Wrong password or unknown username. |
 | `throttled_user_ip`, `throttled_user`, `throttled_ip` | Refused by the limit named above; the password was not checked. |
 | `unknown_client`, `invalid_redirect_uri` | The OAuth client or its redirect URI is not registered; the password was not checked. |
+| `redirect_host_not_allowed` | The host of the redirect URI is not in `TOOLMESH_OAUTH_REDIRECT_HOSTS`; the password was not checked. |
+| `consent_not_confirmed` | The user did not confirm the destination of the authorization; the password was not checked. |
 | `password_login_disabled` | Neither `TOOLMESH_AUTH_PASSWORD` nor `users.yaml` is configured, so there is no password to log in with. Token requests at `/token` are refused for the same reason and logged as `token grant refused`; access tokens issued earlier are not honored. |
 
 A bearer credential that is rejected on an authenticated endpoint (`/mcp`, `/files/upload`, `DELETE /blobs/…`) is logged as `bearer authentication failed` with `method`, `remote` and `reason`; the credential itself is never logged. `unknown_credential` is logged at `WARN`. `expired_token` and `unknown_token` — a value that has the form of an access token issued by this server, which is what an expired token looks like once it has been removed from the store — are the routine case and logged at `INFO`.
@@ -145,6 +170,7 @@ MCP clients such as Claude register themselves at `/register` (OAuth 2.0 Dynamic
 |----------|---------|-------------|
 | `TOOLMESH_DCR_CLIENT_TTL` | `86400` (1 day) | Seconds a registered client is kept as long as it has not obtained a token. `0` keeps such clients forever; otherwise at least `600`, the time registration, login and code exchange need. |
 | `TOOLMESH_DCR_CLIENT_IDLE_TTL` | `7776000` (90 days) | Seconds a client is kept after the last token issued to it. `0` keeps clients that obtained a token forever; otherwise at least `604800`, the lifetime of a refresh token. |
+| `TOOLMESH_OAUTH_REDIRECT_HOSTS` | *(empty: any https host)* | Comma-separated hosts a client may use in `redirect_uri`: host names (`claude.ai`) or `*.example.com` for any subdomain. Applies at `/register` and again at `/authorize`, so it also covers clients registered before it was set. Loopback redirect URIs of native clients (`http://localhost`, `127.0.0.1`, `[::1]`) are always accepted. |
 
 Both must be plain integers; anything else stops the server at startup.
 
@@ -152,7 +178,20 @@ Both must be plain integers; anything else stops the server at startup.
 - **Clients registered with an earlier version** carry no expiry. They get one with the next token issued to them; one that never obtains a token again stays.
 - **Where it is kept.** In Redis the client's key expires with it; the file store (`oauth-state.json` in the data directory) drops it within 5 minutes of its expiry and does not restore an expired client after a restart.
 
-Registrations are limited to 5 per hour from one client address. The counters live in Redis: without Redis there is no limit, which the startup log reports as `dynamic client registration (/register) is not rate-limited`. When Redis cannot be reached for a check, the registration is allowed rather than refused (fail-open, so that an outage of Redis does not stop new connections) and logged at `WARN` as `dcr rate limit unavailable, registration allowed without limit (fail-open)` with `error` and `remote`.
+- **Who gets the authorization.** Anyone can register a client with any https `redirect_uri`. The login page therefore names the `redirect_uri` host and requires the user to confirm it (see [Login Throttling](#login-throttling)). On a server that only serves known clients, such as Claude, set `TOOLMESH_OAUTH_REDIRECT_HOSTS` (for Claude: `claude.ai,claude.com`, plus loopback for Claude Code, which is always accepted).
+
+### Tokens
+
+An access token lives one hour, a refresh token seven days; every refresh issues a new pair.
+
+- **Current identity.** Tokens are resolved against the configuration in force on every request and every refresh: `users.yaml` when it is loaded, the single-password owner otherwise. `users.yaml` and the `TOOLMESH_AUTH_*` variables are read at startup, so a change takes effect when ToolMesh restarts: from then on, a user that was removed from `users.yaml`, or whose `password_hash` is no longer usable (for example `"!"`), loses access with the next request, and no refresh succeeds for it; changed roles, plan and company apply to existing tokens. In single-password mode the same holds when `TOOLMESH_AUTH_USER` changes.
+- **Changed passwords.** Tokens are bound to a fingerprint of the credential the user logged in with: a short hash of the `password_hash` for `users.yaml`, a value derived with scrypt from `TOOLMESH_AUTH_PASSWORD` in single-password mode, so the token store never holds a fast hash of a plain password. After a password change (and the restart that loads it), the sessions issued for the old password end with their next request or refresh. To end one user's sessions without a restart, revoke their tokens (below).
+- **Tokens from before the upgrade.** Tokens issued by a version without this binding carry no fingerprint. They are accepted and get the fingerprint of the credential in force at their next refresh, so such a token survives a password change made after the upgrade: it is renewed and bound to the new password. A later release will close this. Until then, if you suspect misuse of a session that predates the upgrade, revoke its tokens with `POST /revoke` (this needs the token value), or end every session by clearing the stored tokens while ToolMesh is stopped:
+  - **Without Redis:** delete `oauth-state.json` in the data directory (`TOOLMESH_DATA_DIR`). It also holds the registered OAuth clients, so clients register again and every user signs in again.
+  - **With Redis:** delete both the Redis keys `oauth:token:*` and `oauth:refresh:*` (for example `redis-cli --scan --pattern 'oauth:token:*' | xargs -r redis-cli del`, and the same for `oauth:refresh:*`; with the shipped Compose file, run `keydb-cli` inside the `keydb` service) and `oauth-state.json` in the data directory. Clearing only one of them is not enough: at startup ToolMesh copies the tokens from `oauth-state.json` back into Redis, and while running it reads Redis first. The registered clients stay in Redis and are written back to the file.
+- **Revocation.** `POST /revoke` ([RFC 7009](https://www.rfc-editor.org/rfc/rfc7009)) takes `token=<access or refresh token>` and revokes both tokens of the pair. It answers `200` also for an unknown token. Holding a token is enough to revoke it; the metadata advertises the endpoint as `revocation_endpoint`.
+
+Registrations are limited to 5 per hour from one client address (an IPv6 address counts as its /64 when counted in process memory). The counters live in Redis, so the limit holds across replicas. Without Redis they live in process memory and the limit applies per process, which the startup log reports as `dynamic client registration (/register) is rate-limited per process`. When Redis cannot be reached for a check, the registration is allowed rather than refused (fail-open, so that an outage of Redis does not stop new connections) and logged at `WARN` as `dcr rate limit unavailable, registration allowed without limit (fail-open)` with `error` and `remote`.
 
 ## Audit
 
@@ -552,7 +591,7 @@ no login: approving takes a signature by the key of an approver's address.
   beyond that the page answers `429` with `Retry-After`. A successful
   approval clears the request's counters. The counters work like those of
   [login throttling](#login-throttling), with the same source address
-  (right-most public address in `X-Forwarded-For`) and in Redis when it is
+  (see [Client address](#client-address)) and in Redis when it is
   connected, but apart from them: refused signatures never use up the login
   limits.
 
@@ -646,8 +685,14 @@ and time remaining) and its pending requests (`requests`, each with its
 approval link and fingerprint, so that the link can be handed over later), and
 describes these kits with their warnings.
 
-The answer shows only the tools the caller may call or get through a kit.
-For any other tool it says `denied`, without telling whether the tool exists.
+The built-in tools ToolMesh lists (`discover_tools`, `execute_code`,
+`tell_me_my_rights`, and `request_grant` and `upload_file` where offered) are
+`allowed` in a preflight: ToolMesh runs them itself, without the authorization
+step and the gate policies, and checks every tool that `execute_code` calls
+when it calls it. The answer shows only the tools the caller may call or get
+through a kit. For any other name a preflight says `denied` with the reason
+`unknown tool`, both when no tool has the name and when the caller may not see
+the tool, so that it does not tell whether the tool exists.
 Every call is recorded in the audit trail (tool `tell_me_my_rights`, backend
 `toolmesh`): the answer is the first thing an agent that was taken over would
 look up. In external mode there are no kits, so the verdicts are `allowed` and
@@ -661,7 +706,16 @@ The gate runs JavaScript policies (goja) on every tool call: in the
 backend is called, and in the **post-execution** phase with the response.
 Every `.js` file in the policies directory is a policy; policies run in file
 name order, and a policy rejects a call by throwing. Nested `api.*` calls
-inside a composite go through the pre-execution phase as well.
+inside a composite go through the pre-execution phase as well. For REST
+backends the parameters a policy sees have passed the check against the
+declared DADL types (see [Requests to REST backends](#requests-to-rest-backends)),
+with declared defaults filled in and numeric strings converted to numbers,
+so a policy sees what the API receives. Write numeric comparisons with
+`Number(ctx.params.x)` anyway: an integer beyond 2^53 stays a string to keep
+it exact. Only top-level parameters are checked; values nested inside an
+object or array parameter arrive as the caller sent them. Tools of MCP
+backends and units are not checked against a declaration: their policies see
+the caller's arguments, which are also what the MCP server receives.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -737,6 +791,15 @@ a kit that covers the tool, which is how `tell_me_my_rights` tells
 
 ## Credential Store
 
+`CREDENTIAL_STORE` selects where ToolMesh takes backend credentials from:
+
+| Store | Values come from | Values are kept in |
+|-------|------------------|--------------------|
+| `embedded` (default) | `CREDENTIAL_*` environment variables | the process environment |
+| `command` | the output of a command ToolMesh runs | ToolMesh's memory only |
+
+### Embedded store
+
 Credentials are stored as environment variables with the `CREDENTIAL_` prefix.
 
 | Variable | Description |
@@ -749,6 +812,260 @@ CREDENTIAL_MEMORIZER_API_KEY=sk-mem-xxxxx
 CREDENTIAL_BRAVE_API_KEY=BSA-xxxxx
 ```
 
+### Why the environment is not the place for credentials
+
+Under Docker the values reach the container through `env_file:` or
+`environment:`. Docker writes a container's environment in plain text into
+the container configuration on the host
+(`/var/lib/docker/containers/<id>/config.v2.json`, also shown by
+`docker inspect`). Every credential then sits on the host's disk and in every
+backup or snapshot of it, even when the `.env` file itself is stored
+encrypted and decrypted only to start the container. Stdio backends inherit
+the whole environment as well, so each of them receives every credential.
+
+The `command` store avoids both: ToolMesh fetches the values itself and keeps
+them in memory.
+
+### Command store
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CREDENTIAL_STORE` | `embedded` | Set to `command` |
+| `TOOLMESH_CREDENTIAL_COMMAND` | *(none)* | Command line that prints the values. Required |
+| `TOOLMESH_CREDENTIAL_RELOAD_IN` | `0` | Seconds between runs. `0` runs the command only at startup |
+| `TOOLMESH_CREDENTIAL_COMMAND_TIMEOUT` | `30` | Seconds a single run may take |
+| `TOOLMESH_CREDENTIAL_FORMAT` | `dotenv` | Output format: `dotenv` or `json` |
+| `TOOLMESH_CREDENTIAL_JSON_PATH` | *(top level)* | With `json`: dot-separated path to the object that holds the values, e.g. `data.data` |
+
+The settings carry a `TOOLMESH_` prefix because `CREDENTIAL_<NAME>` is the
+namespace of the credentials themselves. Invalid values stop the start.
+
+**The command.** ToolMesh runs it without a shell, since the image has none.
+The line is split into arguments the way a shell splits words: single quotes,
+double quotes and backslash escapes work. Pipes, redirections, `;`, `&&`,
+variables, command substitution and a leading `VAR=value` are refused at
+startup; there is no globbing. Give the program as an absolute path and mount
+it read-only into the container, together with whatever it reads. It has to
+run without a libc, as statically linked binaries do. The command inherits
+ToolMesh's environment, which with this store holds no credentials.
+
+In `.env`, put the command line in double quotes. Docker Compose reads the
+file itself (`env_file`), and some of its versions end an unquoted value at
+the first space and then stop at the rest of the line with an error such as
+`unexpected character "-" in variable name`. Compose removes the quotes
+before ToolMesh sees the value. Quotes that the command line itself needs
+go inside single quotes around the whole value:
+`TOOLMESH_CREDENTIAL_COMMAND='/usr/local/bin/helper "a b"'`.
+
+A run fails when the command exits with a code other than 0, exceeds the
+timeout, writes more than 1 MiB to stdout, prints no value at all, or prints
+something that does not parse.
+
+**dotenv output** (the default). One `KEY=value` per line, as
+`sops -d --output-type dotenv` writes it and as `.env.example` shows:
+
+- `#` comment lines and blank lines are skipped, a leading `export ` is
+  ignored.
+- Unquoted values are trimmed, a `#` after a space or tab starts a comment,
+  and `\n` stands for a line break (the way sops writes multi-line values).
+- `'single quotes'` keep everything literal. `"double quotes"` know the
+  escapes `\n`, `\r`, `\t`, `\"`, `\\` and `\$`. Quoted values may span lines.
+- Variables are not expanded. A later line wins over an earlier one.
+
+**JSON output.** With `TOOLMESH_CREDENTIAL_FORMAT=json` the command prints one
+JSON value, as `vault kv get -format=json` and `bao kv get -format=json` do.
+`TOOLMESH_CREDENTIAL_JSON_PATH` selects the object that holds the values:
+`data.data` for a KV version 2 secret of Vault or OpenBao, `data` for version
+1, empty for the top level. Everything outside that object, such as request
+and lease metadata, is ignored.
+
+- Nested objects below the path are flattened: every string, number and
+  boolean becomes a key named after its own member name, however deep it
+  sits. `{"github": {"CREDENTIAL_GITHUB_TOKEN": "..."}}` gives
+  `CREDENTIAL_GITHUB_TOKEN`.
+- Numbers keep their written form. `null` values and arrays are skipped.
+- A member name that is not an environment variable name, or that occurs
+  twice after flattening, fails the run.
+- Vault's `lease_duration` is not used; a KV version 2 secret reports `0`
+  there.
+
+Keys are environment-style names: `CREDENTIAL_<NAME>` for backend credentials,
+and any other name that an `env:` remapping, a `credential_env` entry or one of
+ToolMesh's own secrets (below) refers to. `RELOAD_IN` is reserved in both
+formats.
+
+**Where the values stay.** In a map in ToolMesh's memory, never in its
+environment and never in the log. stdout is not logged; stderr is logged at
+`WARN`, cut off after 4 KiB, so the command must not write secrets there. When
+a run adds or drops keys, the log names the keys, not the values.
+
+**Refreshing.** After `TOOLMESH_CREDENTIAL_RELOAD_IN` seconds the command runs
+again. A key `RELOAD_IN` in the output (a line `RELOAD_IN=<seconds>`, or a
+JSON member of that name) sets the delay until the next run instead;
+`RELOAD_IN=0` ends the refreshing. A successful run replaces
+the whole set at once, and keys it no longer prints are gone. A failed run
+keeps the previous set and is retried after 30 seconds, then with a doubling
+delay up to the interval in force. If the first run at startup fails, ToolMesh
+exits with a non-zero code and the container's restart policy tries again.
+
+Refreshed values reach REST backends with their next call. MCP backends read
+theirs (`api_key_env`, `credential_env`) when ToolMesh connects to them: at
+startup and when `backends.yaml` changes.
+
+**ToolMesh's own secrets.** With the command store, `TOOLMESH_AUTH_PASSWORD`,
+`TOOLMESH_API_KEY` and `REDIS_URL` are taken from the output when it contains
+them, ahead of the environment, once at startup. Remappings (`env:` in
+`backends.yaml`) resolve their keys in the output too, not in the environment.
+
+**Stdio backends.** A stdio MCP server inherits ToolMesh's environment, which
+with this store contains no credentials. Pass it what it needs with
+`credential_env` in its `backends.yaml` entry: variable name in the child,
+key in the store.
+
+```yaml
+backends:
+  - name: github
+    transport: stdio
+    command: /usr/local/bin/github-mcp-server
+    args: ["stdio"]
+    credential_env:
+      GITHUB_PERSONAL_ACCESS_TOKEN: CREDENTIAL_GITHUB_TOKEN
+```
+
+The child receives nothing else from the store. A key the store does not hold
+keeps the backend from connecting. With the embedded store `credential_env`
+reads the key from the environment, so the same entry works with both stores.
+
+**Monitoring.** Two metrics follow the runs:
+`toolmesh_credential_store_runs_total{result="success|failure"}` and
+`toolmesh_credential_store_last_success_timestamp_seconds`. Alert when the last
+success lies more than two intervals back, for example with a one-hour
+interval:
+
+```promql
+time() - toolmesh_credential_store_last_success_timestamp_seconds > 7200
+```
+
+#### Example: an encrypted file with sops
+
+[sops](https://github.com/getsops/sops) encrypts the values of a dotenv,
+YAML or JSON file and leaves the key names readable, so the file can live in
+git and its diffs stay useful. It takes its keys from
+[age](https://github.com/FiloSottile/age) (a small file-encryption tool), PGP
+or a cloud KMS. With age:
+
+```bash
+sops --encrypt --age <recipient> --input-type dotenv --output-type dotenv \
+  secrets.plain.env > secrets/toolmesh.env
+```
+
+Mount the encrypted file and a static `sops` binary read-only, for example in
+`docker-compose.override.yml` (`docker-compose.override.yml.example` has a
+section to start from, including the mount for an agent's socket):
+
+```yaml
+services:
+  toolmesh:
+    volumes:
+      - /usr/local/bin/sops:/usr/local/bin/sops:ro
+      - ./secrets/toolmesh.env:/run/secrets/toolmesh.env:ro
+```
+
+The `.env` then holds no credentials, only the store settings:
+
+```bash
+CREDENTIAL_STORE=command
+TOOLMESH_CREDENTIAL_COMMAND="/usr/local/bin/sops -d --input-type dotenv --output-type dotenv /run/secrets/toolmesh.env"
+```
+
+How sops gets its age identity is the operator's decision: a key file mounted
+read-only (`SOPS_AGE_KEY_FILE` is a path, not a secret) or a key command. A
+key file on the host travels with every copy of its disk; the next example
+avoids it. Do not put the key itself into `.env` or `environment:`; it would
+end up in the container configuration like any other value there. Change
+values with `sops secrets/toolmesh.env`; ToolMesh picks them up at its next
+run or restart.
+
+#### Example: credentials sealed to the machine with ergosum
+
+The sops example still needs one secret on the host, its age key, and
+whoever copies the disk, a backup or the VM image copies that key too.
+[ergosum](https://github.com/DunkelCloud/ergosum) (v0.2.0 or later) ties
+that step to the machine instead of to a file: its daemon `ergosumd` seals a
+file so that it opens only after a separate ergosum authority has called the
+machine back where it was registered (its tailnet name, a fixed address, an
+address in a permitted network). Only the sealed file lies on disk, and it
+may sit in backups; a copy running elsewhere opens nothing.
+
+Seal the credentials themselves, in the dotenv format described above, and
+delete the plain file afterwards (`-recovery` adds an age-encrypted way
+back):
+
+```bash
+ergosumd secret create toolmesh -threshold 2 -file /etc/toolmesh/credentials.sealed < credentials.env
+```
+
+Mount `ergosumd` (a static binary), the sealed file and the daemon's secret
+socket into the container; `docker-compose.override.yml.example` has the
+section. Then:
+
+```bash
+CREDENTIAL_STORE=command
+TOOLMESH_CREDENTIAL_COMMAND="/usr/bin/ergosumd secret get -socket /run/ergosum/secret.sock -file /etc/toolmesh/credentials.sealed"
+```
+
+`ergosumd secret get` prints the file as it was sealed, so ToolMesh needs no
+support for ergosum. To change a value, seal a new file. ergosum offers no
+rotation, revocation or audit of access; Vault does, and ergosum can log the
+machine in to Vault as well (next example).
+
+#### Example: Vault or OpenBao through their proxy
+
+Vault Proxy (`vault proxy`, in OpenBao `bao proxy`) logs in with its
+auto-auth method and adds its token to every request that carries none
+(`use_auto_auth_token`). The command then needs no token of its own, and
+nothing is written to disk:
+
+```bash
+CREDENTIAL_STORE=command
+TOOLMESH_CREDENTIAL_FORMAT=json
+TOOLMESH_CREDENTIAL_JSON_PATH=data.data
+TOOLMESH_CREDENTIAL_COMMAND="/usr/local/bin/vault kv get -format=json -mount=secret toolmesh"
+TOOLMESH_CREDENTIAL_RELOAD_IN=300
+VAULT_ADDR=http://127.0.0.1:8100
+```
+
+The KV secret `secret/toolmesh` holds the keys as a dotenv file would
+(`CREDENTIAL_GITHUB_TOKEN`, `TOOLMESH_API_KEY` and so on). Mount the static
+`vault` binary (or `bao`, with `BAO_ADDR`) read-only; the address is not a
+secret. Bind the proxy's listener so that only ToolMesh reaches it, for
+example on loopback in a network namespace shared with the ToolMesh
+container: whoever reaches it acts with the proxy's token.
+
+The proxy's own login needs a credential too, usually an AppRole secret ID
+on disk. With [ergosum](https://github.com/DunkelCloud/ergosum) it needs
+none: the ergosum daemon keeps a JWT in `/run/ergosum/token`, valid for 30
+minutes and renewed on its own, which it receives only after the machine was
+called back where it was registered. Point the proxy's auto-auth method `jwt`
+at that file with `remove_jwt_after_reading = false`, since the daemon
+replaces it; Vault or OpenBao check the token with their JWT auth method.
+
+#### Example: short-lived tokens
+
+A small program that requests an access token and prints it together with its
+lifetime minus a margin keeps the token fresh. For a token that is valid for
+an hour:
+
+```bash
+CREDENTIAL_EXAMPLE_TOKEN=eyJhbGciOi...
+RELOAD_IN=3300
+```
+
+ToolMesh runs the program again after 55 minutes. If that run fails, the old
+token stays in use while the retries back off (30 s, 60 s, 120 s, ...), so
+leave a margin for a few of them. The program can print static values too,
+for example by decrypting a file first and adding the token to its output.
+
 ## Timeouts
 
 | Variable | Default | Description |
@@ -756,6 +1073,7 @@ CREDENTIAL_BRAVE_API_KEY=BSA-xxxxx
 | `TOOLMESH_MCP_TIMEOUT` | `120` | HTTP client timeout in seconds for calls to downstream MCP servers |
 | `TOOLMESH_EXEC_TIMEOUT` | `120` | Tool execution timeout in seconds — context deadline for a single backend call. Falls back to `TOOLMESH_ACTIVITY_TIMEOUT` if set (backwards compat). |
 | `TOOLMESH_CODE_TIMEOUT` | `120` | Wall-clock budget in seconds for one `execute_code` run. Bounds a whole orchestration of `toolmesh.*` calls, so set it at least as high as the slowest backend timeout times the number of calls chained in one run (e.g. a committee of slow models). |
+| `TOOLMESH_CODE_MAX_CONCURRENT` | `16` | `execute_code` runs in progress at once; `0` for no limit. One user may hold at most half of them, rounded up (8 with the default), so a single caller cannot keep every other user waiting; a run beyond that share is refused at once. A run that finds every slot taken waits up to 10 seconds for one and is then refused with an error result. On a deployment with a single user, that user can run half the limit in parallel; raise the limit there if needed. Must be an integer of `0` or more; anything else stops the server at startup. |
 
 Increase these for backends that need more time, e.g. browser-based web fetchers processing heavy pages, or `execute_code` runs that fan out across several slow models:
 
@@ -764,6 +1082,8 @@ TOOLMESH_MCP_TIMEOUT=180
 TOOLMESH_EXEC_TIMEOUT=180
 TOOLMESH_CODE_TIMEOUT=600
 ```
+
+Each `execute_code` run gets its own JavaScript runtime (goja), which has no memory limit of its own. What bounds a run is its wall-clock budget, the cap of 50 `toolmesh.*` calls, a call-stack depth cap and `TOOLMESH_CODE_MAX_CONCURRENT`. A script that builds very large values inside one run is limited only by the memory of the process, so run ToolMesh with a container memory limit.
 
 > Long tool calls no longer trip a "connector isn't responding" error: ToolMesh streams the `tools/call` response over SSE and emits keepalives while the backend works, so the MCP client's idle timer never fires mid-call. The per-request write deadline is also lifted for tool calls, so these timeouts — not the HTTP server's `WriteTimeout` — are the real bound.
 
@@ -779,6 +1099,7 @@ The file broker holds files that tool calls pass around without sending their co
 
 The two limits must be plain integers of bytes, `0` or more; anything else stops the server at startup. While the broker is on without `TOOLMESH_FILE_BROKER_MAX_TOTAL_BYTES`, the startup security-posture summary lists it as a relaxed control. Switch the broker off on an instance where callers have no files to exchange, such as a public demo.
 
+- **Deleting a file.** `DELETE /blobs/<id>` needs MCP authentication and succeeds only for the user the file was created for, the same user it counts against. For anyone else it answers `404`, as for an unknown ID. A file created without a user cannot be deleted this way and goes after its TTL.
 - **What counts.** A file counts from the moment it is written until it is deleted (`DELETE /blobs/<id>`) or removed after its TTL, which happens within a minute of the TTL running out. Uploads through `/files/upload` and `upload_file` count against the user who made the call, and so do binary responses of that user's tool calls.
 - **A file that does not fit is refused.** `/files/upload` answers `507 Insufficient Storage`; `upload_file` and a tool with a binary response return an error. The message names the limit, the bytes already in use, and how to make room. A file of unknown length stops as soon as it reaches the limit, and nothing of it stays on disk. Each refusal is logged at `WARN` as `blob refused: file broker quota exceeded` with the `owner`.
 - **Lowering a limit** keeps the files already stored; it only keeps new ones out until enough of them are gone.
@@ -789,6 +1110,46 @@ The two limits must be plain integers of bytes, `0` or more; anything else stops
 |----------|---------|-------------|
 | `TOOLMESH_BACKENDS_CONFIG` | `/app/config/backends.yaml` | Path to backend configuration YAML |
 | `TOOLMESH_POLICIES_DIR` | `/app/policies` | Path to output gate policy directory |
+
+### Credential and host binding
+
+Every REST backend is bound to its `backends.yaml` entry. The binding comes from the operator's configuration, never from the DADL, so a DADL can neither read the credentials of another backend nor send its own credentials to a host the operator did not agree to.
+
+- **Credentials.** Each configured entry has a namespace: its `name` upper-cased with `-` as `_`, followed by `_` (entry `shelly-cloud`: `CREDENTIAL_SHELLY_CLOUD_*`). A credential belongs to the entry whose namespace is the **longest** that starts its name, so `CREDENTIAL_GITHUB_ENTERPRISE_TOKEN` belongs to an entry `github-enterprise`, not to an entry `github`. Every named entry counts, whatever its transport: REST and MCP entries in `backends.yaml`, units and the sub-backends in `unit.yaml`. A backend reads a credential only if its entry owns it, or if the entry lists it in `credentials:` or maps it with `env:`. A credential in no namespace, or in one that two spellings of an entry name share (`my-api`, `my_api`), belongs to no entry and must be listed. The division follows the configuration on every reload: adding an entry `github-enterprise` takes its credentials away from `github` at once. REST entries need a `name`; an entry without one is refused.
+- **Hosts.** Credentials, session cookies, OAuth2 token requests and session logins go only to the host of the effective `base_url` (the entry's `url`, or the DADL's `base_url`) on its port (for an `http` `base_url` on port 80 also its `https` form on 443), to the other hosts of its registrable domain by the public suffix list on the default port, and to the entries of the entry's `allowed_hosts:` list. An entry is a host (`api.example.com`), a wildcard for any depth below a domain (`"*.example.com"`, quoted in YAML) or an IP address (`10.0.0.5`, `"[2001:db8::1]"`), each on the default port, or with `:port` (`files.example.com:8443`) on that port only. An entry with a scheme, a path or other text is a configuration error and the backend is not loaded. With an `https` `base_url`, credentials go out over https only. The public suffix list includes shared hosting domains: `googleapis.com`, for example, is such a suffix, so each Google API host is a domain of its own and needs `allowed_hosts`.
+- **Checked at load.** The credentials the DADL's auth type reads (including `credential:<name>` in a session login body) and the scheme, host and port of `token_url`, absolute tool paths, an absolute health check path and the session login URL are checked when the backend is loaded, at startup and on every reload of `backends.yaml`. With `include_tools`, tools outside it are not checked: no request for them can be sent, and with `allow_private_url` their hosts do not count as destinations the configuration names. The health check tool is checked in any case. A backend that breaks the binding is not loaded: an `ERROR` line `backend refused` names it, each violation (with the entry that owns a refused credential), and the exact lines to add to its entry (`add_to_backends_yaml_entry`). The other backends keep running and ToolMesh starts; the startup security-posture summary lists the refused backends at `ERROR`. There is no global switch, only these per-entry lines.
+- **Checked again at run time.** The same binding is enforced where credentials are injected, where token and login requests go out, and where the cookie jar of a session backend adds cookies, for every request and every redirect hop. When an entry sets no `url` and the DADL's own `base_url` is `http`, ToolMesh warns at load that credentials go out unencrypted. A `token_uri` that a `jwt_bearer` service-account credential supplies itself is operator data and is not checked.
+- **Names.** A DADL names credentials with letters, digits and `_` only; other names, and parameter defaults of the form `credential:<name>`, are refused when the DADL is parsed. In `credentials:` and `env:` the same applies; `env:` keys are read in upper case, so `credential_foo` and `CREDENTIAL_FOO` are the same key, and an entry with both is refused.
+- **No secret.** `credential: none` in an auth block is the placeholder of DADLs for APIs without authentication. It is never looked up and needs no binding.
+- **Units.** REST sub-backends of a unit are bound the same way through their `unit.yaml` entries.
+
+Examples of entries that need a line, with the entry named like the DADL:
+
+```yaml
+  - name: shelly-cloud            # reads shelly_auth_key, outside CREDENTIAL_SHELLY_CLOUD_*
+    transport: rest
+    dadl: shelly-cloud.dadl
+    credentials: [shelly_auth_key]
+
+  - name: youtube                 # token_url on oauth2.googleapis.com
+    transport: rest
+    dadl: youtube.dadl
+    allowed_hosts: [oauth2.googleapis.com]
+```
+
+**Upgrading.** After an upgrade, backends whose DADLs read credentials outside their entry's namespace, or use hosts outside the registrable domain of their `base_url`, are refused until these lines are added. Check the log for `backend refused` after the first start, add the lines it names, and the next reload of `backends.yaml` loads them. A DADL with a credential name other than letters, digits and `_`, or with a parameter default `credential:<name>`, is refused when it is parsed and needs a change to the DADL itself.
+
+### Requests to REST backends
+
+These rules apply to every REST backend, whatever its `backends.yaml` options:
+
+- **Redirects.** A redirect to the origin of the request (same scheme, host and port), or from `http` to `https` on the same host, is followed unchanged. A redirect from `https` to `http` is refused. A redirect to any other origin is refused when it would send the request body again (`307`, `308`) and otherwise followed with only content negotiation headers (`Accept*`, `User-Agent`, `Range`, conditional headers): injected credentials, other custom headers and the `Referer` are dropped. Once a hop has left the origin, the rest of the chain is treated as foreign, also a hop back to the original host. An API that needs credentials on another host has to name that host in its DADL.
+- **Token and login requests** (`auth.type: oauth2` and `session`) never follow redirects. They use the same connection rules as tool calls: `allow_private_url` and `tls_skip_verify` apply to them too.
+- **Session login URL.** `login.path` is appended to `base_url` and must stay on the host of `base_url` (with the same userinfo, if `base_url` has any); it has to start with `/`.
+- **Path parameters.** The values `.` and `..` are refused, and a joined URL that leaves the scheme, host or path prefix of `base_url` is refused before any request is sent, as is a tool path that does not parse. Only a DADL tool path that is itself an absolute `http(s)` URL with a host addresses another host; its scheme, host and port must not contain a `{placeholder}`, which `lint-dadl` and the loader refuse. A `/` in a value is sent encoded (`%2F`) and stays one path segment, as `group%2Fproject` needs. A proxy in front of the API that decodes `%2F` before it normalizes the path could still turn `a%2F..%2Fb` into a traversal; such a proxy should not decode it.
+- **Parameter types.** Arguments are checked against the declared DADL types before the [pre-execution gate](#gate-policies) runs: `boolean` takes only `true` or `false`, `integer` a whole number or a string of decimal digits with an optional sign, `number` a number or a plain decimal string, `array` and `object` their JSON forms. `string` and the file types are passed as given. A mismatch is answered with an `invalid_input` error and never reaches the gate or the API. Accepted numeric strings become numbers (an integer beyond 2^53 stays a string), and declared defaults are filled in before the gate, so the gate and the API see the same values.
+- **Error texts.** A transport error names only scheme and host of the request URL, never its path or query, which can hold a query-injected credential; this includes OAuth2 token and session login requests. The text of an error result has userinfo, query and fragment removed from every URL in it. The audit log and the tool result see the same reduced form.
+- **Private addresses.** With `allow_private_url: false` a backend may not resolve to loopback, private, link-local, carrier-grade NAT (`100.64.0.0/10`), documentation, benchmarking (`198.18.0.0/15`), multicast or reserved addresses, nor to a NAT64 (`64:ff9b::/96`), 6to4 or IPv4-compatible (`::/96`) address embedding one of them, nor to site-local `fec0::/10`. `allow_private_url` defaults to `true` for backends in `backends.yaml`, since the operator configures their URLs. It covers only the destinations the configuration names: the host and port of `base_url` (or the `backends.yaml` `url`), of `token_url` and of absolute tool paths. Any other destination, such as the target of a redirect, must resolve to a public address, checked when the connection is made. The redirect and credential rules above hold either way.
 
 ### Backend health checks
 

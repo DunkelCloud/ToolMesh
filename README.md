@@ -1,95 +1,201 @@
-# ToolMesh — Let AI agents touch real systems. Safely.
+# ToolMesh
 
-> The missing control layer between AI agents and enterprise systems. ToolMesh turns uncontrolled AI tool calls into a governed, auditable process — and connects any REST API or MCP server in minutes, not months.
+**Your agent gets the tools. ToolMesh keeps the keys.**
 
-[![Go](https://img.shields.io/badge/Go-1.26+-00ADD8?style=flat&logo=go)](https://go.dev)
-[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+ToolMesh is a self-hosted MCP gateway. Claude, ChatGPT and other MCP clients connect to one endpoint and call tools from GitHub, NetBox, Stripe, Zammad or your own REST API. ToolMesh holds the API keys, checks for every call whether the caller may make it, and writes each call to an audit log.
+
+REST APIs come in through DADL files, a few lines of YAML per endpoint that an LLM can write for you. Existing MCP servers, over HTTP or stdio, sit behind the same endpoint. Use it when agents need your internal systems and you want to decide who may call what without handing out API keys.
+
 [![CI](https://github.com/DunkelCloud/ToolMesh/actions/workflows/ci.yml/badge.svg)](https://github.com/DunkelCloud/ToolMesh/actions/workflows/ci.yml)
-[![Go Report Card](https://goreportcard.com/badge/github.com/DunkelCloud/ToolMesh)](https://goreportcard.com/report/github.com/DunkelCloud/ToolMesh)
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 
-## 30 lines of YAML. No server to build.
+## Why
 
-In practice, MCP servers only expose a fraction of the REST API they wrap — and you'll hit the gaps fast. ToolMesh lets you replace the wrapper layer with `.dadl` files — a declarative YAML format that describes any REST API as MCP tools. No wrapper server to build, deploy, or maintain.
+An MCP client that talks to five systems usually holds five API keys in its configuration, and every agent that uses the client may call every tool those keys open. An MCP server offers the endpoints its author chose; when you need another one, you wait for a release or fork the server. And when an agent did something unexpected, the question "which tool did it call, with which parameters?" often has no answer.
+
+ToolMesh moves the keys, the permissions and the record of calls into one service you run yourself.
+
+## What you get
+
+- One MCP endpoint for many backends: REST APIs through DADL files and existing MCP servers over HTTP or stdio. Tools are named `<backend>_<tool>`, for example `github_list_issues`.
+- API keys stay on the server. ToolMesh reads them from its environment (`CREDENTIAL_<NAME>`) and adds them to the request at call time, so they appear neither in prompts nor in the client configuration.
+- Authorization from the first start. OpenFGA runs inside ToolMesh; grants name users, roles, plans or companies and allow all tools, a backend, single tools or an access class such as `read`. Tool listings show each caller only what it may call. Rights that are needed only now and then can be bundled as kits: the agent asks for one, a person approves it, and the grant ends after its time.
+- An audit entry for every call: who called which tool with which parameters, how long it took and how it ended. By default as structured log lines; with `AUDIT_STORE=sqlite` in a database you can query with SQL.
+- Code Mode. The model sees two tools, `discover_tools` and `execute_code`, looks up the signatures it needs and writes short JavaScript that makes several calls in one round trip. A client with hundreds of tools behind ToolMesh does not load all their definitions into its context.
+- Optional JavaScript policies that check a call before it runs and filter its result, for example to redact personal data. Examples are in [`config/policies/examples/`](config/policies/examples/).
+
+## How it works
+
+Every tool call runs through the same steps. A step that fails stops the call, and every exit writes an audit entry.
 
 ```
-Current:    Claude → ToolMesh → MCP Server → REST API
-With DADL:  Claude → ToolMesh → REST API (via .dadl file)
+MCP client (Claude Code, Claude Desktop, ChatGPT, ...)
+   |
+   |  one MCP endpoint, e.g. https://toolmesh.example.com/mcp
+   v
+ToolMesh
+   1. authenticate     OAuth 2.1 or API key
+   2. authorize        OpenFGA: may this caller call this tool?
+   3. add credential   the backend's API key, from the server's environment
+   4. policy, before   optional JavaScript check of the parameters
+   5. call             REST API via DADL, or an MCP server
+   6. policy, after    optional JavaScript filter of the result
+   7. audit            one entry per call, also for denied and failed calls
+   |
+   v
+GitHub API, NetBox API, your own REST API, existing MCP servers
 ```
 
-You don't write the YAML by hand. You ask an LLM. Claude, GPT, Gemini — any model that knows the DADL spec generates a working `.dadl` file in seconds. Describe what you need, drop the file into `config/dadl/`, done.
+A DADL file describes a REST API as MCP tools. This is all it takes for a tool that lists the issues of a GitHub repository:
 
-> "Create a DADL for the GitHub API — list repos, open issues, and create pull requests."
-
-10 seconds. Works with any LLM that knows the format.
-
-And unlike MCP gateways that just pass tool calls through, ToolMesh adds what production deployments actually need:
-
-- **Credential Security** — secrets injected at execution time, never in prompts or LLM client configs
-- **Authorization** — on by default: who may call which tool, by user, role, plan or company (OpenFGA, built in)
-- **Input & Output Gating** — JS policies block confidential data and filter responses
-- **Audit Trail** — every tool call recorded with structured logging or queryable SQLite
-
-## The Six Pillars
-
-| Pillar | What it does | Backed by |
-|--------|-------------|-----------|
-| **Any Backend** | 30 lines of DADL replace a whole MCP server. Also proxies existing MCP servers. | Go MCP SDK + DADL (.dadl files) |
-| **Code Mode** | 15 MCP servers at once? Without ToolMesh, impossible. Code Mode cuts 50,000+ tokens to ~1,000. | AST-parsed tool calls |
-| **Credential Store** | Secrets injected at execution time — never in prompts, never in LLM client configs | Per-request injection via Executor pipeline |
-| **OpenFGA** | Fine-grained authorization, on by default with nothing to install (user → plan → tool). Example: free users get read-only, pro gets everything. | OpenFGA, embedded or external |
-| **Gate** | Block confidential data before execution, redact PII in responses | goja |
-| **Audit** | Every tool call recorded and queryable — answer "what did that agent do?" with SQL | slog / SQLite |
-
-## Try the demo
-
-Want to try ToolMesh before installing? Connect to our public demo instance — no Docker, no config, no API keys:
-
-**[demo.toolmesh.io](https://www.toolmesh.io/en/demo/)** — Hacker News APIs via ToolMesh. Works with Claude Desktop, Claude Code, and ChatGPT. Login: `dadl` / `toolmesh`.
-
-## Quickstart
-
-```bash
-# Clone
-git clone https://github.com/DunkelCloud/ToolMesh.git
-cd ToolMesh
-
-# Configure
-cp .env.example .env
-# IMPORTANT: Set a password — without it, all requests are rejected:
-#   TOOLMESH_AUTH_PASSWORD=my-secret-password
-# Or set an API key for programmatic access:
-#   TOOLMESH_API_KEY=my-api-key
-
-# Optional: local overrides (build locally, external OpenFGA, HTTPS proxy, ...)
-# cp docker-compose.override.yml.example docker-compose.override.yml
-# # then edit docker-compose.override.yml — picked up automatically by Docker Compose
-
-# Start (authorization is on: the password/API key above gets every tool;
-# without a password or API key every request is rejected)
-docker compose up -d
-
-# Verify it's running (default port: 8123)
-curl http://localhost:8123/health
-
-# MCP endpoint: http://localhost:8123/mcp
-# Note: Most MCP clients require HTTPS — see TLS section below
+```yaml
+tools:
+  list_issues:
+    method: GET
+    path: /repos/{owner}/{repo}/issues
+    description: "List issues for a repository"
+    params:
+      owner: { type: string, in: path, required: true }
+      repo:  { type: string, in: path, required: true }
+      state: { type: string, in: query }
 ```
 
-### TLS (important)
+The file also declares how the API authenticates (bearer token, API key, OAuth2, session login), how it pages and when to retry. ToolMesh does the HTTP work. The [DADL registry](https://dadl.ai/browse) has descriptions for 34 APIs; for others, ask an LLM that knows the [DADL spec](https://dadl.ai/spec/dadl-spec-v0.2) and test the result against the real API.
 
-ToolMesh itself serves plain HTTP. **Most MCP clients — including Claude Desktop — require HTTPS** and will reject `http://` URLs. You need a TLS-terminating reverse proxy in front of ToolMesh:
+In Code Mode the model calls these tools from JavaScript:
+
+```javascript
+const repos = await toolmesh.github_list_repos({ sort: "updated" });
+const issues = await toolmesh.github_list_issues({
+  owner: repos[0].owner.login,
+  repo: repos[0].name,
+  state: "open"
+});
+```
+
+The script runs in a sandbox (goja) inside ToolMesh, and each `toolmesh.*` call goes through the steps above. More in [docs/architecture.md](docs/architecture.md).
+
+## Status
+
+ToolMesh is at version 0.x. A minor release can still change the configuration; the [changelog](CHANGELOG.md) lists under *Changed* and *Deprecated* what an operator has to adjust.
+
+`docker compose up` pulls the latest release (`ghcr.io/dunkelcloud/toolmesh:latest`, at present v0.5.0), while this README describes `main`. Since v0.5.0, `main` adds health checks for DADL backends on `/health`, a switch and quotas for the file broker, and expiry for OAuth clients that registered themselves. They arrive with the next release.
+
+## Getting started
+
+To look first, connect an MCP client to the public demo at [demo.toolmesh.io](https://www.toolmesh.io/en/demo/). It serves the Hacker News APIs; login `dadl` / `toolmesh`.
+
+For your own instance you need:
+
+- Docker with Docker Compose. The Compose file starts ToolMesh and KeyDB (Redis-compatible, holds the OAuth state).
+- A free port, 8123 by default (`TOOLMESH_PORT`).
+- For Claude Desktop, claude.ai and most other clients an HTTPS URL, so a reverse proxy with TLS in front of ToolMesh (see [Connecting clients](#connecting-clients)). Claude Code also connects over plain HTTP on localhost.
+
+The following steps end with a first tool call. They use the Hacker News DADL that ships with ToolMesh and needs no API key.
+
+1. Clone the repository.
+
+   ```bash
+   git clone https://github.com/DunkelCloud/ToolMesh.git
+   cd ToolMesh
+   ```
+
+2. Create `.env` and set an API key. Without a password or API key ToolMesh rejects every request.
+
+   ```bash
+   cp .env.example .env
+   # in .env:
+   #   TOOLMESH_API_KEY=<output of: openssl rand -hex 32>
+   ```
+
+3. Register the Hacker News backend.
+
+   ```bash
+   cat > config/backends.yaml <<'EOF'
+   backends:
+     - name: hackernews
+       transport: rest
+       dadl: hackernews.dadl
+   EOF
+   ```
+
+4. Start ToolMesh and check that it answers.
+
+   ```bash
+   docker compose up -d
+   curl http://localhost:8123/health
+   ```
+
+5. Connect Claude Code.
+
+   ```bash
+   claude mcp add -t http \
+     -H "Authorization: Bearer <YOUR_API_KEY>" \
+     -s user toolmesh http://localhost:8123/mcp
+   ```
+
+6. Ask Claude Code: "What are the top stories on Hacker News right now?" It calls `hackernews_get_top_stories` through ToolMesh, and the audit entry shows up in `docker compose logs toolmesh`.
+
+### Your own API
+
+1. Take a DADL from [dadl.ai/browse](https://dadl.ai/browse) or have an LLM write one, and put the file into `dadl/`.
+2. Add the backend to `config/backends.yaml`:
+
+   ```yaml
+   backends:
+     - name: deepl
+       transport: rest
+       dadl: deepl.dadl
+       url: "https://api.deepl.com/v2"
+   ```
+
+3. Put the API key into `.env`. The name is `CREDENTIAL_` plus the DADL's `credential` field in upper snake case; the DADL's `setup` section names it.
+
+   ```bash
+   CREDENTIAL_DEEPL_AUTH_KEY=your-deepl-api-key
+   ```
+
+4. Apply the change with `docker compose up -d` (a plain `restart` does not read a changed `.env`).
+
+For internal services on private addresses or with self-signed certificates, a backend entry takes `allow_private_url` (default: true) and `tls_skip_verify` (default: false).
+
+### An existing MCP server
+
+```yaml
+backends:
+  - name: notes
+    transport: http
+    url: "https://notes.example.com/mcp"
+    api_key_env: "NOTES_API_KEY"
+```
+
+with `CREDENTIAL_NOTES_API_KEY=...` in `.env`. A local MCP server runs with `transport: stdio`, `command` and `args`; [config/backends.yaml.example](config/backends.yaml.example) shows all fields.
+
+## What it does not do
+
+- It does not terminate TLS. ToolMesh serves plain HTTP; put a reverse proxy in front for anything beyond localhost.
+- It holds the backends' keys. Each client still signs in to ToolMesh, with OAuth or with an API key that sits in its configuration.
+- It enforces no policy until you add one. The policy engine runs every `.js` file directly in `config/policies/`; the shipped examples lie one level deeper and stay inactive.
+- Its default audit log is write-only. Searching past calls with SQL needs `AUDIT_STORE=sqlite`.
+- It speaks REST through DADL and MCP. Other protocols, such as gRPC, SOAP or direct database access, need an MCP server in front.
+- It does not check a DADL an LLM wrote. Test new tools against the real API, best with a throwaway account or test data.
+- An `execute_code` script makes at most 50 tool calls and runs at most 120 seconds (`TOOLMESH_CODE_TIMEOUT`).
+
+## Telemetry
+
+ToolMesh sends usage statistics once every 24 hours, the first time a few minutes after the first start: a random site ID, the SHA-256 hash of each DADL file, the number of tool calls and errors per DADL, the number of MCP server backends and the ToolMesh version. It sends no user IDs, keys, parameters, URLs, host names or request content; the receiving endpoint sees the sender's IP address. To switch it off, set `DO_NOT_SEND_ANONYMOUS_STATISTICS=yes` in `.env`. Details are in [.env.example](.env.example).
+
+## Connecting clients
+
+ToolMesh serves plain HTTP. Most MCP clients, Claude Desktop among them, accept only `https://` URLs, so they need a reverse proxy with TLS:
 
 | Option | When to use |
 |--------|-------------|
-| **Caddy** | Self-hosted with a public domain — automatic Let's Encrypt certs |
-| **Cloudflare Tunnel** | No open ports needed, zero-config TLS |
-| **nginx / Traefik** | Already in your stack |
+| Caddy | Self-hosted with a public domain, automatic Let's Encrypt certificates |
+| Cloudflare Tunnel | No open ports |
+| nginx / Traefik | Already in your stack |
 
-For **local development only**, you can bypass TLS by editing `claude_desktop_config.json` by hand (the GUI enforces `https://`).
-
-### Connect to Claude Desktop
-
-Add to your Claude Desktop MCP config:
+Claude Desktop, in its MCP config:
 
 ```json
 {
@@ -101,104 +207,54 @@ Add to your Claude Desktop MCP config:
 }
 ```
 
-For local development without TLS proxy:
+For local development without a proxy, `http://localhost:8123/mcp` works if you edit `claude_desktop_config.json` by hand (the settings dialog requires `https://`).
 
-```json
-{
-  "mcpServers": {
-    "toolmesh": {
-      "url": "http://localhost:8123/mcp"
-    }
-  }
-}
-```
-
-### Connect to Claude.ai (Custom Connector)
-
-ToolMesh supports OAuth 2.1 with PKCE S256 for remote access. Configure users in `config/users.yaml` and use the public HTTPS URL as the MCP endpoint.
+claude.ai (custom connector) and ChatGPT sign in with OAuth 2.1 (PKCE S256); use the public HTTPS URL as the MCP endpoint.
 
 ## Authentication
 
-ToolMesh supports two authentication methods that can be used independently or together. All OAuth state (tokens, auth codes, clients) is persisted in Redis and survives server restarts.
+Clients sign in with OAuth 2.1, which suits clients with a login dialog, or send an API key as bearer token, which suits Claude Code and scripts. Both work side by side. OAuth state (tokens, codes, registered clients) is kept in Redis and survives restarts.
 
-### OAuth 2.1 (Interactive Login)
+For one person, `TOOLMESH_AUTH_PASSWORD` (OAuth login) or `TOOLMESH_API_KEY` in `.env` is enough. `TOOLMESH_AUTH_USER`, `TOOLMESH_AUTH_PLAN` and `TOOLMESH_AUTH_ROLES` set the identity (defaults: `owner`, `pro`, `admin`).
 
-Define users in `config/users.yaml` with bcrypt-hashed passwords:
+For several users, list them in `config/users.yaml` with bcrypt hashes:
 
 ```yaml
 users:
-  - username: admin
+  - username: alice
     password_hash: "$2a$10$..."
-    company: dunkelcloud
+    company: example
     plan: pro
     roles: [admin]
 ```
-
-Generate password hashes with any bcrypt-capable utility:
 
 ```bash
 htpasswd -nbBC 10 "" "my-password" | cut -d: -f2
 ```
 
-For single-user setups, `TOOLMESH_AUTH_PASSWORD` still works as a fallback. Configure the identity with `TOOLMESH_AUTH_USER`, `TOOLMESH_AUTH_PLAN`, and `TOOLMESH_AUTH_ROLES` (defaults: `owner`, `pro`, `admin`).
-
-### API Keys (Programmatic Access)
-
-Define API keys in `config/apikeys.yaml`. Each entry names its key by the SHA-256 of the key:
+and API keys in `config/apikeys.yaml`, each named by the SHA-256 of the key:
 
 ```yaml
 keys:
   - key_sha256: "<SHA-256 of the key, 64 hex characters>"
-    user_id: claude-code-user
-    company_id: dunkelcloud
+    user_id: ci-bot
+    company_id: example
     plan: pro
     roles: [tool-executor]
 ```
-
-Generate a key and its `key_sha256`:
 
 ```bash
 KEY="tm_$(openssl rand -hex 32)"
 printf '%s' "$KEY" | sha256sum | cut -d' ' -f1
 ```
 
-Each key maps to a distinct user identity with its own plan and roles, which flow through to authorization.
-
-Entries with a bcrypt `key_hash`, as files written for earlier versions have them, keep working without any change. Until its key has been used once after startup, such an entry costs a bcrypt comparison for every bearer credential that nothing else recognizes; `key_sha256` is looked up directly and is meant for randomly generated keys. See [docs/configuration.md](docs/configuration.md#api-keys) for the details and for how the two forms differ.
-
-For single-key setups, `TOOLMESH_API_KEY` still works as a fallback. The same `TOOLMESH_AUTH_USER`, `TOOLMESH_AUTH_PLAN`, and `TOOLMESH_AUTH_ROLES` variables control the identity.
-
-### Unauthenticated Requests
-
-A request to `/mcp` without a valid credential is answered `401` with a `WWW-Authenticate: Bearer` challenge that carries `resource_metadata`, as the MCP authorization specification asks. MCP clients start the OAuth flow, or refresh an expired token, on that status. Such requests are logged at `INFO` and counted in `toolmesh_logins_total{method="anonymous"}`. See [docs/configuration.md](docs/configuration.md#unauthenticated-requests).
-
-### DCR Rate Limiting
-
-Dynamic Client Registration is rate-limited to 5 registrations per hour per IP to prevent abuse (with Redis; a Redis outage lets registrations through and is logged). A registered client that never obtains a token is forgotten after a day, and one that does after 90 days without a new token (`TOOLMESH_DCR_CLIENT_TTL`, `TOOLMESH_DCR_CLIENT_IDLE_TTL`). See [docs/configuration.md](docs/configuration.md#client-registration).
-
-### File Broker
-
-The file broker (`upload_file`, `POST /files/upload`, download URLs under `/blobs/`) can be switched off with `TOOLMESH_FILE_BROKER_ENABLED=false` and bounded with a quota in bytes, in total and per user (`TOOLMESH_FILE_BROKER_MAX_TOTAL_BYTES`, `TOOLMESH_FILE_BROKER_MAX_BYTES_PER_USER`). It is on and unbounded by default. See [docs/configuration.md](docs/configuration.md#file-broker).
-
-### Login Throttling
-
-Failed password logins are limited per account and per client address: by default 5 failures for one account from one address, 20 for one account from all addresses together, and 50 from one address across all accounts, each within 15 minutes. Beyond that the login answers `429` until the window has passed. Every failed login is logged at `WARN` and counted in `toolmesh_logins_total{result="failure"}`. Already issued tokens and API keys are not affected by a lockout. See [docs/configuration.md](docs/configuration.md#login-throttling) for the variables and the reverse-proxy requirement of the per-address limits.
-
-The number of bcrypt comparisons that run at the same time is bounded for the whole process (`TOOLMESH_BCRYPT_MAX_CONCURRENT`, default: half of the available CPUs), so that password logins cannot take the CPU away from everything else. See [docs/configuration.md](docs/configuration.md#password-hash-comparisons).
+Each key maps to its own identity, whose plan and roles flow into authorization. Entries with a bcrypt `key_hash` from earlier versions keep working. Failed logins are throttled per account and per address, and a request without a valid credential gets a `401` that starts the OAuth flow in MCP clients. See [docs/configuration.md](docs/configuration.md#api-keys) for keys, [login throttling](docs/configuration.md#login-throttling), [unauthenticated requests](docs/configuration.md#unauthenticated-requests) and [client registration](docs/configuration.md#client-registration).
 
 ## Authorization
 
-Every tool call is checked, and tool listings show each caller only the tools it may call. Nothing has to be set up: ToolMesh runs [OpenFGA](https://openfga.dev) inside its own process and keeps its data in `data/authz.db`.
+Every tool call is checked, and tool listings show each caller only the tools it may call. ToolMesh runs [OpenFGA](https://openfga.dev) in its own process and keeps the data in `data/authz.db`; `TOOLMESH_AUTHZ_MODE=external` uses an OpenFGA server you operate instead, `disabled` switches checks off (reported at every start and in the audit trail).
 
-`TOOLMESH_AUTHZ_MODE` selects the engine:
-
-| Mode | Behavior |
-|------|----------|
-| `embedded` (default) | Checks run inside ToolMesh. Grants come from a preset or from `config/authz.yaml`. |
-| `external` | Checks go to an OpenFGA server you operate (`OPENFGA_API_URL`, `OPENFGA_STORE_ID`). ToolMesh never writes to it. |
-| `disabled` | No checks. Reported at every start and recorded in the audit trail. |
-
-Grants refer to the users, roles, plans and companies from `users.yaml`, `apikeys.yaml` or the single password/API key. Without a grants file a preset applies:
+Without a grants file a preset applies:
 
 | Preset | Who may call what |
 |--------|-------------------|
@@ -206,7 +262,7 @@ Grants refer to the users, roles, plans and companies from `users.yaml`, `apikey
 | `team` | as `single-user`, plus plan `pro`: every tool, plan `free`: every `read` tool. Default with `users.yaml` or `apikeys.yaml`. |
 | `open` | every authenticated caller: every tool |
 
-For finer control, copy `config/authz.yaml.example` to `config/authz.yaml`; grants can name all tools, backends, single tools or DADL access classes (`read`, `write`, ...), denies block any of these and win over every grant, and changes take effect within seconds:
+For finer control, copy `config/authz.yaml.example` to `config/authz.yaml`. Grants name all tools, backends, single tools or DADL access classes (`read`, `write`, ...); denies win over every grant. Changes take effect within seconds.
 
 ```yaml
 grants:
@@ -221,178 +277,48 @@ denies:
     tools: [stripe_create_refund]
 ```
 
-An installation upgraded from a version without authorization keeps every tool open to every authenticated caller (preset `open`) and says so at every start, until you pick a preset or write grants. `OPENFGA_MODE` is deprecated: `restrict` maps to `external`, `bypass` to `embedded`. See [docs/configuration.md](docs/configuration.md#authorization).
-
-### Security posture at startup
-
-ToolMesh is secure-by-default: it ships with no individual default that relaxes a control silently. At boot it logs a single **security-posture summary** that lists every control still in a relaxed state (missing auth credential, authorization disabled or open to everyone, open CORS, debug tools, login limits switched off) together with how to harden it. In the default production posture these are logged at `WARN`; set `TOOLMESH_DEV=true` on a local-development machine to report the same facts once at `INFO` so the warnings don't become background noise. `TOOLMESH_DEV` changes only the log level of this summary — it never relaxes a setting on its own.
+An installation upgraded from a version without authorization keeps every tool open to every authenticated caller (preset `open`) and says so at every start, until you pick a preset or write grants. Kits, approvers and the approval page are described in [docs/configuration.md](docs/configuration.md#kits).
 
 ## Configuration
 
-See [docs/configuration.md](docs/configuration.md) for all environment variables.
+All environment variables are in [docs/configuration.md](docs/configuration.md), among them [audit](docs/configuration.md#audit), [gate policies](docs/configuration.md#gate-policies), [timeouts](docs/configuration.md#timeouts), the [file broker](docs/configuration.md#file-broker), [backend health checks](docs/configuration.md#backend-health-checks) and [logging](docs/configuration.md#logging). Metrics are described in [docs/metrics.md](docs/metrics.md).
 
-### Timeout tuning
+With `CREDENTIAL_STORE=command` ToolMesh takes the credentials from a command, such as a sops decryption, and keeps them in memory only, out of the environment that Docker writes into the container configuration on disk; see [docs/configuration.md](docs/configuration.md#command-store).
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `TOOLMESH_MCP_TIMEOUT` | `120` | HTTP client timeout (seconds) for calls to downstream MCP servers |
-| `TOOLMESH_EXEC_TIMEOUT` | `120` | Tool execution timeout (seconds) — context deadline for backend calls |
+At startup ToolMesh logs one summary of every control that is still relaxed (missing credential, authorization disabled or open to everyone, open CORS, debug tools, login limits switched off, file broker without quota), each with how to tighten it. The entries are `WARN`; `TOOLMESH_DEV=true` reports them once at `INFO` on a development machine and changes nothing else.
 
-Increase these for backends that need more time (e.g. browser-based web fetchers):
+The log level is `info`. At `debug`, ToolMesh logs complete request URLs and payloads, which puts query-string API keys into the log; keep it off in production.
 
-```bash
-TOOLMESH_MCP_TIMEOUT=180
-TOOLMESH_EXEC_TIMEOUT=180
-```
+Prometheus metrics are served on a separate, unauthenticated listener. The Compose file binds its host port (9090) to `127.0.0.1`; set `TOOLMESH_METRICS_HOST=0.0.0.0` only if you scrape from another host and have firewalled the port.
 
-### Logging
+`TOOLMESH_DEBUG_TOOLS=true` adds two diagnostic tools: `debug_echo` returns size and SHA-256 of a payload, `debug_generate` produces a printable string of N bytes. They help to find transport size limits between the client and ToolMesh. Off by default and not meant for production.
 
-ToolMesh uses structured logging via `slog`. The default level is **`info`**. Set `LOG_LEVEL=debug` to trace the full MCP request/response flow when diagnosing a problem — but note that debug logs include complete request URLs and payloads, so for query-string API keys the credential ends up in the log. Keep `debug` off in production. Per-backend debug files, log formats, and all logging variables are documented in [docs/configuration.md](docs/configuration.md#logging).
+## Extension model
 
-### Metrics (Prometheus)
+Credential stores (`embedded` and `command`, selected with `CREDENTIAL_STORE`), tool backends (`mcp`, `rest`, `echo`, configured in `config/backends.yaml`) and gate evaluators (`goja`, `GATE_EVALUATORS`) register themselves via `init()`, in the style of Go's `database/sql` drivers. See [docs/architecture.md](docs/architecture.md#extension-model).
 
-ToolMesh exposes Prometheus metrics on a separate listener (default host port 9090) — login counts by method and result, tool-call rates by backend and outcome, and a latency histogram with REST-tuned buckets. The endpoint is unauthenticated, so the Compose file binds the host port to `127.0.0.1` by default (reachable locally and from Prometheus on the same Docker network, never from a public interface). Set `TOOLMESH_METRICS_HOST=0.0.0.0` only if you scrape from another host and have firewalled the port yourself.
+## Building from source
 
-Configure via `TOOLMESH_METRICS_PORT`, `TOOLMESH_METRICS_ENABLED`, and `TOOLMESH_METRICS_LABEL_TOOL` in `.env`. See [docs/metrics.md](docs/metrics.md) for the full schema, example PromQL queries, and a sample scrape configuration.
-
-### Debug tools (opt-in)
-
-Set `TOOLMESH_DEBUG_TOOLS=true` in `.env` to expose two diagnostic MCP tools — `debug_echo` (returns size and SHA-256 of the supplied payload, no backend) and `debug_generate` (produces a printable string of N bytes). Use them to probe transport-level size limits between the calling LLM and ToolMesh, or to verify round-trip byte integrity. Off by default; intended for development and incident triage, not production.
-
-## Architecture
-
-See [docs/architecture.md](docs/architecture.md) for the full architecture documentation.
-
-```
-                          ┌─────────────────────────────────┐
-                          │          ToolMesh               │
-                          │                                 │
-                          │  Redis · OpenFGA · Audit        │
-                          │  Credential Store · JS Gate     │
-                          │                                 │
-AI Agent ──MCP──────────▶ │   AuthZ ▸ Creds ▸ Gate ▸ Exec  │
-                          │                                 │
-                          └──┬──────┬───────┬───────┬───────┘
-                             │      │       │       │
-                          MCP Client  .dadl   .dadl   .dadl
-                             │      │       │       │
-                             ▼      ▼       ▼       ▼
-                          MCP     Stripe  GitHub  Vikunja
-                          Server   API     API     API
-```
-
-## Adding an External MCP Server
-
-Create or edit `config/backends.yaml`:
-
-```yaml
-backends:
-  - name: memorizer
-    transport: http
-    url: "https://memorizer.example.com/mcp"
-    api_key_env: "MEMORIZER_API_KEY"
-```
-
-Set the credential as an environment variable:
+Go 1.26 or later.
 
 ```bash
-CREDENTIAL_MEMORIZER_API_KEY=sk-mem-xxxxx
+make build    # binaries
+make test     # go test ./...
+make lint     # go vet, gofmt check, golangci-lint (as in CI)
+make docker   # production image
 ```
 
-Tools from each backend are exposed with a prefix (e.g. `memorizer_retrieve_knowledge`). Credentials are injected by the Executor at runtime via the CredentialStore — the LLM never sees API keys.
-
-## REST Proxy Mode ([DADL](https://dadl.ai))
-
-When an MCP server doesn't expose an endpoint you need, describe it in a `.dadl` file and ToolMesh calls the REST API directly — no wrapper server needed. Both modes run in parallel.
-
-Add a REST backend to `config/backends.yaml`:
-
-```yaml
-backends:
-  - name: vikunja
-    transport: rest
-    dadl: /app/dadl/vikunja.dadl
-    url: "https://vikunja.example.com/api/v1"
-```
-
-For internal services with private IPs or self-signed certificates:
-
-```yaml
-backends:
-  - name: internal-api
-    transport: rest
-    dadl: internal.dadl
-    url: "https://192.168.1.50:8443/api"
-    allow_private_url: true    # allow private/loopback addresses (default: true)
-    tls_skip_verify: true      # accept self-signed certificates (default: false)
-```
-
-Want Claude to list GitHub issues? Here's all it takes:
-
-```yaml
-tools:
-  list_issues:
-    method: GET
-    path: /repos/{owner}/{repo}/issues
-    description: "List issues for a repository"
-    params:
-      owner: { type: string, in: path, required: true }
-      repo:  { type: string, in: path, required: true }
-      state: { type: string, in: query }
-```
-
-ToolMesh handles auth, pagination, retries, and error mapping. DADL supports bearer tokens, OAuth2, session auth, API keys, automatic pagination, retry with backoff, response transformation, composite tools, and more.
-
-For the full spec, examples, and the community registry, see [dadl.ai](https://dadl.ai). The fastest way to create a `.dadl` file is asking any LLM that knows the format.
-
-## Code Mode
-
-Connect 15 MCP servers to a single AI agent? Without ToolMesh, that simply does not work — the context window fills up, the client chokes. Code Mode makes it possible.
-
-Instead of exposing hundreds of individual tool definitions (50,000+ tokens), ToolMesh exposes two meta-tools: `discover_tools` and `execute_code`. The LLM gets compact TypeScript interfaces (~1,000 tokens) and writes JavaScript against them:
-
-```javascript
-const repos = await toolmesh.github_list_repos({ sort: "updated" });
-const issues = await toolmesh.github_list_issues({
-  owner: repos[0].owner.login,
-  repo: repos[0].name,
-  state: "open"
-});
-```
-
-Multiple API calls in a single round-trip. ToolMesh parses the code, extracts tool calls, and routes them through the full execution pipeline.
-
-## Extension Model
-
-ToolMesh uses a registry-based extension model inspired by Go's `database/sql` driver pattern. Three component types are extensible via `init()` registration:
-
-| Component | Built-in | Config |
-|-----------|----------|--------|
-| Credential Store | `embedded` | `CREDENTIAL_STORE=<name>` |
-| Tool Backend | `mcp`, `rest` (DADL), `echo` | `config/backends.yaml` |
-| Gate Evaluator | `goja` | `GATE_EVALUATORS=<list>` |
-
-Enterprise extensions (InfisicalStore, VaultStore, Compliance-LLM, etc.) are planned and will be included via Go build tags: `go build -tags enterprise ./cmd/toolmesh`.
-
-See [docs/architecture.md](docs/architecture.md#extension-model) for details.
+To run your own build with Compose, see `docker-compose.override.yml.example`.
 
 ## Who's behind this
 
-ToolMesh is built and maintained by **[Axel Dunkel](https://github.com/axeldunkel)**
-at **[Dunkel Cloud GmbH](https://dunkel.cloud)** — a German company building
-infrastructure that connects AI agents to real systems. ToolMesh and DADL grew
-out of the production cloud and edge infrastructure we've run for businesses for
-years, so this isn't a side project behind an anonymous handle: it runs in our
-own stack, and the same people who answer `security@dunkel.cloud` write the code.
+ToolMesh is built and maintained by [Axel Dunkel](https://github.com/axeldunkel) at [Dunkel Cloud GmbH](https://dunkel.cloud), a German company that has run cloud and edge infrastructure for businesses for years. ToolMesh and DADL grew out of that work and run in our own stack, and the people who answer `security@dunkel.cloud` write the code.
 
-The companion **[DADL registry](https://dadl.ai/browse)** currently ships
-**27 community API descriptions covering ~3,300 generated tools** — from a
-4-tool Hacker News reader to a 608-tool NetBox DCIM/IPAM surface — each with a
-visible API-coverage percentage so you can see exactly how complete it is.
+The [DADL registry](https://dadl.ai/browse) holds 34 API descriptions with about 4,300 tools, from a 10-tool Hacker News reader to 608 tools for NetBox DCIM/IPAM. Each shows how much of its API it covers, in percent.
 
-- 🌐 Website: [toolmesh.io](https://www.toolmesh.io/)
-- 📖 DADL spec & registry: [dadl.ai](https://dadl.ai)
-- 🐛 Security contact: security@dunkel.cloud (see [SECURITY.md](SECURITY.md))
+- Website: [toolmesh.io](https://www.toolmesh.io/)
+- DADL spec and registry: [dadl.ai](https://dadl.ai)
+- Security contact: security@dunkel.cloud (see [SECURITY.md](SECURITY.md))
 
 ## Contributing
 
@@ -400,4 +326,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
-Apache 2.0 — Copyright 2025–2026 [Dunkel Cloud GmbH](https://dunkel.cloud)
+Apache 2.0, Copyright 2025–2026 [Dunkel Cloud GmbH](https://dunkel.cloud)

@@ -12,19 +12,19 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package credentials
+package backend
 
-import "context"
+import "github.com/DunkelCloud/ToolMesh/internal/urlredact"
 
-type credKey struct{}
-
-// WithCredentials stores credentials in the context for downstream use.
-func WithCredentials(ctx context.Context, creds map[string]string) context.Context {
-	return context.WithValue(ctx, credKey{}, creds)
+// redactTransportError converts a *url.Error returned by an HTTP client into
+// an error that names only scheme and host (see urlredact.TransportError).
+func redactTransportError(err error) error {
+	return urlredact.TransportError(err)
 }
 
-// CredentialsFromContext extracts credentials from the context.
-func CredentialsFromContext(ctx context.Context) map[string]string {
-	creds, _ := ctx.Value(credKey{}).(map[string]string)
-	return creds
+// RedactURLErrors returns an error equivalent to err whose message shows the
+// URL of every *url.Error in its chain reduced to scheme://host (see
+// urlredact.URLErrors).
+func RedactURLErrors(err error) error {
+	return urlredact.URLErrors(err)
 }

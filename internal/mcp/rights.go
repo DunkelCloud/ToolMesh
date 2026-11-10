@@ -44,10 +44,11 @@ const (
 		"Ask with " + toolRequestGrant + "({kit, reason}), once for the kits your task needs, instead of asking tool by tool."
 )
 
-// reasonUnavailable is the reason of a denied tool that is not visible to the
-// caller. It does not say whether the tool exists, so that the preflight
-// cannot be used to probe for tools the caller may not see.
-const reasonUnavailable = "not available to you, and no kit covers it"
+// reasonUnknown is the reason of a denied name that the caller can neither
+// call nor get a kit for: a name no tool has, and a tool that is not visible
+// to the caller. Both read the same, as in toolmesh.describe, so that the
+// preflight cannot be used to probe for tools the caller may not see.
+const reasonUnknown = "unknown tool: no tool you can see or get a kit for has this name"
 
 // reasonBlocked is the reason of a denied tool that a kit covers but a deny
 // blocks for the caller.
@@ -280,8 +281,14 @@ func formatRemaining(d time.Duration) string {
 }
 
 // preflight gives the verdict for each named tool and the bundle of kits
-// that covers the escalatable ones.
+// that covers the escalatable ones. A built-in tool the handler offers is
+// allowed: HandleToolCall dispatches it itself, without the authorization
+// and the policies of the executor.
 func (h *Handler) preflight(ctx context.Context, uc *userctx.UserContext, all []backend.ToolDescriptor, names []string, answer *rightsAnswer, kitsUsed map[string]bool) {
+	const (
+		unknownTool = -1 // at: no offered built-in or backend tool has the name
+		builtinTool = -2 // at: a built-in tool the handler offers
+	)
 	byName := make(map[string]backend.ToolDescriptor, len(all)*2)
 	for _, t := range all {
 		byName[t.Name] = t
@@ -290,17 +297,21 @@ func (h *Handler) preflight(ctx context.Context, uc *userctx.UserContext, all []
 		}
 	}
 	found := make([]backend.ToolDescriptor, 0, len(names))
-	at := make([]int, len(names)) // index into found, -1 when unknown
+	at := make([]int, len(names)) // index into found, or unknownTool or builtinTool
 	for i, n := range names {
 		name := n
 		if h.aliasResolver != nil {
 			name = h.aliasResolver.ResolveAlias(name)
 		}
+		if h.offersBuiltinTool(name) {
+			at[i] = builtinTool
+			continue
+		}
 		d, ok := byName[name]
 		if !ok {
 			d, ok = byName[sanitizeName(name)]
 		}
-		at[i] = -1
+		at[i] = unknownTool
 		if ok {
 			at[i] = len(found)
 			found = append(found, d)
@@ -310,8 +321,12 @@ func (h *Handler) preflight(ctx context.Context, uc *userctx.UserContext, all []
 
 	escalatable := map[string][]string{} // tool → kits
 	for i, n := range names {
-		if at[i] < 0 {
-			answer.Tools = append(answer.Tools, rightsTool{Tool: n, Verdict: executor.VerdictDenied, Reason: reasonUnavailable})
+		switch at[i] {
+		case builtinTool:
+			answer.Tools = append(answer.Tools, rightsTool{Tool: n, Verdict: executor.VerdictAllowed})
+			continue
+		case unknownTool:
+			answer.Tools = append(answer.Tools, rightsTool{Tool: n, Verdict: executor.VerdictDenied, Reason: reasonUnknown})
 			continue
 		}
 		rt := toRightsTool(n, rights[at[i]])
@@ -416,7 +431,7 @@ func toRightsTool(name string, r executor.ToolRight) rightsTool {
 	case r.Verdict == executor.VerdictDenied && r.Blocked:
 		rt.Reason = reasonBlocked
 	case r.Verdict == executor.VerdictDenied:
-		rt.Reason = reasonUnavailable
+		rt.Reason = reasonUnknown
 	}
 	return rt
 }

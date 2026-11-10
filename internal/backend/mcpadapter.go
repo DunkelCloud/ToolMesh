@@ -26,6 +26,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -80,8 +81,24 @@ type BackendEntry struct {
 	TLSSkipVerify   bool              `yaml:"tls_skip_verify"`   // accept invalid/self-signed TLS certificates
 	Options         map[string]string `yaml:"options"`           // backend-specific options (e.g. blob_ttl: "1h")
 	Env             map[string]string `yaml:"env"`               // credential env remapping (DADL name → actual env var)
-	ExposeTools     []string          `yaml:"expose_tools"`      // tool names to also expose as direct top-level MCP tools (in addition to discover_tools)
-	IncludeTools    []string          `yaml:"include_tools"`     // when set, the ONLY tools this backend exposes (restricts the surface); honored for every transport
+	// Credentials lists credential names outside the entry's namespace
+	// (CREDENTIAL_<NAME>_*) that the backend's DADL may read (transport:
+	// rest). Written by the operator; a DADL cannot widen it.
+	Credentials []string `yaml:"credentials"`
+	// AllowedHosts lists hosts besides the base_url host and its
+	// registrable domain that the backend's credentials may be sent to
+	// ("api.example.com" or "*.example.com"; transport: rest).
+	AllowedHosts []string `yaml:"allowed_hosts"`
+	ExposeTools  []string `yaml:"expose_tools"`  // tool names to also expose as direct top-level MCP tools (in addition to discover_tools)
+	IncludeTools []string `yaml:"include_tools"` // when set, the ONLY tools this backend exposes (restricts the surface); honored for every transport
+	// CredentialEnv sets environment variables of a stdio child from the
+	// credential store: variable name in the child → key in the store, e.g.
+	// GITHUB_PERSONAL_ACCESS_TOKEN: CREDENTIAL_GITHUB_TOKEN. The child gets
+	// ToolMesh's environment plus these; with the command store, whose values
+	// never enter the environment, they are the only credentials it sees.
+	// A key the store does not have keeps the backend from connecting.
+	// Honored for transport: stdio only.
+	CredentialEnv map[string]string `yaml:"credential_env"`
 	// AllowPrivateFileURL permits caller-supplied file_url parameters to resolve
 	// to private/loopback/link-local addresses. Default false (independent of
 	// allow_private_url, which only governs the admin-configured base_url).
@@ -179,6 +196,18 @@ func (c *backendConn) included(name string) bool {
 	return c.include[name]
 }
 
+// inputSchema returns the input schema discovery recorded for a tool, or
+// nil when the backend does not offer the tool. Callers hold the adapter
+// lock: discovery and reconnect rewrite the list.
+func (c *backendConn) inputSchema(name string) map[string]any {
+	for _, t := range c.tools {
+		if t.Name == name {
+			return t.InputSchema
+		}
+	}
+	return nil
+}
+
 // buildMCPIncludeSet turns an include_tools list into a lookup set, returning
 // nil for an empty list ("no restriction").
 //
@@ -243,6 +272,9 @@ func NewMCPAdapterFromEntries(entries []BackendEntry, creds credentials.Credenti
 			include: buildMCPIncludeSet(entry.IncludeTools),
 		}
 		logger.Info("registered backend", "name", entry.Name, "transport", entry.Transport)
+		if len(entry.CredentialEnv) > 0 && entry.Transport != transportTypeSTDIO {
+			logger.Warn("credential_env is honored for transport stdio only, ignoring it", "name", entry.Name, "transport", entry.Transport)
+		}
 	}
 	return adapter
 }
@@ -312,7 +344,7 @@ func (a *MCPAdapter) createTransport(ctx context.Context, entry BackendEntry) (m
 	switch entry.Transport {
 	case transportTypeHTTP:
 		return a.createHTTPTransport(ctx, entry)
-	case "stdio":
+	case transportTypeSTDIO:
 		return a.createSTDIOTransport(ctx, entry)
 	default:
 		return nil, fmt.Errorf("unsupported transport %q", entry.Transport)
@@ -368,7 +400,40 @@ func (a *MCPAdapter) createSTDIOTransport(ctx context.Context, entry BackendEntr
 		return nil, fmt.Errorf("stdio transport requires a command")
 	}
 	cmd := exec.CommandContext(ctx, entry.Command, entry.Args...) //nolint:gosec // command from trusted backends config
+	if len(entry.CredentialEnv) > 0 {
+		extra, err := a.credentialEnv(entry)
+		if err != nil {
+			return nil, err
+		}
+		cmd.Env = append(os.Environ(), extra...)
+	}
 	return &mcp.CommandTransport{Command: cmd}, nil
+}
+
+// credentialEnv resolves the credential_env of a stdio backend into
+// NAME=value pairs, sorted by name. Errors name variables and keys, never
+// values. The values are read once, when the child starts; a refreshed
+// credential reaches the child when it is started again.
+func (a *MCPAdapter) credentialEnv(entry BackendEntry) ([]string, error) {
+	names := make([]string, 0, len(entry.CredentialEnv))
+	for name := range entry.CredentialEnv {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	env := make([]string, 0, len(names))
+	for _, name := range names {
+		key := entry.CredentialEnv[name]
+		if name == "" || strings.ContainsAny(name, "=\x00") {
+			return nil, fmt.Errorf("credential_env: invalid variable name %q", name)
+		}
+		val, _ := credentials.LookupKey(a.creds, key)
+		if val == "" {
+			return nil, fmt.Errorf("credential_env %s: key %q not found in the credential store", name, key)
+		}
+		env = append(env, name+"="+val)
+	}
+	return env, nil
 }
 
 func (a *MCPAdapter) discoverTools(ctx context.Context, name string, conn *backendConn) error {
@@ -480,6 +545,11 @@ func (a *MCPAdapter) Execute(ctx context.Context, toolName string, params map[st
 		"registeredBackends", registeredNames,
 	)
 	backendName, realTool, conn := a.matchBackend(toolName)
+	// The schema is read under the lock: a reconnect rewrites the tool list.
+	var schema map[string]any
+	if conn != nil {
+		schema = conn.inputSchema(realTool)
+	}
 	a.mu.RUnlock()
 
 	if conn == nil {
@@ -500,6 +570,18 @@ func (a *MCPAdapter) Execute(ctx context.Context, toolName string, params map[st
 
 	if conn.session == nil {
 		return nil, fmt.Errorf("backend %q is not connected", backendName)
+	}
+
+	// Check the arguments against the advertised input schema before the
+	// call leaves ToolMesh, so a wrong name fails the way it does for a
+	// REST tool, with the declared names in the message.
+	if err := validateMCPParams(realTool, schema, params); err != nil {
+		a.logger.WarnContext(ctx, "tool call rejected: arguments do not match the backend's input schema",
+			"backend", backendName,
+			"tool", realTool,
+			"error", err,
+		)
+		return errorToolResult(err), nil
 	}
 
 	a.logger.InfoContext(ctx, "calling tool via MCP",

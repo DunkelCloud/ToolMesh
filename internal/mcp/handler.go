@@ -137,6 +137,14 @@ func (h *Handler) SetCodeTimeout(d time.Duration) {
 	}
 }
 
+// SetCodeMaxConcurrent bounds the execute_code runs in progress at once
+// (TOOLMESH_CODE_MAX_CONCURRENT). n <= 0 removes the bound.
+func (h *Handler) SetCodeMaxConcurrent(n int) {
+	if h.codeRunner != nil {
+		h.codeRunner.SetMaxConcurrent(n)
+	}
+}
+
 // isBuiltinTool reports whether a tool name is dispatched directly by the
 // handler instead of through the executor.
 func (h *Handler) isBuiltinTool(name string) bool {
@@ -151,6 +159,16 @@ func (h *Handler) isBuiltinTool(name string) bool {
 		return h.debugTools
 	}
 	return false
+}
+
+// offersBuiltinTool reports whether a tool name is a built-in tool that
+// BuildToolList offers: an isBuiltinTool, except request_grant without a kit
+// to ask for.
+func (h *Handler) offersBuiltinTool(name string) bool {
+	if name == toolRequestGrant {
+		return h.offersRequestGrant()
+	}
+	return h.isBuiltinTool(name)
 }
 
 // HandleToolCall processes a single tool call through the execution pipeline.
@@ -626,7 +644,7 @@ func (h *Handler) BuildToolList(ctx context.Context) ([]ToolDefinition, error) {
 				schemaKeyProperties: map[string]any{
 					argNameCode: map[string]any{
 						contentKeyType:       jsonTypeString,
-						schemaKeyDescription: "JavaScript body that calls toolmesh.<backend>_<function>(...). Tools are flat snake_case — `toolmesh.github_list_user_repos`, NOT `toolmesh.github.list_user_repos` (the latter throws TypeError because `toolmesh.<backend>` is undefined). Top-level await is supported. Example: `const r = await toolmesh.github_list_user_repos({username: \"octocat\"}); return r[0].name;`",
+						schemaKeyDescription: "JavaScript body that calls toolmesh.<backend>_<function>(...). Tools are flat snake_case — `toolmesh.github_list_user_repos`, NOT `toolmesh.github.list_user_repos` (the latter throws TypeError because `toolmesh.<backend>` is undefined). Top-level await is supported. Example: `const r = await toolmesh.github_list_user_repos({username: \"octocat\"}); return r[0].name;`. The sandbox provides atob, btoa, TextEncoder and TextDecoder (UTF-8) for base64 payloads; it has no fetch and no timers.",
 					},
 					argNameIncludeResults: map[string]any{
 						contentKeyType:       jsonTypeBoolean,

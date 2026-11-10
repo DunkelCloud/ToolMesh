@@ -66,8 +66,9 @@ const (
 	metadataKeyProviderCode = "provider_code"
 
 	// Transport identifiers used in backends.yaml entries.
-	transportTypeREST = "rest"
-	transportTypeHTTP = "http"
+	transportTypeREST  = "rest"
+	transportTypeHTTP  = "http"
+	transportTypeSTDIO = "stdio"
 
 	// File-broker response keys.
 	fileKeyID          = "file_id"
@@ -90,6 +91,7 @@ const (
 
 	// URL scheme & host literals used by SSRF/redirect validation.
 	urlSchemeHTTP          = "http"
+	urlSchemeHTTPS         = "https"
 	hostnameLocalhost      = "localhost"
 	hostnameGoogleMetadata = "metadata.google.internal"
 )

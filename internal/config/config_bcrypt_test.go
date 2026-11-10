@@ -78,6 +78,7 @@ func TestLoad_BcryptMaxConcurrentRejectsInvalidValues(t *testing.T) {
 
 func TestIssuerIsPlaceholder(t *testing.T) {
 	for issuer, want := range map[string]bool{
+		"https://toolmesh.invalid/":      true,
 		"https://toolmesh.io/":           true,
 		"https://toolmesh.io":            true,
 		"https://TOOLMESH.io/":           true,

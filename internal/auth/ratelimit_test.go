@@ -16,7 +16,9 @@ package auth
 
 import (
 	"context"
+	"fmt"
 	"testing"
+	"time"
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
@@ -58,5 +60,68 @@ func TestDCRRateLimiter(t *testing.T) {
 	}
 	if !allowed {
 		t.Error("different IP should be allowed")
+	}
+}
+
+func TestLocalDCRRateLimiter(t *testing.T) {
+	rl := NewLocalDCRRateLimiter()
+	now := time.Unix(1_700_000_000, 0)
+	rl.now = func() time.Time { return now }
+	ctx := context.Background()
+
+	for i := 0; i < dcrRateLimit; i++ {
+		if ok, err := rl.Allow(ctx, "203.0.113.9"); err != nil || !ok {
+			t.Fatalf("registration %d refused (%v)", i+1, err)
+		}
+	}
+	if ok, _ := rl.Allow(ctx, "203.0.113.9"); ok {
+		t.Error("registration over the limit allowed")
+	}
+	if ok, _ := rl.Allow(ctx, "198.51.100.1"); !ok {
+		t.Error("another address must have its own limit")
+	}
+
+	// One IPv6 /64 counts as one address.
+	for i := 0; i < dcrRateLimit; i++ {
+		_, _ = rl.Allow(ctx, fmt.Sprintf("2001:db8:1:2::%x", i+1))
+	}
+	if ok, _ := rl.Allow(ctx, "2001:db8:1:2::ffff"); ok {
+		t.Error("a fresh address in the same /64 escaped the limit")
+	}
+
+	now = now.Add(dcrRateWindow)
+	if ok, _ := rl.Allow(ctx, "203.0.113.9"); !ok {
+		t.Error("the limit must reset after the window")
+	}
+}
+
+func TestLocalDCRRateLimiter_TableIsBounded(t *testing.T) {
+	rl := NewLocalDCRRateLimiter()
+	now := time.Unix(1_700_000_000, 0)
+	rl.now = func() time.Time { return now }
+	for i := 0; i < maxLocalDCRWindows+10; i++ {
+		_, _ = rl.Allow(context.Background(), fmt.Sprintf("10.%d.%d.%d", i>>16&0xff, i>>8&0xff, i&0xff))
+	}
+	if n := len(rl.local); n > maxLocalDCRWindows {
+		t.Errorf("table holds %d windows, cap is %d", n, maxLocalDCRWindows)
+	}
+}
+
+// TestDCRRateLimiter_RedisCountsIPv6Per64 pins that the Redis-backed limit
+// counts like the local one: a fresh address in the same /64 is no new
+// client.
+func TestDCRRateLimiter_RedisCountsIPv6Per64(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { _ = rdb.Close() })
+	rl := NewDCRRateLimiter(rdb)
+	ctx := context.Background()
+	for i := 0; i < dcrRateLimit; i++ {
+		if ok, err := rl.Allow(ctx, fmt.Sprintf("2001:db8:5:6::%x", i+1)); err != nil || !ok {
+			t.Fatalf("registration %d refused (%v)", i+1, err)
+		}
+	}
+	if ok, _ := rl.Allow(ctx, "2001:db8:5:6::ffff"); ok {
+		t.Error("a fresh address in the same /64 escaped the Redis-backed limit")
 	}
 }

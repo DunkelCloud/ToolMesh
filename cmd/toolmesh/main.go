@@ -17,6 +17,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -151,13 +152,25 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Initialize credential store via registry
-	credStore, err := credentials.New(cfg.CredentialStore, nil)
+	// Initialize credential store via registry. A store that fetches its
+	// values (command) runs its first fetch here; when that fails, ToolMesh
+	// does not start and the restart policy tries again.
+	credStore, err := credentials.New(cfg.CredentialStore, cfg.CredentialStoreConfig())
 	if err != nil {
 		logger.Error("failed to create credential store", "type", cfg.CredentialStore, "error", err)
 		os.Exit(1) //nolint:gocritic // intentional in main
 	}
 	logger.Info("credential store initialized", "type", cfg.CredentialStore)
+	// A store that keeps its values outside the environment also supplies
+	// ToolMesh's own secrets, once at startup.
+	if src, ok := credStore.(credentials.KeyLookup); ok {
+		if applied := cfg.ApplySecrets(src.LookupKey); len(applied) > 0 {
+			logger.Info("settings taken from the credential store", "names", applied)
+		}
+	}
+	if r, ok := credStore.(credentials.Refresher); ok {
+		go r.Run(ctx)
+	}
 
 	// Load TypeScript tool definitions (canonical source)
 	toolDefs, err := tsdef.LoadDir(cfg.ToolsDir)
@@ -202,6 +215,11 @@ func main() {
 	if cfg.MetricsEnabled {
 		metricsReg = metrics.New(metrics.Options{LabelTool: cfg.MetricsLabelTool})
 	}
+	if runs, ok := credStore.(metrics.CredentialStoreRuns); ok {
+		if err := metricsReg.WatchCredentialStore(runs); err != nil {
+			logger.Error("failed to export credential store metrics", "error", err)
+		}
+	}
 
 	// Build backends from backends.yaml (MCP + REST via DADL)
 	bldCfg := &buildBackendsConfig{
@@ -213,6 +231,7 @@ func main() {
 		baseHandler: baseHandler,
 		debugFile:   debugFile,
 		debugSet:    debugSet,
+		owners:      dadl.NewCredentialOwners(),
 	}
 	res, err := buildBackends(ctx, bldCfg)
 	if err != nil {
@@ -239,7 +258,7 @@ func main() {
 	// Load unit-backends. Each unit appears in the composite under its own
 	// name and is indistinguishable from any other backend for authz,
 	// audit and gate purposes. Failed units are logged and skipped.
-	unitAdapters := loadUnits(ctx, cfg.UnitsDir, cfg.DADLDir, credStore, blobStore, compositeBackend, logger)
+	unitAdapters := loadUnits(ctx, cfg.UnitsDir, cfg.DADLDir, credStore, bldCfg.owners, blobStore, compositeBackend, logger)
 	defer func() {
 		for _, a := range unitAdapters {
 			a.Close()
@@ -342,7 +361,7 @@ func main() {
 	if cfg.RedisURL != "" && cfg.RedisURL != "none" {
 		redisOpts, err := redis.ParseURL(cfg.RedisURL)
 		if err != nil {
-			logger.Warn("failed to parse Redis URL, using file-only token store", "error", err)
+			logger.Warn("failed to parse Redis URL, using file-only token store", "error", redisURLError(err))
 		} else {
 			rdb := redis.NewClient(redisOpts)
 			defer func() { _ = rdb.Close() }()
@@ -360,7 +379,8 @@ func main() {
 		}
 	}
 	if rateLimiter == nil {
-		logger.Warn("dynamic client registration (/register) is not rate-limited: the limit needs Redis")
+		rateLimiter = auth.NewLocalDCRRateLimiter()
+		logger.Info("dynamic client registration (/register) is rate-limited per process: no Redis to share the limit across replicas")
 	}
 
 	// One bound for every bcrypt comparison in the process: password logins
@@ -411,9 +431,23 @@ func main() {
 		logger.Info("loaded caller-classes config", "path", cfg.CallerClassesConfigPath)
 	}
 
+	// X-Forwarded-For is honored only from these networks (client address
+	// for the login throttle, registration limit and logs).
+	auth.SetTrustedProxies(cfg.TrustedProxies)
+	if cfg.TrustedProxies == nil {
+		logger.Info("X-Forwarded-For honored from loopback only (default); a reverse proxy elsewhere needs TOOLMESH_TRUSTED_PROXIES")
+	} else {
+		proxies := make([]string, 0, len(cfg.TrustedProxies))
+		for _, p := range cfg.TrustedProxies {
+			proxies = append(proxies, p.String())
+		}
+		logger.Info("X-Forwarded-For honored from configured proxies", "trusted_proxies", proxies)
+	}
+
 	// Initialize MCP handler and server
 	mcpHandler := mcp.NewHandler(exec, compositeBackend, coercer, rawTS, metricsReg, logger, cfg.DebugTools)
 	mcpHandler.SetCodeTimeout(time.Duration(cfg.CodeTimeout) * time.Second)
+	mcpHandler.SetCodeMaxConcurrent(cfg.CodeMaxConcurrent)
 	mcpHandler.SetBlobStore(blobStore, blob.DefaultUploadLimits())
 	mcpServer := mcp.NewServer(mcpHandler, cfg, logger, tokenStore, userStore, apiKeyStore, rateLimiter, callerClasses, metricsReg)
 	mcpServer.SetBlobStore(blobStore, blob.DefaultUploadLimits())
@@ -548,7 +582,7 @@ func main() {
 	// when TOOLMESH_DEV=true. authConfigured says whether any credential is
 	// configured; without one the MCP server rejects every request.
 	authConfigured := cfg.AuthPassword != "" || cfg.APIKey != "" || userStore != nil || apiKeyStore != nil
-	logSecurityPosture(cfg, authConfigured, authzEngine.openToEveryone(), logger)
+	logSecurityPosture(cfg, authConfigured, authzEngine.openToEveryone(), res.refused, logger)
 	if authConfigured && cfg.IssuerIsPlaceholder() {
 		logger.Warn("TOOLMESH_ISSUER is still the placeholder from .env.example: the OAuth metadata, the 401 challenge of /mcp and file-broker URLs name that host instead of this instance, so clients that are not given a credential up front cannot sign in. Set it to the public URL clients use",
 			"issuer", cfg.Issuer)
@@ -600,6 +634,10 @@ type buildBackendsConfig struct {
 	baseHandler slog.Handler
 	debugFile   *os.File
 	debugSet    map[string]bool
+	// owners divides the credential names among all configured entries;
+	// buildBackends updates it from the configuration on every (re)load,
+	// and every REST backend, units included, is bound with it.
+	owners *dadl.CredentialOwners
 }
 
 // backendsResult holds the output of buildBackends — the named backend map,
@@ -610,6 +648,9 @@ type backendsResult struct {
 	passthroughs  []backend.ToolBackend
 	mcpAdapter    *backend.MCPAdapter
 	healthTargets []health.Target
+	// refused names the REST backends not loaded because of the
+	// credential and host binding.
+	refused []string
 }
 
 // buildBackends creates all MCP and REST backends from backends.yaml and DADL
@@ -631,15 +672,29 @@ func buildBackends(ctx context.Context, bc *buildBackendsConfig) (*backendsResul
 		bc.logger.Error("failed to connect MCP backends", "error", err)
 	}
 
+	// Divide the credential names among the entries as configured now, so
+	// an entry added by this reload takes its names away from an entry with
+	// a shorter namespace, also in backends loaded before.
+	//
+	// This runs before the new adapters exist and before Swap, so until the
+	// swap the running adapters decide with the new division. That is safe
+	// both ways: an added entry only takes names away (fail closed), and a
+	// removed entry gives names back only to the entry the new
+	// configuration gives them to anyway, while the removed entry's own
+	// adapter, still running, owns nothing any more. If the rebuild fails,
+	// the running adapters keep the division of the file as written now.
+	bc.owners.Set(credentialOwnerNames(bc.cfg.BackendsConfigPath, bc.cfg.UnitsDir))
+
 	// Build named REST backends from DADL files
 	named := make(map[string]backend.ToolBackend)
-	healthTargets := loadRESTBackendsInto(named, bc.cfg.BackendsConfigPath, bc.cfg.DADLDir, bc.blobStore, bc.credStore, bc.tc, bc.logger, bc.baseHandler, bc.debugFile, bc.debugSet)
+	healthTargets, refused := loadRESTBackendsInto(named, bc.cfg.BackendsConfigPath, bc.cfg.DADLDir, bc.blobStore, bc.credStore, bc.owners, bc.tc, bc.logger, bc.baseHandler, bc.debugFile, bc.debugSet)
 
 	return &backendsResult{
 		named:         named,
 		passthroughs:  []backend.ToolBackend{mcpAdapter},
 		mcpAdapter:    mcpAdapter,
 		healthTargets: healthTargets,
+		refused:       refused,
 	}, nil
 }
 
@@ -703,19 +758,25 @@ func backendLogger(name string, globalLogger *slog.Logger, stdoutHandler slog.Ha
 // parses their DADL files, and populates the named map. It returns the
 // backends whose DADL declares a health check (spec §4.6) and whose
 // monitoring the operator has not turned off.
-func loadRESTBackendsInto(named map[string]backend.ToolBackend, backendsConfigPath, dadlDir string, blobStore *blob.Store, creds credentials.CredentialStore, tc *telemetry.Collector, logger *slog.Logger, stdoutHandler slog.Handler, debugFile *os.File, debugSet map[string]bool) []health.Target {
+func loadRESTBackendsInto(named map[string]backend.ToolBackend, backendsConfigPath, dadlDir string, blobStore *blob.Store, creds credentials.CredentialStore, owners *dadl.CredentialOwners, tc *telemetry.Collector, logger *slog.Logger, stdoutHandler slog.Handler, debugFile *os.File, debugSet map[string]bool) (healthTargets []health.Target, refused []string) {
 	data, err := os.ReadFile(backendsConfigPath) //nolint:gosec // path from trusted config
 	if err != nil {
-		return nil // no config = no REST backends
+		return nil, nil // no config = no REST backends
 	}
 
 	var cfg backend.BackendConfig
 	if err := backendsYAMLUnmarshal(data, &cfg); err != nil {
 		logger.Error("failed to parse backends config for REST entries", "error", err)
-		return nil
+		return nil, nil
+	}
+	// Callers without units (tests) pass nil: the entries of this file then
+	// divide the credential names among themselves.
+	if owners == nil {
+		owners = dadl.NewCredentialOwners(backendEntryNames(&cfg)...)
 	}
 
-	var healthTargets []health.Target
+	// refused names the backends not loaded because their DADL breaks the
+	// credential or host binding, or their entry has no name.
 
 	// Fetch remote spec manifest once (best-effort, non-blocking with 5s timeout)
 	var specManifest *dadl.SpecManifest
@@ -737,6 +798,14 @@ func loadRESTBackendsInto(named map[string]backend.ToolBackend, backendsConfigPa
 		}
 		if entry.DADL == "" {
 			logger.Error("REST backend missing dadl path", "name", entry.Name)
+			continue
+		}
+		// The entry name sets the credential namespace, so it must come from
+		// the operator, not from the DADL.
+		if entry.Name == "" {
+			logger.Error("REST backend refused: the entry has no name, which sets the backend's credential namespace; add name: to the backends.yaml entry",
+				"dadl", entry.DADL)
+			refused = append(refused, "(unnamed: "+entry.DADL+")")
 			continue
 		}
 
@@ -767,6 +836,7 @@ func loadRESTBackendsInto(named map[string]backend.ToolBackend, backendsConfigPa
 		}
 
 		// Override base_url from backends.yaml if provided
+		backend.WarnPlainHTTPBase(logger, entry, spec)
 		if entry.URL != "" {
 			spec.Backend.BaseURL = entry.URL
 		}
@@ -830,7 +900,25 @@ func loadRESTBackendsInto(named map[string]backend.ToolBackend, backendsConfigPa
 			IncludeTools:        entry.IncludeTools,
 			Hint:                entry.Hint,
 			AuthExpiresAt:       healthSettings.AuthExpiresAt,
+			Scope: &backend.BackendScope{
+				EntryName:    entry.Name,
+				Credentials:  entry.Credentials,
+				Env:          entry.Env,
+				AllowedHosts: entry.AllowedHosts,
+				Owners:       owners,
+			},
 		})
+		var scopeErr *dadl.ScopeError
+		if errors.As(err, &scopeErr) {
+			logger.Error("backend refused: its DADL reaches outside the credentials or hosts allowed for it; the other backends keep running",
+				"name", entry.Name,
+				"dadl", entry.DADL,
+				"error", err,
+				"add_to_backends_yaml_entry", scopeErr.FixLines(),
+			)
+			refused = append(refused, entry.Name)
+			continue
+		}
 		if err != nil {
 			logger.Error("failed to create REST adapter", "name", entry.Name, "error", err)
 			continue
@@ -889,7 +977,38 @@ func loadRESTBackendsInto(named map[string]backend.ToolBackend, backendsConfigPa
 			"health_poll_interval", pollInterval.String(),
 		)
 	}
-	return healthTargets
+	return healthTargets, refused
+}
+
+// backendEntryNames returns the names of all entries of cfg, whatever their
+// transport.
+func backendEntryNames(cfg *backend.BackendConfig) []string {
+	names := make([]string, 0, len(cfg.Backends))
+	for _, e := range cfg.Backends {
+		names = append(names, e.Name)
+	}
+	return names
+}
+
+// credentialOwnerNames returns every configured entry name that takes part
+// in the division of the credential names (dadl.CredentialOwners): the
+// names of all backends.yaml entries, whatever their transport, and of
+// every unit and its sub-backend entries.
+func credentialOwnerNames(backendsConfigPath, unitsDir string) []string {
+	var names []string
+	if data, err := os.ReadFile(backendsConfigPath); err == nil { //nolint:gosec // path from trusted config
+		var cfg backend.BackendConfig
+		if backendsYAMLUnmarshal(data, &cfg) == nil {
+			names = backendEntryNames(&cfg)
+		}
+	}
+	if unitsDir != "" {
+		dirs, _ := unit.ScanDir(unitsDir)
+		for _, d := range dirs {
+			names = append(names, unit.EntryNames(d)...)
+		}
+	}
+	return names
 }
 
 // backendsYAMLUnmarshal unmarshals backends YAML config. It shares the strict
@@ -904,7 +1023,7 @@ func backendsYAMLUnmarshal(data []byte, cfg *backend.BackendConfig) error {
 // each one to the composite backend under its declared name. Returns the
 // list of MCPAdapter instances owning the per-unit sub-backend sessions so
 // the caller can close them on shutdown.
-func loadUnits(ctx context.Context, unitsDir, dadlDir string, creds credentials.CredentialStore, blobStore *blob.Store, comp *backend.CompositeBackend, logger *slog.Logger) []*backend.MCPAdapter {
+func loadUnits(ctx context.Context, unitsDir, dadlDir string, creds credentials.CredentialStore, owners *dadl.CredentialOwners, blobStore *blob.Store, comp *backend.CompositeBackend, logger *slog.Logger) []*backend.MCPAdapter {
 	dirs, err := unit.ScanDir(unitsDir)
 	if err != nil {
 		logger.Error("failed to scan units dir", "dir", unitsDir, "error", err)
@@ -927,7 +1046,7 @@ func loadUnits(ctx context.Context, unitsDir, dadlDir string, creds credentials.
 
 	adapters := make([]*backend.MCPAdapter, 0, len(dirs))
 	for _, d := range dirs {
-		res, loadErr := unit.LoadUnit(ctx, d, dadlDir, creds, blobStore, logger)
+		res, loadErr := unit.LoadUnit(ctx, d, dadlDir, creds, owners, blobStore, logger)
 		if loadErr != nil {
 			logger.Error("failed to load unit", "dir", d, "error", loadErr)
 			continue

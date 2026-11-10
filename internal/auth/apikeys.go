@@ -308,6 +308,17 @@ func (s *APIKeyStore) lookup(at indexKey) *APIKeyEntry {
 	return &s.keys[i]
 }
 
+// NeedsComparison reports whether Verify would compare an unknown value with
+// bcrypt: whether any key_hash-only entry has not been seen since startup.
+func (s *APIKeyStore) NeedsComparison() bool {
+	if s == nil {
+		return false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.unseen) > 0
+}
+
 func (s *APIKeyStore) unseenEntries() []int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

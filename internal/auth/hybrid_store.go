@@ -98,6 +98,12 @@ func (h *HybridTokenStore) GetToken(ctx context.Context, accessToken string) (*T
 	return h.file.GetToken(ctx, accessToken)
 }
 
+// RefreshTokenOf implements PairLookup through the file store, which holds a
+// copy of every token pair.
+func (h *HybridTokenStore) RefreshTokenOf(ctx context.Context, accessToken string) (string, error) {
+	return h.file.RefreshTokenOf(ctx, accessToken)
+}
+
 // DeleteToken removes a token from both stores.
 func (h *HybridTokenStore) DeleteToken(ctx context.Context, accessToken string) error {
 	if err := h.file.DeleteToken(ctx, accessToken); err != nil {

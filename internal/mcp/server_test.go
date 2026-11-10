@@ -410,6 +410,7 @@ func TestServer_OAuthFlow(t *testing.T) {
 		testFormPassword:   {"test-password"},
 		oauthClientID:      {clientID},
 		oauthRedirectURI:   {"https://example.com/callback"},
+		oauthConfirmHost:   {confirmHostOf("https://example.com/callback")},
 		oauthState:         {"test-state"},
 		oauthCodeChallenge: {codeChallenge},
 		oauthScope:         {clientClaudeAI},
@@ -515,6 +516,7 @@ func TestServer_Authorize_WrongPassword(t *testing.T) {
 		testFormPassword:   {"wrong"},
 		oauthClientID:      {clientID},
 		oauthRedirectURI:   {"https://example.com/cb"},
+		oauthConfirmHost:   {confirmHostOf("https://example.com/cb")},
 		oauthState:         {"s1"},
 		oauthCodeChallenge: {"dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"},
 	}

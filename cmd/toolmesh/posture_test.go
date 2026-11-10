@@ -41,6 +41,7 @@ func hardenedConfig() *config.Config {
 		LoginMaxFailuresPerUserIP: 5,
 		LoginMaxFailuresPerUser:   20,
 		LoginMaxFailuresPerIP:     50,
+		APIKeyMaxFailuresPerIP:    50,
 		LoginFailureWindow:        900,
 		FileBrokerEnabled:         true,
 		FileBrokerMaxTotalBytes:   10 << 30,
@@ -133,7 +134,7 @@ func TestLogSecurityPosture(t *testing.T) {
 
 			cfg := hardenedConfig()
 			tt.mutate(cfg)
-			logSecurityPosture(cfg, tt.authConfigured, tt.authzOpen, logger)
+			logSecurityPosture(cfg, tt.authConfigured, tt.authzOpen, nil, logger)
 
 			out := buf.String()
 			if tt.wantLevel != "" && !strings.Contains(out, "\"level\":\""+tt.wantLevel+"\"") {

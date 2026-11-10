@@ -75,6 +75,25 @@ type ToolMetadataLookup interface {
 	LookupTool(toolName string) (ToolDescriptor, bool)
 }
 
+// ParamValidator is implemented by backends that can check a call's
+// arguments against the tool's declaration without executing it. The
+// executor runs it before the pre-execution gate and continues with the
+// arguments it returns: checked, with declared defaults filled in and
+// numeric strings as numbers. Gate policies thus see what the backend uses:
+// a policy that tests a declared boolean is never handed the string "false",
+// and sees a default the caller left out. A backend that does not own the
+// tool returns params unchanged and leaves the verdict to Execute.
+type ParamValidator interface {
+	ValidateToolParams(toolName string, params map[string]any) (map[string]any, error)
+}
+
+// ParamErrorResult renders an argument check failure from ParamValidator as
+// the error ToolResult the backend itself would return for it, with the
+// semantic error fields in the metadata.
+func ParamErrorResult(err error) *ToolResult {
+	return errorToolResult(err)
+}
+
 // Promotion is the structured form of a single tool surfaced as a direct
 // top-level MCP tool. Descriptor.Name is the bare tool name as it should
 // appear on the MCP wire by default; Canonical is the "<backend>_<tool>"

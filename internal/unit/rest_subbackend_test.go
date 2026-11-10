@@ -26,6 +26,7 @@ import (
 	"testing"
 
 	"github.com/DunkelCloud/ToolMesh/internal/credentials"
+	"github.com/DunkelCloud/ToolMesh/internal/dadl"
 	"github.com/DunkelCloud/ToolMesh/internal/unit"
 )
 
@@ -61,7 +62,7 @@ func TestUnit_RESTSubBackend(t *testing.T) {
 	unitDir := t.TempDir()
 
 	// DADL: one GET tool, no auth, base_url overridden by unit.yaml below.
-	dadl := `spec: "https://dadl.ai/spec/dadl-spec-v0.1.md"
+	dadlSrc := `spec: "https://dadl.ai/spec/dadl-spec-v0.1.md"
 backend:
   name: itemsapi
   type: rest
@@ -78,7 +79,7 @@ backend:
           in: query
           description: "Max items to return"
 `
-	if err := os.WriteFile(filepath.Join(unitDir, "items.dadl"), []byte(dadl), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(unitDir, "items.dadl"), []byte(dadlSrc), 0o600); err != nil {
 		t.Fatalf("write dadl: %v", err)
 	}
 
@@ -117,7 +118,7 @@ async function fetch(args) {
 
 	// Pass nil blobStore — this DADL has no binary responses so the
 	// blob store is unused. The loader must tolerate that.
-	res, err := unit.LoadUnit(ctx, unitDir, "", creds, nil, logger)
+	res, err := unit.LoadUnit(ctx, unitDir, "", creds, dadl.NewCredentialOwners(unit.EntryNames(unitDir)...), nil, logger)
 	if err != nil {
 		t.Fatalf("LoadUnit: %v", err)
 	}
@@ -226,7 +227,7 @@ async function get() { return await api.thingapi.get_thing({}); }
 	creds := credentials.NewEmbeddedStore()
 	ctx := context.Background()
 
-	res, err := unit.LoadUnit(ctx, unitDir, dadlDir, creds, nil, logger)
+	res, err := unit.LoadUnit(ctx, unitDir, dadlDir, creds, dadl.NewCredentialOwners(unit.EntryNames(unitDir)...), nil, logger)
 	if err != nil {
 		t.Fatalf("LoadUnit with global dadlDir: %v", err)
 	}

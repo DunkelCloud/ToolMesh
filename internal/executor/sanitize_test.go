@@ -39,7 +39,7 @@ func (h *recordingHandler) WithGroup(_ string) slog.Handler      { return h }
 
 func TestSanitizeParams(t *testing.T) {
 	const redacted = "[REDACTED]"
-	got := sanitizeParams(map[string]any{
+	got := SanitizeParams(map[string]any{
 		"name":          testUserAlice,
 		paramPassword:   "hunter2",
 		"API_KEY":       "abcd",
@@ -63,7 +63,7 @@ func TestSanitizeParams(t *testing.T) {
 	}
 
 	// Empty params returns input unchanged.
-	if got := sanitizeParams(nil); got != nil {
+	if got := SanitizeParams(nil); got != nil {
 		t.Errorf("nil params = %v, want nil", got)
 	}
 }
@@ -123,23 +123,6 @@ func containsRecursive(v any, needle string) bool {
 		}
 	}
 	return false
-}
-
-func TestSplitToolPrefix(t *testing.T) {
-	cases := []struct {
-		in   string
-		want [2]string
-	}{
-		{"github_create_issue", [2]string{"github", "create_issue"}},
-		{"noprefix", [2]string{"", "noprefix"}},
-		{"_leading", [2]string{"", "_leading"}},
-	}
-	for _, c := range cases {
-		got := splitToolPrefix(c.in)
-		if got != c.want {
-			t.Errorf("splitToolPrefix(%q) = %v, want %v", c.in, got, c.want)
-		}
-	}
 }
 
 // Assert backend.ToolResult isn't accidentally imported as unused.

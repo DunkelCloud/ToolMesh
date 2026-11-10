@@ -14,7 +14,16 @@
 
 package backend
 
-import "testing"
+import (
+	"context"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"sync/atomic"
+	"testing"
+
+	"github.com/DunkelCloud/ToolMesh/internal/dadl"
+)
 
 func TestJoinURL(t *testing.T) {
 	tests := []struct {
@@ -90,6 +99,54 @@ func TestJoinURL(t *testing.T) {
 			path:    "/foo",
 			wantErr: true,
 		},
+		{
+			name:    "unparsable tool path is an error, not a relative path",
+			base:    testBaseURLGitLab,
+			path:    "http://evil.example%2F.example.invalid/v1/x",
+			wantErr: true,
+		},
+		{
+			name: "colon in the first segment is not a scheme",
+			base: testBaseURLGitLab,
+			path: "evil.example:443/issues",
+			want: "https://gitlab.example.com/api/v4/evil.example:443/issues",
+		},
+		{
+			name: "escaped scheme in the first segment stays relative",
+			base: testBaseURLGitLab,
+			path: "https:%2F%2Fevil.example/issues",
+			want: "https://gitlab.example.com/api/v4/https:%2F%2Fevil.example/issues",
+		},
+		{
+			name: "network-path reference stays under the base",
+			base: testBaseURLGitLab,
+			path: "//evil.example/x",
+			want: "https://gitlab.example.com/api/v4//evil.example/x",
+		},
+		{
+			name:    "dot segments leaving the base path are rejected",
+			base:    testBaseURLGitLab,
+			path:    "/projects/../../issues",
+			wantErr: true,
+		},
+		{
+			name:    "dot segment at the start is rejected",
+			base:    testBaseURLGitLab,
+			path:    "/../issues",
+			wantErr: true,
+		},
+		{
+			name: "dot segments that stay inside the base path are resolved",
+			base: testBaseURLGitLab,
+			path: "/projects/x/../issues",
+			want: "https://gitlab.example.com/api/v4/projects/issues",
+		},
+		{
+			name: "colon in a later segment of a relative path",
+			base: "https://places.googleapis.com/v1",
+			path: "/places:autocomplete",
+			want: "https://places.googleapis.com/v1/places:autocomplete",
+		},
 	}
 
 	for _, tt := range tests {
@@ -108,5 +165,63 @@ func TestJoinURL(t *testing.T) {
 				t.Errorf("joinURL(%q, %q) = %q, want %q", tt.base, tt.path, got, tt.want)
 			}
 		})
+	}
+}
+
+// TestRESTAdapter_PathParamDotSegments pins that "." and ".." path parameter
+// values are rejected before any request is sent: url.PathEscape keeps them,
+// and URL resolution would turn /projects/{id}/issues with id ".." into
+// /issues, or /{id}/issues into a path outside the base URL prefix.
+func TestRESTAdapter_PathParamDotSegments(t *testing.T) {
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		w.Header().Set(testHeaderContentType, testContentTypeJSON)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+
+	spec := &dadl.Spec{
+		Spec: testDADLSpecURL,
+		Backend: dadl.BackendDef{
+			Name:    testBackendNameAPI,
+			Type:    transportTypeREST,
+			BaseURL: srv.URL + "/api/v4",
+			Tools: map[string]dadl.ToolDef{
+				"under_prefix": {Method: testMethodGET, Path: "/projects/{id}/issues", Params: map[string]dadl.ParamDef{
+					"id": {Type: schemaTypeString, In: paramInPath, Required: true},
+				}},
+				"at_root": {Method: testMethodGET, Path: "/{id}/issues", Params: map[string]dadl.ParamDef{
+					"id": {Type: schemaTypeString, In: paramInPath, Required: true},
+				}},
+			},
+		},
+	}
+	a, err := NewRESTAdapter(spec, &testCredStore{}, slog.Default(), testRESTOpts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tool := range []string{"under_prefix", "at_root"} {
+		for _, v := range []string{".", ".."} {
+			result, err := a.Execute(context.Background(), tool, map[string]any{"id": v})
+			if err == nil && (result == nil || !result.IsError) {
+				t.Errorf("%s with id %q: expected rejection", tool, v)
+			}
+		}
+	}
+	if n := hits.Load(); n != 0 {
+		t.Errorf("backend received %d requests for dot-segment values, want 0", n)
+	}
+
+	// A first segment with a colon must stay on the backend host.
+	result, err := a.Execute(context.Background(), "at_root", map[string]any{"id": "evil.example:443"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IsError {
+		t.Fatalf("colon value should reach the backend as a path segment: %v", result.Content)
+	}
+	if n := hits.Load(); n != 1 {
+		t.Errorf("backend hits = %d, want 1", n)
 	}
 }

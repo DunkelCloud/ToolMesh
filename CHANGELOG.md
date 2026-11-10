@@ -13,6 +13,79 @@ for the full narrative and details.
 
 ### Security
 
+- **Upgrade note:** REST backends are bound to their `backends.yaml` entry.
+  A DADL reads only the credentials of its entry's namespace
+  `CREDENTIAL_<ENTRY>_*` (a name belongs to the configured entry with the
+  longest matching namespace, so `github` does not read the credentials of
+  `github-enterprise`), plus the entry's `env:` and new `credentials:` list.
+  It sends credentials, token requests and session logins only to its
+  `base_url` host and port, the other hosts of that host's registrable
+  domain on the default port, and the entry's new `allowed_hosts:` list
+  (`host`, `*.domain`, optionally `:port`); with an https `base_url`, over
+  https only. A backend whose DADL reaches further is refused at load, with
+  the exact lines to add in the log; the other backends keep running. REST
+  entries need a `name`. DADLs with credential names other than letters,
+  digits and `_`, or with a parameter default `credential:<name>`, are
+  refused at parse. After upgrading, check the log for `backend refused`.
+- Session cookies of a backend follow its host binding: a redirect to
+  another port or scheme of the base host no longer carries them. A
+  warning at load names entries whose DADL sends credentials over plain
+  http.
+- `env:` keys of a backend are read in upper case by both the credential
+  binding and the remapping; before, a key in another case widened what the
+  backend could read without remapping the read.
+- With `allow_private_url`, private addresses stay reachable only for the
+  destinations the configuration names (`base_url`, `token_url`, absolute
+  tool paths), not for redirect targets.
+- A redirect chain that left the origin keeps credentials stripped also on
+  a hop back; tool paths with a placeholder in the host are refused.
+- The login confirmation is never shown pre-ticked; revocation also ends the
+  pair of an expired access token; a password change ends the user's OAuth
+  sessions; redirect URIs with a fragment, without authority or with a
+  non-ASCII host are refused.
+- DADL arguments reach the gate as the API receives them: defaults filled
+  in, numeric strings as numbers, only plain decimal strings accepted.
+
+- Composite `api.*` child calls keep their authorization and pre-execution
+  gate after a reload of `backends.yaml`; a REST adapter without that guard
+  refuses child calls.
+- Backend redirects to another origin drop injected credentials, custom
+  headers and the `Referer`, refuse to re-send a request body and are never
+  followed from `https` to `http`.
+- OAuth2 token and session login requests follow no redirects and use the
+  backend's SSRF-safe transport; the session login URL must stay on the
+  `base_url` host.
+- Transport errors name only scheme and host, so a query-injected API key no
+  longer reaches the audit log or tool results.
+- Path parameter values `.` and `..` are refused and joined URLs must keep
+  the scheme, host and path prefix of `base_url`; a colon in the first path
+  segment is no longer read as a URL scheme.
+- The OAuth login page names the redirect host and the self-declared client
+  name and requires a confirmation; `TOOLMESH_OAUTH_REDIRECT_HOSTS`
+  optionally restricts redirect hosts.
+- Token refresh and access tokens are resolved against the current
+  `users.yaml` or single-password owner as loaded at startup; after a
+  restart, removed or disabled users, and sessions of a changed password, lose
+  access. `POST /revoke` (RFC 7009) revokes tokens. **Upgrade note:** tokens
+  issued before this release carry no credential fingerprint; they are
+  accepted and bound at their next refresh, so they survive a password
+  change made after the upgrade. Revoke suspicious tokens, or clear the
+  stored tokens while ToolMesh is stopped (see the configuration reference,
+  "Tokens from before the upgrade", for the file store and Redis).
+- `X-Forwarded-For` is honored only from the proxy addresses in
+  `TOOLMESH_TRUSTED_PROXIES` (default loopback only); a header from any other
+  address is ignored with a warning at most once an hour.
+- SSRF checks treat carrier-grade NAT, benchmarking, documentation,
+  multicast, reserved, NAT64 and 6to4 addresses as private.
+- DADL parameters are checked against their declared types before the
+  pre-execution gate.
+- Only the owner can delete a blob.
+- `/register` is rate-limited without Redis, and failed API keys on `/mcp`
+  are throttled per client address (`TOOLMESH_APIKEY_MAX_FAILURES_PER_IP`,
+  default 50); a slot is reserved before the key is checked.
+- `TOOLMESH_CODE_MAX_CONCURRENT` (default 16) bounds parallel `execute_code`
+  runs; one user may hold at most half of them.
+- The `TOOLMESH_ISSUER` placeholder is `https://toolmesh.invalid/`.
 - SSRF checks refuse IPv6 addresses with a zone (`[::ffff:127.0.0.1%25x]`),
   which slipped past the private-address check and reached loopback, private
   or metadata addresses, and fail closed on DNS answers that do not parse.
@@ -26,6 +99,26 @@ for the full narrative and details.
   another origin announced by a legacy SSE server.
 
 ### Added
+
+- Credential store `command` (`CREDENTIAL_STORE=command`). ToolMesh runs
+  `TOOLMESH_CREDENTIAL_COMMAND`, for example `sops -d --output-type dotenv`
+  on an encrypted file, and keeps the values it prints in memory only: never
+  in the process environment, which Docker writes into the container
+  configuration on disk, and never in the log. The output is dotenv, or JSON
+  with `TOOLMESH_CREDENTIAL_FORMAT=json`: `TOOLMESH_CREDENTIAL_JSON_PATH`
+  selects the object that holds the values (`data.data` for
+  `vault kv get -format=json` or `bao kv get -format=json`), and nested
+  objects below it are flattened. The command runs without a shell; a failed
+  first run stops the start. `TOOLMESH_CREDENTIAL_RELOAD_IN` refreshes the
+  values on an interval, and a `RELOAD_IN` key in the output sets the next
+  run itself, which suits short-lived tokens. A failed
+  refresh keeps the previous values and retries with backoff. With this store
+  `TOOLMESH_AUTH_PASSWORD`, `TOOLMESH_API_KEY`, `REDIS_URL` and `env:`
+  remappings come from the output too, and stdio backends receive only the
+  variables their new `credential_env` entry in `backends.yaml` names. Two
+  metrics follow the runs: `toolmesh_credential_store_runs_total{result}` and
+  `toolmesh_credential_store_last_success_timestamp_seconds`. The embedded
+  store behaves as before. See `docs/configuration.md`.
 
 - DADL health checks (spec §4.6) are implemented. A DADL can declare under
   `backend.health` the cheapest call that proves the API is reachable and the
@@ -67,7 +160,30 @@ for the full narrative and details.
   lists as a relaxed control. Blob files left by a previous run are removed at
   startup; they could no longer be served. See `docs/configuration.md`.
 
+- The `execute_code` sandbox provides `atob`, `btoa`, `TextEncoder` and
+  `TextDecoder` (UTF-8). A base64 payload, such as the content of a GitHub
+  file read, decodes with the usual idiom instead of a hand-written alphabet
+  table. Composites and unit backends get the same four globals.
+
+- A failed call's entry in the `execute_code` result listing carries the
+  arguments the script sent as `params`, with the values of secret-looking
+  names (`password`, `token`, `api_key`, …) redacted, so a script with
+  several calls shows which one failed with what. Successful entries are
+  unchanged.
+
 ### Changed
+
+- A call to an MCP backend is checked against the tool's `inputSchema`
+  before it leaves ToolMesh. An undeclared argument or a missing required
+  one is rejected with the same `invalid_input` error a REST tool raises:
+  it names the argument, the closest declared name where there is one
+  (`topK` for `top_k`) and the declared parameter set. The backend's own
+  error used to come back raw and usually without the accepted names.
+  **Behavior change:** an argument an MCP backend used to drop silently is
+  now an error. A schema that opens its property set on purpose
+  (`additionalProperties` true or a schema, `patternProperties`) keeps
+  accepting undeclared names, and a schema that declares no properties is
+  not checked.
 
 - OAuth clients registered at `/register` expire. A client that never obtains
   a token is forgotten after a day (`TOOLMESH_DCR_CLIENT_TTL`, default
@@ -93,6 +209,45 @@ for the full narrative and details.
   hours up to that maximum and one typed in whole minutes or hours; the
   request view (`GET /approve/<id>/request`) carries `ttl_max`, and
   `ttl_choices` runs from the shortest to the longest.
+- A REST call answered with a status that the DADL lists in neither
+  `errors.retry_on` nor `errors.terminal` is no longer retried, as the DADL
+  spec (§8) requires. Until now every such `5xx`, and a `3xx` that came
+  through, was retried anyway, so leaving a `5xx` out of `retry_on` had no
+  effect. A DADL that wants a `5xx` such as `500` retried lists it in
+  `retry_on`; a tool with its own `errors` block lists its own `retry_on`,
+  because that block replaces the backend defaults.
+
+### Fixed
+
+- The MCP registry entry (`server.json`) declares the `Authorization` header
+  of the remote endpoint, optional and secret, so that registry listings no
+  longer present ToolMesh as needing no authentication. ToolMesh rejects every
+  request without an API key or an OAuth access token.
+- A `REDIS_URL` that does not parse no longer puts the URL, and with it a
+  password, into the log; the warning names only what is wrong with it.
+- A new installation sends its first telemetry report one to five minutes
+  after it starts instead of after 24 hours, so installations that restart
+  more often than once a day, for example after updates or on laptops,
+  report at all. A start sends a report only when none has succeeded yet or
+  the last one, kept in `toolmesh.json`, is older than 24 hours; restarts
+  add no reports.
+- Tool calls to a backend whose name contains an underscore, such as
+  `web_search`, are attributed to that backend in the audit trail, in
+  telemetry and in the metrics `toolmesh_tool_calls_total` and
+  `toolmesh_tool_call_duration_seconds`. The backend was taken from the
+  tool name up to the first underscore, so `web_search_query` was recorded
+  as backend `web`, tool `search_query`, and telemetry counted the call for
+  a backend `web` or not at all. Dashboards and alerts that select such a
+  backend by the shortened `backend` label need its full name now. Tools no
+  backend claims are counted under backend `unknown` with their full name.
+- The preflight of `tell_me_my_rights` (`tools: [...]`) reports the built-in
+  tools ToolMesh lists, such as `execute_code`, `discover_tools` and
+  `upload_file`, as `allowed`. It used to call them `denied` because no
+  backend has them, so an agent that checked its rights first, as the tool
+  recommends, gave up on tools it could call. A name that is not a tool the
+  caller can see or get a kit for now has the reason `unknown tool: ...`
+  instead of the wording of a denial; a tool the caller may not see still
+  reads the same as a name no tool has.
 
 ## [0.5.0] - 2026-10-23
 

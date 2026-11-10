@@ -30,27 +30,59 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/net/publicsuffix"
+
 	"github.com/DunkelCloud/ToolMesh/internal/credentials"
+	"github.com/DunkelCloud/ToolMesh/internal/urlredact"
 )
 
 // resettableJar wraps an http.CookieJar so it can be cleared on re-login
 // without replacing the jar reference held by multiple HTTP clients.
+//
+// A cookie jar keys cookies by host and path only, and Go's client asks it
+// for every redirect hop after CheckRedirect ran. With a host scope set, the
+// jar therefore answers only for destinations the scope allows (scheme,
+// host and port), so a session cookie never follows a redirect to another
+// port or scheme of the same host, and takes no cookies from such a
+// destination either.
 type resettableJar struct {
-	mu  sync.Mutex
-	jar http.CookieJar
+	mu    sync.Mutex
+	jar   http.CookieJar
+	scope *HostScope
 }
 
-// SetCookies implements http.CookieJar.
+// allows reports whether the jar may answer for or store cookies of u.
+// The caller holds r.mu.
+func (r *resettableJar) allows(u *url.URL) bool {
+	return r.scope == nil || r.scope.check(u.Scheme, u.Hostname(), u.Port()).ok
+}
+
+// setScope binds the jar to the backend's host scope; nil unbinds it.
+func (r *resettableJar) setScope(s *HostScope) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.scope = s
+}
+
+// SetCookies implements http.CookieJar. Cookies from a destination outside
+// the host scope are dropped.
 func (r *resettableJar) SetCookies(u *url.URL, cookies []*http.Cookie) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if !r.allows(u) {
+		return
+	}
 	r.jar.SetCookies(u, cookies)
 }
 
-// Cookies implements http.CookieJar.
+// Cookies implements http.CookieJar. A destination outside the host scope
+// gets no cookies.
 func (r *resettableJar) Cookies(u *url.URL) []*http.Cookie {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if !r.allows(u) {
+		return nil
+	}
 	return r.jar.Cookies(u)
 }
 
@@ -58,7 +90,7 @@ func (r *resettableJar) Cookies(u *url.URL) []*http.Cookie {
 func (r *resettableJar) Reset() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.jar, _ = cookiejar.New(nil)
+	r.jar, _ = cookiejar.New(&cookiejar.Options{PublicSuffixList: publicsuffix.List})
 }
 
 // AuthConfig.Type values.
@@ -108,15 +140,30 @@ type RestAuth struct {
 	tokenExpiry     time.Time
 	sessionTokens   map[string]string // for session auth: token name → value
 	sessionTokenTTL time.Time         // expiry time for session tokens
+
+	// hostScope, when set, is the set of hosts credentials may be sent to
+	// (SetScope); nil leaves the hosts unbound.
+	hostScope *HostScope
 }
 
 // NewRestAuth creates a RestAuth handler for the given auth configuration.
+//
+// Token and login requests never follow redirects: they carry client secrets,
+// refresh tokens or login credentials in the body, and a 307/308 would re-send
+// that body to wherever the redirect points. They use Go's default transport
+// until the owner installs its own with SetTransport.
 func NewRestAuth(config AuthConfig, baseURL string, creds credentials.CredentialStore, logger *slog.Logger) *RestAuth {
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := &http.Client{
+		Timeout:       30 * time.Second,
+		CheckRedirect: refuseAuthRedirect,
+	}
 
 	var jar *resettableJar
 	if config.Type == authTypeSession {
-		inner, _ := cookiejar.New(nil)
+		// The public suffix list keeps a login response from setting a
+		// cookie for a whole public suffix (e.g. ".co.uk"), which the
+		// jar would then send to every host under it.
+		inner, _ := cookiejar.New(&cookiejar.Options{PublicSuffixList: publicsuffix.List})
 		jar = &resettableJar{jar: inner}
 		client.Jar = jar
 	}
@@ -132,6 +179,54 @@ func NewRestAuth(config AuthConfig, baseURL string, creds credentials.Credential
 	}
 }
 
+// refuseAuthRedirect is the CheckRedirect policy for token and login
+// requests: no redirect is followed. The error names only the target host.
+func refuseAuthRedirect(req *http.Request, _ []*http.Request) error {
+	return fmt.Errorf("redirect to %s refused: token and login requests do not follow redirects", req.URL.Host)
+}
+
+// SetTransport sets the transport for token and login requests. The REST
+// adapter passes the transport of its own backend client, so these requests
+// get the same SSRF dial checks and TLS settings as tool calls. Call it before
+// the first request; a nil transport keeps the current one.
+func (a *RestAuth) SetTransport(rt http.RoundTripper) {
+	if rt != nil {
+		a.httpClient.Transport = rt
+	}
+}
+
+// SetScope binds this RestAuth to the scopes of its backend: credentials are
+// read only within creds, and sent, as tool request auth, token request or
+// session login, only to hosts within hosts. The load-time CheckScope makes
+// both checks unreachable for a valid configuration; they stay as a second
+// line. A token URL that a jwt_bearer service-account credential supplies
+// itself (token_uri) is operator data and not checked against hosts. Call
+// SetScope before the first request; nil leaves that side unbound.
+func (a *RestAuth) SetScope(creds *CredentialScope, hosts *HostScope) {
+	if creds != nil {
+		a.creds = &scopedStore{inner: a.creds, scope: creds}
+	}
+	a.hostScope = hosts
+	if a.cookieJar != nil {
+		a.cookieJar.setScope(hosts)
+	}
+}
+
+// checkHost refuses to send credentials to a host outside the scope.
+func (a *RestAuth) checkHost(rawURL string) error {
+	if a.hostScope == nil {
+		return nil
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("credentials not sent: parse %q: %w", rawURL, err)
+	}
+	if d := a.hostScope.check(u.Scheme, u.Hostname(), u.Port()); !d.ok {
+		return fmt.Errorf("credentials are not sent to %s://%s: %s (allowed_hosts in backends.yaml)", u.Scheme, u.Host, d.reason)
+	}
+	return nil
+}
+
 // CookieJar returns the shared cookie jar, or nil if cookie forwarding
 // is not enabled. The RESTAdapter uses this to attach the same jar to
 // its HTTP clients so cookies from login are sent with tool requests.
@@ -144,6 +239,11 @@ func (a *RestAuth) CookieJar() http.CookieJar {
 
 // InjectAuth adds authentication credentials to an HTTP request.
 func (a *RestAuth) InjectAuth(ctx context.Context, req *http.Request) error {
+	if a.config.Type != "" {
+		if err := a.checkHost(req.URL.String()); err != nil {
+			return err
+		}
+	}
 	switch a.config.Type {
 	case authTypeBearer:
 		return a.injectBearer(ctx, req)
@@ -303,6 +403,13 @@ func (a *RestAuth) getOAuth2Token(ctx context.Context) (string, error) {
 	if data == nil {
 		return "", nil // required credential missing: caller skips the auth header
 	}
+	// A declared token_url must be one of the backend's hosts; a token_uri
+	// taken from a jwt_bearer service-account credential is operator data.
+	if a.config.TokenURL != "" {
+		if err := a.checkHost(tokenURL); err != nil {
+			return "", fmt.Errorf("oauth2 token request: %w", err)
+		}
+	}
 
 	req, err := http.NewRequestWithContext(ctx, "POST", tokenURL, strings.NewReader(data.Encode()))
 	if err != nil {
@@ -312,7 +419,7 @@ func (a *RestAuth) getOAuth2Token(ctx context.Context) (string, error) {
 
 	resp, err := a.httpClient.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("oauth2 token request: %w", err)
+		return "", fmt.Errorf("oauth2 token request: %w", urlredact.TransportError(err))
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -479,7 +586,13 @@ func (a *RestAuth) doSessionLogin(ctx context.Context) error {
 		return fmt.Errorf("session auth requires login config")
 	}
 
-	loginURL := a.baseURL + a.config.Login.Path
+	loginURL, err := sessionLoginURL(a.baseURL, a.config.Login.Path)
+	if err != nil {
+		return err
+	}
+	if err := a.checkHost(loginURL); err != nil {
+		return fmt.Errorf("session login: %w", err)
+	}
 
 	// Resolve credential references anywhere in the (possibly nested) login body.
 	// Body is map[string]any, so a JSON-RPC-style login can nest credentials inside
@@ -503,7 +616,7 @@ func (a *RestAuth) doSessionLogin(ctx context.Context) error {
 
 	resp, err := a.httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("session login request: %w", err)
+		return fmt.Errorf("session login request: %w", urlredact.TransportError(err))
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -540,6 +653,28 @@ func (a *RestAuth) doSessionLogin(ctx context.Context) error {
 	a.sessionTokenTTL = time.Now().Add(defaultSessionTTL)
 	a.logger.Info("session login successful", "tokens", len(a.sessionTokens), "ttl", defaultSessionTTL)
 	return nil
+}
+
+// sessionLoginURL appends the login path to the base URL, as the DADL spec
+// describes, and verifies that the result still points at the base URL's
+// scheme and host. Plain concatenation would let a path such as
+// "@attacker.example/x" or ".attacker.example/x" move the login request, and
+// the credentials in its body, to another host when base_url has no path.
+func sessionLoginURL(baseURL, loginPath string) (string, error) {
+	base, err := url.Parse(baseURL)
+	if err != nil {
+		return "", fmt.Errorf("session login: parse base_url: %w", err)
+	}
+	joined := baseURL + loginPath
+	u, err := url.Parse(joined)
+	if err != nil {
+		return "", fmt.Errorf("session login: parse login URL: %w", err)
+	}
+	if u.User.String() != base.User.String() || !strings.EqualFold(u.Scheme, base.Scheme) || !strings.EqualFold(u.Host, base.Host) ||
+		!strings.HasPrefix(u.Path, base.Path) {
+		return "", fmt.Errorf("session login: login.path %q does not stay on the base_url host %s; it must start with \"/\"", loginPath, base.Host)
+	}
+	return joined, nil
 }
 
 // resolveLoginCredentials walks a session-login body and replaces any string of

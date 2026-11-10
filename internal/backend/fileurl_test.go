@@ -75,7 +75,7 @@ func TestFileURL_SSRFPolicy(t *testing.T) {
 	}
 
 	t.Run("private file fetch blocked by default", func(t *testing.T) {
-		a := newAdapter(t, RESTAdapterOptions{AllowPrivateURL: true}) // AllowPrivateFileURL defaults false
+		a := newAdapter(t, RESTAdapterOptions{Unbound: true, AllowPrivateURL: true}) // AllowPrivateFileURL defaults false
 		if _, err := a.Execute(context.Background(), testToolExtractText, map[string]any{paramTypeFile: fileURL}); err == nil {
 			t.Fatal("expected loopback file_url fetch to be blocked, got nil error")
 		}
@@ -83,6 +83,7 @@ func TestFileURL_SSRFPolicy(t *testing.T) {
 
 	t.Run("allowlist rejects non-listed host", func(t *testing.T) {
 		a := newAdapter(t, RESTAdapterOptions{
+			Unbound:             true,
 			AllowPrivateURL:     true,
 			AllowPrivateFileURL: true,
 			FileURLAllowedHosts: []string{"allowed.example"},
@@ -95,6 +96,7 @@ func TestFileURL_SSRFPolicy(t *testing.T) {
 
 	t.Run("allowlist permits listed host", func(t *testing.T) {
 		a := newAdapter(t, RESTAdapterOptions{
+			Unbound:             true,
 			AllowPrivateURL:     true,
 			AllowPrivateFileURL: true,
 			FileURLAllowedHosts: []string{fileHost},

@@ -136,15 +136,39 @@ func TestStore_OpenExpired(t *testing.T) {
 
 func TestStore_ServeHTTPDelete(t *testing.T) {
 	s := newTestStore(t)
-	id, _, err := s.Put(strings.NewReader("bye"), "text/plain", time.Hour)
+	id, _, err := s.PutOwned(strings.NewReader("bye"), "text/plain", "", "alice", time.Hour)
 	if err != nil {
 		t.Fatalf("Put: %v", err)
 	}
 
-	srv := httptest.NewServer(s)
+	// The test server stands in for the authenticating route: it names the
+	// requester from a header.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if u := r.Header.Get("X-Test-User"); u != "" {
+			r = r.WithContext(WithRequester(r.Context(), u))
+		}
+		s.ServeHTTP(w, r)
+	}))
 	defer srv.Close()
 
+	for _, other := range []string{"", "bob"} {
+		req, _ := http.NewRequestWithContext(context.Background(), http.MethodDelete, srv.URL+"/blobs/"+id, http.NoBody)
+		req.Header.Set("X-Test-User", other)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("DELETE: %v", err)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusNotFound {
+			t.Errorf("DELETE by %q: status = %d, want 404", other, resp.StatusCode)
+		}
+		if _, err := s.Stat(id); err != nil {
+			t.Fatalf("blob deleted by %q, who does not own it", other)
+		}
+	}
+
 	req, _ := http.NewRequestWithContext(context.Background(), http.MethodDelete, srv.URL+"/blobs/"+id, http.NoBody)
+	req.Header.Set("X-Test-User", "alice")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("DELETE: %v", err)

@@ -86,6 +86,20 @@ for the full narrative and details.
 - `TOOLMESH_CODE_MAX_CONCURRENT` (default 16) bounds parallel `execute_code`
   runs; one user may hold at most half of them.
 - The `TOOLMESH_ISSUER` placeholder is `https://toolmesh.invalid/`.
+- Behind a trusted proxy, `X-Forwarded-For` entries with a port
+  (`203.0.113.7:51234`, `[2001:db8::7]:51234`) or in brackets are read as
+  the client address instead of being skipped; an entry that is no address
+  (`unknown`, empty) ends the walk at the last trusted proxy, so a client
+  cannot choose the address its limits count it under.
+- A number or boolean given for a DADL parameter declared `string` reaches
+  the pre-execution gate as the exact text the API receives, also in a JSON
+  body (`"42"`, not `42`); arrays, objects and other values without a text
+  form are refused for such parameters with `invalid_input`.
+- `file_url_allowed_hosts` applies to every redirect of a `file_url` fetch,
+  not only to the URL the caller passes. If an allowed source redirects to
+  a CDN or storage host, add that host to the list.
+- A refresh token is refused once its seven days are over; the Redis key
+  and the restart warm-up no longer extend its lifetime.
 
 ### Added
 

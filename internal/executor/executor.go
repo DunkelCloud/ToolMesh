@@ -328,7 +328,8 @@ func (e *Executor) ExecuteTool(ctx context.Context, req ExecuteToolRequest) (*ba
 			return backend.ParamErrorResult(err), nil
 		}
 		// The gate and the backend see the effective arguments: declared
-		// defaults filled in, numeric strings as numbers.
+		// defaults filled in, numeric strings as numbers, numbers and
+		// booleans of string parameters as the text the request carries.
 		req.Params = effective
 	}
 

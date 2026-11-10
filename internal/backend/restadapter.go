@@ -28,7 +28,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -1191,43 +1190,13 @@ func isAbsoluteHTTPURL(u *url.URL) bool {
 // formatScalarParam converts a primitive parameter value to its string form
 // for use in URL paths, query strings, request headers, and form fields.
 //
-// JSON unmarshalling decodes every numeric value into float64. Formatting that
-// float64 with fmt.Sprintf("%v", ...) routes through %g, which switches to
-// scientific notation once the value reaches ~1e6 — so an integer ID like
-// 1234567 becomes "1.234567e+06" and the request URL ends up at
-// /networking/firewalls/1.234567e%2B06, which backends correctly reject as
-// 404. strconv.FormatFloat with verb 'f' and precision -1 always produces the
-// shortest exact decimal representation without exponents.
+// It is dadl.FormatScalar, the function that also turns a number or boolean
+// given for a string parameter into text before the pre-execution gate, so
+// a policy sees exactly the text these request parts carry. Integers stay
+// in plain decimal (1234567, never "1.234567e+06", which would put
+// /networking/firewalls/1.234567e%2B06 into the URL).
 func formatScalarParam(v any) string {
-	switch val := v.(type) {
-	case string:
-		return val
-	case bool:
-		if val {
-			return boolTrue
-		}
-		return boolFalse
-	case float64:
-		return strconv.FormatFloat(val, 'f', -1, 64)
-	case float32:
-		return strconv.FormatFloat(float64(val), 'f', -1, 32)
-	case int:
-		return strconv.Itoa(val)
-	case int32:
-		return strconv.FormatInt(int64(val), 10)
-	case int64:
-		return strconv.FormatInt(val, 10)
-	case uint:
-		return strconv.FormatUint(uint64(val), 10)
-	case uint32:
-		return strconv.FormatUint(uint64(val), 10)
-	case uint64:
-		return strconv.FormatUint(val, 10)
-	case json.Number:
-		return string(val)
-	default:
-		return fmt.Sprintf("%v", v)
-	}
+	return dadl.FormatScalar(v)
 }
 
 // buildPath substitutes path parameters into the tool's URL template. Every

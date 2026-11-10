@@ -250,13 +250,24 @@ func (s *RedisTokenStore) DeleteToken(ctx context.Context, accessToken string) e
 	return s.rdb.Del(ctx, prefixToken+accessToken).Err()
 }
 
-// SaveRefreshToken stores a refresh token with the configured TTL.
+// SaveRefreshToken stores a refresh token. The key expires with the refresh
+// token (see TokenInfo.RefreshExpiry), so that saving a record again, as the
+// warm-up from the file store does after a restart, never extends its
+// lifetime; a refresh token that has already expired is removed instead. A
+// record without any expiry gets the default lifetime.
 func (s *RedisTokenStore) SaveRefreshToken(ctx context.Context, ti *TokenInfo) error {
+	ttl := ttlRefreshToken
+	if expiry := ti.RefreshExpiry(); !expiry.IsZero() {
+		ttl = time.Until(expiry)
+		if ttl <= 0 {
+			return s.rdb.Del(ctx, prefixRefresh+ti.RefreshToken).Err()
+		}
+	}
 	data, err := json.Marshal(ti) //nolint:gosec // G117: intentional — storing OAuth data in Redis
 	if err != nil {
 		return fmt.Errorf("marshal refresh token: %w", err)
 	}
-	return s.rdb.Set(ctx, prefixRefresh+ti.RefreshToken, data, ttlRefreshToken).Err()
+	return s.rdb.Set(ctx, prefixRefresh+ti.RefreshToken, data, ttl).Err()
 }
 
 // ConsumeRefreshToken atomically retrieves and deletes a refresh token.

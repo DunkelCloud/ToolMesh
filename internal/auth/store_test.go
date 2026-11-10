@@ -247,3 +247,47 @@ func TestRedisTokenStore_Persistence(t *testing.T) {
 		t.Errorf("UserID = %q, want %q", got.UserID, testUserAdmin)
 	}
 }
+
+// TestRedisTokenStore_RefreshKeyLivesAsLongAsTheToken pins that a refresh
+// token's key in Redis expires with the refresh token itself: saving a record
+// again, as the warm-up after a restart does, must not give an old refresh
+// token a fresh lifetime, and one that has already expired is not stored.
+func TestRedisTokenStore_RefreshKeyLivesAsLongAsTheToken(t *testing.T) {
+	now := time.Now()
+	cases := []struct {
+		name    string
+		ti      TokenInfo
+		wantTTL time.Duration // 0: the key must not exist
+	}{
+		{"2 hours left", TokenInfo{ExpiresAt: now.Add(-time.Hour), RefreshExpiresAt: now.Add(2 * time.Hour)}, 2 * time.Hour},
+		{"expired an hour ago", TokenInfo{ExpiresAt: now.Add(-7 * 24 * time.Hour), RefreshExpiresAt: now.Add(-time.Hour)}, 0},
+		{"legacy record, expiry from ExpiresAt", TokenInfo{ExpiresAt: now.Add(20 * time.Minute)}, 20 * time.Minute},
+		{"legacy record, expired", TokenInfo{ExpiresAt: now.Add(-time.Minute)}, 0},
+		{"no expiry at all", TokenInfo{}, ttlRefreshToken},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store, mr := newTestStore(t)
+			ctx := context.Background()
+			ti := tc.ti
+			ti.RefreshToken = "rt-ttl"
+			key := prefixRefresh + ti.RefreshToken
+			// A key left from before must not survive a save of an expired token.
+			mr.Set(key, "stale")
+			mr.SetTTL(key, ttlRefreshToken)
+
+			if err := store.SaveRefreshToken(ctx, &ti); err != nil {
+				t.Fatalf("SaveRefreshToken: %v", err)
+			}
+			if tc.wantTTL == 0 {
+				if mr.Exists(key) {
+					t.Errorf("expired refresh token stored with TTL %v", mr.TTL(key))
+				}
+				return
+			}
+			if ttl := mr.TTL(key); ttl > tc.wantTTL || ttl < tc.wantTTL-time.Minute {
+				t.Errorf("TTL = %v, want about %v", ttl, tc.wantTTL)
+			}
+		})
+	}
+}

@@ -11,6 +11,21 @@ for the full narrative and details.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-10
+
+**Behavior change:** this release refuses several things 0.5.0 accepted.
+REST backends whose DADL reads credentials or reaches hosts outside their
+`backends.yaml` entry are refused at load until the entry allows them (see
+the first Security entry), and DADLs with credential names other than
+letters, digits and `_` or with `credential:` parameter defaults are refused
+at parse. Among the other changes: the OAuth login page requires a
+confirmation, `X-Forwarded-For` counts only from `TOOLMESH_TRUSTED_PROXIES`,
+failed API keys are throttled per client address, DADL arguments of the
+wrong type and MCP arguments outside the tool's schema are refused with
+`invalid_input`, statuses outside a DADL's `retry_on` are no longer
+retried, and backends with an underscore in their name keep it in the
+`backend` label of audit, telemetry and metrics.
+
 ### Security
 
 - **Upgrade note:** REST backends are bound to their `backends.yaml` entry.

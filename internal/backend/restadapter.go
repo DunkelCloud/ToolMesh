@@ -28,7 +28,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -116,7 +115,8 @@ type RESTAdapterOptions struct {
 	// against internal services unless an operator opts in per backend.
 	AllowPrivateFileURL bool
 	// FileURLAllowedHosts, when non-empty, restricts caller file_url fetches to
-	// this exact set of hostnames (matched case-insensitively). This is the
+	// this exact set of hostnames (matched case-insensitively), for the URL the
+	// caller passes and for every redirect hop of the fetch. This is the
 	// recommended control for backends that must fetch from a known internal
 	// host: combine it with AllowPrivateFileURL so only those hosts are
 	// reachable, rather than the whole private range.
@@ -269,8 +269,18 @@ func NewRESTAdapter(spec *dadl.Spec, creds credentials.CredentialStore, logger *
 	// backend's AllowPrivateURL — and the client never carries the cookie jar
 	// (set below), credential injection, or relaxed TLS settings. The long
 	// timeout accommodates large files; per-call deadlines come from the request
-	// context.
-	fileRedirectCheck := newRedirectChecker(opts.AllowPrivateFileURL)
+	// context. The optional file_url host allowlist holds for the URL the
+	// caller passes (checkFileURLHostAllowed) and for every redirect hop.
+	var fileURLAllowedHosts map[string]bool
+	if len(opts.FileURLAllowedHosts) > 0 {
+		fileURLAllowedHosts = make(map[string]bool, len(opts.FileURLAllowedHosts))
+		for _, h := range opts.FileURLAllowedHosts {
+			if h = strings.TrimSpace(strings.ToLower(h)); h != "" {
+				fileURLAllowedHosts[h] = true
+			}
+		}
+	}
+	fileRedirectCheck := newFileRedirectChecker(opts.AllowPrivateFileURL, fileURLAllowedHosts)
 	fileFetchClient := &http.Client{
 		Timeout:       defaultStreamingHTTPTimeout,
 		Transport:     SSRFSafeTransport(defaultHTTPTimeout, opts.AllowPrivateFileURL, false),
@@ -303,16 +313,6 @@ func NewRESTAdapter(spec *dadl.Spec, creds credentials.CredentialStore, logger *
 			)
 		}
 		exposeTools = kept
-	}
-
-	var fileURLAllowedHosts map[string]bool
-	if len(opts.FileURLAllowedHosts) > 0 {
-		fileURLAllowedHosts = make(map[string]bool, len(opts.FileURLAllowedHosts))
-		for _, h := range opts.FileURLAllowedHosts {
-			if h = strings.TrimSpace(strings.ToLower(h)); h != "" {
-				fileURLAllowedHosts[h] = true
-			}
-		}
 	}
 
 	maxBodySizes, err := resolveMaxBodySizes(spec, logger)
@@ -1190,43 +1190,13 @@ func isAbsoluteHTTPURL(u *url.URL) bool {
 // formatScalarParam converts a primitive parameter value to its string form
 // for use in URL paths, query strings, request headers, and form fields.
 //
-// JSON unmarshalling decodes every numeric value into float64. Formatting that
-// float64 with fmt.Sprintf("%v", ...) routes through %g, which switches to
-// scientific notation once the value reaches ~1e6 — so an integer ID like
-// 1234567 becomes "1.234567e+06" and the request URL ends up at
-// /networking/firewalls/1.234567e%2B06, which backends correctly reject as
-// 404. strconv.FormatFloat with verb 'f' and precision -1 always produces the
-// shortest exact decimal representation without exponents.
+// It is dadl.FormatScalar, the function that also turns a number or boolean
+// given for a string parameter into text before the pre-execution gate, so
+// a policy sees exactly the text these request parts carry. Integers stay
+// in plain decimal (1234567, never "1.234567e+06", which would put
+// /networking/firewalls/1.234567e%2B06 into the URL).
 func formatScalarParam(v any) string {
-	switch val := v.(type) {
-	case string:
-		return val
-	case bool:
-		if val {
-			return boolTrue
-		}
-		return boolFalse
-	case float64:
-		return strconv.FormatFloat(val, 'f', -1, 64)
-	case float32:
-		return strconv.FormatFloat(float64(val), 'f', -1, 32)
-	case int:
-		return strconv.Itoa(val)
-	case int32:
-		return strconv.FormatInt(int64(val), 10)
-	case int64:
-		return strconv.FormatInt(val, 10)
-	case uint:
-		return strconv.FormatUint(uint64(val), 10)
-	case uint32:
-		return strconv.FormatUint(uint64(val), 10)
-	case uint64:
-		return strconv.FormatUint(val, 10)
-	case json.Number:
-		return string(val)
-	default:
-		return fmt.Sprintf("%v", v)
-	}
+	return dadl.FormatScalar(v)
 }
 
 // buildPath substitutes path parameters into the tool's URL template. Every

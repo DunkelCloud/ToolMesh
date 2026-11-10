@@ -136,9 +136,11 @@ func (e *ParamError) Unwrap() error {
 //     form is unambiguous: boolean takes only true or false, integer a
 //     whole JSON number or a string of decimal digits (large IDs), number a
 //     JSON number or a numeric string, array a JSON array and object a JSON
-//     object. string and the file types are passed as given. The check runs
-//     before the gate, so a policy that tests a boolean for false cannot be
-//     passed with the string "false".
+//     object. string takes a string, number or boolean (the request carries
+//     all three as text, see [NormalizeParams]), but no array or object. The
+//     file types are passed as given. The check runs before the gate, so a
+//     policy that tests a boolean for false cannot be passed with the string
+//     "false".
 //
 // A parameter counts as supplied when the key is present; an explicit nil
 // counts only for `in: body`, where JSON null is a distinct instruction
@@ -229,11 +231,13 @@ const maxExactInteger = 1 << 53
 // NormalizeParams returns the arguments a call takes effect with, for
 // params that passed ValidateParams: declared defaults are filled in for
 // omitted parameters (and for null values outside the body, as the request
-// builder does), and numeric strings of integer and number parameters
-// become numbers. A gate policy then sees the values the API receives: a
-// default it would otherwise never see, and 0 rather than "0". An integer
-// string beyond 2^53 stays a string, since a number could not hold it
-// exactly. Other values pass unchanged; params itself is not modified.
+// builder does), numeric strings of integer and number parameters become
+// numbers, and numbers and booleans of string parameters become the text
+// the request carries ([FormatScalar]: 42 becomes "42", true "true"). A gate
+// policy then sees the values the API receives: a default it would
+// otherwise never see, 0 rather than "0", and "42" rather than 42. An
+// integer string beyond 2^53 stays a string, since a number could not hold
+// it exactly. Other values pass unchanged; params itself is not modified.
 func NormalizeParams(declared map[string]ParamDef, params map[string]any) map[string]any {
 	out := make(map[string]any, len(params)+len(declared))
 	for name, val := range params {
@@ -245,11 +249,78 @@ func NormalizeParams(declared map[string]ParamDef, params map[string]any) map[st
 			out[name] = def.Default
 			continue
 		}
-		if present && val != nil {
-			out[name] = normalizeNumeric(strings.ToLower(def.Type), val)
+		if !present || val == nil {
+			continue
+		}
+		if want := strings.ToLower(def.Type); want == jsTypeString {
+			out[name] = normalizeString(val)
+		} else {
+			out[name] = normalizeNumeric(want, val)
 		}
 	}
 	return out
+}
+
+// normalizeString converts a number or boolean of a string parameter to the
+// text the request builder sends for it. Path, query, header and form
+// parameters are sent as that text anyway; a JSON body carries the string
+// too, as the declaration says.
+func normalizeString(val any) any {
+	if isScalarNonString(val) {
+		return FormatScalar(val)
+	}
+	return val
+}
+
+// isScalarNonString reports whether val is a boolean or a number, the
+// scalar values other than a string that a string parameter takes.
+func isScalarNonString(val any) bool {
+	switch val.(type) {
+	case bool, json.Number:
+		return true
+	}
+	return isNumeric(val)
+}
+
+// FormatScalar renders a scalar parameter value as the text a request
+// carries for it in a URL path, query string, header or form field, and as
+// the string a string parameter's number or boolean becomes before the
+// gate ([NormalizeParams]). Both use this one function so that a policy
+// sees exactly the text the API receives.
+//
+// JSON unmarshalling decodes every numeric value into float64. Formatting
+// that float64 with fmt.Sprintf("%v", ...) routes through %g, which switches
+// to scientific notation once the value reaches ~1e6, so an integer ID like
+// 1234567 would become "1.234567e+06". strconv.FormatFloat with verb 'f'
+// and precision -1 always produces the shortest exact decimal
+// representation without exponents.
+func FormatScalar(v any) string {
+	switch val := v.(type) {
+	case string:
+		return val
+	case bool:
+		return strconv.FormatBool(val)
+	case float64:
+		return strconv.FormatFloat(val, 'f', -1, 64)
+	case float32:
+		return strconv.FormatFloat(float64(val), 'f', -1, 32)
+	case int:
+		return strconv.Itoa(val)
+	case int32:
+		return strconv.FormatInt(int64(val), 10)
+	case int64:
+		return strconv.FormatInt(val, 10)
+	case uint:
+		return strconv.FormatUint(uint64(val), 10)
+	case uint32:
+		return strconv.FormatUint(uint64(val), 10)
+	case uint64:
+		return strconv.FormatUint(val, 10)
+	case json.Number:
+		return string(val)
+	default:
+		return fmt.Sprintf("%v", v)
+	}
 }
 
 // normalizeNumeric converts a numeric string (or json.Number) of an integer
@@ -291,6 +362,12 @@ func normalizeNumeric(declared string, val any) any {
 // DADL type. Types without an unambiguous JSON form always fit.
 func valueFitsType(declared string, val any) bool {
 	switch declared {
+	case jsTypeString:
+		// A number or boolean is taken and becomes text before the gate
+		// (NormalizeParams). An array, object or any other value has no
+		// text form the API would expect.
+		_, isString := val.(string)
+		return isString || isScalarNonString(val)
 	case jsTypeBoolean:
 		_, ok := val.(bool)
 		return ok

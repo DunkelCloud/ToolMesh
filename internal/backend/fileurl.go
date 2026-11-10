@@ -199,7 +199,8 @@ func (a *RESTAdapter) fetchHTTPFile(ctx context.Context, paramName, rawURL strin
 // checkFileURLHostAllowed enforces the optional per-backend file_url host
 // allowlist. When the allowlist is empty the call is permitted (only the
 // transport-level address-class policy applies); otherwise the URL's hostname
-// must appear in the allowlist (case-insensitive).
+// must appear in the allowlist (case-insensitive). Redirect hops of the fetch
+// are held to the same list by newFileRedirectChecker.
 func (a *RESTAdapter) checkFileURLHostAllowed(paramName, rawURL string) error {
 	if len(a.fileURLAllowedHosts) == 0 {
 		return nil
@@ -208,11 +209,37 @@ func (a *RESTAdapter) checkFileURLHostAllowed(paramName, rawURL string) error {
 	if err != nil {
 		return fmt.Errorf("file parameter %q: invalid URL %q: %w", paramName, rawURL, err)
 	}
-	host := strings.ToLower(u.Hostname())
-	if !a.fileURLAllowedHosts[host] {
+	if !fileURLHostAllowed(a.fileURLAllowedHosts, u.Hostname()) {
 		return fmt.Errorf("file parameter %q: host %q is not in the allowed file_url hosts for this backend", paramName, u.Hostname())
 	}
 	return nil
+}
+
+// fileURLHostAllowed reports whether hostname passes the file_url host
+// allowlist: always when the list is empty, otherwise when the hostname is in
+// it (case-insensitive; the port is not part of the match).
+func fileURLHostAllowed(allowed map[string]bool, hostname string) bool {
+	return len(allowed) == 0 || allowed[strings.ToLower(hostname)]
+}
+
+// newFileRedirectChecker returns the CheckRedirect function of the file_url
+// fetch client. Every redirect hop must pass the same host allowlist as the
+// URL the caller passed; otherwise an allowlisted host could send the fetch to
+// any other host, and with AllowPrivateFileURL to internal services. The hop
+// limit and address-class checks of newRedirectChecker apply as before, and
+// without an allowlist they are the only checks.
+func newFileRedirectChecker(allowPrivate bool, allowedHosts map[string]bool) func(*http.Request, []*http.Request) error {
+	base := newRedirectChecker(allowPrivate)
+	if len(allowedHosts) == 0 {
+		return base
+	}
+	return func(req *http.Request, via []*http.Request) error {
+		// Checked first, so a host outside the list is not even resolved.
+		if !fileURLHostAllowed(allowedHosts, req.URL.Hostname()) {
+			return fmt.Errorf("redirect to host %q refused: not in the allowed file_url hosts for this backend", req.URL.Hostname())
+		}
+		return base(req, via)
+	}
 }
 
 // openLocalFileURL opens a file:// URL. Like the legacy local "file" parameter

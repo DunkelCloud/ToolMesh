@@ -104,8 +104,9 @@ type BackendEntry struct {
 	// allow_private_url, which only governs the admin-configured base_url).
 	AllowPrivateFileURL *bool `yaml:"allow_private_file_url"`
 	// FileURLAllowedHosts, when non-empty, restricts caller-supplied file_url
-	// fetches to this exact set of hostnames (case-insensitive). Empty means no
-	// host restriction (only the address-class policy above applies).
+	// fetches, every redirect hop included, to this exact set of hostnames
+	// (case-insensitive). Empty means no host restriction (only the
+	// address-class policy above applies).
 	FileURLAllowedHosts []string `yaml:"file_url_allowed_hosts"`
 	// HealthCheck tunes how ToolMesh monitors the health check the backend's
 	// DADL declares (spec §4.6). nil = a check at startup and on demand, no

@@ -28,6 +28,11 @@ import (
 const (
 	spoofedIP = "6.6.6.6"
 	clientIP  = "198.51.100.7"
+
+	// loopbackPeer is a reverse proxy on the same host, trusted by default;
+	// loopbackRemote is its RemoteAddr.
+	loopbackPeer   = "127.0.0.1"
+	loopbackRemote = loopbackPeer + ":1"
 )
 
 func clientIPRequest(remote string, xff ...string) *http.Request {
@@ -84,16 +89,56 @@ func TestClientIP_Parsing(t *testing.T) {
 		xff  []string
 		want string
 	}{
-		{"entry with port is skipped", []string{"6.6.6.6, 198.51.100.7:443"}, spoofedIP},
-		{"bracketed ipv6 is skipped", []string{"6.6.6.6, [2001:db8::1]"}, spoofedIP},
 		{"ipv4-mapped is unmapped", []string{"::ffff:198.51.100.7"}, clientIP},
-		{"empty entries", []string{",, 198.51.100.7 ,,"}, clientIP},
+		{"empty entries left of the client", []string{",, 198.51.100.7 "}, clientIP},
 		{"two header lines, last wins", []string{spoofedIP, clientIP}, clientIP},
 		{"all garbage falls back to remote", []string{"a, b, c"}, "127.0.0.1"},
 		{"empty header falls back to remote", []string{""}, "127.0.0.1"},
 	}
 	for _, c := range cases {
 		if got := ClientIP(clientIPRequest(proxy, c.xff...)); got != c.want {
+			t.Errorf("%s: ClientIP = %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
+// TestClientIP_ProxyEntryForms pins that an entry a proxy appended with a
+// port or brackets is read as its address, and that an entry that is no
+// address ends the walk at the last trusted hop. Skipping either would hand
+// the client-written entry to its left the per-address limits.
+func TestClientIP_ProxyEntryForms(t *testing.T) {
+	t.Cleanup(func() { SetTrustedProxies(nil) })
+	cases := []struct {
+		name    string
+		trusted []netip.Prefix // nil: DefaultTrustedProxies
+		remote  string
+		xff     []string
+		want    string
+	}{
+		{"ipv4 with port", nil, loopbackRemote, []string{"6.6.6.6, 198.51.100.7:51234"}, clientIP},
+		{"ipv6 with port", nil, loopbackRemote, []string{"6.6.6.6, [2001:db8::7]:51234"}, "2001:db8::7"},
+		{"bracketed ipv6", nil, loopbackRemote, []string{"6.6.6.6, [2001:db8::7]"}, "2001:db8::7"},
+		{"ipv4-mapped with port is unmapped", nil, loopbackRemote, []string{"6.6.6.6, [::ffff:198.51.100.7]:51234"}, clientIP},
+		{"trusted hop with port is skipped", nil, loopbackRemote, []string{"6.6.6.6, 198.51.100.7:51234, 127.0.0.2:8080"}, clientIP},
+		{"unknown gives the peer", nil, loopbackRemote, []string{"6.6.6.6, unknown"}, loopbackPeer},
+		{"empty entry gives the peer", nil, loopbackRemote, []string{"6.6.6.6, "}, loopbackPeer},
+		{"empty header line gives the peer", nil, loopbackRemote, []string{spoofedIP, ""}, loopbackPeer},
+		{"invalid port gives the peer", nil, loopbackRemote, []string{"6.6.6.6, 198.51.100.7:99999"}, loopbackPeer},
+		{"bracketed ipv4 gives the peer", nil, loopbackRemote, []string{"6.6.6.6, [198.51.100.7]"}, loopbackPeer},
+		{
+			"unknown behind a trusted hop gives that hop",
+			[]netip.Prefix{netip.MustParsePrefix("10.0.0.0/8")}, "10.0.0.1:1",
+			[]string{"6.6.6.6, unknown, 10.0.0.2"}, "10.0.0.2",
+		},
+		{
+			"empty entry behind a trusted hop with port gives that hop",
+			[]netip.Prefix{netip.MustParsePrefix("10.0.0.0/8")}, "10.0.0.1:1",
+			[]string{"6.6.6.6,, 10.0.0.2:443"}, "10.0.0.2",
+		},
+	}
+	for _, c := range cases {
+		SetTrustedProxies(c.trusted)
+		if got := ClientIP(clientIPRequest(c.remote, c.xff...)); got != c.want {
 			t.Errorf("%s: ClientIP = %q, want %q", c.name, got, c.want)
 		}
 	}

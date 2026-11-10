@@ -1682,6 +1682,19 @@ func (s *Server) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	// The record's own expiry decides, not whether the store still holds it:
+	// a store may keep a record past its expiry until its cleanup runs. An
+	// expired refresh token is refused like an unknown one, and its access
+	// token goes with it.
+	if !time.Now().Before(oldTI.RefreshExpiry()) {
+		_ = s.tokenStore.DeleteToken(ctx, oldTI.AccessToken)
+		s.metrics.RecordLogin(loginMethodOAuthRefresh, "failure")
+		s.logger.InfoContext(ctx, "refresh refused: the refresh token has expired",
+			"clientId", oldTI.ClientID, logKeyRemote, auth.ClientIP(r))
+		writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: invalidGrantError})
+		return
+	}
+
 	// Verify client_id matches the refresh token's client (H-7).
 	if clientID == "" || clientID != oldTI.ClientID {
 		s.logger.WarnContext(ctx, "client_id mismatch in refresh token grant",

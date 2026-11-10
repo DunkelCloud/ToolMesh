@@ -16,27 +16,38 @@ package backend
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/DunkelCloud/ToolMesh/internal/dadl"
 )
 
-const testCompositeCountItems = "count_items"
+const (
+	testCompositeCountItems = "count_items"
+	testCompositeTouch      = "touch"
+	testParamProjectID      = "project_id"
+	testParamMode           = "mode"
+	testParamNote           = "note"
+)
 
 // recordingChildGuard is a test ChildGuard that records the canonical tool
-// names it is asked to authorize and returns a fixed error (nil = allow).
+// names it is asked to authorize, and the arguments its gate would see, and
+// returns a fixed error (nil = allow).
 type recordingChildGuard struct {
-	seen []string
-	err  error
+	seen   []string
+	params []map[string]any
+	err    error
 }
 
-func (g *recordingChildGuard) CheckChild(_ context.Context, toolName string, _ map[string]any) error {
+func (g *recordingChildGuard) CheckChild(_ context.Context, toolName string, params map[string]any) error {
 	g.seen = append(g.seen, toolName)
+	g.params = append(g.params, params)
 	return g.err
 }
 
@@ -402,4 +413,104 @@ func TestMarshallResults_Paginated(t *testing.T) {
 	if !strings.Contains(text, `"id":1`) && !strings.Contains(text, `"id": 1`) {
 		t.Errorf("missing id=1 in aggregated result: %s", text)
 	}
+}
+
+// TestRESTAdapter_CompositeChildStringParamsAsText pins that an api.* child
+// call hands the guard (and so the pre-execution gate) a number or boolean
+// for a string parameter as the text the request carries, as a direct call
+// does. A value with no text form, such as a BigInt, is refused.
+func TestRESTAdapter_CompositeChildStringParamsAsText(t *testing.T) {
+	var (
+		mu               sync.Mutex
+		gotPath, gotMode string
+		gotBody          map[string]any
+		hits             int
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode request body: %v", err)
+		}
+		mu.Lock()
+		hits++
+		gotPath, gotMode, gotBody = r.URL.Path, r.URL.Query().Get(testParamMode), body
+		mu.Unlock()
+		w.Header().Set(testHeaderContentType, testContentTypeJSON)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+
+	newAdapter := func(t *testing.T, code string) (*RESTAdapter, *recordingChildGuard) {
+		t.Helper()
+		spec := &dadl.Spec{
+			Spec: testDADLSpecURL,
+			Backend: dadl.BackendDef{
+				Name: testBackendNameAPI, Type: transportTypeREST, BaseURL: srv.URL,
+				Tools: map[string]dadl.ToolDef{
+					"update_project": {Method: http.MethodPut, Path: "/projects/{project_id}", Params: map[string]dadl.ParamDef{
+						testParamProjectID: {Type: schemaTypeString, In: paramInPath},
+						testParamMode:      {Type: schemaTypeString, In: paramInQuery},
+						testParamNote:      {Type: schemaTypeString, In: paramInBody},
+					}},
+				},
+				Composites: map[string]dadl.CompositeDef{
+					testCompositeTouch: {Code: code, Timeout: "5s"},
+				},
+			},
+		}
+		a, err := NewRESTAdapter(spec, &testCredStore{}, slog.Default(), testRESTOpts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		guard := &recordingChildGuard{}
+		a.SetChildGuard(guard)
+		return a, guard
+	}
+
+	t.Run("numbers and booleans become text", func(t *testing.T) {
+		adapter, guard := newAdapter(t, `return await api.update_project({project_id: 42, mode: true, note: 4.5});`)
+		result, err := adapter.Execute(context.Background(), testCompositeTouch, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.IsError {
+			t.Fatalf("composite returned error: %v", result.Content)
+		}
+		if len(guard.params) != 1 {
+			t.Fatalf("guard saw %d child calls, want 1", len(guard.params))
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		want := map[string]string{testParamProjectID: "42", testParamMode: "true", testParamNote: "4.5"}
+		for name, text := range want {
+			if got, ok := guard.params[0][name].(string); !ok || got != text {
+				t.Errorf("guard saw %s = %#v, want %q", name, guard.params[0][name], text)
+			}
+		}
+		if gotPath != "/projects/42" || gotMode != "true" {
+			t.Errorf("request %s?mode=%s, want /projects/42?mode=true", gotPath, gotMode)
+		}
+		if note, ok := gotBody[testParamNote].(string); !ok || note != "4.5" {
+			t.Errorf("body note = %#v, want the string \"4.5\"", gotBody[testParamNote])
+		}
+	})
+
+	t.Run("a BigInt is refused before the guard", func(t *testing.T) {
+		mu.Lock()
+		before := hits
+		mu.Unlock()
+		adapter, guard := newAdapter(t, `return await api.update_project({project_id: 42n});`)
+		result, err := adapter.Execute(context.Background(), testCompositeTouch, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !result.IsError || !strings.Contains(redactResultText(t, result), `parameter "project_id" must be string`) {
+			t.Fatalf("expected a type error from the child call, got %v", result.Content)
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		if len(guard.seen) != 0 || hits != before {
+			t.Errorf("the BigInt call got past the check: guard %v, requests %d", guard.seen, hits-before)
+		}
+	})
 }

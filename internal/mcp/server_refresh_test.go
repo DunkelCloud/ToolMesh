@@ -17,6 +17,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -28,6 +29,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/redis/go-redis/v9"
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/DunkelCloud/ToolMesh/internal/auth"
@@ -362,4 +364,122 @@ func TestTokens_RefusedPairEndsAsAWhole(t *testing.T) {
 			t.Errorf("access token after a mismatched refresh: status %d, want 401", w.Code)
 		}
 	})
+}
+
+// TestRefresh_ExpiredRefreshTokenRefused pins that the refresh grant checks
+// the refresh token's own expiry instead of relying on the store to have
+// dropped it: the file store keeps a record until its periodic cleanup, and
+// Redis keeps one for as long as its key lives, which a restart used to
+// renew. An expired refresh token is refused like an unknown one and its
+// pair ends; a valid one still rotates.
+func TestRefresh_ExpiredRefreshTokenRefused(t *testing.T) {
+	ctx := context.Background()
+	newFileStore := func(t *testing.T) *auth.FileTokenStore {
+		t.Helper()
+		fs, err := auth.NewFileTokenStore(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return fs
+	}
+	plantInFile := func(t *testing.T, fs *auth.FileTokenStore) func(*auth.TokenInfo) {
+		return func(ti *auth.TokenInfo) {
+			if err := fs.SaveToken(ctx, ti); err != nil {
+				t.Fatal(err)
+			}
+			if err := fs.SaveRefreshToken(ctx, ti); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	leftInFile := func(fs *auth.FileTokenStore) func(*auth.TokenInfo) bool {
+		return func(ti *auth.TokenInfo) bool {
+			_, err := fs.RefreshTokenOf(ctx, ti.AccessToken)
+			return !errors.Is(err, auth.ErrNotFound)
+		}
+	}
+
+	// Each store plants a pair the way it may still hold one and reports
+	// whether anything of that pair is left.
+	stores := []struct {
+		name string
+		use  func(t *testing.T, ts *loginTestServer) (plant func(*auth.TokenInfo), left func(*auth.TokenInfo) bool)
+	}{
+		{"redis key outliving the token", func(t *testing.T, ts *loginTestServer) (func(*auth.TokenInfo), func(*auth.TokenInfo) bool) {
+			keys := func(ti *auth.TokenInfo) []string {
+				return []string{"oauth:refresh:" + ti.RefreshToken, "oauth:token:" + ti.AccessToken}
+			}
+			plant := func(ti *auth.TokenInfo) {
+				data, err := json.Marshal(ti) //nolint:gosec // G117: test fixture written to miniredis
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, key := range keys(ti) {
+					if err := ts.redis.Set(key, string(data)); err != nil {
+						t.Fatal(err)
+					}
+					ts.redis.SetTTL(key, 7*24*time.Hour)
+				}
+			}
+			left := func(ti *auth.TokenInfo) bool {
+				return slices.ContainsFunc(keys(ti), ts.redis.Exists)
+			}
+			return plant, left
+		}},
+		{"file store before its cleanup", func(t *testing.T, ts *loginTestServer) (func(*auth.TokenInfo), func(*auth.TokenInfo) bool) {
+			fs := newFileStore(t)
+			ts.srv.tokenStore = fs
+			return plantInFile(t, fs), leftInFile(fs)
+		}},
+		{"hybrid falling back to the file store", func(t *testing.T, ts *loginTestServer) (func(*auth.TokenInfo), func(*auth.TokenInfo) bool) {
+			fs := newFileStore(t)
+			rdb := redis.NewClient(&redis.Options{Addr: ts.redis.Addr()})
+			t.Cleanup(func() { _ = rdb.Close() })
+			ts.srv.tokenStore = auth.NewHybridTokenStore(auth.NewRedisTokenStore(rdb), fs)
+			return plantInFile(t, fs), leftInFile(fs)
+		}},
+	}
+	cases := []struct {
+		name          string
+		accessExpiry  time.Duration // relative to now
+		refreshExpiry time.Duration
+		wantStatus    int
+	}{
+		{"expired an hour ago", -7 * 24 * time.Hour, -time.Hour, http.StatusBadRequest},
+		{"valid for six more days", -time.Hour, 6 * 24 * time.Hour, http.StatusOK},
+	}
+	for _, st := range stores {
+		for _, tc := range cases {
+			t.Run(st.name+"/"+tc.name, func(t *testing.T) {
+				ts := newLoginTestServer(t, loginTestConfig(), loginTestOptions{})
+				plant, left := st.use(t, ts)
+				now := time.Now()
+				ti := &auth.TokenInfo{
+					AccessToken: generateID(), RefreshToken: generateID(), ClientID: ts.clientID, UserID: testLoginOwner,
+					ExpiresAt: now.Add(tc.accessExpiry), RefreshExpiresAt: now.Add(tc.refreshExpiry),
+				}
+				plant(ti)
+
+				w := ts.refreshGrant(ti.RefreshToken)
+				if w.Code != tc.wantStatus {
+					t.Fatalf("refresh: status %d, want %d; body %s", w.Code, tc.wantStatus, w.Body.String())
+				}
+				var resp map[string]any
+				if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+					t.Fatal(err)
+				}
+				if tc.wantStatus == http.StatusOK {
+					if rt, _ := resp[oauthRefreshToken].(string); rt == "" || rt == ti.RefreshToken {
+						t.Errorf("refresh_token in the response = %q, want a new one", rt)
+					}
+				} else if resp[outcomeError] != invalidGrantError {
+					t.Errorf("error = %v, want %s", resp[outcomeError], invalidGrantError)
+				}
+				// Refused or rotated, the old pair is gone either way.
+				if left(ti) {
+					t.Error("the old token pair is still stored")
+				}
+			})
+		}
+	}
 }

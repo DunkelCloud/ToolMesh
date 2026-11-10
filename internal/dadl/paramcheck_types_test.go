@@ -17,6 +17,7 @@ package dadl
 import (
 	"encoding/json"
 	"errors"
+	"math/big"
 	"strings"
 	"testing"
 )
@@ -78,6 +79,11 @@ func TestValidateParams_DeclaredTypes(t *testing.T) {
 		{"object", typesAttrs, map[string]any{"k": "v"}, true},
 		{"array for object", typesAttrs, []any{}, false},
 		{"number for string passes", typesTitle, float64(7), true},
+		{"boolean for string passes", typesTitle, false, true},
+		{"json.Number for string passes", typesTitle, json.Number("7"), true},
+		{"array for string", typesTitle, []any{"a"}, false},
+		{"object for string", typesTitle, map[string]any{"k": "v"}, false},
+		{"BigInt for string", typesTitle, big.NewInt(42), false},
 		{"null is not type-checked", typesOn, nil, true},
 	}
 	for _, tc := range cases {
@@ -138,5 +144,42 @@ func TestNormalizeParams(t *testing.T) {
 	num := NormalizeParams(declared, map[string]any{typesRatio: expLiteral})
 	if num[typesRatio] != float64(1000) {
 		t.Errorf("number string: %v", num[typesRatio])
+	}
+}
+
+// TestNormalizeParams_StringParams pins that a number or boolean given for a
+// string parameter reaches the gate as the text the request carries. Left
+// as a number, a policy that forbids "42" was passed with 42 while the URL
+// still read /projects/42.
+func TestNormalizeParams_StringParams(t *testing.T) {
+	declared := map[string]ParamDef{typesTitle: {Type: jsTypeString, In: typesQuery}}
+	cases := []struct {
+		name string
+		val  any
+		want string
+	}{
+		{"whole number", float64(42), "42"},
+		{"fraction", 4.5, "4.5"},
+		{"boolean true", true, "true"},
+		{"boolean false", false, "false"},
+		{"goja integer", int64(42), "42"},
+		{"json.Number", json.Number("42"), "42"},
+		{"large integer without exponent", float64(1234567), "1234567"},
+		{"negative whole number", float64(-3), "-3"},
+		{"string unchanged", "007", "007"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := ValidateParams("t", declared, map[string]any{typesTitle: tc.val}); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			out := NormalizeParams(declared, map[string]any{typesTitle: tc.val})
+			if got, ok := out[typesTitle].(string); !ok || got != tc.want {
+				t.Errorf("normalized = %#v, want %q", out[typesTitle], tc.want)
+			}
+			if got := FormatScalar(tc.val); got != tc.want {
+				t.Errorf("FormatScalar = %q, want the text the gate saw, %q", got, tc.want)
+			}
+		})
 	}
 }

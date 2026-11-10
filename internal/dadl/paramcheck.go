@@ -146,10 +146,26 @@ func (e *ParamError) Unwrap() error {
 // satisfies required on its own — the runtime fills the value in, so the
 // caller need not.
 func ValidateParams(toolName string, declared map[string]ParamDef, params map[string]any) error {
+	return validateParams(toolName, declared, params, true)
+}
+
+// ValidateRequiredParams is [ValidateParams] for a declaration that leaves
+// its parameter set open — an MCP input schema that admits additional
+// properties — where a name outside the declared ones is legitimate. Only
+// the required rule applies; an undeclared argument passes through.
+func ValidateRequiredParams(toolName string, declared map[string]ParamDef, params map[string]any) error {
+	return validateParams(toolName, declared, params, false)
+}
+
+// validateParams applies both rules of [ValidateParams], or only the
+// required rule when rejectUnknown is false.
+func validateParams(toolName string, declared map[string]ParamDef, params map[string]any, rejectUnknown bool) error {
 	var unknown []string
-	for name := range params {
-		if _, ok := declared[name]; !ok {
-			unknown = append(unknown, name)
+	if rejectUnknown {
+		for name := range params {
+			if _, ok := declared[name]; !ok {
+				unknown = append(unknown, name)
+			}
 		}
 	}
 

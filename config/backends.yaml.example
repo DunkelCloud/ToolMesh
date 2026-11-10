@@ -52,6 +52,12 @@ backends:
   #   transport: stdio
   #   command: "./my-mcp-server"
   #   args: ["--port", "0"]
+  #   # Optional: environment variables for the child from the credential
+  #   # store (variable name in the child: key in the store). The child
+  #   # inherits ToolMesh's environment; with CREDENTIAL_STORE=command that
+  #   # holds no credentials, so these are the only ones it receives.
+  #   credential_env:
+  #     MY_SERVER_TOKEN: CREDENTIAL_MY_SERVER_TOKEN
 
   # REST Proxy via DADL (no MCP server needed)
   # The hackernews DADL ships with ToolMesh and needs no credentials —

@@ -685,8 +685,14 @@ and time remaining) and its pending requests (`requests`, each with its
 approval link and fingerprint, so that the link can be handed over later), and
 describes these kits with their warnings.
 
-The answer shows only the tools the caller may call or get through a kit.
-For any other tool it says `denied`, without telling whether the tool exists.
+The built-in tools ToolMesh lists (`discover_tools`, `execute_code`,
+`tell_me_my_rights`, and `request_grant` and `upload_file` where offered) are
+`allowed` in a preflight: ToolMesh runs them itself, without the authorization
+step and the gate policies, and checks every tool that `execute_code` calls
+when it calls it. The answer shows only the tools the caller may call or get
+through a kit. For any other name a preflight says `denied` with the reason
+`unknown tool`, both when no tool has the name and when the caller may not see
+the tool, so that it does not tell whether the tool exists.
 Every call is recorded in the audit trail (tool `tell_me_my_rights`, backend
 `toolmesh`): the answer is the first thing an agent that was taken over would
 look up. In external mode there are no kits, so the verdicts are `allowed` and
@@ -785,6 +791,15 @@ a kit that covers the tool, which is how `tell_me_my_rights` tells
 
 ## Credential Store
 
+`CREDENTIAL_STORE` selects where ToolMesh takes backend credentials from:
+
+| Store | Values come from | Values are kept in |
+|-------|------------------|--------------------|
+| `embedded` (default) | `CREDENTIAL_*` environment variables | the process environment |
+| `command` | the output of a command ToolMesh runs | ToolMesh's memory only |
+
+### Embedded store
+
 Credentials are stored as environment variables with the `CREDENTIAL_` prefix.
 
 | Variable | Description |
@@ -796,6 +811,260 @@ Example:
 CREDENTIAL_MEMORIZER_API_KEY=sk-mem-xxxxx
 CREDENTIAL_BRAVE_API_KEY=BSA-xxxxx
 ```
+
+### Why the environment is not the place for credentials
+
+Under Docker the values reach the container through `env_file:` or
+`environment:`. Docker writes a container's environment in plain text into
+the container configuration on the host
+(`/var/lib/docker/containers/<id>/config.v2.json`, also shown by
+`docker inspect`). Every credential then sits on the host's disk and in every
+backup or snapshot of it, even when the `.env` file itself is stored
+encrypted and decrypted only to start the container. Stdio backends inherit
+the whole environment as well, so each of them receives every credential.
+
+The `command` store avoids both: ToolMesh fetches the values itself and keeps
+them in memory.
+
+### Command store
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CREDENTIAL_STORE` | `embedded` | Set to `command` |
+| `TOOLMESH_CREDENTIAL_COMMAND` | *(none)* | Command line that prints the values. Required |
+| `TOOLMESH_CREDENTIAL_RELOAD_IN` | `0` | Seconds between runs. `0` runs the command only at startup |
+| `TOOLMESH_CREDENTIAL_COMMAND_TIMEOUT` | `30` | Seconds a single run may take |
+| `TOOLMESH_CREDENTIAL_FORMAT` | `dotenv` | Output format: `dotenv` or `json` |
+| `TOOLMESH_CREDENTIAL_JSON_PATH` | *(top level)* | With `json`: dot-separated path to the object that holds the values, e.g. `data.data` |
+
+The settings carry a `TOOLMESH_` prefix because `CREDENTIAL_<NAME>` is the
+namespace of the credentials themselves. Invalid values stop the start.
+
+**The command.** ToolMesh runs it without a shell, since the image has none.
+The line is split into arguments the way a shell splits words: single quotes,
+double quotes and backslash escapes work. Pipes, redirections, `;`, `&&`,
+variables, command substitution and a leading `VAR=value` are refused at
+startup; there is no globbing. Give the program as an absolute path and mount
+it read-only into the container, together with whatever it reads. It has to
+run without a libc, as statically linked binaries do. The command inherits
+ToolMesh's environment, which with this store holds no credentials.
+
+In `.env`, put the command line in double quotes. Docker Compose reads the
+file itself (`env_file`), and some of its versions end an unquoted value at
+the first space and then stop at the rest of the line with an error such as
+`unexpected character "-" in variable name`. Compose removes the quotes
+before ToolMesh sees the value. Quotes that the command line itself needs
+go inside single quotes around the whole value:
+`TOOLMESH_CREDENTIAL_COMMAND='/usr/local/bin/helper "a b"'`.
+
+A run fails when the command exits with a code other than 0, exceeds the
+timeout, writes more than 1 MiB to stdout, prints no value at all, or prints
+something that does not parse.
+
+**dotenv output** (the default). One `KEY=value` per line, as
+`sops -d --output-type dotenv` writes it and as `.env.example` shows:
+
+- `#` comment lines and blank lines are skipped, a leading `export ` is
+  ignored.
+- Unquoted values are trimmed, a `#` after a space or tab starts a comment,
+  and `\n` stands for a line break (the way sops writes multi-line values).
+- `'single quotes'` keep everything literal. `"double quotes"` know the
+  escapes `\n`, `\r`, `\t`, `\"`, `\\` and `\$`. Quoted values may span lines.
+- Variables are not expanded. A later line wins over an earlier one.
+
+**JSON output.** With `TOOLMESH_CREDENTIAL_FORMAT=json` the command prints one
+JSON value, as `vault kv get -format=json` and `bao kv get -format=json` do.
+`TOOLMESH_CREDENTIAL_JSON_PATH` selects the object that holds the values:
+`data.data` for a KV version 2 secret of Vault or OpenBao, `data` for version
+1, empty for the top level. Everything outside that object, such as request
+and lease metadata, is ignored.
+
+- Nested objects below the path are flattened: every string, number and
+  boolean becomes a key named after its own member name, however deep it
+  sits. `{"github": {"CREDENTIAL_GITHUB_TOKEN": "..."}}` gives
+  `CREDENTIAL_GITHUB_TOKEN`.
+- Numbers keep their written form. `null` values and arrays are skipped.
+- A member name that is not an environment variable name, or that occurs
+  twice after flattening, fails the run.
+- Vault's `lease_duration` is not used; a KV version 2 secret reports `0`
+  there.
+
+Keys are environment-style names: `CREDENTIAL_<NAME>` for backend credentials,
+and any other name that an `env:` remapping, a `credential_env` entry or one of
+ToolMesh's own secrets (below) refers to. `RELOAD_IN` is reserved in both
+formats.
+
+**Where the values stay.** In a map in ToolMesh's memory, never in its
+environment and never in the log. stdout is not logged; stderr is logged at
+`WARN`, cut off after 4 KiB, so the command must not write secrets there. When
+a run adds or drops keys, the log names the keys, not the values.
+
+**Refreshing.** After `TOOLMESH_CREDENTIAL_RELOAD_IN` seconds the command runs
+again. A key `RELOAD_IN` in the output (a line `RELOAD_IN=<seconds>`, or a
+JSON member of that name) sets the delay until the next run instead;
+`RELOAD_IN=0` ends the refreshing. A successful run replaces
+the whole set at once, and keys it no longer prints are gone. A failed run
+keeps the previous set and is retried after 30 seconds, then with a doubling
+delay up to the interval in force. If the first run at startup fails, ToolMesh
+exits with a non-zero code and the container's restart policy tries again.
+
+Refreshed values reach REST backends with their next call. MCP backends read
+theirs (`api_key_env`, `credential_env`) when ToolMesh connects to them: at
+startup and when `backends.yaml` changes.
+
+**ToolMesh's own secrets.** With the command store, `TOOLMESH_AUTH_PASSWORD`,
+`TOOLMESH_API_KEY` and `REDIS_URL` are taken from the output when it contains
+them, ahead of the environment, once at startup. Remappings (`env:` in
+`backends.yaml`) resolve their keys in the output too, not in the environment.
+
+**Stdio backends.** A stdio MCP server inherits ToolMesh's environment, which
+with this store contains no credentials. Pass it what it needs with
+`credential_env` in its `backends.yaml` entry: variable name in the child,
+key in the store.
+
+```yaml
+backends:
+  - name: github
+    transport: stdio
+    command: /usr/local/bin/github-mcp-server
+    args: ["stdio"]
+    credential_env:
+      GITHUB_PERSONAL_ACCESS_TOKEN: CREDENTIAL_GITHUB_TOKEN
+```
+
+The child receives nothing else from the store. A key the store does not hold
+keeps the backend from connecting. With the embedded store `credential_env`
+reads the key from the environment, so the same entry works with both stores.
+
+**Monitoring.** Two metrics follow the runs:
+`toolmesh_credential_store_runs_total{result="success|failure"}` and
+`toolmesh_credential_store_last_success_timestamp_seconds`. Alert when the last
+success lies more than two intervals back, for example with a one-hour
+interval:
+
+```promql
+time() - toolmesh_credential_store_last_success_timestamp_seconds > 7200
+```
+
+#### Example: an encrypted file with sops
+
+[sops](https://github.com/getsops/sops) encrypts the values of a dotenv,
+YAML or JSON file and leaves the key names readable, so the file can live in
+git and its diffs stay useful. It takes its keys from
+[age](https://github.com/FiloSottile/age) (a small file-encryption tool), PGP
+or a cloud KMS. With age:
+
+```bash
+sops --encrypt --age <recipient> --input-type dotenv --output-type dotenv \
+  secrets.plain.env > secrets/toolmesh.env
+```
+
+Mount the encrypted file and a static `sops` binary read-only, for example in
+`docker-compose.override.yml` (`docker-compose.override.yml.example` has a
+section to start from, including the mount for an agent's socket):
+
+```yaml
+services:
+  toolmesh:
+    volumes:
+      - /usr/local/bin/sops:/usr/local/bin/sops:ro
+      - ./secrets/toolmesh.env:/run/secrets/toolmesh.env:ro
+```
+
+The `.env` then holds no credentials, only the store settings:
+
+```bash
+CREDENTIAL_STORE=command
+TOOLMESH_CREDENTIAL_COMMAND="/usr/local/bin/sops -d --input-type dotenv --output-type dotenv /run/secrets/toolmesh.env"
+```
+
+How sops gets its age identity is the operator's decision: a key file mounted
+read-only (`SOPS_AGE_KEY_FILE` is a path, not a secret) or a key command. A
+key file on the host travels with every copy of its disk; the next example
+avoids it. Do not put the key itself into `.env` or `environment:`; it would
+end up in the container configuration like any other value there. Change
+values with `sops secrets/toolmesh.env`; ToolMesh picks them up at its next
+run or restart.
+
+#### Example: credentials sealed to the machine with ergosum
+
+The sops example still needs one secret on the host, its age key, and
+whoever copies the disk, a backup or the VM image copies that key too.
+[ergosum](https://github.com/DunkelCloud/ergosum) (v0.2.0 or later) ties
+that step to the machine instead of to a file: its daemon `ergosumd` seals a
+file so that it opens only after a separate ergosum authority has called the
+machine back where it was registered (its tailnet name, a fixed address, an
+address in a permitted network). Only the sealed file lies on disk, and it
+may sit in backups; a copy running elsewhere opens nothing.
+
+Seal the credentials themselves, in the dotenv format described above, and
+delete the plain file afterwards (`-recovery` adds an age-encrypted way
+back):
+
+```bash
+ergosumd secret create toolmesh -threshold 2 -file /etc/toolmesh/credentials.sealed < credentials.env
+```
+
+Mount `ergosumd` (a static binary), the sealed file and the daemon's secret
+socket into the container; `docker-compose.override.yml.example` has the
+section. Then:
+
+```bash
+CREDENTIAL_STORE=command
+TOOLMESH_CREDENTIAL_COMMAND="/usr/bin/ergosumd secret get -socket /run/ergosum/secret.sock -file /etc/toolmesh/credentials.sealed"
+```
+
+`ergosumd secret get` prints the file as it was sealed, so ToolMesh needs no
+support for ergosum. To change a value, seal a new file. ergosum offers no
+rotation, revocation or audit of access; Vault does, and ergosum can log the
+machine in to Vault as well (next example).
+
+#### Example: Vault or OpenBao through their proxy
+
+Vault Proxy (`vault proxy`, in OpenBao `bao proxy`) logs in with its
+auto-auth method and adds its token to every request that carries none
+(`use_auto_auth_token`). The command then needs no token of its own, and
+nothing is written to disk:
+
+```bash
+CREDENTIAL_STORE=command
+TOOLMESH_CREDENTIAL_FORMAT=json
+TOOLMESH_CREDENTIAL_JSON_PATH=data.data
+TOOLMESH_CREDENTIAL_COMMAND="/usr/local/bin/vault kv get -format=json -mount=secret toolmesh"
+TOOLMESH_CREDENTIAL_RELOAD_IN=300
+VAULT_ADDR=http://127.0.0.1:8100
+```
+
+The KV secret `secret/toolmesh` holds the keys as a dotenv file would
+(`CREDENTIAL_GITHUB_TOKEN`, `TOOLMESH_API_KEY` and so on). Mount the static
+`vault` binary (or `bao`, with `BAO_ADDR`) read-only; the address is not a
+secret. Bind the proxy's listener so that only ToolMesh reaches it, for
+example on loopback in a network namespace shared with the ToolMesh
+container: whoever reaches it acts with the proxy's token.
+
+The proxy's own login needs a credential too, usually an AppRole secret ID
+on disk. With [ergosum](https://github.com/DunkelCloud/ergosum) it needs
+none: the ergosum daemon keeps a JWT in `/run/ergosum/token`, valid for 30
+minutes and renewed on its own, which it receives only after the machine was
+called back where it was registered. Point the proxy's auto-auth method `jwt`
+at that file with `remove_jwt_after_reading = false`, since the daemon
+replaces it; Vault or OpenBao check the token with their JWT auth method.
+
+#### Example: short-lived tokens
+
+A small program that requests an access token and prints it together with its
+lifetime minus a margin keeps the token fresh. For a token that is valid for
+an hour:
+
+```bash
+CREDENTIAL_EXAMPLE_TOKEN=eyJhbGciOi...
+RELOAD_IN=3300
+```
+
+ToolMesh runs the program again after 55 minutes. If that run fails, the old
+token stays in use while the retries back off (30 s, 60 s, 120 s, ...), so
+leave a margin for a few of them. The program can print static values too,
+for example by decrypting a file first and adding the token to its output.
 
 ## Timeouts
 

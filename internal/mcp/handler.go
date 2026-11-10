@@ -161,6 +161,16 @@ func (h *Handler) isBuiltinTool(name string) bool {
 	return false
 }
 
+// offersBuiltinTool reports whether a tool name is a built-in tool that
+// BuildToolList offers: an isBuiltinTool, except request_grant without a kit
+// to ask for.
+func (h *Handler) offersBuiltinTool(name string) bool {
+	if name == toolRequestGrant {
+		return h.offersRequestGrant()
+	}
+	return h.isBuiltinTool(name)
+}
+
 // HandleToolCall processes a single tool call through the execution pipeline.
 func (h *Handler) HandleToolCall(ctx context.Context, toolName string, params map[string]any) (result *backend.ToolResult, err error) {
 	h.logger.InfoContext(ctx, "handling tool call", logKeyTool, toolName)
@@ -634,7 +644,7 @@ func (h *Handler) BuildToolList(ctx context.Context) ([]ToolDefinition, error) {
 				schemaKeyProperties: map[string]any{
 					argNameCode: map[string]any{
 						contentKeyType:       jsonTypeString,
-						schemaKeyDescription: "JavaScript body that calls toolmesh.<backend>_<function>(...). Tools are flat snake_case — `toolmesh.github_list_user_repos`, NOT `toolmesh.github.list_user_repos` (the latter throws TypeError because `toolmesh.<backend>` is undefined). Top-level await is supported. Example: `const r = await toolmesh.github_list_user_repos({username: \"octocat\"}); return r[0].name;`",
+						schemaKeyDescription: "JavaScript body that calls toolmesh.<backend>_<function>(...). Tools are flat snake_case — `toolmesh.github_list_user_repos`, NOT `toolmesh.github.list_user_repos` (the latter throws TypeError because `toolmesh.<backend>` is undefined). Top-level await is supported. Example: `const r = await toolmesh.github_list_user_repos({username: \"octocat\"}); return r[0].name;`. The sandbox provides atob, btoa, TextEncoder and TextDecoder (UTF-8) for base64 payloads; it has no fetch and no timers.",
 					},
 					argNameIncludeResults: map[string]any{
 						contentKeyType:       jsonTypeBoolean,

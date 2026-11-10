@@ -17,7 +17,6 @@ package credentials
 import (
 	"context"
 	"fmt"
-	"os"
 	"strings"
 )
 
@@ -32,7 +31,10 @@ import (
 //
 // When Get() is called for logical name "ANTHROPIC_TOKEN", the store checks
 // whether "CREDENTIAL_ANTHROPIC_TOKEN" has a remapping. If so, it reads the
-// mapped env var directly. Otherwise it delegates to the underlying store.
+// mapped key through [LookupKey]: from the underlying store when that holds its
+// values outside the process environment (the command store), from the
+// environment otherwise. Without a remapping it delegates to the underlying
+// store.
 type RemappingStore struct {
 	delegate CredentialStore
 	envMap   map[string]string // CanonicalEnvKey(CREDENTIAL_X) → actual env var name
@@ -75,9 +77,9 @@ func NewRemappingStore(delegate CredentialStore, envMap map[string]string) *Rema
 func (r *RemappingStore) Get(ctx context.Context, logicalName string, tenant TenantInfo) (string, error) {
 	envKey := CanonicalEnvKey(EnvKeyPrefix + logicalName)
 	if mapped, ok := r.envMap[envKey]; ok {
-		val := os.Getenv(mapped)
+		val, _ := LookupKey(r.delegate, mapped)
 		if val == "" {
-			return "", fmt.Errorf("remapped credential %q (env %q) is empty: %w", logicalName, mapped, ErrCredentialNotFound)
+			return "", fmt.Errorf("remapped credential %q (key %q) is empty: %w", logicalName, mapped, ErrCredentialNotFound)
 		}
 		return val, nil
 	}
@@ -106,7 +108,7 @@ func (r *RemappingStore) ListByPrefix(ctx context.Context, prefix string, tenant
 		if !strings.HasPrefix(credEnvKey, envPrefix) {
 			continue
 		}
-		val := os.Getenv(actualEnvVar)
+		val, _ := LookupKey(r.delegate, actualEnvVar)
 		if val == "" {
 			continue
 		}

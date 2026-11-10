@@ -23,6 +23,8 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+
+	"github.com/DunkelCloud/ToolMesh/internal/credentials"
 )
 
 // URL schemes accepted for operator-configured redirect targets.
@@ -79,6 +81,15 @@ const (
 	AuthzSourceEnv     = "TOOLMESH_AUTHZ_MODE"
 	AuthzSourceLegacy  = "OPENFGA_MODE"
 	AuthzSourceDefault = "default"
+)
+
+// Names of the settings that carry ToolMesh's own secrets. With a credential
+// store that holds values outside the environment they come from the store
+// (see ApplySecrets).
+const (
+	envAuthPassword = "TOOLMESH_AUTH_PASSWORD" //nolint:gosec // the variable's name, not a credential
+	envAPIKey       = "TOOLMESH_API_KEY"       //nolint:gosec // the variable's name, not a credential
+	envRedisURL     = "REDIS_URL"
 )
 
 // Config holds all ToolMesh configuration values.
@@ -218,6 +229,15 @@ type Config struct {
 	CredentialStore string // registered store name (default: "embedded")
 	GateEvaluators  string // comma-separated evaluator chain (default: "goja")
 
+	// Settings of the credential store "command", passed to it unparsed; the
+	// store checks them. They live outside CREDENTIAL_<NAME>, which is the
+	// namespace of the credentials themselves.
+	CredentialCommand  string // TOOLMESH_CREDENTIAL_COMMAND: command line printing dotenv
+	CredentialReloadIn string // TOOLMESH_CREDENTIAL_RELOAD_IN: seconds between runs, default 0 (only at startup)
+	CredentialTimeout  string // TOOLMESH_CREDENTIAL_COMMAND_TIMEOUT: seconds per run, default 30
+	CredentialFormat   string // TOOLMESH_CREDENTIAL_FORMAT: dotenv (default) or json
+	CredentialJSONPath string // TOOLMESH_CREDENTIAL_JSON_PATH: dot path to the object holding the values (json only)
+
 	// Prometheus metrics endpoint (served on a separate listener so the
 	// scraper does not need to traverse the public auth domain).
 	MetricsEnabled   bool   // TOOLMESH_METRICS_ENABLED, default true
@@ -261,8 +281,8 @@ func Load() (*Config, error) {
 	cfg := &Config{
 		Port:                    8080, // always listen on 8080 inside container; TOOLMESH_PORT controls host-side mapping only
 		Transport:               envStr("TOOLMESH_TRANSPORT", "http"),
-		AuthPassword:            envStr("TOOLMESH_AUTH_PASSWORD", ""),
-		APIKey:                  envStr("TOOLMESH_API_KEY", ""),
+		AuthPassword:            envStr(envAuthPassword, ""),
+		APIKey:                  envStr(envAPIKey, ""),
 		Issuer:                  envStr("TOOLMESH_ISSUER", placeholderIssuer+"/"),
 		RootRedirect:            envStr("TOOLMESH_ROOT_REDIRECT", ""),
 		AuditStore:              envStr("AUDIT_STORE", "log"),
@@ -273,7 +293,7 @@ func Load() (*Config, error) {
 		OpenFGAStoreID:          envStr("OPENFGA_STORE_ID", ""),
 		AuthzPreset:             envStr("TOOLMESH_AUTHZ_PRESET", ""),
 		AuthzConfigPath:         envStr("TOOLMESH_AUTHZ_CONFIG", "/app/config/authz.yaml"),
-		RedisURL:                envStr("REDIS_URL", "redis://localhost:6379/0"),
+		RedisURL:                envStr(envRedisURL, "redis://localhost:6379/0"),
 		LogLevel:                envStr("LOG_LEVEL", "info"), // default "info"; set LOG_LEVEL=debug to trace requests (debug logs include full request URLs, which may contain query-string credentials)
 		LogFormat:               envStr("LOG_FORMAT", "json"),
 		DebugBackends:           envStr("DEBUG_BACKENDS", ""),
@@ -291,6 +311,11 @@ func Load() (*Config, error) {
 		AuthRoles:               envStr("TOOLMESH_AUTH_ROLES", "admin"),
 		DataDir:                 envStr("TOOLMESH_DATA_DIR", "/app/data"),
 		CredentialStore:         envStr("CREDENTIAL_STORE", "embedded"),
+		CredentialCommand:       envStr("TOOLMESH_CREDENTIAL_COMMAND", ""),
+		CredentialReloadIn:      envStr("TOOLMESH_CREDENTIAL_RELOAD_IN", ""),
+		CredentialTimeout:       envStr("TOOLMESH_CREDENTIAL_COMMAND_TIMEOUT", ""),
+		CredentialFormat:        envStr("TOOLMESH_CREDENTIAL_FORMAT", ""),
+		CredentialJSONPath:      envStr("TOOLMESH_CREDENTIAL_JSON_PATH", ""),
 		GateEvaluators:          envStr("GATE_EVALUATORS", "goja"),
 		MetricsEnabled:          envBool("TOOLMESH_METRICS_ENABLED", true),
 		MetricsBind:             envStr("TOOLMESH_METRICS_BIND", ":9090"),
@@ -593,6 +618,42 @@ const legacyPlaceholderIssuer = "https://toolmesh.io"
 func (c *Config) IssuerIsPlaceholder() bool {
 	issuer := strings.TrimRight(c.Issuer, "/")
 	return strings.EqualFold(issuer, placeholderIssuer) || strings.EqualFold(issuer, legacyPlaceholderIssuer)
+}
+
+// CredentialStoreConfig returns the settings handed to the credential store
+// factory. Only the command store reads them.
+func (c *Config) CredentialStoreConfig() map[string]string {
+	return map[string]string{
+		credentials.CommandConfigCommand:  c.CredentialCommand,
+		credentials.CommandConfigReloadIn: c.CredentialReloadIn,
+		credentials.CommandConfigTimeout:  c.CredentialTimeout,
+		credentials.CommandConfigFormat:   c.CredentialFormat,
+		credentials.CommandConfigJSONPath: c.CredentialJSONPath,
+	}
+}
+
+// ApplySecrets takes ToolMesh's own secrets (TOOLMESH_AUTH_PASSWORD,
+// TOOLMESH_API_KEY, REDIS_URL) from lookup wherever it has a non-empty
+// value, overriding the environment. It is called once at startup with a
+// credential store that holds values outside the environment, and returns the
+// names it took, never the values.
+func (c *Config) ApplySecrets(lookup func(key string) (string, bool)) []string {
+	secrets := []struct {
+		name string
+		dst  *string
+	}{
+		{envAuthPassword, &c.AuthPassword},
+		{envAPIKey, &c.APIKey},
+		{envRedisURL, &c.RedisURL},
+	}
+	var applied []string
+	for _, s := range secrets {
+		if v, ok := lookup(s.name); ok && v != "" {
+			*s.dst = v
+			applied = append(applied, s.name)
+		}
+	}
+	return applied
 }
 
 // AuthRolesList returns the simple-mode auth roles as a string slice.

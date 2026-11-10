@@ -236,7 +236,7 @@ func (e *Executor) ExecuteTool(ctx context.Context, req ExecuteToolRequest) (*ba
 
 	e.logger.DebugContext(ctx, "executor pipeline start",
 		"tool", req.ToolName,
-		"params", sanitizeParams(req.Params),
+		"params", SanitizeParams(req.Params),
 	)
 
 	// Resolve the tool's access classification once. The lookup is best-effort —
@@ -258,8 +258,8 @@ func (e *Executor) ExecuteTool(ctx context.Context, req ExecuteToolRequest) (*ba
 		CallerClass: uc.CallerClass,
 		Tool:        req.ToolName,
 		ToolAccess:  toolAccess,
-		Params:      sanitizeParams(req.Params),
-		Backend:     splitToolPrefix(req.ToolName)[0],
+		Params:      SanitizeParams(req.Params),
+		Backend:     e.routedBackend(req.ToolName),
 	}
 
 	// Step 1: AuthZ check via OpenFGA
@@ -567,9 +567,11 @@ func (e *Executor) recordAudit(ctx context.Context, entry audit.AuditEntry) {
 	// Prometheus metric — recorded here (rather than at the MCP handler) so that
 	// individual tool calls made from inside execute_code's JS body are counted
 	// with their real backend/tool labels, not collapsed under "execute_code".
+	// The tool label drops the routed backend's prefix, so the tool
+	// "web_search_query" of backend "web_search" is counted as "query".
 	if e.metrics != nil {
 		backendLabel := entry.Backend
-		toolLabel := splitToolPrefix(entry.Tool)[1]
+		toolLabel := strings.TrimPrefix(entry.Tool, entry.Backend+"_")
 		if backendLabel == "" {
 			backendLabel = "unknown"
 			toolLabel = entry.Tool
@@ -613,8 +615,10 @@ var sensitiveParamNames = map[string]bool{
 	"private_key":   true,
 }
 
-// sanitizeParams returns a copy of params with sensitive values replaced by "[REDACTED]".
-func sanitizeParams(params map[string]any) map[string]any {
+// SanitizeParams returns a copy of params with the values of secret-looking
+// names (password, token, api_key, ...) replaced by "[REDACTED]". It serves
+// the audit trail and every other place a call's arguments are shown.
+func SanitizeParams(params map[string]any) map[string]any {
 	if len(params) == 0 {
 		return params
 	}
@@ -650,18 +654,24 @@ func (e *Executor) FilterAuthorizedTools(ctx context.Context, uc *userctx.UserCo
 	return authorized
 }
 
-// backendResolver is implemented by the composite backend: it names the
-// backend a tool call is routed to.
-type backendResolver interface {
-	ResolveBackendName(toolName string) (string, bool)
+// routedBackend names the backend a call of toolName is routed to. The name
+// comes from the same routing the call takes; splitting the name at the first
+// underscore would attribute "web_search_query" to a backend "web". It is
+// empty when no backend claims the tool or the backend cannot resolve names.
+func (e *Executor) routedBackend(toolName string) string {
+	r, ok := e.backend.(backend.BackendNameResolver)
+	if !ok {
+		return ""
+	}
+	name, _ := r.ResolveBackendName(toolName)
+	return name
 }
 
-// authzRequest describes a call for the authorizer. The backend comes from
-// the same routing the call takes; splitting the name at the first underscore
-// would attribute "web_search_query" to a backend "web". Without a resolver
-// the backend stays empty, so grants on a backend do not apply.
+// authzRequest describes a call for the authorizer, with the backend the call
+// is routed to. Without a resolver the backend stays empty, so grants on a
+// backend do not apply.
 func (e *Executor) authzRequest(uc *userctx.UserContext, toolName, toolAccess string, h held) authz.Request {
-	req := authz.Request{
+	return authz.Request{
 		UserID:    uc.UserID,
 		CompanyID: uc.CompanyID,
 		Plan:      uc.Plan,
@@ -669,12 +679,9 @@ func (e *Executor) authzRequest(uc *userctx.UserContext, toolName, toolAccess st
 		Kits:      h.kits,
 		KitParts:  h.parts,
 		Tool:      toolName,
+		Backend:   e.routedBackend(toolName),
 		Access:    toolAccess,
 	}
-	if r, ok := e.backend.(backendResolver); ok {
-		req.Backend, _ = r.ResolveBackendName(toolName)
-	}
-	return req
 }
 
 // splitToolPrefix extracts the backend prefix from a tool name like "backend_tool".

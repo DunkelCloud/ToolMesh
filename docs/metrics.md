@@ -101,8 +101,8 @@ own right.
 
 | Label     | Values                                                              |
 | --------- | ------------------------------------------------------------------- |
-| `backend` | Backend name (e.g., `hetzner`, `deepl`), `builtin` for `discover_tools`/`execute_code`/`tell_me_my_rights`/`request_grant`, or `unknown` for tools without a backend prefix. |
-| `tool`    | Tool name without the backend prefix, or `*` if `TOOLMESH_METRICS_LABEL_TOOL=false`. |
+| `backend` | Name of the backend the call is routed to, as configured (e.g., `hetzner`, `deepl`, `web_search`), `builtin` for `discover_tools`/`execute_code`/`tell_me_my_rights`/`request_grant`, or `unknown` for tools no backend claims. |
+| `tool`    | Tool name without that backend's prefix (`web_search_query` of backend `web_search` is `query`), the full name for `unknown`, or `*` if `TOOLMESH_METRICS_LABEL_TOOL=false`. |
 | `result`  | `success`, `error`, `denied`                                        |
 
 - `success` — completed without error.
@@ -201,6 +201,22 @@ without a known expiry has no series. Same label as above.
 
 The series of a backend disappear when it is removed from `backends.yaml`.
 
+### `toolmesh_credential_store_runs_total` (counter)
+
+Runs of the command of the `command` credential store
+([configuration](configuration.md#command-store)), including the first run
+at startup. A failed run keeps the previous credentials. Present only with
+`CREDENTIAL_STORE=command`.
+
+| Label    | Values               |
+| -------- | -------------------- |
+| `result` | `success`, `failure` |
+
+### `toolmesh_credential_store_last_success_timestamp_seconds` (gauge)
+
+Unix time of the last successful run of the `command` credential store.
+Present only with `CREDENTIAL_STORE=command`.
+
 ## Example queries
 
 ```promql
@@ -237,6 +253,13 @@ sum by (backend, reason) (increase(toolmesh_codemode_swallowed_errors_total[14d]
 
 # Scripts by outcome over the same range, the base for the counts above
 sum by (outcome) (increase(toolmesh_codemode_scripts_total[14d]))
+
+# Credential store refresh overdue: last success more than two intervals back
+# (here an interval of one hour)
+time() - toolmesh_credential_store_last_success_timestamp_seconds > 7200
+
+# Failed credential store runs in the last hour
+increase(toolmesh_credential_store_runs_total{result="failure"}[1h]) > 0
 
 # Backends whose health check has been failing (degraded)
 toolmesh_backend_health_degraded == 1

@@ -1610,7 +1610,9 @@ func (a *RESTAdapter) apiErrorResult(err error) *ToolResult {
 }
 
 // errorToolResult builds the error ToolResult for err, carrying the §8.2
-// fields of a dadl.APIError in the metadata.
+// fields of a dadl.APIError in the metadata. Every adapter uses it: the MCP
+// adapter raises the same parameter errors as the REST adapter, and they
+// must look the same to the caller.
 func errorToolResult(err error) *ToolResult {
 	result := &ToolResult{
 		Content: []any{textContent(fmt.Sprintf("Error: %s", err))},

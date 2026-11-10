@@ -89,6 +89,26 @@ for the full narrative and details.
 
 ### Added
 
+- Credential store `command` (`CREDENTIAL_STORE=command`). ToolMesh runs
+  `TOOLMESH_CREDENTIAL_COMMAND`, for example `sops -d --output-type dotenv`
+  on an encrypted file, and keeps the values it prints in memory only: never
+  in the process environment, which Docker writes into the container
+  configuration on disk, and never in the log. The output is dotenv, or JSON
+  with `TOOLMESH_CREDENTIAL_FORMAT=json`: `TOOLMESH_CREDENTIAL_JSON_PATH`
+  selects the object that holds the values (`data.data` for
+  `vault kv get -format=json` or `bao kv get -format=json`), and nested
+  objects below it are flattened. The command runs without a shell; a failed
+  first run stops the start. `TOOLMESH_CREDENTIAL_RELOAD_IN` refreshes the
+  values on an interval, and a `RELOAD_IN` key in the output sets the next
+  run itself, which suits short-lived tokens. A failed
+  refresh keeps the previous values and retries with backoff. With this store
+  `TOOLMESH_AUTH_PASSWORD`, `TOOLMESH_API_KEY`, `REDIS_URL` and `env:`
+  remappings come from the output too, and stdio backends receive only the
+  variables their new `credential_env` entry in `backends.yaml` names. Two
+  metrics follow the runs: `toolmesh_credential_store_runs_total{result}` and
+  `toolmesh_credential_store_last_success_timestamp_seconds`. The embedded
+  store behaves as before. See `docs/configuration.md`.
+
 - DADL health checks (spec §4.6) are implemented. A DADL can declare under
   `backend.health` the cheapest call that proves the API is reachable and the
   credential works, by referencing a tool or naming an endpoint. ToolMesh runs
@@ -129,7 +149,30 @@ for the full narrative and details.
   lists as a relaxed control. Blob files left by a previous run are removed at
   startup; they could no longer be served. See `docs/configuration.md`.
 
+- The `execute_code` sandbox provides `atob`, `btoa`, `TextEncoder` and
+  `TextDecoder` (UTF-8). A base64 payload, such as the content of a GitHub
+  file read, decodes with the usual idiom instead of a hand-written alphabet
+  table. Composites and unit backends get the same four globals.
+
+- A failed call's entry in the `execute_code` result listing carries the
+  arguments the script sent as `params`, with the values of secret-looking
+  names (`password`, `token`, `api_key`, …) redacted, so a script with
+  several calls shows which one failed with what. Successful entries are
+  unchanged.
+
 ### Changed
+
+- A call to an MCP backend is checked against the tool's `inputSchema`
+  before it leaves ToolMesh. An undeclared argument or a missing required
+  one is rejected with the same `invalid_input` error a REST tool raises:
+  it names the argument, the closest declared name where there is one
+  (`topK` for `top_k`) and the declared parameter set. The backend's own
+  error used to come back raw and usually without the accepted names.
+  **Behavior change:** an argument an MCP backend used to drop silently is
+  now an error. A schema that opens its property set on purpose
+  (`additionalProperties` true or a schema, `patternProperties`) keeps
+  accepting undeclared names, and a schema that declares no properties is
+  not checked.
 
 - OAuth clients registered at `/register` expire. A client that never obtains
   a token is forgotten after a day (`TOOLMESH_DCR_CLIENT_TTL`, default
@@ -155,6 +198,45 @@ for the full narrative and details.
   hours up to that maximum and one typed in whole minutes or hours; the
   request view (`GET /approve/<id>/request`) carries `ttl_max`, and
   `ttl_choices` runs from the shortest to the longest.
+- A REST call answered with a status that the DADL lists in neither
+  `errors.retry_on` nor `errors.terminal` is no longer retried, as the DADL
+  spec (§8) requires. Until now every such `5xx`, and a `3xx` that came
+  through, was retried anyway, so leaving a `5xx` out of `retry_on` had no
+  effect. A DADL that wants a `5xx` such as `500` retried lists it in
+  `retry_on`; a tool with its own `errors` block lists its own `retry_on`,
+  because that block replaces the backend defaults.
+
+### Fixed
+
+- The MCP registry entry (`server.json`) declares the `Authorization` header
+  of the remote endpoint, optional and secret, so that registry listings no
+  longer present ToolMesh as needing no authentication. ToolMesh rejects every
+  request without an API key or an OAuth access token.
+- A `REDIS_URL` that does not parse no longer puts the URL, and with it a
+  password, into the log; the warning names only what is wrong with it.
+- A new installation sends its first telemetry report one to five minutes
+  after it starts instead of after 24 hours, so installations that restart
+  more often than once a day, for example after updates or on laptops,
+  report at all. A start sends a report only when none has succeeded yet or
+  the last one, kept in `toolmesh.json`, is older than 24 hours; restarts
+  add no reports.
+- Tool calls to a backend whose name contains an underscore, such as
+  `web_search`, are attributed to that backend in the audit trail, in
+  telemetry and in the metrics `toolmesh_tool_calls_total` and
+  `toolmesh_tool_call_duration_seconds`. The backend was taken from the
+  tool name up to the first underscore, so `web_search_query` was recorded
+  as backend `web`, tool `search_query`, and telemetry counted the call for
+  a backend `web` or not at all. Dashboards and alerts that select such a
+  backend by the shortened `backend` label need its full name now. Tools no
+  backend claims are counted under backend `unknown` with their full name.
+- The preflight of `tell_me_my_rights` (`tools: [...]`) reports the built-in
+  tools ToolMesh lists, such as `execute_code`, `discover_tools` and
+  `upload_file`, as `allowed`. It used to call them `denied` because no
+  backend has them, so an agent that checked its rights first, as the tool
+  recommends, gave up on tools it could call. A name that is not a tool the
+  caller can see or get a kit for now has the reason `unknown tool: ...`
+  instead of the wording of a denial; a tool the caller may not see still
+  reads the same as a name no tool has.
 
 ## [0.5.0] - 2026-10-23
 

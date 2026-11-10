@@ -27,6 +27,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -43,6 +45,11 @@ const (
 	testToolUnpack      = "unpack_embedded"
 	testTextPlain       = "text/plain"
 	testTikaToken       = "tika_token"
+
+	testPathToForeign      = "/to-foreign"
+	testHostFiles          = "files.example"
+	testErrNotAllowlisted  = "allowed file_url hosts"
+	testErrPrivateHostname = "private hostname"
 )
 
 // TestFileURL_SSRFPolicy verifies the caller-controlled file_url fetch policy:
@@ -89,7 +96,7 @@ func TestFileURL_SSRFPolicy(t *testing.T) {
 			FileURLAllowedHosts: []string{"allowed.example"},
 		})
 		_, err := a.Execute(context.Background(), testToolExtractText, map[string]any{paramTypeFile: fileURL})
-		if err == nil || !strings.Contains(err.Error(), "allowed file_url hosts") {
+		if err == nil || !strings.Contains(err.Error(), testErrNotAllowlisted) {
 			t.Fatalf("expected allowlist rejection, got %v", err)
 		}
 	})
@@ -105,6 +112,191 @@ func TestFileURL_SSRFPolicy(t *testing.T) {
 			t.Fatalf("expected allowed host fetch to succeed, got %v", err)
 		}
 	})
+}
+
+// TestFileURL_AllowlistAppliesToRedirects verifies that FileURLAllowedHosts
+// holds for every redirect hop of a file_url fetch, not only for the URL the
+// caller passed: an allowlisted host must not bounce the fetch to a host
+// outside the list (with AllowPrivateFileURL not even to a loopback service),
+// while redirects that stay within the list, and every redirect when no list
+// is configured, are followed as before.
+func TestFileURL_AllowlistAppliesToRedirects(t *testing.T) {
+	const secret = "INTERNAL-SECRET"
+	pdf := []byte("%PDF-1.4 minimal")
+
+	var adminHits atomic.Int32
+	internalSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/admin" {
+			adminHits.Add(1)
+			_, _ = w.Write([]byte(secret))
+			return
+		}
+		w.Header().Set(testHeaderContentType, testContentTypePDF)
+		_, _ = w.Write(pdf)
+	}))
+	defer internalSrv.Close()
+	// The same loopback service under a second hostname, so the redirect
+	// target differs from the allowlisted 127.0.0.1 by host, not only by port.
+	internalURL, err := url.Parse(internalSrv.URL)
+	if err != nil {
+		t.Fatalf("parse %q: %v", internalSrv.URL, err)
+	}
+	internalBase := "http://localhost:" + internalURL.Port()
+
+	redirectSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case testPathToForeign:
+			http.Redirect(w, r, internalBase+"/admin", http.StatusFound)
+		case "/to-same-host":
+			http.Redirect(w, r, "/doc.pdf", http.StatusFound)
+		case "/to-listed":
+			http.Redirect(w, r, internalBase+"/doc.pdf", http.StatusFound)
+		default:
+			w.Header().Set(testHeaderContentType, testContentTypePDF)
+			_, _ = w.Write(pdf)
+		}
+	}))
+	defer redirectSrv.Close()
+	redirectHost := mustHostname(t, redirectSrv.URL)
+
+	tests := []struct {
+		name          string
+		allowedHosts  []string
+		path          string
+		wantErr       string // empty: the fetch succeeds
+		wantBody      []byte
+		wantAdminHits int32
+	}{
+		{
+			name:         "redirect to a host outside the allowlist is refused",
+			allowedHosts: []string{redirectHost},
+			path:         testPathToForeign,
+			wantErr:      testErrNotAllowlisted,
+		},
+		{
+			name:         "redirect within the allowlisted host is followed",
+			allowedHosts: []string{redirectHost},
+			path:         "/to-same-host",
+			wantBody:     pdf,
+		},
+		{
+			name:         "redirect to another allowlisted host is followed",
+			allowedHosts: []string{redirectHost, "LOCALHOST"},
+			path:         "/to-listed",
+			wantBody:     pdf,
+		},
+		{
+			name:          "without an allowlist the redirect is followed as before",
+			path:          testPathToForeign,
+			wantBody:      []byte(secret),
+			wantAdminHits: 1,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			adminHits.Store(0)
+			var mu sync.Mutex
+			var received []byte
+			backendSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, _ := io.ReadAll(r.Body)
+				mu.Lock()
+				received = body
+				mu.Unlock()
+				_, _ = w.Write([]byte("parsed"))
+			}))
+			defer backendSrv.Close()
+
+			a, err := NewRESTAdapter(tikaLikeSpec(backendSrv.URL),
+				&testCredStore{creds: map[string]string{testTikaToken: testTokenValue}}, slog.Default(),
+				RESTAdapterOptions{
+					Unbound:             true,
+					AllowPrivateURL:     true,
+					AllowPrivateFileURL: true,
+					FileURLAllowedHosts: tc.allowedHosts,
+				})
+			if err != nil {
+				t.Fatalf("create adapter: %v", err)
+			}
+
+			_, err = a.Execute(context.Background(), testToolExtractText, map[string]any{paramTypeFile: redirectSrv.URL + tc.path})
+			mu.Lock()
+			got := received
+			mu.Unlock()
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("redirect left file_url_allowed_hosts: err = %v, backend received %q", err, got)
+				}
+			} else {
+				if err != nil {
+					t.Fatalf("Execute: %v", err)
+				}
+				if !bytes.Equal(got, tc.wantBody) {
+					t.Errorf("backend received %q, want %q", got, tc.wantBody)
+				}
+			}
+			if hits := adminHits.Load(); hits != tc.wantAdminHits {
+				t.Errorf("redirect target /admin was fetched %d times, want %d", hits, tc.wantAdminHits)
+			}
+		})
+	}
+}
+
+// TestFileURL_RedirectHopChecks checks the file fetch client's redirect
+// policy hop by hop: the file_url allowlist applies to every hop, on top of
+// the hop limit and the address-class checks, which stay as they are.
+func TestFileURL_RedirectHopChecks(t *testing.T) {
+	const publicIP = "8.8.8.8" // an address literal: checked, never dialed
+
+	tests := []struct {
+		name         string
+		allowPrivate bool
+		allowedHosts []string
+		target       string
+		hops         int
+		wantErr      string // empty: the redirect is followed
+	}{
+		{"host outside the allowlist", false, []string{testHostFiles}, "http://other.example/x", 1, testErrNotAllowlisted},
+		{"loopback outside the allowlist with private fetches allowed", true, []string{testHostFiles}, "http://localhost:8080/admin", 1, testErrNotAllowlisted},
+		{"allowlisted host in other case and on another port", true, []string{testHostFiles}, "https://FILES.example:8443/doc.pdf", 1, ""},
+		{"allowlisted public address", false, []string{publicIP}, "http://" + publicIP + "/doc.pdf", 1, ""},
+		{"allowlisted loopback still needs private fetches allowed", false, []string{"127.0.0.1"}, "http://127.0.0.1/doc.pdf", 1, "private IP"},
+		{"hop limit still applies", true, []string{testHostFiles}, "http://files.example/doc.pdf", 10, "stopped after 10 redirects"},
+		{"no allowlist follows any host", true, nil, "http://other.example/x", 1, ""},
+		{"no allowlist still blocks private targets", false, nil, "http://localhost/x", 1, testErrPrivateHostname},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			a, err := NewRESTAdapter(tikaLikeSpec("http://127.0.0.1:1"),
+				&testCredStore{creds: map[string]string{testTikaToken: testTokenValue}}, slog.Default(),
+				RESTAdapterOptions{
+					Unbound:             true,
+					AllowPrivateURL:     true,
+					AllowPrivateFileURL: tc.allowPrivate,
+					FileURLAllowedHosts: tc.allowedHosts,
+				})
+			if err != nil {
+				t.Fatalf("create adapter: %v", err)
+			}
+			via := make([]*http.Request, tc.hops)
+			for i := range via {
+				via[i] = httptest.NewRequestWithContext(context.Background(), http.MethodGet, "http://"+testHostFiles+"/start", nil)
+			}
+			req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, tc.target, http.NoBody)
+			if err != nil {
+				t.Fatalf("new request: %v", err)
+			}
+			err = a.fileFetchClient.CheckRedirect(req, via)
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("redirect to %s refused: %v", tc.target, err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("redirect to %s: err = %v, want it to contain %q", tc.target, err, tc.wantErr)
+			}
+		})
+	}
 }
 
 func mustHostname(t *testing.T, raw string) string {

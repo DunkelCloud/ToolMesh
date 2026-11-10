@@ -116,7 +116,8 @@ type RESTAdapterOptions struct {
 	// against internal services unless an operator opts in per backend.
 	AllowPrivateFileURL bool
 	// FileURLAllowedHosts, when non-empty, restricts caller file_url fetches to
-	// this exact set of hostnames (matched case-insensitively). This is the
+	// this exact set of hostnames (matched case-insensitively), for the URL the
+	// caller passes and for every redirect hop of the fetch. This is the
 	// recommended control for backends that must fetch from a known internal
 	// host: combine it with AllowPrivateFileURL so only those hosts are
 	// reachable, rather than the whole private range.
@@ -269,8 +270,18 @@ func NewRESTAdapter(spec *dadl.Spec, creds credentials.CredentialStore, logger *
 	// backend's AllowPrivateURL — and the client never carries the cookie jar
 	// (set below), credential injection, or relaxed TLS settings. The long
 	// timeout accommodates large files; per-call deadlines come from the request
-	// context.
-	fileRedirectCheck := newRedirectChecker(opts.AllowPrivateFileURL)
+	// context. The optional file_url host allowlist holds for the URL the
+	// caller passes (checkFileURLHostAllowed) and for every redirect hop.
+	var fileURLAllowedHosts map[string]bool
+	if len(opts.FileURLAllowedHosts) > 0 {
+		fileURLAllowedHosts = make(map[string]bool, len(opts.FileURLAllowedHosts))
+		for _, h := range opts.FileURLAllowedHosts {
+			if h = strings.TrimSpace(strings.ToLower(h)); h != "" {
+				fileURLAllowedHosts[h] = true
+			}
+		}
+	}
+	fileRedirectCheck := newFileRedirectChecker(opts.AllowPrivateFileURL, fileURLAllowedHosts)
 	fileFetchClient := &http.Client{
 		Timeout:       defaultStreamingHTTPTimeout,
 		Transport:     SSRFSafeTransport(defaultHTTPTimeout, opts.AllowPrivateFileURL, false),
@@ -303,16 +314,6 @@ func NewRESTAdapter(spec *dadl.Spec, creds credentials.CredentialStore, logger *
 			)
 		}
 		exposeTools = kept
-	}
-
-	var fileURLAllowedHosts map[string]bool
-	if len(opts.FileURLAllowedHosts) > 0 {
-		fileURLAllowedHosts = make(map[string]bool, len(opts.FileURLAllowedHosts))
-		for _, h := range opts.FileURLAllowedHosts {
-			if h = strings.TrimSpace(strings.ToLower(h)); h != "" {
-				fileURLAllowedHosts[h] = true
-			}
-		}
 	}
 
 	maxBodySizes, err := resolveMaxBodySizes(spec, logger)

@@ -64,18 +64,28 @@ func UnmarshalBackendConfig(data []byte, cfg *BackendConfig) error {
 		}
 		return err
 	}
+	for _, entry := range cfg.Backends {
+		if err := validateHintRequiredFor(entry); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
 // BackendEntry represents a single backend server configuration.
 type BackendEntry struct {
-	Name            string            `yaml:"name"`
-	Transport       string            `yaml:"transport"` // "http", "stdio", or "rest"
-	URL             string            `yaml:"url"`       // for HTTP transport
-	APIKeyEnv       string            `yaml:"api_key_env"`
-	Command         string            `yaml:"command"` // for STDIO transport
-	Args            []string          `yaml:"args"`
-	Hint            string            `yaml:"hint"`              // optional domain-specific hint for LLM tool descriptions
+	Name      string   `yaml:"name"`
+	Transport string   `yaml:"transport"` // "http", "stdio", or "rest"
+	URL       string   `yaml:"url"`       // for HTTP transport
+	APIKeyEnv string   `yaml:"api_key_env"`
+	Command   string   `yaml:"command"` // for STDIO transport
+	Args      []string `yaml:"args"`
+	Hint      string   `yaml:"hint"` // optional domain-specific hint for LLM tool descriptions
+	// HintRequiredFor lists the access classes of this backend's tools that
+	// run only for a caller that shows it has received the hint ("write",
+	// "dangerous", ...; "all" for every tool). Such a call is refused with
+	// the hint and a proof that is valid for the day; see HintProof.
+	HintRequiredFor []string          `yaml:"hint_required_for"`
 	DADL            string            `yaml:"dadl"`              // path to .dadl file (for transport: rest)
 	AllowPrivateURL *bool             `yaml:"allow_private_url"` // allow private/loopback base_url (default: true)
 	TLSSkipVerify   bool              `yaml:"tls_skip_verify"`   // accept invalid/self-signed TLS certificates
@@ -160,8 +170,12 @@ type BackendInfo struct {
 	// a page to read first, a local gotcha. Unlike Description it is
 	// deployment-specific, which is why it drives the first-use notice while
 	// Description drives the catalog blurb. Empty when no hint is configured.
-	Hint   string
-	SpecID string
+	Hint string
+	// HintRequiredFor lists the access classes whose tools run only for a
+	// caller that shows it has received Hint (backends.yaml
+	// hint_required_for). Empty means the hint is advice only.
+	HintRequiredFor []string
+	SpecID          string
 }
 
 // MCPAdapter connects ToolMesh as an MCP client to external MCP servers.
@@ -770,8 +784,9 @@ func (a *MCPAdapter) BackendSummaries() []BackendInfo {
 	infos := make([]BackendInfo, 0, len(a.backends))
 	for _, conn := range a.backends {
 		infos = append(infos, BackendInfo{
-			Name: conn.entry.Name,
-			Hint: conn.entry.Hint,
+			Name:            conn.entry.Name,
+			Hint:            conn.entry.Hint,
+			HintRequiredFor: conn.entry.HintRequiredFor,
 		})
 	}
 	return infos

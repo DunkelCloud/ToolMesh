@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -39,6 +40,9 @@ import (
 const (
 	sandboxDiscoverFn = "discover"
 	sandboxDescribeFn = "describe"
+	// sandboxAssertProofsFn presents hint proofs for the calls of one run;
+	// see CodeRunner.installProofs.
+	sandboxAssertProofsFn = "assert_proofs"
 )
 
 // maxCodeCalls is the maximum number of toolmesh.* calls allowed per execution.
@@ -305,6 +309,9 @@ func (r *CodeRunner) ExecuteWithOptions(ctx context.Context, code string, opts E
 		results   []any
 		console   []string
 		failed    = map[failedCall]struct{}{}
+		// proofs are the hint proofs the script asserted; they hold for
+		// this run only.
+		proofs []string
 	)
 
 	rt := goja.New()
@@ -392,9 +399,13 @@ func (r *CodeRunner) ExecuteWithOptions(ctx context.Context, code string, opts E
 			}
 
 			// Execute the tool
+			mu.Lock()
+			held := slices.Clone(proofs)
+			mu.Unlock()
 			result, err := r.executor.ExecuteTool(ctx, executor.ExecuteToolRequest{
-				ToolName: cn,
-				Params:   toolParams,
+				ToolName:   cn,
+				Params:     toolParams,
+				HintProofs: held,
 			})
 			if err != nil {
 				r.logger.DebugContext(ctx, "execute_code tool error",
@@ -415,6 +426,23 @@ func (r *CodeRunner) ExecuteWithOptions(ctx context.Context, code string, opts E
 				_ = errObj.Set(outcomeError, err.Error())
 				_ = errObj.Set(logKeyTool, cn)
 				return rt.ToValue(errObj)
+			}
+
+			// A call refused for want of a hint proof ends the script. The
+			// refusal carries the backend's hint, which the caller is meant
+			// to read before it goes on; handed to the script as an error
+			// value, a script that does not check its results would carry on
+			// and report success.
+			if hintBackend, refused := hintRefused(result); refused {
+				mu.Lock()
+				ran := len(results)
+				results = append(results, map[string]any{
+					logKeyTool:      cn,
+					outcomeError:    "not executed: hint proof for " + hintBackend + " missing or expired",
+					resultKeyParams: executor.SanitizeParams(toolParams),
+				})
+				mu.Unlock()
+				panic(rt.NewGoError(errors.New(hintStopText(result, ran))))
 			}
 
 			// Log result
@@ -499,6 +527,15 @@ func (r *CodeRunner) ExecuteWithOptions(ctx context.Context, code string, opts E
 	// index — no backend round-trip — so they do not count toward the
 	// maxCodeCalls budget.
 	r.installDiscovery(ctx, rt, tmObj)
+
+	// toolmesh.assert_proofs(proofs) presents hint proofs for the calls
+	// that follow in this run. It runs locally and does not count toward
+	// the maxCodeCalls budget.
+	r.installProofs(rt, tmObj, func(asserted []string) {
+		mu.Lock()
+		proofs = append(proofs, asserted...)
+		mu.Unlock()
+	})
 
 	// Guard against the common LLM mistake of invoking discover_tools or
 	// execute_code from inside the JS sandbox. Both are top-level MCP tools,
@@ -688,6 +725,82 @@ func (r *CodeRunner) installDiscovery(ctx context.Context, rt *goja.Runtime, tmO
 			return rt.ToValue(desc)
 		})
 	}
+}
+
+// installProofs registers toolmesh.assert_proofs on the toolmesh object. A
+// script presents with it the proofs that it has received the hints of the
+// backends it is about to call (backends.yaml hint_required_for); hold
+// takes the proofs for the run. A stale or malformed proof ends the script
+// at that line, before the calls that depend on it, with the hint in force
+// and the proof to use. A backend tool with the same sanitized name takes
+// precedence, in which case the helper is not installed.
+func (r *CodeRunner) installProofs(rt *goja.Runtime, tmObj *goja.Object, hold func([]string)) {
+	if _, taken := r.nameMap[sandboxAssertProofsFn]; taken {
+		return
+	}
+	_ = tmObj.Set(sandboxAssertProofsFn, func(call goja.FunctionCall) goja.Value {
+		asserted, err := proofArguments(call.Argument(0).Export())
+		if err != nil {
+			panic(rt.NewGoError(err))
+		}
+		if r.executor != nil {
+			if err := r.executor.CheckHintProofs(asserted); err != nil {
+				panic(rt.NewGoError(err))
+			}
+		}
+		hold(asserted)
+		return rt.ToValue(asserted)
+	})
+}
+
+// proofArguments reads the argument of toolmesh.assert_proofs: an array of
+// proof strings, or a single one.
+func proofArguments(arg any) ([]string, error) {
+	const usage = "toolmesh.assert_proofs: pass the proofs as an array of strings, e.g. toolmesh.assert_proofs([\"<backend>:<digest>\"])"
+	switch v := arg.(type) {
+	case string:
+		return []string{v}, nil
+	case []any:
+		out := make([]string, 0, len(v))
+		for _, item := range v {
+			s, ok := item.(string)
+			if !ok {
+				return nil, errors.New(usage)
+			}
+			out = append(out, s)
+		}
+		return out, nil
+	}
+	return nil, errors.New(usage)
+}
+
+// hintRefused reports whether a result is the refusal of a call that lacked
+// a current hint proof, and for which backend.
+func hintRefused(result *backend.ToolResult) (string, bool) {
+	if result == nil || !result.IsError {
+		return "", false
+	}
+	name, ok := result.Metadata[backend.MetadataKeyHintRequired].(string)
+	return name, ok && name != ""
+}
+
+// hintStopText is the error a script ends with when one of its calls was
+// refused for want of a hint proof: the refusal itself, then what became of
+// the calls before it, so that the next run does not repeat a write.
+func hintStopText(result *backend.ToolResult, ran int) string {
+	var refusal string
+	for _, block := range result.Content {
+		if m, ok := block.(map[string]any); ok {
+			if text, ok := m[contentKeyText].(string); ok {
+				refusal = text
+				break
+			}
+		}
+	}
+	if ran == 0 {
+		return refusal + "\n\nThe script stopped at this call. None of its calls was executed."
+	}
+	return refusal + fmt.Sprintf("\n\nThe script stopped at this call. The %d call(s) before it were executed and are listed in this result; leave them out of the next run unless they are meant to run again.", ran)
 }
 
 // visibleMatches runs a BM25 search and keeps the descriptors the calling

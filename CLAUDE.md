@@ -1,6 +1,6 @@
 # ToolMesh — Getting Started with Claude Code
 
-ToolMesh is a secure MCP gateway that turns REST APIs into tools using DADL (Declarative API Description Language). This guide helps you set up ToolMesh and connect your first backend — all from this Claude Code session.
+ToolMesh is a secure MCP gateway that turns REST APIs into tools using DADL (Dunkel API Description Language). This guide helps you set up ToolMesh and connect your first backend — all from this Claude Code session.
 
 ## Quick Start
 

@@ -60,7 +60,7 @@ tools:
       state: { type: string, in: query }
 ```
 
-The file also declares how the API authenticates (bearer token, API key, OAuth2, session login), how it pages and when to retry. ToolMesh does the HTTP work. The [DADL registry](https://dadl.ai/browse) has descriptions for 34 APIs; for others, ask an LLM that knows the [DADL spec](https://dadl.ai/spec/dadl-spec-v0.2) and test the result against the real API.
+The file also declares how the API authenticates (bearer token, API key, OAuth2, session login), how it pages and when to retry. ToolMesh does the HTTP work. The [DADL registry](https://dadl.ai/browse) has descriptions for 36 APIs; for others, ask an LLM that knows the [DADL spec](https://dadl.ai/spec/dadl-spec-v0.2) and test the result against the real API.
 
 In Code Mode the model calls these tools from JavaScript:
 
@@ -79,7 +79,7 @@ The script runs in a sandbox (goja) inside ToolMesh, and each `toolmesh.*` call 
 
 ToolMesh is at version 0.x. A minor release can still change the configuration; the [changelog](CHANGELOG.md) lists under *Changed* and *Deprecated* what an operator has to adjust.
 
-`docker compose up` pulls the latest release (`ghcr.io/dunkelcloud/toolmesh:latest`, at present v0.5.0), while this README describes `main`. Since v0.5.0, `main` adds health checks for DADL backends on `/health`, a switch and quotas for the file broker, and expiry for OAuth clients that registered themselves. They arrive with the next release.
+`docker compose up` pulls the latest release (`ghcr.io/dunkelcloud/toolmesh:latest`, at present v0.6.0). This README describes `main`; when `main` is ahead of the latest release, this section names what the release does not have yet.
 
 ## Getting started
 
@@ -314,7 +314,7 @@ To run your own build with Compose, see `docker-compose.override.yml.example`.
 
 ToolMesh is built and maintained by [Axel Dunkel](https://github.com/axeldunkel) at [Dunkel Cloud GmbH](https://dunkel.cloud), a German company that has run cloud and edge infrastructure for businesses for years. ToolMesh and DADL grew out of that work and run in our own stack, and the people who answer `security@dunkel.cloud` write the code.
 
-The [DADL registry](https://dadl.ai/browse) holds 34 API descriptions with about 4,300 tools, from a 10-tool Hacker News reader to 608 tools for NetBox DCIM/IPAM. Each shows how much of its API it covers, in percent.
+The [DADL registry](https://dadl.ai/browse) holds 36 API descriptions with about 4,500 tools, from 3 tools for YouTube video metadata to 608 tools for NetBox DCIM/IPAM. Each shows how much of its API it covers, in percent.
 
 - Website: [toolmesh.io](https://www.toolmesh.io/)
 - DADL spec and registry: [dadl.ai](https://dadl.ai)

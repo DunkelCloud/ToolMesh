@@ -56,6 +56,13 @@ func newProofRunner(t *testing.T, day time.Time) (*CodeRunner, *proofBackend) {
 	if err != nil {
 		t.Fatalf("ListTools: %v", err)
 	}
+	// The runner's descriptors carry the access classes, as a backend set
+	// that passes them through its tool list does.
+	for i := range tools {
+		if d, ok := b.LookupTool(tools[i].Name); ok {
+			tools[i].Access = d.Access
+		}
+	}
 	nameMap := map[string]string{sanitizeName(testToolFoo): testToolFoo, sanitizeName(testToolBar): testToolBar}
 	return NewCodeRunner(nameMap, tools, exec, nil, logger), b
 }

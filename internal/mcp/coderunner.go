@@ -436,13 +436,24 @@ func (r *CodeRunner) ExecuteWithOptions(ctx context.Context, code string, opts E
 			if hintBackend, refused := hintRefused(result); refused {
 				mu.Lock()
 				ran := len(results)
+				// The run ends here and is repeated with the proof. What it
+				// read can be read again, so those results shrink to their
+				// size: a script typically reads before it writes, and
+				// echoing a page it is about to fetch a second time costs
+				// the caller the page twice. What it wrote stays in full,
+				// because the caller needs the answers of calls it must not
+				// repeat.
+				cut := !opts.IncludeResults
+				if cut {
+					results = compactReadResults(results, r.isReadTool)
+				}
 				results = append(results, map[string]any{
 					logKeyTool:      cn,
 					outcomeError:    "not executed: hint proof for " + hintBackend + " missing or expired",
 					resultKeyParams: executor.SanitizeParams(toolParams),
 				})
 				mu.Unlock()
-				panic(rt.NewGoError(errors.New(hintStopText(result, ran))))
+				panic(rt.NewGoError(errors.New(hintStopText(result, ran, cut))))
 			}
 
 			// Log result
@@ -786,8 +797,9 @@ func hintRefused(result *backend.ToolResult) (string, bool) {
 
 // hintStopText is the error a script ends with when one of its calls was
 // refused for want of a hint proof: the refusal itself, then what became of
-// the calls before it, so that the next run does not repeat a write.
-func hintStopText(result *backend.ToolResult, ran int) string {
+// the calls before it, so that the next run does not repeat a write. cut
+// says that the results of read calls were reduced to their size.
+func hintStopText(result *backend.ToolResult, ran int, cut bool) string {
 	var refusal string
 	for _, block := range result.Content {
 		if m, ok := block.(map[string]any); ok {
@@ -800,7 +812,18 @@ func hintStopText(result *backend.ToolResult, ran int) string {
 	if ran == 0 {
 		return refusal + "\n\nThe script stopped at this call. None of its calls was executed."
 	}
-	return refusal + fmt.Sprintf("\n\nThe script stopped at this call. The %d call(s) before it were executed and are listed in this result; leave them out of the next run unless they are meant to run again.", ran)
+	listed := "are listed in this result"
+	if cut {
+		listed += ", read calls by the size of their result only"
+	}
+	return refusal + fmt.Sprintf("\n\nThe script stopped at this call. The %d call(s) before it were executed and %s; leave them out of the next run unless they are meant to run again.", ran, listed)
+}
+
+// isReadTool reports whether a tool is classified as reading only, by its
+// canonical name.
+func (r *CodeRunner) isReadTool(toolName string) bool {
+	d, ok := r.descBySanitized[sanitizeName(toolName)]
+	return ok && d.Access == accessClassRead
 }
 
 // visibleMatches runs a BM25 search and keeps the descriptors the calling
@@ -947,17 +970,49 @@ func compactCallResults(results []any) []any {
 			compacted[i] = entry
 			continue
 		}
-		compact := map[string]any{
-			logKeyTool:      m[logKeyTool],
-			resultKeyStatus: resultStatusOK,
-			resultKeyBytes:  contentBytes(tr),
+		compacted[i] = compactEntry(m, tr)
+	}
+	return compacted
+}
+
+// compactEntry is the {tool, status, resultBytes} summary of a successful
+// call entry.
+func compactEntry(m map[string]any, tr *backend.ToolResult) map[string]any {
+	compact := map[string]any{
+		logKeyTool:      m[logKeyTool],
+		resultKeyStatus: resultStatusOK,
+		resultKeyBytes:  contentBytes(tr),
+	}
+	// Carry the notice through compaction — it is the one part of the
+	// entry the caller cannot recover by re-reading the returned data.
+	if notice, ok := m[resultKeyNotice]; ok {
+		compact[resultKeyNotice] = notice
+	}
+	return compact
+}
+
+// accessClassRead is the access classification of tools that only read.
+const accessClassRead = "read"
+
+// compactReadResults is compactCallResults for the successful calls of read
+// tools only. Every other entry is kept in full: failed calls for their
+// message, and calls that may have changed something for their answer,
+// which the caller cannot get a second time without repeating the change.
+func compactReadResults(results []any, isRead func(toolName string) bool) []any {
+	compacted := make([]any, len(results))
+	for i, entry := range results {
+		compacted[i] = entry
+		m, ok := entry.(map[string]any)
+		if !ok {
+			continue
 		}
-		// Carry the notice through compaction — it is the one part of the
-		// entry the caller cannot recover by re-reading the returned data.
-		if notice, ok := m[resultKeyNotice]; ok {
-			compact[resultKeyNotice] = notice
+		tr, ok := m[resultKeyResult].(*backend.ToolResult)
+		if !ok || tr == nil || tr.IsError {
+			continue
 		}
-		compacted[i] = compact
+		if name, _ := m[logKeyTool].(string); isRead(name) {
+			compacted[i] = compactEntry(m, tr)
+		}
 	}
 	return compacted
 }

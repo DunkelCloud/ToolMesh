@@ -11,6 +11,26 @@ for the full narrative and details.
 
 ## [Unreleased]
 
+### Added
+
+- A DADL tool can list in `not_ready_on` the 2xx statuses with which its API
+  answers a read whose result it is still preparing; GitHub's repository
+  statistics send `202` with an empty body, for example. ToolMesh sends such
+  a request again under `errors.retry_strategy` instead of returning the
+  empty body as the result, and fails the call with the error code
+  `not_ready` when the result does not arrive within `max_retries`. For
+  `GET` and `HEAD` tools. The key is a ToolMesh extension that DADL spec
+  v0.2 does not define. See `docs/configuration.md`.
+
+### Fixed
+
+- The first retry of a REST call waits `errors.retry_strategy.initial_delay`
+  like every later one, and `max_retries` is the number of retries. Until
+  now the first retry went out at once, and one request more than declared
+  was sent.
+- A REST call that ends on a terminal error after a retry reports the
+  message of that response, not of the first one.
+
 ## [0.6.0] - 2026-11-10
 
 **Behavior change:** this release refuses several things 0.5.0 accepted.

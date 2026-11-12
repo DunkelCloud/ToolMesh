@@ -11,6 +11,14 @@ for the full narrative and details.
 
 ## [Unreleased]
 
+### Fixed
+
+- Embedded authorization: closing the engine while a check was in flight,
+  or right after one, could panic inside OpenFGA (`sync: WaitGroup is reused
+  before previous Wait has returned`). ToolMesh closes the engine when it
+  stops, so a stop during a tool call could run into this. The engine now
+  ends its server context before it closes the server.
+
 ## [0.6.0] - 2026-11-10
 
 **Behavior change:** this release refuses several things 0.5.0 accepted.

@@ -154,7 +154,10 @@ type Embedded struct {
 	// approvers holds the approvers of the policy applied last.
 	approvers atomic.Pointer[[]Approver]
 
-	applyMu   sync.Mutex
+	applyMu sync.Mutex
+	// stop ends the context the server was created with. Close calls it
+	// before it closes the server; see OpenEmbedded.
+	stop      context.CancelFunc
 	closeOnce sync.Once
 }
 
@@ -216,23 +219,34 @@ func OpenEmbedded(ctx context.Context, opts EmbeddedOptions) (*Embedded, error) 
 		return nil, fmt.Errorf("create authz cache: %w", err)
 	}
 	cache := &epochCache{inner: lru}
+	// The server gets a context of its own, which Close ends before it closes
+	// the server. OpenFGA answers a check as soon as the result is known and
+	// leaves the remaining workers of that check to finish on their own. A
+	// worker that stops its tuple iterator starts a goroutine that fills the
+	// iterator cache and adds it to a wait group of the server, unless the
+	// server's context has ended. The server's Close waits on that group, and
+	// an addition that arrives while it waits makes it panic. The context is
+	// not derived from ctx: the engine outlives the call that opens it.
+	srvCtx, stop := context.WithCancel(context.Background())
 	srv, err := server.NewServerWithOpts(
+		server.WithContext(srvCtx),
 		server.WithDatastore(ds),
 		server.WithCheckCache(cache),
 		server.WithCheckIteratorCacheEnabled(true),
 		server.WithCheckIteratorCacheTTL(cacheTTL),
 	)
 	if err != nil {
+		stop()
 		cache.Stop()
 		ds.Close()
 		return nil, fmt.Errorf("start embedded openfga: %w", err)
 	}
 
-	e := &Embedded{srv: srv, db: db, cache: cache, logger: logger}
+	e := &Embedded{srv: srv, stop: stop, db: db, cache: cache, logger: logger}
 	e.kits.Store(&[]Kit{})
 	e.approvers.Store(&[]Approver{})
 	if err := e.bootstrap(ctx, opts.Upgrade, filepath.Join(filepath.Dir(opts.Path), MarkerFileName)); err != nil {
-		srv.Close() // closes the datastore and with it db
+		_ = e.Close() // closes the datastore and with it db
 		return nil, err
 	}
 	return e, nil
@@ -533,10 +547,15 @@ func (e *Embedded) Healthy(ctx context.Context) error {
 	return nil
 }
 
-// Close stops the engine and closes the SQLite file. Calls after the first
-// do nothing; OpenFGA's own Close must not run twice.
+// Close stops the engine and closes the SQLite file. It ends the server's
+// context first, so that workers of checks already answered no longer start
+// goroutines the server would have to wait for (see OpenEmbedded). Calls
+// after the first do nothing; OpenFGA's own Close must not run twice.
 func (e *Embedded) Close() error {
-	e.closeOnce.Do(e.srv.Close)
+	e.closeOnce.Do(func() {
+		e.stop()
+		e.srv.Close()
+	})
 	return nil
 }
 

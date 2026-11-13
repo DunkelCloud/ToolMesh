@@ -28,6 +28,24 @@ for the full narrative and details.
   conversation gets the hint before its first such call, where the notice
   on a user's first call reached only the first conversation. See
   [Backend hints](docs/configuration.md#backend-hints).
+- Credentials of users. A REST backend can list credential names of its DADL
+  under `user_credentials` in `backends.yaml`; every user then stores the
+  credentials of their own accounts on the new page `/credentials`, signed in
+  with their ToolMesh password, and a call is made with the calling user's
+  credentials. A user can store several accounts per backend and picks one per
+  call with the parameter `account`, which every tool of such a backend takes.
+  A call whose user has stored none fails with a pointer to the page; there is
+  no fallback to the instance's credential, and such a backend never sends a
+  call without authentication. Tokens, sessions and cookies are kept per user
+  and account, and the audit entry of a call names the account it used. The
+  page offers a backend to the users who may call a tool of it. The values are
+  encrypted with `TOOLMESH_USER_CREDENTIALS_KEY`; without that key the store
+  and the page are off. The page can have a listener of its own
+  (`TOOLMESH_CREDENTIALS_BIND`, `TOOLMESH_CREDENTIALS_URL`, optional certificate
+  files), for instances whose main listener stands behind a proxy that someone
+  else runs: that proxy would read the passwords typed into the page. See
+  [Credentials of Users](docs/configuration.md#credentials-of-users)
+  and [ADR-0004](docs/adr/0004-credentials-of-users.md).
 
 ### Fixed
 
@@ -42,6 +60,12 @@ for the full narrative and details.
   before previous Wait has returned`). ToolMesh closes the engine when it
   stops, so a stop during a tool call could run into this. The engine now
   ends its server context before it closes the server.
+- Session auth: calls that arrive while a login runs wait for it instead of
+  logging in themselves, and give up at their own deadline; calls that fail
+  together on one expired session cause one re-login; a request no longer goes
+  out with the unresolved `{{token}}` of an inject rule when another call's
+  401 has just discarded the session; and a login whose answer lacks a token
+  leaves no partial session behind.
 
 ## [0.6.0] - 2026-11-10
 

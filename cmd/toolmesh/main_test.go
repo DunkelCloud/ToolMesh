@@ -85,7 +85,7 @@ func TestBackendLogger_DebugEnabled(t *testing.T) {
 func TestLoadRESTBackends_MissingFile(t *testing.T) {
 	// Non-existent file should simply return without error.
 	named := make(map[string]backend.ToolBackend)
-	loadRESTBackendsInto(named, filepath.Join(t.TempDir(), "does-not-exist.yaml"), "", nil, nil, nil, nil, quietLogger(), nil, nil, nil)
+	loadRESTBackendsInto(named, filepath.Join(t.TempDir(), "does-not-exist.yaml"), "", nil, nil, nil, nil, quietLogger(), nil, nil, nil, nil)
 	if len(named) != 0 {
 		t.Errorf("expected 0 backends, got %d", len(named))
 	}
@@ -98,7 +98,7 @@ func TestLoadRESTBackends_InvalidYAML(t *testing.T) {
 		t.Fatal(err)
 	}
 	named := make(map[string]backend.ToolBackend)
-	loadRESTBackendsInto(named, path, dir, nil, nil, nil, nil, quietLogger(), nil, nil, nil)
+	loadRESTBackendsInto(named, path, dir, nil, nil, nil, nil, quietLogger(), nil, nil, nil, nil)
 	// Should log error but not panic.
 }
 
@@ -114,7 +114,7 @@ backends:
 		t.Fatal(err)
 	}
 	named := make(map[string]backend.ToolBackend)
-	loadRESTBackendsInto(named, path, dir, nil, nil, nil, nil, quietLogger(), nil, nil, nil)
+	loadRESTBackendsInto(named, path, dir, nil, nil, nil, nil, quietLogger(), nil, nil, nil, nil)
 }
 
 func TestLoadRESTBackends_NonRestBackendSkipped(t *testing.T) {
@@ -130,7 +130,7 @@ backends:
 		t.Fatal(err)
 	}
 	named := make(map[string]backend.ToolBackend)
-	loadRESTBackendsInto(named, path, dir, nil, nil, nil, nil, quietLogger(), nil, nil, nil)
+	loadRESTBackendsInto(named, path, dir, nil, nil, nil, nil, quietLogger(), nil, nil, nil, nil)
 	if len(named) != 0 {
 		t.Errorf("expected 0 backends for non-rest transport, got %d", len(named))
 	}
@@ -149,5 +149,5 @@ backends:
 		t.Fatal(err)
 	}
 	named := make(map[string]backend.ToolBackend)
-	loadRESTBackendsInto(named, backendsPath, dir, nil, nil, nil, nil, quietLogger(), nil, nil, nil)
+	loadRESTBackendsInto(named, backendsPath, dir, nil, nil, nil, nil, quietLogger(), nil, nil, nil, nil)
 }

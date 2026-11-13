@@ -27,6 +27,10 @@ type TenantInfo struct {
 	Environment string // "production" | "staging"
 	CallerID    string
 	CallerClass string
+	// Account is the account of the user that the call selected, for
+	// backends whose credentials every user stores for themselves; empty
+	// when the call named none.
+	Account string
 }
 
 // CredentialStore is the interface for retrieving credentials by logical name.

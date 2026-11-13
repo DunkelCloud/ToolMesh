@@ -80,6 +80,8 @@ type RESTAdapter struct {
 	syntheticHealth     bool                          // the DADL's health check is offered as the synthetic health tool (spec §4.6)
 	authExpiresAt       time.Time                     // operator-recorded credential expiry from backends.yaml; zero = unknown
 	healthObserver      atomic.Pointer[HealthObserver]
+	userCredentials     []UserCredential             // credentials every user stores for themselves (backends.yaml user_credentials); nil = none
+	userAccounts        *credentials.UserScopedStore // resolves the account a call uses; nil without user credentials
 }
 
 // childGuardRef boxes a ChildGuard so it can live behind an atomic.Pointer:
@@ -152,6 +154,10 @@ type RESTAdapterOptions struct {
 	// entry (see BackendScope). ToolMesh sets it for every backend it loads.
 	// Without Scope the adapter is refused unless Unbound says so.
 	Scope *BackendScope
+	// UserCredentials makes credentials of the backend per user (see
+	// UserCredentialBinding); nil leaves every credential with the
+	// instance.
+	UserCredentials *UserCredentialBinding
 	// Unbound builds an adapter without the credential and host binding,
 	// for code that builds a backend outside a configuration, such as
 	// tests. It has no effect when Scope is set.
@@ -231,8 +237,29 @@ func NewRESTAdapter(spec *dadl.Spec, creds credentials.CredentialStore, logger *
 		}
 	}
 
+	// Credentials the operator declared per user are read from the calling
+	// user's namespace. The credential scope above still applies to their
+	// names: a user credential is one the entry may read.
+	var scopeEnv map[string]string
+	if opts.Scope != nil {
+		scopeEnv = opts.Scope.Env
+	}
+	creds, userCredentials, err := bindUserCredentials(spec, creds, opts.UserCredentials, scopeEnv)
+	if err != nil {
+		return nil, &UserCredentialConfigError{Backend: spec.Backend.Name, Err: err}
+	}
+
 	auth := dadl.NewRestAuth(spec.Backend.Auth, spec.Backend.BaseURL, creds, logger)
 	auth.SetScope(credScope, hostScope)
+	userAccounts, _ := creds.(*credentials.UserScopedStore)
+	if userAccounts != nil {
+		auth.SetPerUser(spec.Backend.Name, userAccounts)
+		// The tools take the label of the user's account besides their
+		// own parameters.
+		if err := declareAccountParam(spec); err != nil {
+			return nil, &UserCredentialConfigError{Backend: spec.Backend.Name, Err: err}
+		}
+	}
 
 	// Each adapter gets its own transport with SSRF-safe dial hooks (H-4, M-19)
 	// and redirect validation (H-3). When AllowPrivateURL is set, IP checks are
@@ -343,6 +370,8 @@ func NewRESTAdapter(spec *dadl.Spec, creds credentials.CredentialStore, logger *
 		maxBodySizes:        maxBodySizes,
 		hint:                opts.Hint,
 		hintRequiredFor:     opts.HintRequiredFor,
+		userCredentials:     userCredentials,
+		userAccounts:        userAccounts,
 	}, nil
 }
 
@@ -612,9 +641,21 @@ func (a *RESTAdapter) included(name string) bool {
 // declaration of the tool or composite toolName with dadl.ValidateParams and
 // returns them normalized by dadl.NormalizeParams. Names this adapter does
 // not expose yield params unchanged; Execute reports them.
+//
+// For a backend with user credentials the account label is put into its
+// stored form first, so the pre-execution gate and the backend see the same
+// label, whatever case or padding the caller wrote. The audit entry keeps
+// the arguments as the caller wrote them and names the account the call
+// used in its metadata.
 func (a *RESTAdapter) ValidateToolParams(toolName string, params map[string]any) (map[string]any, error) {
 	if !a.included(toolName) {
 		return params, nil
+	}
+	if a.userAccounts != nil {
+		var err error
+		if params, err = normalizeAccountParam(toolName, params); err != nil {
+			return nil, err
+		}
 	}
 	var declared map[string]dadl.ParamDef
 	if comp, ok := a.spec.Backend.Composites[toolName]; ok {
@@ -632,7 +673,46 @@ func (a *RESTAdapter) ValidateToolParams(toolName string, params map[string]any)
 
 // Execute runs a tool by name with the given parameters.
 // If the tool is a composite, it is executed in a sandboxed goja runtime.
+//
+// A call that lacks a credential of its user (user_credentials) comes back
+// as an error result that says what is missing and where the user adds it,
+// not as a failure of the backend.
+//
+// The account is resolved here, once, before anything is built or sent:
+// every request of the call, the child calls of a composite included, uses
+// that account, and the result names it in its metadata.
 func (a *RESTAdapter) Execute(ctx context.Context, toolName string, params map[string]any) (*ToolResult, error) {
+	account := ""
+	if a.userAccounts != nil {
+		var err error
+		if ctx, params, err = selectAccount(ctx, toolName, params); err != nil {
+			return a.paramErrorResult(ctx, toolName, err), nil
+		}
+		if account, err = a.resolveAccount(ctx); err != nil {
+			if remedy, ok := userCredentialResult(err); ok {
+				return remedy, nil
+			}
+			return nil, err
+		}
+		ctx = credentials.WithAccount(ctx, account)
+	}
+	result, err := a.execute(ctx, toolName, params)
+	if err != nil {
+		if remedy, ok := userCredentialResult(err); ok {
+			return remedy, nil
+		}
+	}
+	if account != "" && result != nil {
+		if result.Metadata == nil {
+			result.Metadata = map[string]any{}
+		}
+		result.Metadata[MetadataKeyAccount] = account
+	}
+	return result, err
+}
+
+// execute is Execute without the translation of a missing user credential.
+func (a *RESTAdapter) execute(ctx context.Context, toolName string, params map[string]any) (*ToolResult, error) {
 	// Enforce the include_tools allow-list at the execution boundary too, so a
 	// hidden tool cannot be invoked by guessing its name even though it never
 	// appears in discover_tools/execute_code.
@@ -766,7 +846,7 @@ func (a *RESTAdapter) Execute(ctx context.Context, toolName string, params map[s
 	if apiErr != nil {
 		// Handle 401 for session auth
 		if resp.StatusCode == 401 {
-			if err := a.auth.HandleUnauthorized(ctx); err == nil {
+			if err := a.auth.HandleUnauthorizedFor(ctx, sentRequest(resp)); err == nil {
 				// Retry once after re-auth
 				resp, body, err = a.doRequest(ctx, &tool, params, idemKey) //nolint:bodyclose // closed inside doRequest
 				if err != nil {
@@ -913,14 +993,29 @@ func (a *RESTAdapter) LookupTool(toolName string) (ToolDescriptor, bool) {
 // BackendSummaries returns metadata for this REST backend. SpecID is set to
 // the parsed spec's ContentHash so that the description builder can collapse
 // multiple instances of the same DADL spec into one line.
+//
+// A backend with user credentials says so in its description, so that a
+// caller knows about the account parameter before the first call, and has
+// a SpecID of its own: it is not collapsed with an instance of the same
+// DADL that uses credentials of the instance.
 func (a *RESTAdapter) BackendSummaries() []BackendInfo {
-	return []BackendInfo{{
+	info := BackendInfo{
 		Name:            a.spec.Backend.Name,
 		Description:     a.spec.Backend.Description,
 		Hint:            a.hint,
 		HintRequiredFor: a.hintRequiredFor,
 		SpecID:          a.spec.ContentHash,
-	}}
+	}
+	if len(a.userCredentials) > 0 {
+		info.Description = strings.TrimSpace(info.Description + " " + userCredentialNote)
+		info.SpecID += "+user-credentials"
+	}
+	return []BackendInfo{info}
+}
+
+// Description returns what the backend is, as its DADL says it.
+func (a *RESTAdapter) Description() string {
+	return a.spec.Backend.Description
 }
 
 // PromotedTools returns one Promotion per tool this backend opted to expose
@@ -2175,7 +2270,9 @@ func (a *RESTAdapter) executeComposite(ctx context.Context, name string, comp *d
 		if ref == nil {
 			return nil, fmt.Errorf("composite child call %s refused: no authorization guard installed", canonical)
 		}
-		if err := ref.guard.CheckChild(ctx, canonical, toolParams); err != nil {
+		// The guard sees the account the child call uses: the child inherits
+		// the composite's, so a policy on accounts applies to it as well.
+		if err := ref.guard.CheckChild(ctx, canonical, a.withContextAccount(ctx, toolParams)); err != nil {
 			return nil, err
 		}
 		result, err := a.Execute(ctx, toolName, toolParams)

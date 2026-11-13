@@ -21,7 +21,7 @@ All configuration is done via environment variables. Copy `.env.example` to `.en
 
 ## Login Throttling
 
-The password login at `/authorize` limits failed attempts. Each limit counts failures within `TOOLMESH_LOGIN_FAILURE_WINDOW`. Once a limit is reached, further attempts it covers are answered with `429` and a `Retry-After` header, without the password being checked, until the window that began with the first counted failure has passed. Later attempts do not extend it.
+The password login at `/authorize` and on the page [`/credentials`](#the-page) limits failed attempts. Each limit counts failures within `TOOLMESH_LOGIN_FAILURE_WINDOW`. Once a limit is reached, further attempts it covers are answered with `429` and a `Retry-After` header, without the password being checked, until the window that began with the first counted failure has passed. Later attempts do not extend it.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -914,8 +914,8 @@ theirs (`api_key_env`, `credential_env`) when ToolMesh connects to them: at
 startup and when `backends.yaml` changes.
 
 **ToolMesh's own secrets.** With the command store, `TOOLMESH_AUTH_PASSWORD`,
-`TOOLMESH_API_KEY` and `REDIS_URL` are taken from the output when it contains
-them, ahead of the environment, once at startup. Remappings (`env:` in
+`TOOLMESH_API_KEY`, `REDIS_URL` and `TOOLMESH_USER_CREDENTIALS_KEY` are taken
+from the output when it contains them, ahead of the environment, once at startup. Remappings (`env:` in
 `backends.yaml`) resolve their keys in the output too, not in the environment.
 
 **Stdio backends.** A stdio MCP server inherits ToolMesh's environment, which
@@ -1066,6 +1066,255 @@ ToolMesh runs the program again after 55 minutes. If that run fails, the old
 token stays in use while the retries back off (30 s, 60 s, 120 s, ...), so
 leave a margin for a few of them. The program can print static values too,
 for example by decrypting a file first and adding the token to its output.
+
+## Credentials of Users
+
+Some APIs have an account per person: a mailbox, a calendar, a personal API
+token. With one stored credential every caller would act as the same account.
+For such a backend ToolMesh can use the credential of the calling user instead.
+Each user stores their own on a page of ToolMesh; a credential never passes
+through a tool call. The reasons are in
+[ADR-0004](adr/0004-credentials-of-users.md).
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `TOOLMESH_USER_CREDENTIALS_KEY` | *(empty)* | Turns the store for credentials of users and the page `/credentials` on: 32 random bytes as base64 or as 64 hex digits, the key the stored values are encrypted with. Create one with `openssl rand -base64 32`. With `CREDENTIAL_STORE=command` it may come from the command's output |
+
+Without the key the store and the page do not exist, and a backend that
+declares `user_credentials` is not loaded. Keep the key like any other secret
+of the instance, and keep a copy: without it the stored values cannot be read.
+After a change of the key the stored accounts stay in the file but are
+unreadable; the page shows them as such and users store them again. A key of
+another form, or a `user-credentials.json` that cannot be read, stops ToolMesh
+at startup. ToolMesh takes the key out of its environment once it is read, so
+stdio backends, which inherit the environment, do not receive it.
+
+### Declaring them
+
+In `backends.yaml`, an entry lists under `user_credentials` the credential
+names of its DADL that every user stores for themselves. An item is the name:
+
+```yaml
+  - name: tracker
+    transport: rest
+    dadl: tracker.dadl
+    user_credentials:
+      - tracker_token
+```
+
+or a mapping with the name and the texts the page shows (`label` up to 80
+characters, `hint` up to 300):
+
+```yaml
+  - name: mail
+    transport: rest
+    dadl: mail.dadl
+    user_credentials:
+      - name: mail_login
+        label: Mailbox login
+        hint: Your mail address and an app password.
+        format: basic
+```
+
+`format: secret` (the default) stores what the user enters. `format: basic`
+asks for a username and a password and stores `Basic <base64(username:password)>`,
+the value of an HTTP `Authorization` header. It is for a DADL that sends one
+credential as that value, in a session login body or with `type: apikey`,
+`header_name: Authorization` and no `prefix`. A DADL with `type: basic` reads
+two credentials and encodes them itself: list its `username_credential` and
+`password_credential` as two items of the default format.
+
+- The DADL stays as it is. Which of its credentials are per user is the
+  operator's decision; credentials not listed stay with the instance.
+- A listed name is read from what the calling user has stored and from nowhere
+  else: there is no fallback to `CREDENTIAL_<NAME>`.
+- The names follow the [credential binding](#credential-and-host-binding) of the
+  entry like any other: a name outside the entry's namespace also has to be in
+  `credentials:`.
+- Every listed name must be one the DADL's auth block reads, for `oauth2` one
+  that its flow reads. A backend with a name it does not read is not loaded: a
+  typo would otherwise leave the real one with the instance. The same goes for
+  a name listed twice or also remapped with `env:`, an unknown `format`, a DADL
+  that declares a parameter named `account` itself, and a store that is off.
+  The `ERROR` line `backend refused` names the reason, and the startup
+  security-posture summary lists the backend; the other backends keep running.
+- A `user_credentials` key without a name under it (the key alone, an empty
+  list, an empty item) is an error of the file, like a misspelled key.
+- A backend with user credentials never sends a call without authentication.
+  Where a missing credential of the instance otherwise means "send without a
+  header", such a backend fails the call.
+- With `flow: jwt_bearer`, the `token_uri` inside a service-account key that a
+  user stored has to be a host of the backend (its `base_url` domain or
+  `allowed_hosts`), unless the DADL declares `token_url`.
+- `user_credentials` works for `transport: rest`. An MCP entry (`http`,
+  `stdio`) that sets it is refused, and a unit with a backend that sets it is
+  not loaded.
+- Stored accounts belong to the entry's `name`. After a rename of the entry the
+  page lists them under "No longer used" and users store them again.
+
+### Accounts and the `account` parameter
+
+A user can store several accounts for one backend, each under a label, for
+example the mail address. A label has 1 to 100 characters: letters a to z,
+digits and `@ . _ + -`, starting with a letter or digit, without spaces. Upper
+and lower case are the same label. Every tool of such a backend takes a
+parameter `account` besides its own:
+
+- With one stored account, `account` may be left out.
+- With several, a call has to name one. A call that names none fails and lists
+  the labels, so an agent can pick.
+- ToolMesh consumes the parameter; the API never receives it.
+- Labels are names, not secrets. They appear in tool calls, in the log and in
+  the audit trail. The audit entry of a call names the account it used in its
+  metadata (`account`), also when the call left the parameter out.
+
+**Whose accounts.** Accounts belong to a user id. A call uses what the user
+with the caller's `user_id` stored: a key in `apikeys.yaml` calls with the
+accounts of the `users.yaml` user of the same name, and a key whose `user_id`
+has no password login can never have any. With `TOOLMESH_AUTH_PASSWORD` there
+is one user (`TOOLMESH_AUTH_USER`), shared by everyone who knows the password
+and by `TOOLMESH_API_KEY`.
+
+**Policies.** A [gate policy](#gate-policies) sees the label as
+`ctx.params.account`, trimmed and in lower case, so it can limit which account
+a caller uses; the child calls of a composite are checked with the account the
+composite was called with. Two things to mind: a call that leaves `account` out
+uses the user's only stored account, which the policy does not see, so refuse
+such calls where the account matters; and a policy yields to a kit unless it
+carries the `enforce-with-kit` directive.
+
+**Errors.** A call whose user has stored no account ends as an error result,
+not as a request without authentication: the text says what is missing and
+names the page (its full address when `TOOLMESH_ISSUER` is set or the page has
+[an address of its own](#where-the-page-is-served)). Nothing is
+sent to the API. The result carries the code `user_credential_missing`,
+`user_credential_unknown_account`, `user_credential_ambiguous_account`,
+`user_credential_incomplete` or `user_credential_unreadable`.
+
+OAuth2 access tokens, session tokens and the cookies of a session login are
+kept per user and account, never shared. Only the cookies of the login are
+kept for such sessions; a cookie that a tool response sets is not.
+
+### The page
+
+`/credentials` is where a user stores, replaces and removes accounts.
+
+- **Sign-in.** With the user's ToolMesh password, the one of the login at
+  `/authorize` (`users.yaml` or `TOOLMESH_AUTH_PASSWORD`), under the same
+  [failed-login limits](#login-throttling) and counters. An installation
+  without a password login cannot use the page. A session ends 15 minutes after
+  sign-in, without renewal, and earlier when the user's password changes, the
+  user is removed or the user signs out. A signed-out session is remembered by
+  the process that signed it out: after a restart, or on another instance, its
+  cookie would be accepted again for what is left of the 15 minutes.
+- **What it shows.** The backends with user credentials of which the user may
+  call a tool, by the same [authorization](#authorization) as a tool call. Per
+  backend the stored accounts with the time they were stored, and a form.
+  Never a stored value. A form is answered with a redirect to the page, so a
+  reload never sends a credential a second time.
+- **The check.** After storing, ToolMesh sends the
+  [health check](#backend-health-checks) the DADL declares, with the new
+  credentials. If the API answers 401 or 403, or refuses the login or token
+  request, the page says so and the credentials are not kept: what the account
+  held before is put back. If the check cannot tell, for example because the
+  API does not answer, the account is stored and the page says that it is
+  unchecked. A DADL without a health check is stored unchecked. The check
+  runs to its end also when the browser goes away.
+- **Audit.** Every stored and removed account is recorded, with backend
+  `toolmesh` and the tool `user_credential_store` or `user_credential_remove`.
+  The entry carries the user and, in its metadata, `backend`, `account`,
+  `credentials` (the names) and `check` (the outcome). A save the API refused
+  is recorded as an error. Values are never recorded.
+- **Limits.** 50 accounts per user and backend; 20 saves per user in ten
+  minutes, of which the API may refuse 5; 16 KiB per value, no line breaks in a
+  value. The counts are kept per process. They bound how often a user can make
+  ToolMesh try credentials against an API.
+
+- **Sessions at the API.** Storing or removing an account ends the token or
+  session ToolMesh keeps for that account, so its next call authenticates with
+  what is stored then. The user's other accounts keep theirs.
+
+### Where the page is served
+
+By default the page is at `/credentials` of the main listener, next to the MCP
+endpoint. Put it behind TLS like the rest of ToolMesh. That is all an instance
+needs that is reached directly or through a proxy you run yourself.
+
+Whatever ends TLS in front of the page reads every form sent to it: the
+ToolMesh password at sign-in and each credential a user stores. If that is a
+proxy someone else runs, such as a CDN in front of a public MCP endpoint, a
+third party is in that path. For this case the page can have a listener of its
+own, on an address that does not pass that proxy, for example on a private
+network or a VPN. This is optional:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `TOOLMESH_CREDENTIALS_BIND` | *(empty)* | Address the page's own listener binds, such as `:8444` or `10.0.0.5:8444`. Empty leaves the page on the main listener |
+| `TOOLMESH_CREDENTIALS_URL` | *(empty)* | The address users open that listener at, scheme and host, such as `https://toolmesh.internal.example:8444`. Required with `TOOLMESH_CREDENTIALS_BIND` |
+| `TOOLMESH_CREDENTIALS_TLS_CERT` | *(empty)* | PEM file with the certificate of that listener. With it and the key the listener serves https itself |
+| `TOOLMESH_CREDENTIALS_TLS_KEY` | *(empty)* | PEM file with the key of that certificate |
+
+- With the listener, the main listener answers `/credentials` with 404. The
+  listener serves the page and nothing else.
+- Messages that send a user to the page name `TOOLMESH_CREDENTIALS_URL`. The
+  page is at that address and nowhere else: a request that reaches the
+  listener under another host name gets no page (status 421), and a form is
+  accepted from that address only. A proxy of your own in front of the
+  listener has to pass the `Host` header on.
+- Give the page a host name of its own. Browsers do not keep cookies apart by
+  port, so with the host name of the main listener and another port, what
+  stands in front of the main listener is sent the page's session cookie.
+  ToolMesh warns at startup about such an address.
+- `TOOLMESH_CREDENTIALS_BIND` needs a port from 1 to 65535.
+- Without certificate files the listener speaks plain http: put a TLS proxy of
+  your own in front of it, or use it on a network that is encrypted already.
+  With them, ToolMesh looks at the files once a minute and loads them again
+  after a change, so a renewed certificate needs no restart.
+- The settings go together. ToolMesh does not start with
+  `TOOLMESH_CREDENTIALS_URL` or the certificate files but no
+  `TOOLMESH_CREDENTIALS_BIND`, with a listener but no address, with one of the
+  two files alone, with files that hold no certificate, or with an address it
+  cannot bind.
+- In Docker, publish the listener's port on the address users reach it at.
+  `docker-compose.override.yml.example` has the lines.
+- A credential passes the page once, when it is stored. Calls take it from the
+  store and send it from ToolMesh to the backend's API; it does not travel
+  through the MCP endpoint.
+
+The session cookie is marked `Secure` when the page's address
+(`TOOLMESH_CREDENTIALS_URL`, otherwise `TOOLMESH_ISSUER`) is an `https` address
+or the request arrived over https, directly or as `X-Forwarded-Proto: https`
+from a proxy.
+
+The page puts the comments `<!--email_off-->` and `<!--/email_off-->` around
+its content. A Cloudflare zone with Email Address Obfuscation otherwise
+replaces the mail addresses on the page and shows them again with a script,
+which the page's Content-Security-Policy does not run: account labels that are
+mail addresses would be unreadable.
+
+### What to know before turning it on
+
+- The values are in `user-credentials.json` in `TOOLMESH_DATA_DIR`. Each value
+  is sealed with AES-256-GCM; user, backend, account, name, time and a short id
+  of the key are readable. A value is padded to a multiple of 256 bytes before
+  it is sealed, so the file does not tell a short password from a long one;
+  a larger value, such as a service-account key, shows its size in steps of
+  256 bytes. An
+  entry copied to another user or account in the file does not open. Back the
+  file up with the data directory, the key apart from it.
+- If a proxy that someone else runs ends TLS in front of ToolMesh, it reads
+  what users type into the page. Give the page
+  [a listener of its own](#where-the-page-is-served) then.
+- The file belongs to one process. Several instances do not share it.
+- Accounts belong to a user id and outlive the user. Removing a user from
+  `users.yaml` leaves their accounts in the file, unused; whoever is given
+  that id later would call with them. ToolMesh warns at startup about accounts
+  of users who cannot sign in. Before reusing an id, stop ToolMesh and remove
+  its entries from `user-credentials.json`.
+- A backend with user credentials is not monitored in the background: a
+  background check has no user. `/health` and the metrics do not list it, and
+  `<backend>_health` checks the caller's own account.
+- Whoever operates the instance and holds the key can read the stored values.
 
 ## Timeouts
 
@@ -1230,6 +1479,12 @@ such a backend ToolMesh
 
 The check never runs as part of a regular tool call. Backends without a
 declared check are not affected.
+
+A backend with [credentials of users](#credentials-of-users) is the exception:
+it is not checked in the background and does not appear on `/health` or in the
+metrics, the polling and threshold settings of its `health_check` block have no
+effect, and `<backend>_health` checks the caller's own account without counting
+toward a state.
 
 `health_check` in `backends.yaml` tunes the monitoring per backend. Every key
 is optional:

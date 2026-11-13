@@ -1406,69 +1406,26 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Reserve a slot against the failed-login limits before verifying the
-	// password. In single-password mode the submitted username is not part of
-	// the credential, so every attempt counts against the one configured
-	// account — typing a different name must not start a fresh count.
-	account := username
-	if s.userStore == nil {
-		account = s.cfg.AuthUser
-	}
-	attempt := s.loginThrottle.Acquire(r.Context(), account, auth.ClientIP(r))
-	if !attempt.Allowed {
-		s.loginFailed(r, username, loginReasonThrottledPrefix+attempt.Scope)
-		wait := retryAfterSeconds(attempt.RetryAfter)
+	// Check the password (failed-login limits included, see checkPassword).
+	check := s.checkPassword(r, username, password)
+	switch check.Outcome {
+	case auth.PasswordOK:
+	case auth.PasswordThrottled:
+		wait := retryAfterSeconds(check.RetryAfter)
 		w.Header().Set("Retry-After", strconv.Itoa(wait))
 		form.Error = fmt.Sprintf("Too many failed login attempts. Try again in %s.", humanWait(wait))
 		s.renderLoginForm(w, http.StatusTooManyRequests, form)
 		return
+	case auth.PasswordBusy:
+		w.Header().Set("Retry-After", authUnavailableRetryAfter)
+		form.Error = msgLoginBusy
+		s.renderLoginForm(w, http.StatusServiceUnavailable, form)
+		return
+	default:
+		form.Error = msgInvalidCredentials
+		s.renderLoginForm(w, http.StatusUnauthorized, form)
+		return
 	}
-
-	// Authenticate user
-	var userID, companyID, plan, credentialFP string
-	var roles []string
-
-	if s.userStore != nil {
-		// Multi-user mode (users.yaml)
-		user, err := s.userStore.Authenticate(r.Context(), username, password)
-		if err != nil {
-			// The password was not checked. The attempt is neither a failed
-			// login nor a successful one, so its slot goes back unused.
-			s.loginThrottle.Cancel(r.Context(), attempt)
-			s.compareDeferred(r, loginMethodPassword, err)
-			w.Header().Set("Retry-After", authUnavailableRetryAfter)
-			form.Error = msgLoginBusy
-			s.renderLoginForm(w, http.StatusServiceUnavailable, form)
-			return
-		}
-		if user == nil {
-			s.loginFailed(r, username, loginReasonInvalidCredentials)
-			form.Error = msgInvalidCredentials
-			s.renderLoginForm(w, http.StatusUnauthorized, form)
-			return
-		}
-		userID = user.Username
-		companyID = user.Company
-		plan = user.Plan
-		roles = user.Roles
-		credentialFP = hashFingerprint(user.PasswordHash)
-	} else {
-		// Legacy single-password mode
-		if !secretsEqual(password, s.cfg.AuthPassword) {
-			s.loginFailed(r, username, loginReasonInvalidCredentials)
-			form.Error = msgInvalidCredentials
-			s.renderLoginForm(w, http.StatusUnauthorized, form)
-			return
-		}
-		userID = s.cfg.AuthUser
-		companyID = "default"
-		plan = s.cfg.AuthPlan
-		roles = s.cfg.AuthRolesList()
-		credentialFP = s.ownerFingerprint()
-	}
-
-	// The password was right, whatever happens to the auth code below.
-	s.loginThrottle.Success(r.Context(), attempt)
 
 	code := generateID()
 	ac := &auth.AuthCode{
@@ -1477,12 +1434,12 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		RedirectURI:   form.RedirectURI,
 		CodeChallenge: form.CodeChallenge,
 		Scope:         form.Scope,
-		UserID:        userID,
-		CompanyID:     companyID,
-		Plan:          plan,
-		Roles:         roles,
+		UserID:        check.UserID,
+		CompanyID:     check.CompanyID,
+		Plan:          check.Plan,
+		Roles:         check.Roles,
 		ExpiresAt:     time.Now().Add(5 * time.Minute),
-		CredentialFP:  credentialFP,
+		CredentialFP:  check.Fingerprint,
 	}
 
 	if s.tokenStore != nil {

@@ -1083,8 +1083,15 @@ through a tool call. The reasons are in
 Without the key the store and the page do not exist, and a backend that
 declares `user_credentials` is not loaded. Keep the key like any other secret
 of the instance, and keep a copy: without it the stored values cannot be read.
+With the [command store](#command-store), keep it in the command's output
+rather than in `.env`: every value of `.env` ends up in the container
+configuration, where `docker inspect` shows it.
+
+The key is read at startup only, so a change needs a restart.
 After a change of the key the stored accounts stay in the file but are
-unreadable; the page shows them as such and users store them again. A key of
+unreadable; the page shows them as such and users store them again. A new key
+does not undo a leak: if the key and `user-credentials.json` may have been
+copied, the stored credentials have to be changed at their APIs as well. A key of
 another form, or a `user-credentials.json` that cannot be read, stops ToolMesh
 at startup. ToolMesh takes the key out of its environment once it is read, so
 stdio backends, which inherit the environment, do not receive it.

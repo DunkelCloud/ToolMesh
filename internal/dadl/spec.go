@@ -196,7 +196,25 @@ type ParamDef struct {
 	// Description documents the parameter (spec §6.1). Not yet emitted into
 	// the generated TypeScript interface.
 	Description string `yaml:"description"`
+	// gateway marks a parameter ToolMesh declares for its own use (see
+	// GatewayParam). A DADL cannot set it.
+	gateway bool
 }
+
+// ParamInGateway is the location of a parameter ToolMesh consumes itself:
+// it is declared, checked and shown like any other and never sent to the
+// API.
+const ParamInGateway = "gateway"
+
+// GatewayParam returns a string parameter that ToolMesh adds to a tool for
+// its own use.
+func GatewayParam(description string) ParamDef {
+	return ParamDef{Type: "string", In: ParamInGateway, Description: description, gateway: true}
+}
+
+// Gateway reports whether the parameter was added by ToolMesh with
+// GatewayParam, as opposed to declared by the DADL.
+func (p ParamDef) Gateway() bool { return p.gateway }
 
 // ParamTypeFileURL is the ParamDef.Type for file inputs referenced by URL
 // (DADL spec §6.2.1). The caller provides a URL; ToolMesh fetches the bytes

@@ -133,6 +133,11 @@ func LoadUnit(ctx context.Context, dir, dadlDir string, creds credentials.Creden
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parse %s: %w", cfgPath, err)
 	}
+	// A user_credentials key without a name under it decodes to nothing;
+	// refuse it here, so that it is not mistaken for no key at all.
+	if err := backend.CheckUserCredentialsYAML(data); err != nil {
+		return nil, fmt.Errorf("%s: %w", cfgPath, err)
+	}
 	if cfg.Unit == "" {
 		return nil, fmt.Errorf("%s: unit name is required", cfgPath)
 	}
@@ -206,6 +211,11 @@ func loadRESTSubBackend(
 ) (backend.ToolBackend, error) {
 	if entry.DADL == "" {
 		return nil, fmt.Errorf("transport=rest requires a dadl path")
+	}
+	// Refused, not ignored: the backend would otherwise run with one
+	// credential for all callers where the unit asks for one per user.
+	if len(entry.UserCredentials) > 0 {
+		return nil, fmt.Errorf("user_credentials is not supported for the backends of a unit")
 	}
 	dadlPath := resolveSubBackendDADL(unitDir, dadlDir, entry.DADL)
 	spec, err := dadl.Parse(dadlPath)

@@ -29,6 +29,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/DunkelCloud/ToolMesh/internal/credentials"
 	"github.com/DunkelCloud/ToolMesh/internal/dadl"
 )
 
@@ -156,7 +157,7 @@ func (a *RESTAdapter) CheckHealth(ctx context.Context) HealthResult {
 
 	at := a.healthAttempt(ctx, &tool)
 	if at.err == nil && at.status == http.StatusUnauthorized && a.auth.CanReauthenticate() {
-		if err := a.auth.HandleUnauthorized(ctx); err == nil {
+		if err := a.auth.HandleUnauthorizedFor(ctx, at.sent); err == nil {
 			at = a.healthAttempt(ctx, &tool)
 		}
 	}
@@ -175,7 +176,9 @@ func (a *RESTAdapter) CheckHealth(ctx context.Context) HealthResult {
 		res.HTTPStatus = at.status
 		a.evaluateHealth(&res, &tool, at)
 	}
-	if res.AuthExpiresAt.IsZero() {
+	// The expiry the operator recorded is that of the instance's credential;
+	// it says nothing about a user's own.
+	if res.AuthExpiresAt.IsZero() && !a.auth.PerUser() {
 		res.AuthExpiresAt = a.authExpiresAt
 	}
 	return res
@@ -190,6 +193,9 @@ type healthAttempt struct {
 	// setup marks an error raised while building the request, auth
 	// injection included — before anything was sent.
 	setup bool
+	// sent is the request the response answers, nil when it cannot tell
+	// which credentials were refused (see sentRequest).
+	sent *http.Request
 }
 
 // healthAttempt sends the check request once and reads at most
@@ -208,7 +214,7 @@ func (a *RESTAdapter) healthAttempt(ctx context.Context, tool *dadl.ToolDef) hea
 	if err != nil {
 		return healthAttempt{err: fmt.Errorf("read response: %w", err)}
 	}
-	at := healthAttempt{status: resp.StatusCode, body: body}
+	at := healthAttempt{status: resp.StatusCode, body: body, sent: sentRequest(resp)}
 	if len(body) > maxHealthBodyBytes {
 		at.body, at.truncated = body[:maxHealthBodyBytes], true
 	}
@@ -337,12 +343,18 @@ func transportErrorMessage(err error) string {
 // It is classified read — the check is side-effect-free by rule — and kept
 // out of ranked discovery.
 func (a *RESTAdapter) healthToolDescriptor() ToolDescriptor {
+	properties := map[string]any{}
+	if len(a.userCredentials) > 0 {
+		// The check runs with the caller's credentials, so it takes the
+		// account like every tool of the backend.
+		properties[credentials.AccountParam] = map[string]any{schemaKeyType: schemaTypeString}
+	}
 	return ToolDescriptor{
 		Name:        dadl.HealthToolName,
 		Description: dadl.HealthToolDescription + " Returns: " + dadl.HealthResultTS,
 		InputSchema: map[string]any{
 			schemaKeyType:                 schemaTypeObject,
-			schemaKeyProperties:           map[string]any{},
+			schemaKeyProperties:           properties,
 			schemaKeyAdditionalProperties: false,
 		},
 		Backend:  "rest:" + a.spec.Backend.Name,
@@ -360,7 +372,9 @@ func (a *RESTAdapter) executeHealthTool(ctx context.Context, params map[string]a
 		return a.paramErrorResult(ctx, dadl.HealthToolName, err), nil
 	}
 	res := a.CheckHealth(ctx)
-	if o := a.healthObserver.Load(); o != nil {
+	// With per-user credentials the result is about the caller's own
+	// credential, not about the backend: monitoring does not get it.
+	if o := a.healthObserver.Load(); o != nil && !a.auth.PerUser() {
 		(*o)(a.spec.Backend.Name, res)
 	}
 	payload, err := json.Marshal(res)

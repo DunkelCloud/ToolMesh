@@ -87,9 +87,10 @@ const (
 // store that holds values outside the environment they come from the store
 // (see ApplySecrets).
 const (
-	envAuthPassword = "TOOLMESH_AUTH_PASSWORD" //nolint:gosec // the variable's name, not a credential
-	envAPIKey       = "TOOLMESH_API_KEY"       //nolint:gosec // the variable's name, not a credential
-	envRedisURL     = "REDIS_URL"
+	envAuthPassword       = "TOOLMESH_AUTH_PASSWORD" //nolint:gosec // the variable's name, not a credential
+	envAPIKey             = "TOOLMESH_API_KEY"       //nolint:gosec // the variable's name, not a credential
+	envRedisURL           = "REDIS_URL"
+	envUserCredentialsKey = "TOOLMESH_USER_CREDENTIALS_KEY" //nolint:gosec // the variable's name, not a credential
 )
 
 // Config holds all ToolMesh configuration values.
@@ -227,7 +228,14 @@ type Config struct {
 
 	// Registry-based provider selection
 	CredentialStore string // registered store name (default: "embedded")
-	GateEvaluators  string // comma-separated evaluator chain (default: "goja")
+
+	// UserCredentialsKey turns on the store for credentials that users
+	// store for themselves (user_credentials in backends.yaml) and the
+	// credentials page: 32 random bytes as base64 or hex, the key those
+	// credentials are encrypted with. Empty leaves both off.
+	// TOOLMESH_USER_CREDENTIALS_KEY.
+	UserCredentialsKey string
+	GateEvaluators     string // comma-separated evaluator chain (default: "goja")
 
 	// Settings of the credential store "command", passed to it unparsed; the
 	// store checks them. They live outside CREDENTIAL_<NAME>, which is the
@@ -311,6 +319,7 @@ func Load() (*Config, error) {
 		AuthRoles:               envStr("TOOLMESH_AUTH_ROLES", "admin"),
 		DataDir:                 envStr("TOOLMESH_DATA_DIR", "/app/data"),
 		CredentialStore:         envStr("CREDENTIAL_STORE", "embedded"),
+		UserCredentialsKey:      envStr(envUserCredentialsKey, ""),
 		CredentialCommand:       envStr("TOOLMESH_CREDENTIAL_COMMAND", ""),
 		CredentialReloadIn:      envStr("TOOLMESH_CREDENTIAL_RELOAD_IN", ""),
 		CredentialTimeout:       envStr("TOOLMESH_CREDENTIAL_COMMAND_TIMEOUT", ""),
@@ -645,7 +654,10 @@ func (c *Config) ApplySecrets(lookup func(key string) (string, bool)) []string {
 		{envAuthPassword, &c.AuthPassword},
 		{envAPIKey, &c.APIKey},
 		{envRedisURL, &c.RedisURL},
+		{envUserCredentialsKey, &c.UserCredentialsKey},
 	}
+	// TOOLMESH_USER_CREDENTIALS_KEY is among them: the key that seals the
+	// credentials of users is ToolMesh's own secret as well.
 	var applied []string
 	for _, s := range secrets {
 		if v, ok := lookup(s.name); ok && v != "" {

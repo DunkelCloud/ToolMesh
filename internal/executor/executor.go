@@ -412,6 +412,14 @@ func (e *Executor) ExecuteTool(ctx context.Context, req ExecuteToolRequest) (*ba
 	if result != nil && result.IsError {
 		redactErrorResult(result)
 	}
+	// A backend with credentials of users names the account the call was
+	// made with; the audit entry records it, also when the caller left the
+	// choice to ToolMesh.
+	if result != nil {
+		if account, ok := result.Metadata[backend.MetadataKeyAccount].(string); ok && account != "" {
+			addMetadata(&entry, backend.MetadataKeyAccount, account)
+		}
+	}
 	if contentJSON, err := json.Marshal(result.Content); err == nil {
 		e.logger.DebugContext(ctx, "backend execution complete",
 			"tool", req.ToolName,

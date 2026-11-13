@@ -76,6 +76,7 @@ type RESTAdapter struct {
 	maxBodySizes        map[string]int64              // declared max_body_size string → effective byte ceiling; see resolveMaxBodySizes
 	childGuard          atomic.Pointer[childGuardRef] // authorizes composite child api.* calls; nil = child calls are refused (fail closed)
 	hint                string                        // operator guidance from backends.yaml hint:; empty = none configured
+	hintRequiredFor     []string                      // access classes that need a hint proof (backends.yaml hint_required_for)
 	syntheticHealth     bool                          // the DADL's health check is offered as the synthetic health tool (spec §4.6)
 	authExpiresAt       time.Time                     // operator-recorded credential expiry from backends.yaml; zero = unknown
 	healthObserver      atomic.Pointer[HealthObserver]
@@ -143,6 +144,10 @@ type RESTAdapterOptions struct {
 	// backend.description, which says what the API is; empty means the
 	// operator configured no hint.
 	Hint string
+	// HintRequiredFor lists the access classes whose tools run only for a
+	// caller that shows it has received Hint (backends.yaml
+	// hint_required_for).
+	HintRequiredFor []string
 	// Scope binds the backend's credentials and hosts to its backends.yaml
 	// entry (see BackendScope). ToolMesh sets it for every backend it loads.
 	// Without Scope the adapter is refused unless Unbound says so.
@@ -337,6 +342,7 @@ func NewRESTAdapter(spec *dadl.Spec, creds credentials.CredentialStore, logger *
 		fileURLAllowedHosts: fileURLAllowedHosts,
 		maxBodySizes:        maxBodySizes,
 		hint:                opts.Hint,
+		hintRequiredFor:     opts.HintRequiredFor,
 	}, nil
 }
 
@@ -909,10 +915,11 @@ func (a *RESTAdapter) LookupTool(toolName string) (ToolDescriptor, bool) {
 // multiple instances of the same DADL spec into one line.
 func (a *RESTAdapter) BackendSummaries() []BackendInfo {
 	return []BackendInfo{{
-		Name:        a.spec.Backend.Name,
-		Description: a.spec.Backend.Description,
-		Hint:        a.hint,
-		SpecID:      a.spec.ContentHash,
+		Name:            a.spec.Backend.Name,
+		Description:     a.spec.Backend.Description,
+		Hint:            a.hint,
+		HintRequiredFor: a.hintRequiredFor,
+		SpecID:          a.spec.ContentHash,
 	}}
 }
 

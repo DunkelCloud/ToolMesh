@@ -899,6 +899,7 @@ func loadRESTBackendsInto(named map[string]backend.ToolBackend, backendsConfigPa
 			ExposeTools:         entry.ExposeTools,
 			IncludeTools:        entry.IncludeTools,
 			Hint:                entry.Hint,
+			HintRequiredFor:     entry.HintRequiredFor,
 			AuthExpiresAt:       healthSettings.AuthExpiresAt,
 			Scope: &backend.BackendScope{
 				EntryName:    entry.Name,

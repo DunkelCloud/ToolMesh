@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"sync/atomic"
@@ -69,11 +70,45 @@ func newUserCredentialSetup(cfg *config.Config, logger *slog.Logger) (*userCrede
 		return nil, err
 	}
 	setup := &userCredentialSetup{store: store, key: key}
-	if !cfg.IssuerIsPlaceholder() {
-		setup.enrollURL = strings.TrimRight(cfg.Issuer, "/") + enroll.Path
+	if base := credentialsPageBase(cfg); base != "" {
+		setup.enrollURL = base + enroll.Path
 	}
 	logger.Info("user credential store initialized", "dataDir", cfg.DataDir)
 	return setup, nil
+}
+
+// credentialsPageBase is the address users reach the credentials page at,
+// without the page's path: the address of the page's own listener when it
+// has one, otherwise the public address of this ToolMesh. "" when that is
+// not configured.
+func credentialsPageBase(cfg *config.Config) string {
+	if cfg.CredentialsBind != "" {
+		return cfg.CredentialsURL
+	}
+	if cfg.IssuerIsPlaceholder() {
+		return ""
+	}
+	return strings.TrimRight(cfg.Issuer, "/")
+}
+
+// credentialsPageSharesHost reports whether the credentials page has a
+// listener of its own under the host name of the main listener, on another
+// port. Browsers do not keep cookies apart by port: whatever stands in
+// front of the main listener is then sent the page's session cookie and can
+// set one for it.
+func credentialsPageSharesHost(cfg *config.Config) bool {
+	if cfg.CredentialsBind == "" || cfg.IssuerIsPlaceholder() {
+		return false
+	}
+	page, err := url.Parse(cfg.CredentialsURL)
+	if err != nil {
+		return false
+	}
+	issuer, err := url.Parse(cfg.Issuer)
+	if err != nil {
+		return false
+	}
+	return page.Hostname() != "" && strings.EqualFold(page.Hostname(), issuer.Hostname())
 }
 
 // binding returns the user credential binding of a backend entry, nil for
@@ -199,10 +234,6 @@ func warnOrphanedAccounts(users *userCredentialSetup, identity enroll.Authentica
 // newCredentialsPage builds the credentials page on the user credential
 // store and the loaded backends.
 func newCredentialsPage(cfg *config.Config, users *userCredentialSetup, backends *userBackendRegistry, identity pageIdentity, authz toolAuthorizer, auditStore audit.AuditStore, logger *slog.Logger) (http.Handler, error) {
-	publicURL := ""
-	if !cfg.IssuerIsPlaceholder() {
-		publicURL = strings.TrimRight(cfg.Issuer, "/")
-	}
 	page, err := enroll.New(enroll.Options{
 		Store:    users.store,
 		Backends: backends.list,
@@ -225,15 +256,18 @@ func newCredentialsPage(cfg *config.Config, users *userCredentialSetup, backends
 			})
 			return rest.CheckUserCredentials(ctx, account)
 		},
-		Forget: func(userID, backendName string) {
+		Forget: func(userID, backendName, account string) {
 			if rest, ok := backends.get(backendName); ok {
-				rest.ForgetUser(userID)
+				rest.ForgetAccount(userID, account)
 			}
 		},
 		Audit:     auditStore,
 		Logger:    logger,
 		Key:       users.key,
-		PublicURL: publicURL,
+		PublicURL: credentialsPageBase(cfg),
+		// A page with a listener of its own is at its address and nowhere
+		// else.
+		AddressOnly: cfg.CredentialsBind != "",
 	})
 	if err != nil {
 		return nil, err

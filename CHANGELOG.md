@@ -25,7 +25,11 @@ for the full narrative and details.
   and account, and the audit entry of a call names the account it used. The
   page offers a backend to the users who may call a tool of it. The values are
   encrypted with `TOOLMESH_USER_CREDENTIALS_KEY`; without that key the store
-  and the page are off. See [Credentials of Users](docs/configuration.md#credentials-of-users)
+  and the page are off. The page can have a listener of its own
+  (`TOOLMESH_CREDENTIALS_BIND`, `TOOLMESH_CREDENTIALS_URL`, optional certificate
+  files), for instances whose main listener stands behind a proxy that someone
+  else runs: that proxy would read the passwords typed into the page. See
+  [Credentials of Users](docs/configuration.md#credentials-of-users)
   and [ADR-0004](docs/adr/0004-credentials-of-users.md).
 
 ### Fixed

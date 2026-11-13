@@ -41,6 +41,8 @@ const (
 	pageOrigin     = "https://toolmesh.example.com"
 	pageLoginPath  = enroll.Path + "/login"
 	pageFetchSite  = "Sec-Fetch-Site"
+	pageFieldUser  = "username" // fields of the page's sign-in form
+	pageFieldPass  = "password"
 	pageSameOrigin = "same-origin"
 )
 
@@ -240,7 +242,7 @@ func TestNewCredentialsPage(t *testing.T) {
 
 	signedIn := func(user string) string {
 		t.Helper()
-		form := url.Values{"username": {user}, "password": {pageUserPass}}
+		form := url.Values{pageFieldUser: {user}, pageFieldPass: {pageUserPass}}
 		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, pageOrigin+pageLoginPath, strings.NewReader(form.Encode()))
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		req.Header.Set(pageFetchSite, pageSameOrigin)

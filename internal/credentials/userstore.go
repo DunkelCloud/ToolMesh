@@ -262,11 +262,20 @@ func (s *FileUserStore) load() error {
 	return nil
 }
 
-// readable reports whether the store can open the entry: it was sealed
-// under the store's key and has a nonce of the right length. A nonce of
-// another length would make the cipher panic instead of failing.
-func (s *FileUserStore) readable(e userFileEntry) bool {
-	return e.KeyID == s.keyID && len(e.Nonce) == s.aead.NonceSize()
+// open returns the value of the entry stored for slot. ok is false when the
+// store cannot open it: it was sealed under another key, is damaged, was
+// moved to another slot, or is not in the form this store writes. A nonce
+// of another length would make the cipher panic instead of failing, so it
+// is looked at first.
+func (s *FileUserStore) open(e userFileEntry, slot UserSlot) (value string, ok bool) {
+	if e.KeyID != s.keyID || len(e.Nonce) != s.aead.NonceSize() {
+		return "", false
+	}
+	plain, err := s.aead.Open(nil, e.Nonce, e.Value, sealAAD(slot))
+	if err != nil {
+		return "", false
+	}
+	return unpadValue(plain)
 }
 
 // Users returns the ids of the users who have something stored, sorted.
@@ -380,6 +389,46 @@ func sealAAD(slot UserSlot) []byte {
 	return aad
 }
 
+// userValueBlock is the size sealed values are padded to a multiple of.
+// The sealed form is as long as what is sealed, so without padding the
+// file would tell how long each stored value is. Every value of up to
+// userValueBlock-4 bytes seals to the same length, which holds a password
+// or an API token. A larger value, such as a service-account key, still
+// shows its size in steps of a block.
+const userValueBlock = 256
+
+// padValue frames a value for sealing: its length, the value, and zero
+// bytes up to the next multiple of userValueBlock.
+func padValue(value string) []byte {
+	n := 4 + len(value)
+	padded := make([]byte, (n+userValueBlock-1)/userValueBlock*userValueBlock)
+	binary.BigEndian.PutUint32(padded, uint32(len(value))) //nolint:gosec // bounded by MaxUserCredentialBytes
+	copy(padded[4:], value)
+	return padded
+}
+
+// unpadValue undoes padValue. ok is false for anything padValue does not
+// produce: another length, a length field that does not fit, more padding
+// than a block, or padding that is not zero.
+func unpadValue(padded []byte) (value string, ok bool) {
+	if len(padded) < userValueBlock || len(padded)%userValueBlock != 0 {
+		return "", false
+	}
+	// On a platform with a 32-bit int a large length field turns negative
+	// here, which the check below refuses like any other that does not fit.
+	n := int(binary.BigEndian.Uint32(padded))
+	room := len(padded) - 4
+	if n <= 0 || n > room || room-n >= userValueBlock {
+		return "", false
+	}
+	for _, b := range padded[4+n:] {
+		if b != 0 {
+			return "", false
+		}
+	}
+	return string(padded[4 : 4+n]), true
+}
+
 // GetUser implements UserStore.
 func (s *FileUserStore) GetUser(_ context.Context, slot UserSlot) (string, error) {
 	slot = slot.canonical()
@@ -389,14 +438,11 @@ func (s *FileUserStore) GetUser(_ context.Context, slot UserSlot) (string, error
 	if !ok {
 		return "", fmt.Errorf("user credential %q of account %q at backend %q: %w", slot.Name, slot.Account, slot.Backend, ErrCredentialNotFound)
 	}
-	if !s.readable(e) {
-		return "", fmt.Errorf("user credential %q of account %q at backend %q was stored under another key or is damaged: %w", slot.Name, slot.Account, slot.Backend, ErrUserCredentialUnreadable)
+	value, ok := s.open(e, slot)
+	if !ok {
+		return "", fmt.Errorf("user credential %q of account %q at backend %q was stored under another key, is damaged or is not in the form this ToolMesh stores: %w", slot.Name, slot.Account, slot.Backend, ErrUserCredentialUnreadable)
 	}
-	plain, err := s.aead.Open(nil, e.Nonce, e.Value, sealAAD(slot))
-	if err != nil {
-		return "", fmt.Errorf("user credential %q of account %q at backend %q: %w", slot.Name, slot.Account, slot.Backend, ErrUserCredentialUnreadable)
-	}
-	return string(plain), nil
+	return value, nil
 }
 
 // PutUser implements UserStore.
@@ -422,7 +468,7 @@ func (s *FileUserStore) PutUser(_ context.Context, slot UserSlot, value string) 
 		Name:      slot.Name,
 		KeyID:     s.keyID,
 		Nonce:     nonce,
-		Value:     s.aead.Seal(nil, nonce, []byte(value), sealAAD(slot)),
+		Value:     s.aead.Seal(nil, nonce, padValue(value), sealAAD(slot)),
 		UpdatedAt: s.now().UTC().Truncate(time.Second),
 	}
 	s.mu.Lock()
@@ -468,12 +514,16 @@ func (s *FileUserStore) ListUser(_ context.Context, userID string) ([]UserCreden
 		if slot.UserID != userID {
 			continue
 		}
+		// Readable is what a read would find, not a guess from the entry's
+		// key id: the page must not show an account as stored that every
+		// call would fail on.
+		_, readable := s.open(e, slot)
 		out = append(out, UserCredentialInfo{
 			Backend:   slot.Backend,
 			Account:   slot.Account,
 			Name:      slot.Name,
 			UpdatedAt: e.UpdatedAt,
-			Readable:  s.readable(e),
+			Readable:  readable,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool {

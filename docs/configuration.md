@@ -1185,7 +1185,8 @@ carries the `enforce-with-kit` directive.
 
 **Errors.** A call whose user has stored no account ends as an error result,
 not as a request without authentication: the text says what is missing and
-names the page (its full address when `TOOLMESH_ISSUER` is set). Nothing is
+names the page (its full address when `TOOLMESH_ISSUER` is set or the page has
+[an address of its own](#where-the-page-is-served)). Nothing is
 sent to the API. The result carries the code `user_credential_missing`,
 `user_credential_unknown_account`, `user_credential_ambiguous_account`,
 `user_credential_incomplete` or `user_credential_unreadable`.
@@ -1229,17 +1230,81 @@ kept for such sessions; a cookie that a tool response sets is not.
   value. The counts are kept per process. They bound how often a user can make
   ToolMesh try credentials against an API.
 
-Put the page behind TLS like the rest of ToolMesh. The session cookie is marked
-`Secure` when `TOOLMESH_ISSUER` is an `https` address or the request arrived
-over https, directly or as `X-Forwarded-Proto: https` from a proxy.
+- **Sessions at the API.** Storing or removing an account ends the token or
+  session ToolMesh keeps for that account, so its next call authenticates with
+  what is stored then. The user's other accounts keep theirs.
+
+### Where the page is served
+
+By default the page is at `/credentials` of the main listener, next to the MCP
+endpoint. Put it behind TLS like the rest of ToolMesh. That is all an instance
+needs that is reached directly or through a proxy you run yourself.
+
+Whatever ends TLS in front of the page reads every form sent to it: the
+ToolMesh password at sign-in and each credential a user stores. If that is a
+proxy someone else runs, such as a CDN in front of a public MCP endpoint, a
+third party is in that path. For this case the page can have a listener of its
+own, on an address that does not pass that proxy, for example on a private
+network or a VPN. This is optional:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `TOOLMESH_CREDENTIALS_BIND` | *(empty)* | Address the page's own listener binds, such as `:8444` or `10.0.0.5:8444`. Empty leaves the page on the main listener |
+| `TOOLMESH_CREDENTIALS_URL` | *(empty)* | The address users open that listener at, scheme and host, such as `https://toolmesh.internal.example:8444`. Required with `TOOLMESH_CREDENTIALS_BIND` |
+| `TOOLMESH_CREDENTIALS_TLS_CERT` | *(empty)* | PEM file with the certificate of that listener. With it and the key the listener serves https itself |
+| `TOOLMESH_CREDENTIALS_TLS_KEY` | *(empty)* | PEM file with the key of that certificate |
+
+- With the listener, the main listener answers `/credentials` with 404. The
+  listener serves the page and nothing else.
+- Messages that send a user to the page name `TOOLMESH_CREDENTIALS_URL`. The
+  page is at that address and nowhere else: a request that reaches the
+  listener under another host name gets no page (status 421), and a form is
+  accepted from that address only. A proxy of your own in front of the
+  listener has to pass the `Host` header on.
+- Give the page a host name of its own. Browsers do not keep cookies apart by
+  port, so with the host name of the main listener and another port, what
+  stands in front of the main listener is sent the page's session cookie.
+  ToolMesh warns at startup about such an address.
+- `TOOLMESH_CREDENTIALS_BIND` needs a port from 1 to 65535.
+- Without certificate files the listener speaks plain http: put a TLS proxy of
+  your own in front of it, or use it on a network that is encrypted already.
+  With them, ToolMesh looks at the files once a minute and loads them again
+  after a change, so a renewed certificate needs no restart.
+- The settings go together. ToolMesh does not start with
+  `TOOLMESH_CREDENTIALS_URL` or the certificate files but no
+  `TOOLMESH_CREDENTIALS_BIND`, with a listener but no address, with one of the
+  two files alone, with files that hold no certificate, or with an address it
+  cannot bind.
+- In Docker, publish the listener's port on the address users reach it at.
+  `docker-compose.override.yml.example` has the lines.
+- A credential passes the page once, when it is stored. Calls take it from the
+  store and send it from ToolMesh to the backend's API; it does not travel
+  through the MCP endpoint.
+
+The session cookie is marked `Secure` when the page's address
+(`TOOLMESH_CREDENTIALS_URL`, otherwise `TOOLMESH_ISSUER`) is an `https` address
+or the request arrived over https, directly or as `X-Forwarded-Proto: https`
+from a proxy.
+
+The page puts the comments `<!--email_off-->` and `<!--/email_off-->` around
+its content. A Cloudflare zone with Email Address Obfuscation otherwise
+replaces the mail addresses on the page and shows them again with a script,
+which the page's Content-Security-Policy does not run: account labels that are
+mail addresses would be unreadable.
 
 ### What to know before turning it on
 
 - The values are in `user-credentials.json` in `TOOLMESH_DATA_DIR`. Each value
   is sealed with AES-256-GCM; user, backend, account, name, time and a short id
-  of the key are readable. An entry copied to another user or account in the
-  file does not open. Back the file up with the data directory, the key apart
-  from it.
+  of the key are readable. A value is padded to a multiple of 256 bytes before
+  it is sealed, so the file does not tell a short password from a long one;
+  a larger value, such as a service-account key, shows its size in steps of
+  256 bytes. An
+  entry copied to another user or account in the file does not open. Back the
+  file up with the data directory, the key apart from it.
+- If a proxy that someone else runs ends TLS in front of ToolMesh, it reads
+  what users type into the page. Give the page
+  [a listener of its own](#where-the-page-is-served) then.
 - The file belongs to one process. Several instances do not share it.
 - Accounts belong to a user id and outlive the user. Removing a user from
   `users.yaml` leaves their accounts in the file, unused; whoever is given

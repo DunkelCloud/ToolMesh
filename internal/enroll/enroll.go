@@ -56,7 +56,21 @@ var webFiles embed.FS
 
 // pageTmpl is the page. Everything a request or the configuration
 // contributes to it is escaped by html/template.
-var pageTmpl = template.Must(template.ParseFS(webFiles, "web/credentials.html"))
+var pageTmpl = template.Must(template.New("credentials.html").Funcs(template.FuncMap{
+	"mailAddressesAsWritten":    func() template.HTML { return emailOff },
+	"endMailAddressesAsWritten": func() template.HTML { return emailOn },
+}).ParseFS(webFiles, "web/credentials.html"))
+
+// emailOff and emailOn are the comments with which a page tells Cloudflare
+// to leave the mail addresses between them as written. A Cloudflare zone
+// with "Email Address Obfuscation" otherwise replaces every address in the
+// HTML and shows it again with a script, which the page's policy does not
+// run: account labels that are mail addresses would be unreadable. They are
+// values, not template text, because html/template drops comments.
+const (
+	emailOff template.HTML = "<!--email_off-->"
+	emailOn  template.HTML = "<!--/email_off-->"
+)
 
 // pageCSP lets the page load its own style sheet and post its forms to its
 // own origin, and nothing else: no script, no other origin, no framing.
@@ -130,19 +144,26 @@ type Options struct {
 	// Check tries the credentials stored for one account of a user against
 	// the backend's API; nil stores without a check.
 	Check func(ctx context.Context, userID, backendName, account string) backend.UserCredentialCheck
-	// Forget makes a backend drop the tokens and sessions it keeps for a
-	// user, so that a changed credential is used from the next call on;
-	// may be nil.
-	Forget func(userID, backendName string)
+	// Forget makes a backend drop the token and session it keeps for one
+	// account of a user, so that a changed credential is used from the
+	// account's next call on; may be nil.
+	Forget func(userID, backendName, account string)
 	// Audit records every stored and removed account; may be nil.
 	Audit  audit.AuditStore
 	Logger *slog.Logger
 	// Key is the key user credentials are encrypted with. The keys of the
 	// page's cookies and forms are derived from it.
 	Key []byte
-	// PublicURL is the address users reach this ToolMesh at, "" when not
-	// configured.
+	// PublicURL is the address users reach the page at, without its path:
+	// the address of the page's own listener when it has one, otherwise the
+	// public address of this ToolMesh. "" when not configured.
 	PublicURL string
+	// AddressOnly says that PublicURL is the one address of the page, as
+	// with a listener of its own. A request that arrives under another host
+	// name gets no page, and a form has to come from PublicURL also when
+	// the browser calls it same-origin. Without it the page answers under
+	// every name its listener is reached at. It needs PublicURL.
+	AddressOnly bool
 	// Now is the clock; nil means time.Now.
 	Now func() time.Time
 }
@@ -154,12 +175,14 @@ type Service struct {
 	auth      Authenticator
 	allowed   func(ctx context.Context, userID, backendName string) bool
 	check     func(ctx context.Context, userID, backendName, account string) backend.UserCredentialCheck
-	forget    func(userID, backendName string)
+	forget    func(userID, backendName, account string)
 	audit     audit.AuditStore
 	logger    *slog.Logger
 	sealer    *sealer
 	publicURL *url.URL
-	now       func() time.Time
+	// addressOnly: publicURL is the only address the page answers under.
+	addressOnly bool
+	now         func() time.Time
 
 	mu       sync.Mutex
 	saves    map[string][]time.Time // user → times of recent saves
@@ -211,6 +234,12 @@ func New(opts Options) (*Service, error) {
 			s.publicURL = u
 		}
 	}
+	if opts.AddressOnly {
+		if s.publicURL == nil {
+			return nil, errors.New("credentials page: an address of its own needs that address")
+		}
+		s.addressOnly = true
+	}
 	return s, nil
 }
 
@@ -237,7 +266,28 @@ func (s *Service) Handler() http.Handler {
 	mux.HandleFunc("POST "+Path+"/logout", s.handleLogout)
 	mux.HandleFunc("POST "+Path+"/save", s.handleSave)
 	mux.HandleFunc("POST "+Path+"/remove", s.handleRemove)
-	return mux
+	if !s.addressOnly {
+		return mux
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.EqualFold(r.Host, s.publicURL.Host) {
+			s.misdirected(w)
+			return
+		}
+		mux.ServeHTTP(w, r)
+	})
+}
+
+// misdirected answers a request that reached the page under a host name
+// that is not the page's address. It gets no form: what a user typed into
+// it would travel the path that name leads over, and keeping passwords off
+// such a path is what the page's own address is for. A proxy in front of
+// the page's listener therefore has to pass the Host header on.
+func (s *Service) misdirected(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusMisdirectedRequest)
+	_, _ = fmt.Fprintf(w, "The credentials page of this ToolMesh is at %s%s\n", s.publicURL.String(), Path)
 }
 
 // Kinds of a notice; they are the classes the style sheet colors.
@@ -386,22 +436,48 @@ func (s *Service) secure(r *http.Request) bool {
 // address when one is configured, otherwise the scheme and host the request
 // arrived with. A request that says neither is refused, as is an Origin of
 // "null" without the verdict.
+//
+// The verdict compares with the address the browser used, whatever that
+// was. Where the page has an address of its own, the form has to come from
+// that address: an Origin the browser sends along with the verdict has to
+// name it, scheme included, so that the page reached over plain http when
+// its address is https takes no password either.
 func (s *Service) sameOrigin(r *http.Request) bool {
-	if site := r.Header.Get("Sec-Fetch-Site"); site != "" {
-		return site == "same-origin"
-	}
 	origin := r.Header.Get("Origin")
+	if site := r.Header.Get("Sec-Fetch-Site"); site != "" {
+		if site != "same-origin" {
+			return false
+		}
+		if s.addressOnly && origin != "" && origin != originNull {
+			return s.fromPublicURL(origin)
+		}
+		return true
+	}
 	if origin == "" {
 		return false
+	}
+	if s.publicURL != nil {
+		return s.fromPublicURL(origin)
 	}
 	u, err := url.Parse(origin)
 	if err != nil || u.Host == "" {
 		return false
 	}
-	if s.publicURL != nil {
-		return strings.EqualFold(u.Scheme, s.publicURL.Scheme) && strings.EqualFold(u.Host, s.publicURL.Host)
-	}
 	return strings.EqualFold(u.Scheme, requestScheme(r)) && strings.EqualFold(u.Host, r.Host)
+}
+
+// originNull is the Origin header of a request whose origin the browser
+// withholds, for instance under a strict referrer policy.
+const originNull = "null"
+
+// fromPublicURL reports whether origin, the value of an Origin header, is
+// the configured address of the page.
+func (s *Service) fromPublicURL(origin string) bool {
+	u, err := url.Parse(origin)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	return strings.EqualFold(u.Scheme, s.publicURL.Scheme) && strings.EqualFold(u.Host, s.publicURL.Host)
 }
 
 // cookieName is the name a cookie of the page has for this request: with
@@ -880,12 +956,12 @@ func (s *Service) handleSave(w http.ResponseWriter, r *http.Request) {
 		if rerr := s.restore(ctx, sess.User, b.Name, account, keys[:i], before.values); rerr != nil {
 			err = fmt.Errorf("%w; putting the earlier state back failed as well: %w", err, rerr)
 		}
-		s.forgetUser(sess.User, b.Name)
+		s.forgetAccount(sess.User, b.Name, account)
 		s.record(ctx, auditStore, start, sess.User, b.Name, account, keys, "", err)
 		s.storeFailed(ctx, w, r, sess, err)
 		return
 	}
-	s.forgetUser(sess.User, b.Name)
+	s.forgetAccount(sess.User, b.Name, account)
 
 	outcome := backend.UserCredentialCheck{Outcome: backend.UserCheckUnavailable}
 	if s.check != nil {
@@ -897,7 +973,7 @@ func (s *Service) handleSave(w http.ResponseWriter, r *http.Request) {
 	case backend.UserCheckRefused:
 		s.countRefusal(sess.User)
 		rerr := s.restore(ctx, sess.User, b.Name, account, keys, before.values)
-		s.forgetUser(sess.User, b.Name)
+		s.forgetAccount(sess.User, b.Name, account)
 		auditErr = fmt.Errorf("the API refused the credentials: %s", outcome.Detail)
 		text := fmt.Sprintf("%s did not accept these credentials (%s). ", b.Name, outcome.Detail)
 		switch {
@@ -986,14 +1062,14 @@ func (s *Service) handleRemove(w http.ResponseWriter, r *http.Request) {
 		}
 		slot := credentials.UserSlot{UserID: sess.User, Backend: backendName, Account: account, Name: info.Name}
 		if _, err := s.store.DeleteUser(ctx, slot); err != nil {
-			s.forgetUser(sess.User, backendName)
+			s.forgetAccount(sess.User, backendName, account)
 			s.record(ctx, auditRemove, start, sess.User, backendName, account, removed, "", err)
 			s.storeFailed(ctx, w, r, sess, err)
 			return
 		}
 		removed = append(removed, info.Name)
 	}
-	s.forgetUser(sess.User, backendName)
+	s.forgetAccount(sess.User, backendName, account)
 	if len(removed) == 0 {
 		done(notice{Kind: noticeWarn, Text: "There was no such account; nothing was removed."})
 		return
@@ -1003,10 +1079,11 @@ func (s *Service) handleRemove(w http.ResponseWriter, r *http.Request) {
 	done(notice{Kind: noticeOK, Text: fmt.Sprintf("Removed the account %s for %s.", account, backendName)})
 }
 
-// forgetUser makes the backend drop what it keeps for the user.
-func (s *Service) forgetUser(user, backendName string) {
+// forgetAccount makes the backend drop what it keeps for one account of
+// the user.
+func (s *Service) forgetAccount(user, backendName, account string) {
 	if s.forget != nil {
-		s.forget(user, backendName)
+		s.forget(user, backendName, account)
 	}
 }
 

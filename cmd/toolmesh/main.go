@@ -537,17 +537,28 @@ func main() {
 	}
 
 	// The credentials page, where users store the credentials of their own
-	// accounts. It exists with the user credential store only.
+	// accounts. It exists with the user credential store only, and is
+	// served on the main listener or, when configured, on one of its own.
+	var credentialsSrv *credentialsListener
 	if users != nil {
 		page, err := newCredentialsPage(cfg, users, userBackends, mcpServer, exec, auditStore, logger)
 		if err != nil {
 			logger.Error("failed to set up the credentials page", "error", err)
 			os.Exit(1)
 		}
-		httpMux.Handle(enroll.Path, page)
-		httpMux.Handle(enroll.Path+"/", page)
-		logger.Info("credentials page configured", "path", enroll.Path, "passwordLogin", mcpServer.PasswordLoginEnabled(), "link", users.enrollURL)
+		credentialsSrv, err = serveCredentialsPage(ctx, cfg, httpMux, page, logger)
+		if err != nil {
+			logger.Error("failed to start the listener of the credentials page", "error", err)
+			os.Exit(1)
+		}
+		logger.Info("credentials page configured", "path", enroll.Path, "listener", credentialsSrv.describe(), "passwordLogin", mcpServer.PasswordLoginEnabled(), "link", users.enrollURL)
+		if credentialsPageSharesHost(cfg) {
+			logger.Warn("the credentials page has a listener of its own, but under the host name of TOOLMESH_ISSUER: browsers do not keep cookies apart by port, so what stands in front of the main listener is sent the page's session cookie and can set one for it. Give the page a host name of its own",
+				"page", cfg.CredentialsURL, "issuer", cfg.Issuer)
+		}
 		warnOrphanedAccounts(users, mcpServer, logger)
+	} else if cfg.CredentialsBind != "" {
+		logger.Warn("TOOLMESH_CREDENTIALS_BIND is set, but there is no credentials page without TOOLMESH_USER_CREDENTIALS_KEY: no listener is started for it")
 	}
 
 	// Wrap with middleware: panic recovery (outermost) → security headers → request logging.
@@ -624,6 +635,16 @@ func main() {
 		logger.Error("http server error", "error", err)
 		os.Exit(1)
 	}
+
+	// The page's own listener is stopped here and not next to the others:
+	// ListenAndServe returns as soon as the shutdown begins, and the process
+	// would end before a form in flight is done. Storing an account ends
+	// with its check and its audit entry, so the listener gets the time.
+	pageCtx, pageCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	if err := credentialsSrv.shutdown(pageCtx); err != nil {
+		logger.Error("credentials page listener shutdown error", "error", err)
+	}
+	pageCancel()
 
 	logger.Info("ToolMesh stopped")
 }

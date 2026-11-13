@@ -225,7 +225,7 @@ type page struct {
 	// check answers the check of a save; nil accepts.
 	check   func(ctx context.Context) backend.UserCredentialCheck
 	checked []string // "user/backend/account" of every check
-	forgot  []string // "user/backend" of every forget
+	forgot  []string // "user/backend/account" of every forget
 	// denied lists the users the backend is not offered to.
 	denied map[string]bool
 }
@@ -278,10 +278,10 @@ func newPage(t *testing.T, publicURL string) *page {
 			}
 			return backend.UserCredentialCheck{Outcome: backend.UserCheckAccepted, Detail: "HTTP 200"}
 		},
-		Forget: func(userID, backendName string) {
+		Forget: func(userID, backendName, account string) {
 			p.mu.Lock()
 			defer p.mu.Unlock()
-			p.forgot = append(p.forgot, userID+"/"+backendName)
+			p.forgot = append(p.forgot, userID+"/"+backendName+"/"+account)
 		},
 		Audit:     p.audit,
 		Logger:    slog.New(slog.NewTextHandler(p.logs, nil)),
@@ -573,7 +573,7 @@ func TestPage_FormsMustComeFromThePage(t *testing.T) {
 	for name, origin := range map[string]string{
 		"another site": tEvil,
 		"no origin":    "",
-		"null origin":  "null",
+		"null origin":  originNull,
 		"other scheme": "http://toolmesh.example.com",
 		"other port":   "https://toolmesh.example.com:8443",
 	} {
@@ -602,7 +602,7 @@ func TestPage_FormsMustComeFromThePage(t *testing.T) {
 	}
 	// What browsers send with the page's own form: the verdict same-origin,
 	// with an Origin of "null" under a strict referrer policy, or none.
-	for _, origin := range []string{"null", "", tOrigin} {
+	for _, origin := range []string{originNull, "", tOrigin} {
 		b := p.newBrowser()
 		b.site, b.origin = tSameOrigin, origin
 		if rec := b.post(tLoginPath, login); rec.Code != http.StatusSeeOther {
@@ -705,8 +705,8 @@ func TestPage_SaveStoresAndNeverShows(t *testing.T) {
 	if len(p.checked) != 1 || p.checked[0] != tAlice+"/"+tBackend+"/"+tAccount {
 		t.Errorf("checks = %v", p.checked)
 	}
-	if len(p.forgot) != 1 || p.forgot[0] != tAlice+"/"+tBackend {
-		t.Errorf("forgets = %v, want the backend told once to drop alice's sessions", p.forgot)
+	if len(p.forgot) != 1 || p.forgot[0] != tAlice+"/"+tBackend+"/"+tAccount {
+		t.Errorf("forgets = %v, want the backend told once to drop the session of this account", p.forgot)
 	}
 
 	// The account is listed, and the notice is shown once: a reload of the

@@ -307,6 +307,7 @@ func TestRestAuth_PerUser_ConcurrentUsersNeverMix(t *testing.T) {
 	var wg sync.WaitGroup
 	for i := range people {
 		user, secret := fmt.Sprintf("user%d", i), fmt.Sprintf("secret%d", i)
+		account := fmt.Sprintf("u%d@example.com", i)
 		for w := range workers {
 			wg.Add(1)
 			go func() {
@@ -325,7 +326,7 @@ func TestRestAuth_PerUser_ConcurrentUsersNeverMix(t *testing.T) {
 					}
 					switch (c + w) % 5 {
 					case 0:
-						a.ForgetUser(user)
+						a.ForgetAccount(user, account)
 					case 1:
 						_ = a.HandleUnauthorizedFor(req.Context(), req)
 					}

@@ -84,7 +84,9 @@ serialized: calls that arrive while a login runs wait for it.
 in the data directory, each value sealed with AES-256-GCM under a key the
 operator supplies (`TOOLMESH_USER_CREDENTIALS_KEY`). User, backend, account and
 name are bound into each seal, so an entry copied to another place in the file
-does not open. Without the key the store is off and a backend that declares
+does not open. A value is padded to a multiple of 256 bytes before it is
+sealed: the sealed form is as long as what is sealed, and the file would
+otherwise tell how long each password is. Without the key the store is off and a backend that declares
 user credentials is refused. The key is the operator's to create because a key
 that ToolMesh generated next to the file would protect nothing.
 
@@ -94,7 +96,22 @@ when, and never a value. It offers a backend to the users who may call a tool
 of it, by the authorization of tool calls. After storing, ToolMesh sends the
 health check the DADL declares with the new credentials; if the API refuses
 them, the earlier state is restored. Every stored and removed account is an
-audit entry without values.
+audit entry without values. A changed or removed account loses the token or
+session kept for it; the user's other accounts keep theirs.
+
+**Where the page is served.** By default on the main listener, next to the MCP
+endpoint. Whatever ends TLS in front of the page reads the passwords typed into
+it, and a public MCP endpoint often stands behind a proxy that someone else
+runs. The page can therefore have a listener of its own, with its own address
+and, if wanted, its own certificate; the main listener then does not serve the
+page at all, and the page answers under its own address only: under another
+host name it shows no form, and it accepts forms from that address alone.
+This is an
+option and not the default, because an instance that is reached directly or
+through the operator's own proxy has no such third party and should not need a
+second listener. Encrypting the form in the browser was not chosen: it needs a
+script, and the proxy that is to be kept out delivers the page and could
+replace the script.
 
 **No call without authentication.** For a backend with instance credentials a
 credential that is not set means the call goes out without a header, which
@@ -121,6 +138,10 @@ whichever of its credentials is missing.
   in.
 - Limit: the page signs users in with a password. An installation that
   authenticates callers with API keys only cannot use it.
+- Limit: a proxy that ends TLS in front of the page reads what is typed into
+  it. The page's own listener avoids that for the page; the ToolMesh password
+  typed at `/authorize` and everything sent through the MCP endpoint still
+  pass that proxy.
 - Limit: the store is a file of one process. Instances behind a load balancer
   do not share it.
 - Limit: cookies a tool response sets are not kept for the sessions of such a

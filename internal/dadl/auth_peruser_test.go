@@ -259,11 +259,11 @@ func TestRestAuth_PerUser_SessionsAreIsolated(t *testing.T) {
 	// A changed credential: forgetting alice makes her next call log in
 	// with the new value; bob's session is untouched.
 	puStore(t, users, puAlice, puAccount, "alice2")
-	a.ForgetUser(puAlice)
+	a.ForgetAccount(puAlice, puAccount)
 	check(puAlice, "alice2")
 	check(puBob, "bob")
 	if got := api.logins.Load(); got != 3 {
-		t.Errorf("logins after ForgetUser = %d, want 3", got)
+		t.Errorf("logins after ForgetAccount = %d, want 3", got)
 	}
 
 	// A 401 renews the session of the caller only.

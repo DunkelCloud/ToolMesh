@@ -425,11 +425,12 @@ func (a *RESTAdapter) UserCredentials() []UserCredential {
 	return a.userCredentials
 }
 
-// ForgetUser drops the token, session and cookies the backend keeps for
-// userID, so that the user's next call authenticates with the credentials
-// stored then. It does nothing for a backend without user credentials.
-func (a *RESTAdapter) ForgetUser(userID string) {
-	a.auth.ForgetUser(userID)
+// ForgetAccount drops the token, session and cookies the backend keeps for
+// one account of userID, so that the account's next call authenticates
+// with the credentials stored then. The user's other accounts keep their
+// sessions. It does nothing for a backend without user credentials.
+func (a *RESTAdapter) ForgetAccount(userID, account string) {
+	a.auth.ForgetAccount(userID, account)
 }
 
 // Outcomes of a check of a user's credentials (UserCredentialCheck.Outcome).
@@ -459,8 +460,8 @@ type UserCredentialCheck struct {
 
 // CheckUserCredentials sends the health check the backend's DADL declares
 // with the credentials stored for one account of the user in ctx, once,
-// and says whether the API accepted them. Tokens, sessions and cookies
-// kept for that user are dropped first, so the check authenticates with
+// and says whether the API accepted them. The token, session and cookies
+// kept for that account are dropped first, so the check authenticates with
 // what is stored now.
 func (a *RESTAdapter) CheckUserCredentials(ctx context.Context, account string) UserCredentialCheck {
 	tool, ok := a.spec.Backend.HealthToolDef()
@@ -468,7 +469,7 @@ func (a *RESTAdapter) CheckUserCredentials(ctx context.Context, account string) 
 		return UserCredentialCheck{Outcome: UserCheckUnavailable, Detail: "the backend declares no health check"}
 	}
 	if uc := userctx.FromContext(ctx); uc != nil {
-		a.auth.ForgetUser(uc.UserID)
+		a.auth.ForgetAccount(uc.UserID, account)
 	}
 	ctx = credentials.WithAccount(ctx, account)
 	ctx, cancel := context.WithTimeout(ctx, a.spec.Backend.Health.CheckTimeout())

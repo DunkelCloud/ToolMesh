@@ -388,18 +388,18 @@ func (a *RestAuth) SetPerUser(backend string, accounts UserAccounts) {
 // user.
 func (a *RestAuth) PerUser() bool { return a.perUser }
 
-// ForgetUser drops what RestAuth keeps for the accounts of userID: OAuth2
-// tokens, sessions and their cookies. The user's next call authenticates
-// anew, with the credentials stored then. Call it when a user changes or
-// removes a credential.
-func (a *RestAuth) ForgetUser(userID string) {
+// ForgetAccount drops what RestAuth keeps for one account of userID: its
+// OAuth2 token, its session and the session's cookies. The account's next
+// call authenticates anew, with the credentials stored then. The other
+// accounts of the user keep their sessions. Call it when a user changes or
+// removes the credentials of the account.
+func (a *RestAuth) ForgetAccount(userID, account string) {
+	if label, ok := credentials.NormalizeAccount(account); ok {
+		account = label
+	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	for key := range a.users {
-		if key.user == userID {
-			delete(a.users, key)
-		}
-	}
+	delete(a.users, userStateKey{user: userID, account: account})
 }
 
 // stateFor returns the token state and the tenant of the call in ctx: the

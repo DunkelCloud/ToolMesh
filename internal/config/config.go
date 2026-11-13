@@ -17,6 +17,7 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"net/netip"
 	"net/url"
 	"os"
@@ -237,6 +238,18 @@ type Config struct {
 	UserCredentialsKey string
 	GateEvaluators     string // comma-separated evaluator chain (default: "goja")
 
+	// The credentials page on a listener of its own. This is optional:
+	// unset, the page is served on the main listener next to the MCP
+	// endpoint, which is right for an instance that is reached directly or
+	// through a proxy of the operator's own. A listener of its own keeps the
+	// page, and with it every password typed into it, away from a proxy
+	// that ends TLS in front of the main listener and that someone else
+	// runs, such as a CDN.
+	CredentialsBind    string // TOOLMESH_CREDENTIALS_BIND, e.g. ":8444"; empty: the main listener
+	CredentialsURL     string // TOOLMESH_CREDENTIALS_URL, the address users open that listener at (with CredentialsBind)
+	CredentialsTLSCert string // TOOLMESH_CREDENTIALS_TLS_CERT, PEM file; with the key the listener serves https
+	CredentialsTLSKey  string // TOOLMESH_CREDENTIALS_TLS_KEY, PEM file
+
 	// Settings of the credential store "command", passed to it unparsed; the
 	// store checks them. They live outside CREDENTIAL_<NAME>, which is the
 	// namespace of the credentials themselves.
@@ -320,6 +333,10 @@ func Load() (*Config, error) {
 		DataDir:                 envStr("TOOLMESH_DATA_DIR", "/app/data"),
 		CredentialStore:         envStr("CREDENTIAL_STORE", "embedded"),
 		UserCredentialsKey:      envStr(envUserCredentialsKey, ""),
+		CredentialsBind:         strings.TrimSpace(envStr(envCredentialsBind, "")),
+		CredentialsURL:          strings.TrimSpace(envStr(envCredentialsURL, "")),
+		CredentialsTLSCert:      strings.TrimSpace(envStr(envCredentialsTLSCert, "")),
+		CredentialsTLSKey:       strings.TrimSpace(envStr(envCredentialsTLSKey, "")),
 		CredentialCommand:       envStr("TOOLMESH_CREDENTIAL_COMMAND", ""),
 		CredentialReloadIn:      envStr("TOOLMESH_CREDENTIAL_RELOAD_IN", ""),
 		CredentialTimeout:       envStr("TOOLMESH_CREDENTIAL_COMMAND_TIMEOUT", ""),
@@ -372,6 +389,9 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 	if err := cfg.loadTrustedProxies(); err != nil {
+		return nil, err
+	}
+	if err := cfg.checkCredentialsPage(); err != nil {
 		return nil, err
 	}
 	codeMax, err := envIntStrict("TOOLMESH_CODE_MAX_CONCURRENT", defaultCodeMaxConcurrent)
@@ -606,6 +626,80 @@ func (c *Config) LoginThrottleDisabled() []string {
 		off = append(off, "TOOLMESH_APIKEY_MAX_FAILURES_PER_IP")
 	}
 	return off
+}
+
+// Settings of the credentials page's own listener.
+const (
+	envCredentialsBind    = "TOOLMESH_CREDENTIALS_BIND"     //nolint:gosec // G101: the name of a setting, not a credential
+	envCredentialsURL     = "TOOLMESH_CREDENTIALS_URL"      //nolint:gosec // G101: the name of a setting, not a credential
+	envCredentialsTLSCert = "TOOLMESH_CREDENTIALS_TLS_CERT" //nolint:gosec // G101: the name of a setting, not a credential
+	envCredentialsTLSKey  = "TOOLMESH_CREDENTIALS_TLS_KEY"  //nolint:gosec // G101: the name of a setting, not a credential
+)
+
+// checkCredentialsPage checks the settings of the credentials page's own
+// listener and brings CredentialsURL into its plain form, scheme and host
+// without a trailing slash. The settings go together: without
+// TOOLMESH_CREDENTIALS_BIND the page stays on the main listener and the
+// others have no meaning, so setting one of them alone is a mistake worth
+// stopping for. Somebody who set an address for the page expects the page,
+// and the passwords typed into it, to be there and nowhere else.
+func (c *Config) checkCredentialsPage() error {
+	if c.CredentialsBind == "" {
+		for _, other := range []struct{ name, value string }{
+			{envCredentialsURL, c.CredentialsURL},
+			{envCredentialsTLSCert, c.CredentialsTLSCert},
+			{envCredentialsTLSKey, c.CredentialsTLSKey},
+		} {
+			if other.value != "" {
+				return fmt.Errorf("%s is set without %s: it applies to the credentials page's own listener, which %s turns on", other.name, envCredentialsBind, envCredentialsBind)
+			}
+		}
+		return nil
+	}
+	_, bindPort, err := net.SplitHostPort(c.CredentialsBind)
+	if err != nil {
+		return fmt.Errorf("invalid %s %q: want an address to listen on such as \":8444\" or \"10.0.0.5:8444\": %w", envCredentialsBind, c.CredentialsBind, err)
+	}
+	// Without a port, or with port 0, the system would pick one: the page
+	// would be neither where its address says nor on the main listener.
+	if n, err := strconv.Atoi(bindPort); err != nil || n < 1 || n > 65535 {
+		return fmt.Errorf("invalid %s %q: want a port from 1 to 65535, as in \":8444\"", envCredentialsBind, c.CredentialsBind)
+	}
+	if c.CredentialsURL == "" {
+		return fmt.Errorf("%s needs %s: the address users open the page at, such as https://toolmesh.internal.example:8444. Messages that send users to the page name it, and the page accepts forms from it only", envCredentialsBind, envCredentialsURL)
+	}
+	u, err := url.Parse(c.CredentialsURL)
+	if err != nil {
+		return fmt.Errorf("invalid %s: %w", envCredentialsURL, err)
+	}
+	switch {
+	case u.Scheme != schemeHTTP && u.Scheme != schemeHTTPS:
+		return fmt.Errorf("invalid %s %q: want http:// or https:// and a host", envCredentialsURL, c.CredentialsURL)
+	case u.Hostname() == "" || strings.HasSuffix(u.Host, ":") || u.User != nil || u.RawQuery != "" || u.Fragment != "":
+		return fmt.Errorf("invalid %s %q: want scheme and host only, such as https://toolmesh.internal.example:8444", envCredentialsURL, c.CredentialsURL)
+	case u.Path != "" && u.Path != "/":
+		return fmt.Errorf("invalid %s %q: want scheme and host only; the page is at /credentials of that address", envCredentialsURL, c.CredentialsURL)
+	}
+	// The address is kept as a browser names it in the Origin header, which
+	// the page compares with: without the port that is the scheme's own.
+	host, port := u.Hostname(), u.Port()
+	if (u.Scheme == schemeHTTPS && port == "443") || (u.Scheme == schemeHTTP && port == "80") {
+		port = ""
+	}
+	switch {
+	case port != "":
+		host = net.JoinHostPort(host, port)
+	case strings.Contains(host, ":"):
+		host = "[" + host + "]"
+	}
+	c.CredentialsURL = u.Scheme + "://" + host
+	if (c.CredentialsTLSCert == "") != (c.CredentialsTLSKey == "") {
+		return fmt.Errorf("%s and %s go together: set both for https on the page's listener, or neither", envCredentialsTLSCert, envCredentialsTLSKey)
+	}
+	if c.CredentialsTLSCert != "" && u.Scheme != schemeHTTPS {
+		return fmt.Errorf("%s is %q, but with %s the page's listener serves https", envCredentialsURL, c.CredentialsURL, envCredentialsTLSCert)
+	}
+	return nil
 }
 
 // placeholderIssuer is the TOOLMESH_ISSUER that .env.example ships and that

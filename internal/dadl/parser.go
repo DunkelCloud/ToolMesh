@@ -474,7 +474,41 @@ func validateTool(name string, tool *ToolDef, defaults *DefaultsConfig) error {
 		return err
 	}
 
+	if err := validateNotReadyOn(name, tool, defaults); err != nil {
+		return err
+	}
+
 	return validateResponse(tool.Response, fmt.Sprintf("tool %q: response", name))
+}
+
+// validateNotReadyOn checks a tool's not_ready_on list. Sending a request
+// again is harmless only for a read, so the list is limited to GET and HEAD
+// tools: on a write, a 202 usually says the operation was accepted, and a
+// second request would start it again. The statuses are 2xx other than 200;
+// a non-2xx status that should be retried belongs in errors.retry_on. A
+// streamed binary response is piped to the file broker without passing the
+// retry logic, so the list could not take effect there.
+func validateNotReadyOn(name string, tool *ToolDef, defaults *DefaultsConfig) error {
+	if len(tool.NotReadyOn) == 0 {
+		return nil
+	}
+	method := strings.ToUpper(tool.Method)
+	if method != httpMethodGET && method != httpMethodHEAD {
+		return fmt.Errorf("tool %q: not_ready_on is only allowed on GET and HEAD tools, this one is %s", name, method)
+	}
+	for _, status := range tool.NotReadyOn {
+		if status <= 200 || status > 299 {
+			return fmt.Errorf("tool %q: not_ready_on status %d must be a 2xx status other than 200; a non-2xx status to retry belongs in errors.retry_on", name, status)
+		}
+	}
+	rc := tool.Response
+	if rc == nil {
+		rc = defaults.Response
+	}
+	if rc != nil && rc.Streaming && rc.StreamHandling == streamHandlingCollect && (rc.Binary || rc.IsFileURL()) {
+		return fmt.Errorf("tool %q: not_ready_on cannot be combined with a streamed binary response", name)
+	}
+	return nil
 }
 
 // CheckToolPathAuthority returns an error when an absolute tool path has a

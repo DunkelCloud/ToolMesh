@@ -149,6 +149,17 @@ type ToolDef struct {
 	// although it declares no idempotency — the author accepts duplicate
 	// execution (spec §8 retry safety). Default false.
 	RetryUnsafe bool `yaml:"retry_unsafe"`
+	// NotReadyOn lists the 2xx statuses with which the API answers a read
+	// whose result it is still preparing — GitHub's repository statistics
+	// send 202 with an empty body while they fill their cache. A response
+	// with one of these statuses is not the result: the request is sent
+	// again under the effective errors.retry_strategy, and a status that
+	// outlasts the retries fails the call with the not_ready code instead of
+	// passing the empty body on as a success. Only GET and HEAD tools may
+	// declare it, and only 2xx statuses other than 200; a non-2xx status
+	// that should be retried belongs in errors.retry_on. A ToolMesh
+	// extension: DADL spec v0.2 does not define the key.
+	NotReadyOn []int `yaml:"not_ready_on"`
 	// Returns types the result for TypeScript generation (spec §6.5):
 	// either the name of a `types` entry (string) or an inline schema
 	// (map). Describes the value after the response pipeline; never

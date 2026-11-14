@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -39,6 +40,9 @@ import (
 const (
 	sandboxDiscoverFn = "discover"
 	sandboxDescribeFn = "describe"
+	// sandboxAssertProofsFn presents hint proofs for the calls of one run;
+	// see CodeRunner.installProofs.
+	sandboxAssertProofsFn = "assert_proofs"
 )
 
 // maxCodeCalls is the maximum number of toolmesh.* calls allowed per execution.
@@ -305,6 +309,9 @@ func (r *CodeRunner) ExecuteWithOptions(ctx context.Context, code string, opts E
 		results   []any
 		console   []string
 		failed    = map[failedCall]struct{}{}
+		// proofs are the hint proofs the script asserted; they hold for
+		// this run only.
+		proofs []string
 	)
 
 	rt := goja.New()
@@ -392,9 +399,13 @@ func (r *CodeRunner) ExecuteWithOptions(ctx context.Context, code string, opts E
 			}
 
 			// Execute the tool
+			mu.Lock()
+			held := slices.Clone(proofs)
+			mu.Unlock()
 			result, err := r.executor.ExecuteTool(ctx, executor.ExecuteToolRequest{
-				ToolName: cn,
-				Params:   toolParams,
+				ToolName:   cn,
+				Params:     toolParams,
+				HintProofs: held,
 			})
 			if err != nil {
 				r.logger.DebugContext(ctx, "execute_code tool error",
@@ -415,6 +426,34 @@ func (r *CodeRunner) ExecuteWithOptions(ctx context.Context, code string, opts E
 				_ = errObj.Set(outcomeError, err.Error())
 				_ = errObj.Set(logKeyTool, cn)
 				return rt.ToValue(errObj)
+			}
+
+			// A call refused for want of a hint proof ends the script. The
+			// refusal carries the backend's hint, which the caller is meant
+			// to read before it goes on; handed to the script as an error
+			// value, a script that does not check its results would carry on
+			// and report success.
+			if hintBackend, refused := hintRefused(result); refused {
+				mu.Lock()
+				ran := len(results)
+				// The run ends here and is repeated with the proof. What it
+				// read can be read again, so those results shrink to their
+				// size: a script typically reads before it writes, and
+				// echoing a page it is about to fetch a second time costs
+				// the caller the page twice. What it wrote stays in full,
+				// because the caller needs the answers of calls it must not
+				// repeat.
+				cut := !opts.IncludeResults
+				if cut {
+					results = compactReadResults(results, r.isReadTool)
+				}
+				results = append(results, map[string]any{
+					logKeyTool:      cn,
+					outcomeError:    "not executed: hint proof for " + hintBackend + " missing or expired",
+					resultKeyParams: executor.SanitizeParams(toolParams),
+				})
+				mu.Unlock()
+				panic(rt.NewGoError(errors.New(hintStopText(result, ran, cut))))
 			}
 
 			// Log result
@@ -499,6 +538,15 @@ func (r *CodeRunner) ExecuteWithOptions(ctx context.Context, code string, opts E
 	// index — no backend round-trip — so they do not count toward the
 	// maxCodeCalls budget.
 	r.installDiscovery(ctx, rt, tmObj)
+
+	// toolmesh.assert_proofs(proofs) presents hint proofs for the calls
+	// that follow in this run. It runs locally and does not count toward
+	// the maxCodeCalls budget.
+	r.installProofs(rt, tmObj, func(asserted []string) {
+		mu.Lock()
+		proofs = append(proofs, asserted...)
+		mu.Unlock()
+	})
 
 	// Guard against the common LLM mistake of invoking discover_tools or
 	// execute_code from inside the JS sandbox. Both are top-level MCP tools,
@@ -690,6 +738,94 @@ func (r *CodeRunner) installDiscovery(ctx context.Context, rt *goja.Runtime, tmO
 	}
 }
 
+// installProofs registers toolmesh.assert_proofs on the toolmesh object. A
+// script presents with it the proofs that it has received the hints of the
+// backends it is about to call (backends.yaml hint_required_for); hold
+// takes the proofs for the run. A stale or malformed proof ends the script
+// at that line, before the calls that depend on it, with the hint in force
+// and the proof to use. A backend tool with the same sanitized name takes
+// precedence, in which case the helper is not installed.
+func (r *CodeRunner) installProofs(rt *goja.Runtime, tmObj *goja.Object, hold func([]string)) {
+	if _, taken := r.nameMap[sandboxAssertProofsFn]; taken {
+		return
+	}
+	_ = tmObj.Set(sandboxAssertProofsFn, func(call goja.FunctionCall) goja.Value {
+		asserted, err := proofArguments(call.Argument(0).Export())
+		if err != nil {
+			panic(rt.NewGoError(err))
+		}
+		if r.executor != nil {
+			if err := r.executor.CheckHintProofs(asserted); err != nil {
+				panic(rt.NewGoError(err))
+			}
+		}
+		hold(asserted)
+		return rt.ToValue(asserted)
+	})
+}
+
+// proofArguments reads the argument of toolmesh.assert_proofs: an array of
+// proof strings, or a single one.
+func proofArguments(arg any) ([]string, error) {
+	const usage = "toolmesh.assert_proofs: pass the proofs as an array of strings, e.g. toolmesh.assert_proofs([\"<backend>:<digest>\"])"
+	switch v := arg.(type) {
+	case string:
+		return []string{v}, nil
+	case []any:
+		out := make([]string, 0, len(v))
+		for _, item := range v {
+			s, ok := item.(string)
+			if !ok {
+				return nil, errors.New(usage)
+			}
+			out = append(out, s)
+		}
+		return out, nil
+	}
+	return nil, errors.New(usage)
+}
+
+// hintRefused reports whether a result is the refusal of a call that lacked
+// a current hint proof, and for which backend.
+func hintRefused(result *backend.ToolResult) (string, bool) {
+	if result == nil || !result.IsError {
+		return "", false
+	}
+	name, ok := result.Metadata[backend.MetadataKeyHintRequired].(string)
+	return name, ok && name != ""
+}
+
+// hintStopText is the error a script ends with when one of its calls was
+// refused for want of a hint proof: the refusal itself, then what became of
+// the calls before it, so that the next run does not repeat a write. cut
+// says that the results of read calls were reduced to their size.
+func hintStopText(result *backend.ToolResult, ran int, cut bool) string {
+	var refusal string
+	for _, block := range result.Content {
+		if m, ok := block.(map[string]any); ok {
+			if text, ok := m[contentKeyText].(string); ok {
+				refusal = text
+				break
+			}
+		}
+	}
+	if ran == 0 {
+		return refusal + "\n\nThe script stopped at this call. None of its calls was executed."
+	}
+	listed := "are listed in this result"
+	if cut {
+		listed += ", read calls by the size of their result only"
+	}
+	return refusal + fmt.Sprintf("\n\nThe script stopped at this call. The %d call(s) before it were executed and %s; leave them out of the next run unless they are meant to run again.", ran, listed)
+}
+
+// isReadTool reports whether a tool is classified as reading only, by its
+// canonical name.
+func (r *CodeRunner) isReadTool(toolName string) bool {
+	d, ok := r.descBySanitized[sanitizeName(toolName)]
+	return ok && d.Access == accessClassRead
+}
+
 // visibleMatches runs a BM25 search and keeps the descriptors the calling
 // user may execute or get through a kit, preserving rank order. The notes
 // name the kits of the latter.
@@ -834,17 +970,49 @@ func compactCallResults(results []any) []any {
 			compacted[i] = entry
 			continue
 		}
-		compact := map[string]any{
-			logKeyTool:      m[logKeyTool],
-			resultKeyStatus: resultStatusOK,
-			resultKeyBytes:  contentBytes(tr),
+		compacted[i] = compactEntry(m, tr)
+	}
+	return compacted
+}
+
+// compactEntry is the {tool, status, resultBytes} summary of a successful
+// call entry.
+func compactEntry(m map[string]any, tr *backend.ToolResult) map[string]any {
+	compact := map[string]any{
+		logKeyTool:      m[logKeyTool],
+		resultKeyStatus: resultStatusOK,
+		resultKeyBytes:  contentBytes(tr),
+	}
+	// Carry the notice through compaction — it is the one part of the
+	// entry the caller cannot recover by re-reading the returned data.
+	if notice, ok := m[resultKeyNotice]; ok {
+		compact[resultKeyNotice] = notice
+	}
+	return compact
+}
+
+// accessClassRead is the access classification of tools that only read.
+const accessClassRead = "read"
+
+// compactReadResults is compactCallResults for the successful calls of read
+// tools only. Every other entry is kept in full: failed calls for their
+// message, and calls that may have changed something for their answer,
+// which the caller cannot get a second time without repeating the change.
+func compactReadResults(results []any, isRead func(toolName string) bool) []any {
+	compacted := make([]any, len(results))
+	for i, entry := range results {
+		compacted[i] = entry
+		m, ok := entry.(map[string]any)
+		if !ok {
+			continue
 		}
-		// Carry the notice through compaction — it is the one part of the
-		// entry the caller cannot recover by re-reading the returned data.
-		if notice, ok := m[resultKeyNotice]; ok {
-			compact[resultKeyNotice] = notice
+		tr, ok := m[resultKeyResult].(*backend.ToolResult)
+		if !ok || tr == nil || tr.IsError {
+			continue
 		}
-		compacted[i] = compact
+		if name, _ := m[logKeyTool].(string); isRead(name) {
+			compacted[i] = compactEntry(m, tr)
+		}
 	}
 	return compacted
 }

@@ -92,6 +92,8 @@ const (
 	envAPIKey             = "TOOLMESH_API_KEY"       //nolint:gosec // the variable's name, not a credential
 	envRedisURL           = "REDIS_URL"
 	envUserCredentialsKey = "TOOLMESH_USER_CREDENTIALS_KEY" //nolint:gosec // the variable's name, not a credential
+	// envUserCredentialsKeyNext names the key to change to.
+	envUserCredentialsKeyNext = "TOOLMESH_USER_CREDENTIALS_KEY_NEXT" //nolint:gosec // the variable's name, not a credential
 )
 
 // Config holds all ToolMesh configuration values.
@@ -236,7 +238,11 @@ type Config struct {
 	// credentials are encrypted with. Empty leaves both off.
 	// TOOLMESH_USER_CREDENTIALS_KEY.
 	UserCredentialsKey string
-	GateEvaluators     string // comma-separated evaluator chain (default: "goja")
+	// UserCredentialsKeyNext is the key to change to. While it is set next
+	// to UserCredentialsKey, a start seals every stored value again under
+	// it and runs on it. TOOLMESH_USER_CREDENTIALS_KEY_NEXT.
+	UserCredentialsKeyNext string
+	GateEvaluators         string // comma-separated evaluator chain (default: "goja")
 
 	// The credentials page on a listener of its own. This is optional:
 	// unset, the page is served on the main listener next to the MCP
@@ -333,6 +339,7 @@ func Load() (*Config, error) {
 		DataDir:                 envStr("TOOLMESH_DATA_DIR", "/app/data"),
 		CredentialStore:         envStr("CREDENTIAL_STORE", "embedded"),
 		UserCredentialsKey:      envStr(envUserCredentialsKey, ""),
+		UserCredentialsKeyNext:  envStr(envUserCredentialsKeyNext, ""),
 		CredentialsBind:         strings.TrimSpace(envStr(envCredentialsBind, "")),
 		CredentialsURL:          strings.TrimSpace(envStr(envCredentialsURL, "")),
 		CredentialsTLSCert:      strings.TrimSpace(envStr(envCredentialsTLSCert, "")),
@@ -736,7 +743,8 @@ func (c *Config) CredentialStoreConfig() map[string]string {
 }
 
 // ApplySecrets takes ToolMesh's own secrets (TOOLMESH_AUTH_PASSWORD,
-// TOOLMESH_API_KEY, REDIS_URL) from lookup wherever it has a non-empty
+// TOOLMESH_API_KEY, REDIS_URL and the keys of the user credential store)
+// from lookup wherever it has a non-empty
 // value, overriding the environment. It is called once at startup with a
 // credential store that holds values outside the environment, and returns the
 // names it took, never the values.
@@ -749,9 +757,10 @@ func (c *Config) ApplySecrets(lookup func(key string) (string, bool)) []string {
 		{envAPIKey, &c.APIKey},
 		{envRedisURL, &c.RedisURL},
 		{envUserCredentialsKey, &c.UserCredentialsKey},
+		{envUserCredentialsKeyNext, &c.UserCredentialsKeyNext},
 	}
-	// TOOLMESH_USER_CREDENTIALS_KEY is among them: the key that seals the
-	// credentials of users is ToolMesh's own secret as well.
+	// The keys that seal the credentials of users are among them: they are
+	// ToolMesh's own secrets as well.
 	var applied []string
 	for _, s := range secrets {
 		if v, ok := lookup(s.name); ok && v != "" {

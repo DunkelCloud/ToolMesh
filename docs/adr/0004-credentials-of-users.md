@@ -90,6 +90,15 @@ otherwise tell how long each password is. Without the key the store is off and a
 user credentials is refused. The key is the operator's to create because a key
 that ToolMesh generated next to the file would protect nothing.
 
+The key can be changed without the users. With the key to change to set next
+to the key in use, a start seals every value again under the new key and runs
+on it; a later start with both still set reads with the new one what the old
+one no longer opens. Two settings and a restart were chosen over a ring of
+keys with identifiers: there is one file, it is small, and it is read at
+startup anyway. A change of key is for keeping a key from being in use too
+long. It does not undo a leak: after one, the stored credentials themselves
+have to be changed at their APIs.
+
 **Page.** Users store their accounts on a page of ToolMesh, signed in with
 their ToolMesh password. The page runs no script, shows what is stored and
 when, and never a value. It offers a backend to the users who may call a tool
@@ -127,8 +136,8 @@ whichever of its credentials is missing.
 - Good: one user's token, session or cookie cannot ride on another user's
   request.
 - Cost: the operator keeps one more secret, and losing it loses every stored
-  value. Changing the key makes stored values unreadable; users store them
-  again.
+  value. A key replaced without the change described under Store makes stored
+  values unreadable; users store them again.
 - Cost: a backend with user credentials is not monitored in the background,
   because a background check has no user. Each user's check runs when they
   store an account and when they call `<backend>_health`.

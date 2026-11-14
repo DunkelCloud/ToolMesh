@@ -196,16 +196,9 @@ type FileUserStore struct {
 // needed, and loads what is there. key is the 32-byte encryption key (see
 // ParseUserCredentialsKey).
 func NewFileUserStore(dataDir string, key []byte) (*FileUserStore, error) {
-	if len(key) != UserCredentialsKeyBytes {
-		return nil, fmt.Errorf("user credentials key has %d bytes, need %d", len(key), UserCredentialsKeyBytes)
-	}
-	block, err := aes.NewCipher(key)
+	aead, err := newUserAEAD(key)
 	if err != nil {
-		return nil, fmt.Errorf("user credentials key: %w", err)
-	}
-	aead, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, fmt.Errorf("user credentials key: %w", err)
+		return nil, err
 	}
 	if err := os.MkdirAll(dataDir, 0o750); err != nil {
 		return nil, fmt.Errorf("create data dir: %w", err)
@@ -221,6 +214,22 @@ func NewFileUserStore(dataDir string, key []byte) (*FileUserStore, error) {
 		return nil, err
 	}
 	return s, nil
+}
+
+// newUserAEAD returns the cipher values are sealed with under key.
+func newUserAEAD(key []byte) (cipher.AEAD, error) {
+	if len(key) != UserCredentialsKeyBytes {
+		return nil, fmt.Errorf("user credentials key has %d bytes, need %d", len(key), UserCredentialsKeyBytes)
+	}
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, fmt.Errorf("user credentials key: %w", err)
+	}
+	aead, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, fmt.Errorf("user credentials key: %w", err)
+	}
+	return aead, nil
 }
 
 // userKeyID names a key without revealing it: the first bytes of a hash of
@@ -268,14 +277,126 @@ func (s *FileUserStore) load() error {
 // of another length would make the cipher panic instead of failing, so it
 // is looked at first.
 func (s *FileUserStore) open(e userFileEntry, slot UserSlot) (value string, ok bool) {
-	if e.KeyID != s.keyID || len(e.Nonce) != s.aead.NonceSize() {
+	return openUserEntry(s.aead, s.keyID, e, slot)
+}
+
+// openUserEntry returns the value of the entry stored for slot when the key
+// behind aead, whose id is keyID, opens it.
+func openUserEntry(aead cipher.AEAD, keyID string, e userFileEntry, slot UserSlot) (value string, ok bool) {
+	if e.KeyID != keyID || len(e.Nonce) != aead.NonceSize() {
 		return "", false
 	}
-	plain, err := s.aead.Open(nil, e.Nonce, e.Value, sealAAD(slot))
+	plain, err := aead.Open(nil, e.Nonce, e.Value, sealAAD(slot))
 	if err != nil {
 		return "", false
 	}
 	return unpadValue(plain)
+}
+
+// KeyState says how the stored values stand to the key the store runs on.
+type KeyState struct {
+	// KeyID is the id of that key, as entries record it (key_id in the
+	// file). It names the key without revealing it.
+	KeyID string
+	// Readable counts the values the key opens.
+	Readable int
+	// Unreadable counts the values it does not open.
+	Unreadable int
+	// OtherKeyIDs lists the ids of the keys the unreadable values were
+	// sealed under, sorted. The store's own id among them means damaged
+	// values.
+	OtherKeyIDs []string
+}
+
+// KeyState reports how the stored values stand to the key the store runs
+// on. A store whose key opens nothing of what is stored was most likely
+// given the wrong key, and nothing but this tells the operator before the
+// right key is gone.
+func (s *FileUserStore) KeyState() KeyState {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	state := KeyState{KeyID: s.keyID}
+	other := map[string]bool{}
+	for slot, e := range s.entries {
+		if _, ok := s.open(e, slot); ok {
+			state.Readable++
+			continue
+		}
+		state.Unreadable++
+		other[e.KeyID] = true
+	}
+	for id := range other {
+		state.OtherKeyIDs = append(state.OtherKeyIDs, id)
+	}
+	sort.Strings(state.OtherKeyIDs)
+	return state
+}
+
+// KeyChange is what ChangeKey found and did.
+type KeyChange struct {
+	// Resealed counts the values that the store's key opened and that are
+	// sealed under the next key now.
+	Resealed int
+	// UnderNext counts the values that were sealed under the next key
+	// already.
+	UnderNext int
+	// Unreadable counts the values that neither key opens. They are left as
+	// they are.
+	Unreadable int
+}
+
+// ChangeKey moves the store from the key it was opened with to next. Every
+// value the store's key opens is sealed again under next, and from then on
+// the store seals and opens with next. A value that next opens already is
+// left alone: a start after the change, with both keys still configured,
+// finds nothing left to do and runs on next. A value neither key opens
+// stays in the file, unreadable as before.
+//
+// The file is written once, after every value is sealed again. When that
+// fails nothing has changed, on disk or in memory, and the store keeps
+// running on the key it was opened with.
+func (s *FileUserStore) ChangeKey(next []byte) (KeyChange, error) {
+	nextAEAD, err := newUserAEAD(next)
+	if err != nil {
+		return KeyChange{}, err
+	}
+	nextID := userKeyID(next)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var change KeyChange
+	entries := make(map[UserSlot]userFileEntry, len(s.entries))
+	for slot, e := range s.entries {
+		if _, ok := openUserEntry(nextAEAD, nextID, e, slot); ok {
+			entries[slot] = e
+			change.UnderNext++
+			continue
+		}
+		value, ok := s.open(e, slot)
+		if !ok {
+			entries[slot] = e
+			change.Unreadable++
+			continue
+		}
+		nonce := make([]byte, nextAEAD.NonceSize())
+		if _, err := rand.Read(nonce); err != nil {
+			return KeyChange{}, fmt.Errorf("user credential: %w", err)
+		}
+		// UpdatedAt stays: it says when the user stored the value.
+		e.KeyID, e.Nonce, e.Value = nextID, nonce, nextAEAD.Seal(nil, nonce, padValue(value), sealAAD(slot))
+		entries[slot] = e
+		change.Resealed++
+	}
+
+	before, beforeAEAD, beforeID := s.entries, s.aead, s.keyID
+	s.entries, s.aead, s.keyID = entries, nextAEAD, nextID
+	if change.Resealed > 0 {
+		if err := s.save(); err != nil {
+			s.entries, s.aead, s.keyID = before, beforeAEAD, beforeID
+			return KeyChange{}, err
+		}
+	}
+	return change, nil
 }
 
 // Users returns the ids of the users who have something stored, sorted.
@@ -432,9 +553,11 @@ func unpadValue(padded []byte) (value string, ok bool) {
 // GetUser implements UserStore.
 func (s *FileUserStore) GetUser(_ context.Context, slot UserSlot) (string, error) {
 	slot = slot.canonical()
+	// The lock is held while the value is opened: ChangeKey replaces the
+	// key the store runs on.
 	s.mu.RLock()
+	defer s.mu.RUnlock()
 	e, ok := s.entries[slot]
-	s.mu.RUnlock()
 	if !ok {
 		return "", fmt.Errorf("user credential %q of account %q at backend %q: %w", slot.Name, slot.Account, slot.Backend, ErrCredentialNotFound)
 	}
@@ -457,6 +580,11 @@ func (s *FileUserStore) PutUser(_ context.Context, slot UserSlot, value string) 
 	if len(value) > MaxUserCredentialBytes {
 		return fmt.Errorf("user credential: the value is longer than %d bytes", MaxUserCredentialBytes)
 	}
+	// The value is sealed under the lock: ChangeKey replaces the key the
+	// store runs on, and a value sealed under the key of a moment ago would
+	// be unreadable from then on.
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	nonce := make([]byte, s.aead.NonceSize())
 	if _, err := rand.Read(nonce); err != nil {
 		return fmt.Errorf("user credential: %w", err)
@@ -471,8 +599,6 @@ func (s *FileUserStore) PutUser(_ context.Context, slot UserSlot, value string) 
 		Value:     s.aead.Seal(nil, nonce, padValue(value), sealAAD(slot)),
 		UpdatedAt: s.now().UTC().Truncate(time.Second),
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	prev, had := s.entries[slot]
 	s.entries[slot] = e
 	if err := s.save(); err != nil {

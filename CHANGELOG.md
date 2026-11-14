@@ -28,7 +28,10 @@ for the full narrative and details.
   and the page are off. The page can have a listener of its own
   (`TOOLMESH_CREDENTIALS_BIND`, `TOOLMESH_CREDENTIALS_URL`, optional certificate
   files), for instances whose main listener stands behind a proxy that someone
-  else runs: that proxy would read the passwords typed into the page. See
+  else runs: that proxy would read the passwords typed into the page. The key
+  can be changed without users storing anything again: with the new key in
+  `TOOLMESH_USER_CREDENTIALS_KEY_NEXT`, a start seals every value again under
+  it. See
   [Credentials of Users](docs/configuration.md#credentials-of-users)
   and [ADR-0004](docs/adr/0004-credentials-of-users.md).
 

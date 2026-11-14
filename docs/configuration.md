@@ -914,7 +914,8 @@ theirs (`api_key_env`, `credential_env`) when ToolMesh connects to them: at
 startup and when `backends.yaml` changes.
 
 **ToolMesh's own secrets.** With the command store, `TOOLMESH_AUTH_PASSWORD`,
-`TOOLMESH_API_KEY`, `REDIS_URL` and `TOOLMESH_USER_CREDENTIALS_KEY` are taken
+`TOOLMESH_API_KEY`, `REDIS_URL`, `TOOLMESH_USER_CREDENTIALS_KEY` and
+`TOOLMESH_USER_CREDENTIALS_KEY_NEXT` are taken
 from the output when it contains them, ahead of the environment, once at startup. Remappings (`env:` in
 `backends.yaml`) resolve their keys in the output too, not in the environment.
 
@@ -1079,6 +1080,7 @@ through a tool call. The reasons are in
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `TOOLMESH_USER_CREDENTIALS_KEY` | *(empty)* | Turns the store for credentials of users and the page `/credentials` on: 32 random bytes as base64 or as 64 hex digits, the key the stored values are encrypted with. Create one with `openssl rand -base64 32`. With `CREDENTIAL_STORE=command` it may come from the command's output |
+| `TOOLMESH_USER_CREDENTIALS_KEY_NEXT` | *(empty)* | The key to change to, in the same form. Set next to the key in use, it makes a start seal every stored value again under it (see [Changing the key](#changing-the-key)) |
 
 Without the key the store and the page do not exist, and a backend that
 declares `user_credentials` is not loaded. Keep the key like any other secret
@@ -1087,14 +1089,54 @@ With the [command store](#command-store), keep it in the command's output
 rather than in `.env`: every value of `.env` ends up in the container
 configuration, where `docker inspect` shows it.
 
-The key is read at startup only, so a change needs a restart.
-After a change of the key the stored accounts stay in the file but are
-unreadable; the page shows them as such and users store them again. A new key
-does not undo a leak: if the key and `user-credentials.json` may have been
-copied, the stored credentials have to be changed at their APIs as well. A key of
-another form, or a `user-credentials.json` that cannot be read, stops ToolMesh
-at startup. ToolMesh takes the key out of its environment once it is read, so
-stdio backends, which inherit the environment, do not receive it.
+A key of another form, or a `user-credentials.json` that cannot be read, stops
+ToolMesh at startup. ToolMesh takes the keys out of its environment once they
+are read, so child processes started later, such as stdio backends, do not
+inherit them.
+
+At every start ToolMesh logs the id of the key it runs on (`keyId`, the
+`key_id` that entries in the file carry; it names a key without revealing it)
+and warns when stored values do not open under that key, with their number and
+the ids of the keys they were sealed under.
+
+### Changing the key
+
+The keys are read at startup only. To change the key without anybody storing
+anything again:
+
+1. Set the new key as `TOOLMESH_USER_CREDENTIALS_KEY_NEXT`, next to the key in
+   use, and start ToolMesh anew so that the setting reaches it. With Docker
+   Compose that is `docker compose up -d`; `docker compose restart` keeps the
+   environment the container was created with. ToolMesh seals every stored
+   value again under the new key and runs on it. The log line
+   `user credential store: change of key` says how many values it sealed
+   again (`resealed`). If values are stored and this first start reports
+   `resealed=0`, the two settings are the wrong way round.
+2. Make the new key `TOOLMESH_USER_CREDENTIALS_KEY`, remove
+   `TOOLMESH_USER_CREDENTIALS_KEY_NEXT` and start anew. Do not leave this for
+   long: until then every start works like the first, which also means that
+   a value sealed under the old key is still taken and sealed again.
+3. Keep the old key until that start has run without the warning
+   `stored values do not open under TOOLMESH_USER_CREDENTIALS_KEY`, and for as
+   long as you keep backups of `user-credentials.json` from before the change.
+   A file restored from such a backup is brought to the new key the same way,
+   with the old key as the key in use.
+
+- The file is written once, after every value is sealed again. If that fails,
+  ToolMesh does not start and nothing has changed.
+- A value that neither key opens stays unreadable, and a warning says how many
+  there are.
+- Both keys come from the same place: if the key in use is in the output of the
+  command store, a key in `.env` does not replace it.
+- `TOOLMESH_USER_CREDENTIALS_KEY_NEXT` without `TOOLMESH_USER_CREDENTIALS_KEY`,
+  or with the same key, stops ToolMesh at startup.
+- Users sign in on the page again after the change: its sessions are derived
+  from the key.
+- A key replaced without these steps leaves the stored accounts in the file
+  but unreadable; the page shows them as such and users store them again.
+- A new key does not undo a leak. If a key and `user-credentials.json` may
+  have been copied, every user changes the stored credentials at their API
+  and stores them again.
 
 ### Declaring them
 

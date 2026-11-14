@@ -16,6 +16,7 @@ package main
 
 import (
 	"context"
+	"crypto/subtle"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -45,35 +46,88 @@ type userCredentialSetup struct {
 	enrollURL string
 }
 
-// userCredentialsKeyEnv names the setting that turns the store on.
-const userCredentialsKeyEnv = "TOOLMESH_USER_CREDENTIALS_KEY" //nolint:gosec // the variable's name, not a credential
+// userCredentialsKeyEnv names the setting that turns the store on, and
+// userCredentialsKeyNextEnv the one that names the key to change to.
+const (
+	userCredentialsKeyEnv     = "TOOLMESH_USER_CREDENTIALS_KEY"      //nolint:gosec // the variable's name, not a credential
+	userCredentialsKeyNextEnv = "TOOLMESH_USER_CREDENTIALS_KEY_NEXT" //nolint:gosec // the variable's name, not a credential
+)
 
 // newUserCredentialSetup opens the store for credentials of users in the
 // data directory. It returns nil without TOOLMESH_USER_CREDENTIALS_KEY: the
 // store is opt-in, because its key is the operator's to create and keep.
 func newUserCredentialSetup(cfg *config.Config, logger *slog.Logger) (*userCredentialSetup, error) {
 	if cfg.UserCredentialsKey == "" {
+		if cfg.UserCredentialsKeyNext != "" {
+			return nil, fmt.Errorf("%s is set without %s: it only names the key to change to. Put the key in use into %s", userCredentialsKeyNextEnv, userCredentialsKeyEnv, userCredentialsKeyEnv)
+		}
 		return nil, nil
 	}
 	key, err := credentials.ParseUserCredentialsKey(cfg.UserCredentialsKey)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", userCredentialsKeyEnv, err)
 	}
-	// The key is taken out of the environment once it is read: stdio
-	// backends are started later and inherit the environment, and none of
-	// them has any use for the key to every user's credentials.
-	if err := os.Unsetenv(userCredentialsKeyEnv); err != nil {
-		logger.Warn("could not take the user credentials key out of the environment; stdio backends inherit it", "error", err)
+	var next []byte
+	if cfg.UserCredentialsKeyNext != "" {
+		if next, err = credentials.ParseUserCredentialsKey(cfg.UserCredentialsKeyNext); err != nil {
+			return nil, fmt.Errorf("%s: %w", userCredentialsKeyNextEnv, err)
+		}
+		if subtle.ConstantTimeCompare(key, next) == 1 {
+			return nil, fmt.Errorf("%s is the same key as %s: there is nothing to change to. Remove it, or set a new key", userCredentialsKeyNextEnv, userCredentialsKeyEnv)
+		}
+	}
+	// The keys are taken out of the configuration and out of the environment
+	// once they are read: child processes such as stdio backends are started
+	// later and inherit the environment, and none of them has any use for
+	// the key to every user's credentials.
+	cfg.UserCredentialsKey, cfg.UserCredentialsKeyNext = "", ""
+	for _, name := range []string{userCredentialsKeyEnv, userCredentialsKeyNextEnv} {
+		if err := os.Unsetenv(name); err != nil {
+			logger.Warn("could not take a user credentials key out of the environment; stdio backends inherit it", "name", name, "error", err)
+		}
 	}
 	store, err := credentials.NewFileUserStore(cfg.DataDir, key)
 	if err != nil {
 		return nil, err
 	}
 	setup := &userCredentialSetup{store: store, key: key}
+	if next != nil {
+		// A change of the key: what the key in use opens is sealed again
+		// under the next one, and this instance runs on the next one. A
+		// start after that, with both still set, finds everything under
+		// the next key already.
+		change, err := store.ChangeKey(next)
+		if err != nil {
+			return nil, fmt.Errorf("change of the user credentials key: %w", err)
+		}
+		setup.key = next
+		logger.Info("user credential store: change of key. Every value this instance can read is sealed under "+userCredentialsKeyNextEnv+" now. To finish, make that key "+userCredentialsKeyEnv+" and remove "+userCredentialsKeyNextEnv+"; until then every start runs like this one",
+			"resealed", change.Resealed, "underNextKey", change.UnderNext, "unreadable", change.Unreadable)
+		if change.Resealed == 0 && change.UnderNext > 0 {
+			// Nothing tells a start after the change from a first start
+			// with the two settings the wrong way round. Said here, the
+			// operator can tell before the other key is thrown away.
+			logger.Info("user credential store: nothing was sealed again, every value lay under " + userCredentialsKeyNextEnv + " already. That is as it should be on a start after the change. On the first start of a change it means the two settings are the wrong way round: " + userCredentialsKeyEnv + " is the key the values are sealed under now, " + userCredentialsKeyNextEnv + " the new one")
+		}
+	}
+	// What the key this instance runs on does not open is said at every
+	// start. Without it a change of key that was finished wrongly, or a key
+	// that is not the one the values were sealed under, shows only when a
+	// user's call fails, and by then the right key may be gone.
+	state := store.KeyState()
+	switch {
+	case state.Unreadable == 0:
+	case next != nil:
+		logger.Warn("user credential store: stored values open under neither "+userCredentialsKeyEnv+" nor "+userCredentialsKeyNextEnv+". They stay unreadable; their users store them again",
+			"values", state.Unreadable, "ofValues", state.Readable+state.Unreadable, "sealedUnderKeyIds", state.OtherKeyIDs)
+	default:
+		logger.Warn("user credential store: stored values do not open under "+userCredentialsKeyEnv+". If they were sealed under another key, that key belongs into "+userCredentialsKeyEnv+"; to change keys, set the new one as "+userCredentialsKeyNextEnv+" next to it. Otherwise their users store them again",
+			"values", state.Unreadable, "ofValues", state.Readable+state.Unreadable, "keyId", state.KeyID, "sealedUnderKeyIds", state.OtherKeyIDs)
+	}
 	if base := credentialsPageBase(cfg); base != "" {
 		setup.enrollURL = base + enroll.Path
 	}
-	logger.Info("user credential store initialized", "dataDir", cfg.DataDir)
+	logger.Info("user credential store initialized", "dataDir", cfg.DataDir, "keyId", state.KeyID, "values", state.Readable+state.Unreadable)
 	return setup, nil
 }
 

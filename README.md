@@ -24,6 +24,7 @@ ToolMesh moves the keys, the permissions and the record of calls into one servic
 - An audit entry for every call: who called which tool with which parameters, how long it took and how it ended. By default as structured log lines; with `AUDIT_STORE=sqlite` in a database you can query with SQL.
 - Code Mode. The model sees two tools, `discover_tools` and `execute_code`, looks up the signatures it needs and writes short JavaScript that makes several calls in one round trip. A client with hundreds of tools behind ToolMesh does not load all their definitions into its context.
 - Optional JavaScript policies that check a call before it runs and filter its result, for example to redact personal data. Examples are in [`config/policies/examples/`](config/policies/examples/).
+- Optional house rules per backend. A `hint` in `backends.yaml` says what an agent must know before it uses a backend, such as a naming convention. With `hint_required_for`, writes are refused until the agent shows that it has received the hint, so every conversation gets it before its first write.
 
 ## How it works
 

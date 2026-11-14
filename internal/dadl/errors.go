@@ -67,6 +67,29 @@ const (
 	ErrCodeUnexpectedStatus = "unexpected_status"
 )
 
+// ErrCodeNotReady is the semantic code of a call whose result the API was
+// still preparing when the retries ran out: every response carried a status
+// the tool lists in not_ready_on. It stands outside the spec §8.2 default
+// mapping, which covers non-2xx statuses only.
+const ErrCodeNotReady = "not_ready"
+
+// NotReadyError returns the error a response with the given status stands
+// for when the tool lists that status in not_ready_on, and nil for every
+// other status. Such a response says the API has not finished preparing the
+// result: its body is not the result, and the request may be sent again.
+func (t *ToolDef) NotReadyError(status int) *APIError {
+	for _, s := range t.NotReadyOn {
+		if s == status {
+			return &APIError{
+				Code:       ErrCodeNotReady,
+				HTTPStatus: status,
+				Message:    "the API is still preparing the result; call the tool again later",
+			}
+		}
+	}
+	return nil
+}
+
 // DefaultSemanticCode returns the spec §8.2 well-known semantic code for an
 // HTTP status. The catch-alls client_error / server_error / unexpected_status
 // guarantee every non-2xx status maps to some code.
@@ -216,6 +239,18 @@ func NewRetryer(strategy RetryStrategyConfig, logger *slog.Logger) *Retryer {
 
 // Do executes fn with retries on retryable errors. Respects max_retries and backoff.
 func (r *Retryer) Do(ctx context.Context, fn func() (*http.Response, error)) (*http.Response, error) {
+	resp, err := fn()
+	if err == nil {
+		return resp, nil
+	}
+	return r.Retry(ctx, err, fn)
+}
+
+// Retry runs fn again after a first attempt that the caller has already made
+// and that failed with firstErr. It waits before every attempt, the first
+// one included, and makes at most max_retries of them, so the caller's
+// attempt and these retries together are the sequence Do runs.
+func (r *Retryer) Retry(ctx context.Context, firstErr error, fn func() (*http.Response, error)) (*http.Response, error) {
 	maxRetries := r.strategy.MaxRetries
 	if maxRetries <= 0 {
 		maxRetries = 3
@@ -223,17 +258,15 @@ func (r *Retryer) Do(ctx context.Context, fn func() (*http.Response, error)) (*h
 
 	initialDelay := parseDelayOrDefault(r.strategy.InitialDelay, time.Second)
 
-	var lastErr error
-	for attempt := 0; attempt <= maxRetries; attempt++ {
-		if attempt > 0 {
-			delay := r.calcDelay(attempt, initialDelay)
-			r.logger.Info("retrying request", "attempt", attempt, "delay", delay)
+	lastErr := firstErr
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		delay := r.calcDelay(attempt, initialDelay)
+		r.logger.Info("retrying request", "attempt", attempt, "delay", delay)
 
-			select {
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			case <-time.After(delay):
-			}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(delay):
 		}
 
 		resp, err := fn()

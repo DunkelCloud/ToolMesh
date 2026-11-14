@@ -13,6 +13,21 @@ for the full narrative and details.
 
 ### Added
 
+- A DADL tool can list in `not_ready_on` the 2xx statuses with which its API
+  answers a read whose result it is still preparing; GitHub's repository
+  statistics send `202` with an empty body, for example. ToolMesh sends such
+  a request again under `errors.retry_strategy` instead of returning the
+  empty body as the result, and fails the call with the error code
+  `not_ready` when the result does not arrive within `max_retries`. For
+  `GET` and `HEAD` tools. The key is a ToolMesh extension that DADL spec
+  v0.2 does not define. See `docs/configuration.md`.
+- `hint_required_for` in `backends.yaml` makes a backend's `hint` a
+  precondition for tools of the listed access classes. A call without proof
+  is refused with the hint and a line for the top of an `execute_code`
+  script (`toolmesh.assert_proofs`); the line is valid for the day. Every
+  conversation gets the hint before its first such call, where the notice
+  on a user's first call reached only the first conversation. See
+  [Backend hints](docs/configuration.md#backend-hints).
 - Credentials of users. A REST backend can list credential names of its DADL
   under `user_credentials` in `backends.yaml`; every user then stores the
   credentials of their own accounts on the new page `/credentials`, signed in
@@ -37,6 +52,17 @@ for the full narrative and details.
 
 ### Fixed
 
+- The first retry of a REST call waits `errors.retry_strategy.initial_delay`
+  like every later one, and `max_retries` is the number of retries. Until
+  now the first retry went out at once, and one request more than declared
+  was sent.
+- A REST call that ends on a terminal error after a retry reports the
+  message of that response, not of the first one.
+- Embedded authorization: closing the engine while a check was in flight,
+  or right after one, could panic inside OpenFGA (`sync: WaitGroup is reused
+  before previous Wait has returned`). ToolMesh closes the engine when it
+  stops, so a stop during a tool call could run into this. The engine now
+  ends its server context before it closes the server.
 - Session auth: calls that arrive while a login runs wait for it instead of
   logging in themselves, and give up at their own deadline; calls that fail
   together on one expired session cause one re-login; a request no longer goes

@@ -59,7 +59,9 @@ backend:
 		t.Fatalf("ParseBytes: %v", err)
 	}
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	adapter, err := NewRESTAdapter(spec, credentials.NewEmbeddedStore(), logger, RESTAdapterOptions{Unbound: true})
+	// testRESTOpts skips the base_url validation, which would resolve
+	// api.github.com; the test is about the access classification.
+	adapter, err := NewRESTAdapter(spec, credentials.NewEmbeddedStore(), logger, testRESTOpts)
 	if err != nil {
 		t.Fatalf("NewRESTAdapter: %v", err)
 	}

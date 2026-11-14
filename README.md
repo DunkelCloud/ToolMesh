@@ -81,7 +81,7 @@ The script runs in a sandbox (goja) inside ToolMesh, and each `toolmesh.*` call 
 
 ToolMesh is at version 0.x. A minor release can still change the configuration; the [changelog](CHANGELOG.md) lists under *Changed* and *Deprecated* what an operator has to adjust.
 
-`docker compose up` pulls the latest release (`ghcr.io/dunkelcloud/toolmesh:latest`, at present v0.6.0). This README describes `main`; when `main` is ahead of the latest release, this section names what the release does not have yet. At present that is the credentials of users: `user_credentials` in `backends.yaml` and the page `/credentials`.
+`docker compose up` pulls the latest release (`ghcr.io/dunkelcloud/toolmesh:latest`, at present v0.6.0). This README describes `main`; when `main` is ahead of the latest release, this section names what the release does not have yet. At present that is the credentials of users (`user_credentials` in `backends.yaml` and the page `/credentials`) and built-in TLS (`TOOLMESH_TLS_ACME`, `TOOLMESH_TLS_CERT`).
 
 ## Getting started
 
@@ -91,7 +91,7 @@ For your own instance you need:
 
 - Docker with Docker Compose. The Compose file starts ToolMesh and KeyDB (Redis-compatible, holds the OAuth state).
 - A free port, 8123 by default (`TOOLMESH_PORT`).
-- For Claude Desktop, claude.ai and most other clients an HTTPS URL, so a reverse proxy with TLS in front of ToolMesh (see [Connecting clients](#connecting-clients)). Claude Code also connects over plain HTTP on localhost.
+- For Claude Desktop, claude.ai and most other clients an HTTPS URL. ToolMesh serves HTTPS itself once it has a certificate, from Let's Encrypt or from files, or stands behind a reverse proxy with TLS (see [Connecting clients](#connecting-clients)). Claude Code also connects over plain HTTP on localhost.
 
 The following steps end with a first tool call. They use the Hacker News DADL that ships with ToolMesh and needs no API key.
 
@@ -175,7 +175,7 @@ with `CREDENTIAL_NOTES_API_KEY=...` in `.env`. A local MCP server runs with `tra
 
 ## What it does not do
 
-- It does not terminate TLS. ToolMesh serves plain HTTP; put a reverse proxy in front for anything beyond localhost.
+- It serves plain HTTP until you turn TLS on. For anything beyond localhost, give it a certificate ([TLS](docs/configuration.md#tls)) or put a reverse proxy in front.
 - It holds the backends' keys. Each client still signs in to ToolMesh, with OAuth or with an API key that sits in its configuration.
 - It enforces no policy until you add one. The policy engine runs every `.js` file directly in `config/policies/`; the shipped examples lie one level deeper and stay inactive.
 - Its default audit log is write-only. Searching past calls with SQL needs `AUDIT_STORE=sqlite`.
@@ -189,13 +189,22 @@ ToolMesh sends usage statistics once every 24 hours, the first time a few minute
 
 ## Connecting clients
 
-ToolMesh serves plain HTTP. Most MCP clients, Claude Desktop among them, accept only `https://` URLs, so they need a reverse proxy with TLS:
+Most MCP clients, Claude Desktop among them, accept only `https://` URLs. ToolMesh serves plain HTTP by default; for HTTPS pick one of these:
 
 | Option | When to use |
 |--------|-------------|
-| Caddy | Self-hosted with a public domain, automatic Let's Encrypt certificates |
+| Built-in TLS | Self-hosted with a public domain and no proxy: `TOOLMESH_TLS_ACME=true` gets a Let's Encrypt certificate for the host name of `TOOLMESH_ISSUER` and renews it; certificate files work too. See [TLS](docs/configuration.md#tls) |
+| Caddy | A reverse proxy with automatic Let's Encrypt certificates, when the host serves other sites too |
 | Cloudflare Tunnel | No open ports |
 | nginx / Traefik | Already in your stack |
+
+With built-in TLS, three lines in `.env` are enough when port 443 of the host name reaches the machine:
+
+```bash
+TOOLMESH_ISSUER=https://toolmesh.example.com/
+TOOLMESH_TLS_ACME=true
+TOOLMESH_PORT=443
+```
 
 Claude Desktop, in its MCP config:
 

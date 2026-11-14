@@ -13,6 +13,19 @@ for the full narrative and details.
 
 ### Added
 
+- Built-in TLS. The main listener serves https itself once it has a
+  certificate, so an instance needs no reverse proxy: with
+  `TOOLMESH_TLS_ACME=true` ToolMesh obtains a certificate from Let's Encrypt,
+  or from another ACME certificate authority
+  (`TOOLMESH_TLS_ACME_DIRECTORY`), for the host name of `TOOLMESH_ISSUER`,
+  keeps it in the data directory and renews it; with `TOOLMESH_TLS_CERT` and
+  `TOOLMESH_TLS_KEY` it serves a certificate from two files and loads them
+  again after a change. `TOOLMESH_HTTP_REDIRECT_BIND` adds a plain http
+  listener that redirects to the https address and answers ACME HTTP-01
+  challenges, which also lets an instance behind a CDN that ends TLS obtain
+  its certificate. Without these settings ToolMesh serves plain http as
+  before.
+  See [TLS](docs/configuration.md#tls).
 - A DADL tool can list in `not_ready_on` the 2xx statuses with which its API
   answers a read whose result it is still preparing; GitHub's repository
   statistics send `202` with an empty body, for example. ToolMesh sends such

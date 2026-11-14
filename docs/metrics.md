@@ -37,8 +37,8 @@ Authentication / token-issuance events.
 | `method` | `password`, `oauth_code`, `oauth_refresh`, `oauth_bearer`, `api_key`, `anonymous` |
 | `result` | `success`, `failure`                                              |
 
-- `password` — Password login at `/authorize` (username and password, or the
-  single password).
+- `password` — Password login at `/authorize` and on the page `/credentials`
+  (username and password, or the single password).
 - `oauth_code` — Authorization-code-to-token exchange at `/token`.
 - `oauth_refresh` — Refresh-token grant at `/token`. Both grants also fail,
   and are counted, when the server has no password login configured.

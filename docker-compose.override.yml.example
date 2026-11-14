@@ -40,6 +40,20 @@ services:
   #       bind:
   #         create_host_path: false
 
+  # --- Credentials page on a listener of its own (TOOLMESH_CREDENTIALS_BIND) ---
+  # Publish the listener's port on the address users reach the page at, here
+  # an address of a private network, and mount the certificate files if the
+  # listener is to serve https itself. See docs/configuration.md, "Where the
+  # page is served". If you use other sections for toolmesh as well, put them
+  # into one toolmesh: entry.
+  #
+  # toolmesh:
+  #   ports:
+  #     - "10.0.0.5:8444:8444"
+  #   volumes:
+  #     - ./certs/credentials.crt:/run/certs/credentials.crt:ro
+  #     - ./certs/credentials.key:/run/certs/credentials.key:ro
+
   # --- External OpenFGA server (TOOLMESH_AUTHZ_MODE=external) ---
   # Authorization runs inside ToolMesh by default. Uncomment all three services
   # only to run your own OpenFGA server; see the Authorization section in .env

@@ -84,7 +84,7 @@ backends:
 	buf := &capturedWriter{}
 	logger := slog.New(slog.NewTextHandler(io.MultiWriter(buf, io.Discard), nil))
 	named := make(map[string]backend.ToolBackend)
-	_, refused := loadRESTBackendsInto(named, backendsPath, dir, nil, credentials.NewEmbeddedStore(), nil, nil, logger, nil, nil, nil)
+	_, refused := loadRESTBackendsInto(named, backendsPath, dir, nil, credentials.NewEmbeddedStore(), nil, nil, logger, nil, nil, nil, nil)
 
 	if _, ok := named["mine"]; ok {
 		t.Error("backend reaching outside its binding was loaded")

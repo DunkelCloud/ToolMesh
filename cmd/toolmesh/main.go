@@ -39,6 +39,7 @@ import (
 	"github.com/DunkelCloud/ToolMesh/internal/credentials"
 	"github.com/DunkelCloud/ToolMesh/internal/dadl"
 	"github.com/DunkelCloud/ToolMesh/internal/debuglog"
+	"github.com/DunkelCloud/ToolMesh/internal/enroll"
 	"github.com/DunkelCloud/ToolMesh/internal/executor"
 	"github.com/DunkelCloud/ToolMesh/internal/gate"
 	"github.com/DunkelCloud/ToolMesh/internal/grants"
@@ -172,6 +173,16 @@ func main() {
 		go r.Run(ctx)
 	}
 
+	// Credentials that users store for themselves (user_credentials in
+	// backends.yaml) live in a store of their own, encrypted with the
+	// operator's key. Without the key the store and the credentials page
+	// are off, and a backend that declares user credentials is refused.
+	users, err := newUserCredentialSetup(cfg, logger)
+	if err != nil {
+		logger.Error("failed to open the user credential store", "error", err)
+		os.Exit(1)
+	}
+
 	// Load TypeScript tool definitions (canonical source)
 	toolDefs, err := tsdef.LoadDir(cfg.ToolsDir)
 	if err != nil {
@@ -232,6 +243,7 @@ func main() {
 		debugFile:   debugFile,
 		debugSet:    debugSet,
 		owners:      dadl.NewCredentialOwners(),
+		users:       users,
 	}
 	res, err := buildBackends(ctx, bldCfg)
 	if err != nil {
@@ -253,6 +265,10 @@ func main() {
 	for _, p := range res.passthroughs {
 		compositeBackend.AddPassthrough(p)
 	}
+	// The backends that take credentials from their users, for the
+	// credentials page; replaced on every reload.
+	userBackends := &userBackendRegistry{}
+	userBackends.set(res.named)
 	tc.SetMCPServerCount(res.mcpAdapter.BackendCount())
 
 	// Load unit-backends. Each unit appears in the composite under its own
@@ -276,6 +292,7 @@ func main() {
 		// Merge echo backend (static) with reloaded backends
 		newRes.named["echo"] = echoBackend
 		compositeBackend.Swap(newRes.named, newRes.passthroughs)
+		userBackends.set(newRes.named)
 		healthMonitor.Replace(ctx, newRes.healthTargets)
 		tc.SetMCPServerCount(newRes.mcpAdapter.BackendCount())
 		logger.Info("backends hot-reloaded successfully")
@@ -519,6 +536,31 @@ func main() {
 		httpMux.Handle(grants.ApprovePathPrefix+"/", grantService.ApprovalHandler())
 	}
 
+	// The credentials page, where users store the credentials of their own
+	// accounts. It exists with the user credential store only, and is
+	// served on the main listener or, when configured, on one of its own.
+	var credentialsSrv *credentialsListener
+	if users != nil {
+		page, err := newCredentialsPage(cfg, users, userBackends, mcpServer, exec, auditStore, logger)
+		if err != nil {
+			logger.Error("failed to set up the credentials page", "error", err)
+			os.Exit(1)
+		}
+		credentialsSrv, err = serveCredentialsPage(ctx, cfg, httpMux, page, logger)
+		if err != nil {
+			logger.Error("failed to start the listener of the credentials page", "error", err)
+			os.Exit(1)
+		}
+		logger.Info("credentials page configured", "path", enroll.Path, "listener", credentialsSrv.describe(), "passwordLogin", mcpServer.PasswordLoginEnabled(), "link", users.enrollURL)
+		if credentialsPageSharesHost(cfg) {
+			logger.Warn("the credentials page has a listener of its own, but under the host name of TOOLMESH_ISSUER: browsers do not keep cookies apart by port, so what stands in front of the main listener is sent the page's session cookie and can set one for it. Give the page a host name of its own",
+				"page", cfg.CredentialsURL, "issuer", cfg.Issuer)
+		}
+		warnOrphanedAccounts(users, mcpServer, logger)
+	} else if cfg.CredentialsBind != "" {
+		logger.Warn("TOOLMESH_CREDENTIALS_BIND is set, but there is no credentials page without TOOLMESH_USER_CREDENTIALS_KEY: no listener is started for it")
+	}
+
 	// Wrap with middleware: panic recovery (outermost) → security headers → request logging.
 	httpHandler := mcp.PanicRecovery(logger)(mcp.SecurityHeaders(mcp.RequestLogging(logger)(httpMux)))
 
@@ -594,6 +636,16 @@ func main() {
 		os.Exit(1)
 	}
 
+	// The page's own listener is stopped here and not next to the others:
+	// ListenAndServe returns as soon as the shutdown begins, and the process
+	// would end before a form in flight is done. Storing an account ends
+	// with its check and its audit entry, so the listener gets the time.
+	pageCtx, pageCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	if err := credentialsSrv.shutdown(pageCtx); err != nil {
+		logger.Error("credentials page listener shutdown error", "error", err)
+	}
+	pageCancel()
+
 	logger.Info("ToolMesh stopped")
 }
 
@@ -638,6 +690,9 @@ type buildBackendsConfig struct {
 	// buildBackends updates it from the configuration on every (re)load,
 	// and every REST backend, units included, is bound with it.
 	owners *dadl.CredentialOwners
+	// users is the store for credentials of users and the address of the
+	// credentials page; nil when TOOLMESH_USER_CREDENTIALS_KEY is not set.
+	users *userCredentialSetup
 }
 
 // backendsResult holds the output of buildBackends — the named backend map,
@@ -687,7 +742,7 @@ func buildBackends(ctx context.Context, bc *buildBackendsConfig) (*backendsResul
 
 	// Build named REST backends from DADL files
 	named := make(map[string]backend.ToolBackend)
-	healthTargets, refused := loadRESTBackendsInto(named, bc.cfg.BackendsConfigPath, bc.cfg.DADLDir, bc.blobStore, bc.credStore, bc.owners, bc.tc, bc.logger, bc.baseHandler, bc.debugFile, bc.debugSet)
+	healthTargets, refused := loadRESTBackendsInto(named, bc.cfg.BackendsConfigPath, bc.cfg.DADLDir, bc.blobStore, bc.credStore, bc.owners, bc.tc, bc.logger, bc.baseHandler, bc.debugFile, bc.debugSet, bc.users)
 
 	return &backendsResult{
 		named:         named,
@@ -758,7 +813,10 @@ func backendLogger(name string, globalLogger *slog.Logger, stdoutHandler slog.Ha
 // parses their DADL files, and populates the named map. It returns the
 // backends whose DADL declares a health check (spec §4.6) and whose
 // monitoring the operator has not turned off.
-func loadRESTBackendsInto(named map[string]backend.ToolBackend, backendsConfigPath, dadlDir string, blobStore *blob.Store, creds credentials.CredentialStore, owners *dadl.CredentialOwners, tc *telemetry.Collector, logger *slog.Logger, stdoutHandler slog.Handler, debugFile *os.File, debugSet map[string]bool) (healthTargets []health.Target, refused []string) {
+//
+// users is the store for credentials of users; nil when that store is off,
+// and a backend that declares user_credentials is then not loaded.
+func loadRESTBackendsInto(named map[string]backend.ToolBackend, backendsConfigPath, dadlDir string, blobStore *blob.Store, creds credentials.CredentialStore, owners *dadl.CredentialOwners, tc *telemetry.Collector, logger *slog.Logger, stdoutHandler slog.Handler, debugFile *os.File, debugSet map[string]bool, users *userCredentialSetup) (healthTargets []health.Target, refused []string) {
 	data, err := os.ReadFile(backendsConfigPath) //nolint:gosec // path from trusted config
 	if err != nil {
 		return nil, nil // no config = no REST backends
@@ -892,6 +950,7 @@ func loadRESTBackendsInto(named map[string]backend.ToolBackend, backendsConfigPa
 
 		bl := backendLogger(spec.Backend.Name, logger, stdoutHandler, debugFile, debugSet)
 		adapter, err := backend.NewRESTAdapter(spec, backendCreds, bl, backend.RESTAdapterOptions{
+			UserCredentials:     users.binding(entry.UserCredentials),
 			AllowPrivateURL:     allowPrivate,
 			AllowPrivateFileURL: allowPrivateFile,
 			FileURLAllowedHosts: entry.FileURLAllowedHosts,
@@ -916,6 +975,16 @@ func loadRESTBackendsInto(named map[string]backend.ToolBackend, backendsConfigPa
 				"dadl", entry.DADL,
 				"error", err,
 				"add_to_backends_yaml_entry", scopeErr.FixLines(),
+			)
+			refused = append(refused, entry.Name)
+			continue
+		}
+		var userErr *backend.UserCredentialConfigError
+		if errors.As(err, &userErr) {
+			logger.Error("backend refused: its user_credentials cannot be honored, and it must not run with one credential for all callers instead; the other backends keep running",
+				"name", entry.Name,
+				"dadl", entry.DADL,
+				"error", userErr.Err,
 			)
 			refused = append(refused, entry.Name)
 			continue
@@ -961,6 +1030,11 @@ func loadRESTBackendsInto(named map[string]backend.ToolBackend, backendsConfigPa
 			if entry.HealthCheck != nil {
 				logger.Warn("health_check is configured but the DADL declares no health check, ignoring", "name", entry.Name)
 			}
+		case len(adapter.UserCredentials()) > 0:
+			// A check in the background has no user and so no credentials
+			// to send. Each user's own check runs when they store an
+			// account, and on demand through the health tool.
+			logger.Info("health check not monitored: the backend uses the credentials of its users", "name", entry.Name)
 		case healthSettings.Enabled:
 			healthTargets = append(healthTargets, health.Target{
 				Name:    spec.Backend.Name,
@@ -974,7 +1048,8 @@ func loadRESTBackendsInto(named map[string]backend.ToolBackend, backendsConfigPa
 			"tools", len(spec.Backend.Tools),
 			"baseURL", spec.Backend.BaseURL,
 			"content_hash", spec.ContentHash,
-			"health_check", adapter.HasHealthCheck() && healthSettings.Enabled,
+			"health_check", adapter.HasHealthCheck() && healthSettings.Enabled && len(adapter.UserCredentials()) == 0,
+			"user_credentials", len(adapter.UserCredentials()),
 			"health_poll_interval", pollInterval.String(),
 		)
 	}

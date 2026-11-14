@@ -250,6 +250,7 @@ func loadRESTSubBackend(
 		TLSSkipVerify:       entry.TLSSkipVerify,
 		ExposeTools:         entry.ExposeTools,
 		Hint:                entry.Hint,
+		HintRequiredFor:     entry.HintRequiredFor,
 		// The sub-backend is bound like a backends.yaml entry: its
 		// unit.yaml entry name sets the credential namespace.
 		Scope: &backend.BackendScope{

@@ -50,6 +50,13 @@ const hintNoticePrefix = "[ToolMesh note: "
 // Delivery is best-effort by design. A missed or repeated notice costs a few
 // tokens and nothing else, which is why the ledger below may be keyed
 // coarsely and dropped wholesale — no correctness rests on it.
+//
+// Best effort also means: once per principal, not once per conversation. A
+// gateway cannot tell conversations apart, so a second conversation of the
+// same user gets no notice. A backend whose hint must reach every
+// conversation sets hint_required_for instead: its calls are refused until
+// the caller presents the proof the refusal hands out (see
+// executor.CheckHintProofs), and this notifier stays silent for it.
 type hintNotifier struct {
 	resolver   backend.BackendNameResolver
 	summarizer backend.BackendSummarizer
@@ -85,8 +92,15 @@ func (n *hintNotifier) noticeFor(ctx context.Context, toolName string) string {
 	if !ok {
 		return ""
 	}
-	hint := n.hintFor(backendName)
+	info := n.infoFor(backendName)
+	hint := strings.TrimSpace(info.Hint)
 	if hint == "" {
+		return ""
+	}
+	// A hint that is a precondition is delivered with the refusal of the
+	// call that lacks its proof, to every conversation. A second, per-user
+	// delivery on other calls would only repeat it.
+	if len(info.HintRequiredFor) > 0 {
 		return ""
 	}
 	if !n.markFirstUse(principalKey(ctx) + "\x00" + backendName) {
@@ -95,16 +109,16 @@ func (n *hintNotifier) noticeFor(ctx context.Context, toolName string) string {
 	return hintNoticePrefix + backendName + "] " + hint
 }
 
-// hintFor returns the configured hint for a backend, or an empty string. The
-// summaries are read live on every call rather than cached at construction so
-// a hot-reloaded backend set takes effect immediately.
-func (n *hintNotifier) hintFor(backendName string) string {
+// infoFor returns the summary of a backend, or a zero value. The summaries
+// are read live on every call rather than cached at construction so a
+// hot-reloaded backend set takes effect immediately.
+func (n *hintNotifier) infoFor(backendName string) backend.BackendInfo {
 	for _, info := range n.summarizer.BackendSummaries() {
 		if info.Name == backendName {
-			return strings.TrimSpace(info.Hint)
+			return info
 		}
 	}
-	return ""
+	return backend.BackendInfo{}
 }
 
 // markFirstUse records key in the ledger and reports whether this call was the

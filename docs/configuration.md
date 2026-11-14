@@ -1142,6 +1142,40 @@ Examples of entries that need a line, with the entry named like the DADL:
 
 **Upgrading.** After an upgrade, backends whose DADLs read credentials outside their entry's namespace, or use hosts outside the registrable domain of their `base_url`, are refused until these lines are added. Check the log for `backend refused` after the first start, add the lines it names, and the next reload of `backends.yaml` loads them. A DADL with a credential name other than letters, digits and `_`, or with a parameter default `credential:<name>`, is refused when it is parsed and needs a change to the DADL itself.
 
+### Backend hints
+
+A backend entry can carry a `hint:`: what an agent must know before it uses this backend in this deployment, such as a naming convention or a page to read first. Say what the caller must do, not what the backend is; the description from the API definition already says that.
+
+```yaml
+backends:
+  - name: wiki
+    transport: rest
+    dadl: wiki.dadl
+    hint: >-
+      Page names start with a type prefix and use lowercase words joined by
+      underscores. Read the page naming_rules before you create or rename a page.
+    hint_required_for: [write, dangerous, admin]
+```
+
+Without `hint_required_for` the hint is advice. ToolMesh attaches it to the first tool call each user makes into the backend and forgets on restart whom it has told. It cannot tell one conversation from the next, because an MCP request carries no session, so a second conversation of the same user gets no hint.
+
+With `hint_required_for` the hint is a precondition and reaches every conversation:
+
+- **Which tools.** The list names the access classes whose tools need the hint: `read`, `write`, `admin`, `dangerous` or a class a DADL defines. `all` covers every tool of the backend, including tools without a class.
+- **Refusal.** A call to such a tool without proof is refused before it reaches the backend. The refusal carries the hint and one line of JavaScript: `toolmesh.assert_proofs(["<backend>:<digest>"]);`.
+- **Proof.** An `execute_code` script that starts with that line may call the tools. The line holds for that one script; the agent keeps it in its conversation and puts it at the top of each script that needs it. A new conversation does not have the line, is refused once, and has the hint before its first such call.
+- **Stopped script.** A script that meets the refusal stops at that call. The error says how many calls ran before it, so that the next run does not repeat them. The result lists those calls: read calls by the size of their result only, since the script reads again anyway, and all others in full. A script that asserts a proof that is no longer valid stops at that line, before any call.
+- **Expiry.** The proof is a digest of the backend name, the hint text and the date (UTC). It expires at the end of the day and when you change the hint; the caller is then refused once more and gets the hint again. It holds across restarts, and across instances with the same configuration.
+- **Audit.** The refusal is an audit entry with status `denied` and `hint_required` in its metadata. It comes after authorization: a caller that may not call the tool gets the authorization denial and not the hint.
+
+Limits:
+
+- The proof shows that the hint was delivered to the conversation. It does not show that the agent followed it, and it is no access control: who may call a tool is decided by [authorization](#authorization).
+- A direct MCP call to such a tool (a tool listed under `expose_tools`) cannot carry a proof and is refused with the same text. Agents reach these tools through `execute_code`.
+- A fixed script without a model behind it cannot react to the refusal. Do not list access classes that such callers use.
+- Calls a composite tool makes on its own are not checked; the access class of the composite decides.
+- `hint_required_for` without a `hint` is a configuration error: ToolMesh does not start with such a `backends.yaml`, and a reload keeps the previous backends.
+
 ### Requests to REST backends
 
 These rules apply to every REST backend, whatever its `backends.yaml` options:

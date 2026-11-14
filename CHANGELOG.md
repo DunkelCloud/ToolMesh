@@ -21,6 +21,13 @@ for the full narrative and details.
   `not_ready` when the result does not arrive within `max_retries`. For
   `GET` and `HEAD` tools. The key is a ToolMesh extension that DADL spec
   v0.2 does not define. See `docs/configuration.md`.
+- `hint_required_for` in `backends.yaml` makes a backend's `hint` a
+  precondition for tools of the listed access classes. A call without proof
+  is refused with the hint and a line for the top of an `execute_code`
+  script (`toolmesh.assert_proofs`); the line is valid for the day. Every
+  conversation gets the hint before its first such call, where the notice
+  on a user's first call reached only the first conversation. See
+  [Backend hints](docs/configuration.md#backend-hints).
 
 ### Fixed
 

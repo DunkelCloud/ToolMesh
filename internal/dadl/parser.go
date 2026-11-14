@@ -353,6 +353,9 @@ func Validate(spec *Spec) error {
 	if err := validateCredentialNames(b.Auth); err != nil {
 		return err
 	}
+	if err := validateLoginOptional(b.Auth); err != nil {
+		return err
+	}
 
 	// Validate default pagination
 	if b.Defaults.Pagination != nil {

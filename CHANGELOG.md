@@ -50,6 +50,22 @@ for the full narrative and details.
   [Credentials of Users](docs/configuration.md#credentials-of-users)
   and [ADR-0004](docs/adr/0004-credentials-of-users.md).
 
+- A limit per account, for APIs whose session login takes one. A user stores
+  it on `/credentials` next to the credentials of an account: an entry of
+  `user_credentials` with `format: acl`, a JSON object in the form the API
+  defines, for example the mailboxes and calendars a session may reach.
+  ToolMesh hands it to the API at login as that object, and the API enforces
+  it. An agent selects the account and can neither read nor widen its limit.
+  The limit is no secret: the page shows it, and the audit entry of a change
+  names it. `optional: true` on the entry lets an account go without one; the
+  new DADL key `auth.login.optional` names the login fields that are then left
+  out. Without `optional` every account must hold a limit. A limit that is
+  stored and cannot be read fails the call instead of being left out. A save
+  on the page is one write to the store, and one the API refuses puts every
+  entry back as it was, also an entry that can no longer be read.
+  `auth.login.optional` is a ToolMesh extension that DADL spec v0.2 does not
+  define. See `docs/configuration.md`, "Limiting what an account reaches".
+
 ### Fixed
 
 - The first retry of a REST call waits `errors.retry_strategy.initial_delay`

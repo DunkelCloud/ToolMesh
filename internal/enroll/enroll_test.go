@@ -168,8 +168,9 @@ func (l *auditLog) last(t *testing.T) audit.AuditEntry {
 	return l.entries[len(l.entries)-1]
 }
 
-// flakyStore is the user store of a page; failPut makes the n-th PutUser
-// from now fail, failDelete every DeleteUser.
+// flakyStore is the user store of a page; failPut makes the n-th write from
+// now fail (a PutUser, a ChangeUser or a RestoreUser), failDelete every
+// DeleteUser.
 type flakyStore struct {
 	*credentials.FileUserStore
 	mu         sync.Mutex
@@ -179,18 +180,36 @@ type flakyStore struct {
 
 var errStoreDown = errors.New("disk full")
 
-func (s *flakyStore) PutUser(ctx context.Context, slot credentials.UserSlot, value string) error {
+// failsNow counts a write and reports whether it is the one to fail.
+func (s *flakyStore) failsNow() bool {
 	s.mu.Lock()
-	fail := false
-	if s.failPut > 0 {
-		s.failPut--
-		fail = s.failPut == 0
+	defer s.mu.Unlock()
+	if s.failPut == 0 {
+		return false
 	}
-	s.mu.Unlock()
-	if fail {
+	s.failPut--
+	return s.failPut == 0
+}
+
+func (s *flakyStore) PutUser(ctx context.Context, slot credentials.UserSlot, value string) error {
+	if s.failsNow() {
 		return errStoreDown
 	}
 	return s.FileUserStore.PutUser(ctx, slot, value)
+}
+
+func (s *flakyStore) ChangeUser(ctx context.Context, change credentials.UserChange) (credentials.UserSnapshot, error) {
+	if s.failsNow() {
+		return credentials.UserSnapshot{}, errStoreDown
+	}
+	return s.FileUserStore.ChangeUser(ctx, change)
+}
+
+func (s *flakyStore) RestoreUser(ctx context.Context, snapshot credentials.UserSnapshot) error {
+	if s.failsNow() {
+		return errStoreDown
+	}
+	return s.FileUserStore.RestoreUser(ctx, snapshot)
 }
 
 func (s *flakyStore) DeleteUser(ctx context.Context, slot credentials.UserSlot) (bool, error) {
@@ -203,7 +222,7 @@ func (s *flakyStore) DeleteUser(ctx context.Context, slot credentials.UserSlot) 
 	return s.FileUserStore.DeleteUser(ctx, slot)
 }
 
-// failNextPut makes the n-th PutUser from now fail.
+// failNextPut makes the n-th write from now fail.
 func (s *flakyStore) failNextPut(n int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -228,6 +247,9 @@ type page struct {
 	forgot  []string // "user/backend/account" of every forget
 	// denied lists the users the backend is not offered to.
 	denied map[string]bool
+	// limit, when set, is a third credential of the backend: a value that
+	// limits the account and is no secret.
+	limit *backend.UserCredential
 }
 
 func tKey() []byte { return bytes.Repeat([]byte{3}, credentials.UserCredentialsKeyBytes) }
@@ -253,14 +275,16 @@ func newPage(t *testing.T, publicURL string) *page {
 	svc, err := New(Options{
 		Store: p.store,
 		Backends: func() []Backend {
-			return []Backend{{
-				Name:        tBackend,
-				Description: "A mail API",
-				Credentials: []backend.UserCredential{
-					{Name: "mail_login", Label: "Mailbox login", Hint: "Your address and an app password.", Format: backend.UserCredentialFormatBasic},
-					{Name: "mail_pin", Format: backend.UserCredentialFormatSecret},
-				},
-			}}
+			declared := []backend.UserCredential{
+				{Name: "mail_login", Label: "Mailbox login", Hint: "Your address and an app password.", Format: backend.UserCredentialFormatBasic},
+				{Name: "mail_pin", Format: backend.UserCredentialFormatSecret},
+			}
+			p.mu.Lock()
+			if p.limit != nil {
+				declared = append(declared, *p.limit)
+			}
+			p.mu.Unlock()
+			return []Backend{{Name: tBackend, Description: "A mail API", Credentials: declared}}
 		},
 		Auth: p.auth,
 		Allowed: func(_ context.Context, userID, _ string) bool {
@@ -826,7 +850,8 @@ func TestPage_RefusedCredentialsAreRolledBack(t *testing.T) {
 
 // TestPage_UnreadableEarlierEntry covers an account whose stored values
 // cannot be read any more, after a change of the key: a refused attempt to
-// store it again cannot put the old entry back, and the page says so.
+// store it again changes nothing. The old entries are in place as they
+// were, still unreadable, and the page says so.
 func TestPage_UnreadableEarlierEntry(t *testing.T) {
 	p := newPage(t, tOrigin)
 	// Seal the account under another key in the page's store file, then
@@ -854,8 +879,16 @@ func TestPage_UnreadableEarlierEntry(t *testing.T) {
 	}
 	p.setCheck(backend.UserCheckRefused, tRefused401)
 	out := b.submit(tSavePath, saveForm(token))
-	if out.kind != noticeError || !strings.Contains(out.notice, "could no longer be read and is gone") {
+	if out.kind != noticeError || !strings.Contains(out.notice, "is in place and can still not be read") {
 		t.Errorf("refused save over an unreadable entry: %q", out.notice)
+	}
+	for _, name := range []string{tLogin, tPin} {
+		if _, err := p.stored(name); !errors.Is(err, credentials.ErrUserCredentialUnreadable) {
+			t.Errorf("%s after the refused save: err = %v, want the earlier entry, still unreadable", name, err)
+		}
+	}
+	if !strings.Contains(out.body, "can no longer be read") {
+		t.Errorf("after the refused save the page does not mark the account as unreadable:\n%s", out.body)
 	}
 }
 
@@ -1115,18 +1148,18 @@ func TestPage_RemoveAndStaleAccounts(t *testing.T) {
 }
 
 // TestPage_StoreFailureIsRecorded pins the audit entry of a save the store
-// could not complete, and that what it had written is taken back.
+// could not complete, and that nothing of it is stored: a save is one write.
 func TestPage_StoreFailureIsRecorded(t *testing.T) {
 	p := newPage(t, tOrigin)
 	b := p.newBrowser()
 	token := b.signIn(tAlice, tPassword)
-	p.store.failNextPut(2) // the first of the two credentials is written, the second fails
+	p.store.failNextPut(1) // the one write of the save fails
 	out := b.submit(tSavePath, saveForm(token))
 	if out.kind != noticeError || !strings.Contains(out.notice, "The change failed") {
 		t.Fatalf("save with a failing store: %q", out.notice)
 	}
 	if infos, _ := p.store.ListUser(context.Background(), tAlice); len(infos) != 0 {
-		t.Errorf("a save that failed halfway left %d credentials", len(infos))
+		t.Errorf("a save that failed left %d credentials", len(infos))
 	}
 	if e := p.audit.last(t); e.Tool != auditStore || e.Status != statusError || !strings.Contains(e.Error, errStoreDown.Error()) {
 		t.Errorf("audit entry = %+v", e)
@@ -1135,7 +1168,7 @@ func TestPage_StoreFailureIsRecorded(t *testing.T) {
 		t.Error("the check ran for an account that was not stored")
 	}
 	if p.forgets() == 0 {
-		t.Error("the backend was not told to forget after a save that failed halfway")
+		t.Error("the backend was not told to forget after a save that failed")
 	}
 }
 

@@ -50,7 +50,7 @@ backends:
 		t.Fatal(err)
 	}
 	named := make(map[string]backend.ToolBackend)
-	_, refused := loadRESTBackendsInto(named, backendsPath, dir, nil, credentials.NewEmbeddedStore(), nil, nil, quietLogger(), nil, nil, nil)
+	_, refused := loadRESTBackendsInto(named, backendsPath, dir, nil, credentials.NewEmbeddedStore(), nil, nil, quietLogger(), nil, nil, nil, nil)
 	if _, ok := named["my"]; ok || !slices.Contains(refused, "my") {
 		t.Errorf("entry my read the namespace of the MCP entry my-other; refused = %v", refused)
 	}

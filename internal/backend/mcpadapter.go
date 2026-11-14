@@ -55,6 +55,11 @@ type BackendConfig struct {
 // An empty document decodes to a zero config rather than an error, so an
 // operator can comment a backends.yaml out entirely without the server
 // refusing to boot.
+//
+// A user_credentials key that names no credential is an error as well: the
+// decoder drops an empty list and empty items without a trace, and the
+// backend would run on the instance's credentials where the operator meant
+// each user's.
 func UnmarshalBackendConfig(data []byte, cfg *BackendConfig) error {
 	dec := yaml.NewDecoder(bytes.NewReader(data))
 	dec.KnownFields(true)
@@ -69,7 +74,7 @@ func UnmarshalBackendConfig(data []byte, cfg *BackendConfig) error {
 			return err
 		}
 	}
-	return nil
+	return CheckUserCredentialsYAML(data)
 }
 
 // BackendEntry represents a single backend server configuration.
@@ -122,6 +127,14 @@ type BackendEntry struct {
 	// DADL declares (spec §4.6). nil = a check at startup and on demand, no
 	// polling, default thresholds. Honored for transport: rest only.
 	HealthCheck *HealthCheckConfig `yaml:"health_check"`
+	// UserCredentials lists credential names of the backend's DADL that
+	// every user stores for themselves on the credentials page, instead of
+	// the operator storing one value for all callers. A call then
+	// authenticates with the calling user's value and fails, with a pointer
+	// to the page, while that user has stored none. Needs
+	// TOOLMESH_USER_CREDENTIALS_KEY. Honored for transport: rest; an entry
+	// of another transport that sets it is refused.
+	UserCredentials []UserCredential `yaml:"user_credentials"`
 }
 
 // HealthCheckConfig is the backends.yaml health_check block: deployment
@@ -280,6 +293,14 @@ func NewMCPAdapterFromEntries(entries []BackendEntry, creds credentials.Credenti
 			continue
 		}
 		if entry.Transport == transportTypeREST {
+			continue
+		}
+		// Refused, not ignored: the backend would otherwise run with one
+		// credential for all callers where the operator asked for one per
+		// user.
+		if len(entry.UserCredentials) > 0 {
+			logger.Error("backend refused: user_credentials is supported for transport: rest only; remove it or the backend stays off",
+				"name", entry.Name, "transport", entry.Transport)
 			continue
 		}
 		adapter.backends[entry.Name] = &backendConn{

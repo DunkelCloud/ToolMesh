@@ -19,6 +19,7 @@ ToolMesh moves the keys, the permissions and the record of calls into one servic
 
 - One MCP endpoint for many backends: REST APIs through DADL files and existing MCP servers over HTTP or stdio. Tools are named `<backend>_<tool>`, for example `github_list_issues`.
 - API keys stay on the server. ToolMesh reads them from its environment (`CREDENTIAL_<NAME>`) and adds them to the request at call time, so they appear neither in prompts nor in the client configuration.
+- Credentials of users where an API has an account per person, such as a mailbox. Each user stores their own on a page of ToolMesh, several accounts if they have them, and a call is made with the calling user's. Off until you set a key; see [Credentials of Users](docs/configuration.md#credentials-of-users).
 - Authorization from the first start. OpenFGA runs inside ToolMesh; grants name users, roles, plans or companies and allow all tools, a backend, single tools or an access class such as `read`. Tool listings show each caller only what it may call. Rights that are needed only now and then can be bundled as kits: the agent asks for one, a person approves it, and the grant ends after its time.
 - An audit entry for every call: who called which tool with which parameters, how long it took and how it ended. By default as structured log lines; with `AUDIT_STORE=sqlite` in a database you can query with SQL.
 - Code Mode. The model sees two tools, `discover_tools` and `execute_code`, looks up the signatures it needs and writes short JavaScript that makes several calls in one round trip. A client with hundreds of tools behind ToolMesh does not load all their definitions into its context.
@@ -80,7 +81,7 @@ The script runs in a sandbox (goja) inside ToolMesh, and each `toolmesh.*` call 
 
 ToolMesh is at version 0.x. A minor release can still change the configuration; the [changelog](CHANGELOG.md) lists under *Changed* and *Deprecated* what an operator has to adjust.
 
-`docker compose up` pulls the latest release (`ghcr.io/dunkelcloud/toolmesh:latest`, at present v0.6.0). This README describes `main`; when `main` is ahead of the latest release, this section names what the release does not have yet.
+`docker compose up` pulls the latest release (`ghcr.io/dunkelcloud/toolmesh:latest`, at present v0.6.0). This README describes `main`; when `main` is ahead of the latest release, this section names what the release does not have yet. At present that is the credentials of users: `user_credentials` in `backends.yaml` and the page `/credentials`.
 
 ## Getting started
 

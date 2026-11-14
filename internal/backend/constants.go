@@ -65,6 +65,11 @@ const (
 	metadataKeyErrorMessage = "error_message"
 	metadataKeyProviderCode = "provider_code"
 
+	// MetadataKeyAccount is the result metadata key that names the account
+	// of the calling user a call was made with, for backends with user
+	// credentials. The executor copies it into the audit entry.
+	MetadataKeyAccount = "account"
+
 	// Transport identifiers used in backends.yaml entries.
 	transportTypeREST  = "rest"
 	transportTypeHTTP  = "http"

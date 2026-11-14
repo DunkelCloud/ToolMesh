@@ -44,7 +44,7 @@ type relaxedControl struct {
 // ERROR in every posture.
 func logSecurityPosture(cfg *config.Config, authConfigured, authzOpen bool, refused []string, logger *slog.Logger) {
 	if len(refused) > 0 {
-		logger.Error("security posture: backends refused at load because their DADL reaches outside the credentials or hosts allowed for them; see the 'backend refused' lines for the backends.yaml lines that allow it",
+		logger.Error("security posture: backends refused at load because their DADL reaches outside the credentials or hosts allowed for them, or because their user_credentials cannot be honored; see the 'backend refused' lines for the reason and the backends.yaml lines that allow it",
 			"backends", refused)
 	}
 	var relaxed []relaxedControl

@@ -88,9 +88,25 @@ backends:
   #   # entry allows it explicitly (the refusal log names the exact line):
   #   # credentials: [vikunja_legacy_token]       # names outside the namespace
   #   # allowed_hosts: [files.vikunja-cdn.example, "*.cdn.example", media.example:8443]
+  #   # Optional: credentials that every user stores for themselves on the
+  #   # page /credentials, instead of one value for all callers. A call then
+  #   # authenticates as the calling user and fails, with a pointer to the
+  #   # page, while that user has stored none; there is no fallback to
+  #   # CREDENTIAL_<NAME>. Users can store several accounts and pick one per
+  #   # call with the parameter "account". Needs TOOLMESH_USER_CREDENTIALS_KEY.
+  #   # See docs/configuration.md, section "Credentials of Users".
+  #   # Every listed name must be one the DADL's auth block reads.
+  #   # user_credentials:
+  #   #   - vikunja_token                # an item is the credential name ...
+  #   # user_credentials:
+  #   #   - name: vikunja_token          # ... or a mapping with the texts the page shows
+  #   #     label: Vikunja API token
+  #   #     hint: Create one under Settings, API tokens.
   #   # Optional, for DADLs that declare a health check: how ToolMesh monitors
   #   # it. Without this block the check runs at startup, after a reload and
   #   # every 15 minutes; failures show up on /health and in the metrics.
+  #   # (Not for a backend with user_credentials: it is not monitored in the
+  #   # background, where no user and so no credential exists.)
   #   health_check:
   #     interval: 1h               # poll hourly instead (minimum 30s, 0 turns polling off)
   #     degrade_after: 2           # consecutive failures before "degraded" (default: 1)

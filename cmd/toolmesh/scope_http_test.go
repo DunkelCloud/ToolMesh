@@ -56,7 +56,7 @@ backends:
 	buf := &capturedWriter{}
 	logger := slog.New(slog.NewTextHandler(io.MultiWriter(buf, io.Discard), nil))
 	named := make(map[string]backend.ToolBackend)
-	loadRESTBackendsInto(named, backendsPath, dir, nil, credentials.NewEmbeddedStore(), nil, nil, logger, nil, nil, nil)
+	loadRESTBackendsInto(named, backendsPath, dir, nil, credentials.NewEmbeddedStore(), nil, nil, logger, nil, nil, nil, nil)
 
 	var warned []string
 	for _, line := range strings.Split(string(buf.data), "\n") {

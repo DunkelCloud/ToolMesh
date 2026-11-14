@@ -92,7 +92,7 @@ The MCPAdapter connects to multiple external MCP servers and aggregates their to
 
 Credentials are injected at execution time within the executor pipeline scope. They never appear in prompts, logs, or model context.
 
-Two stores are built in. `embedded` reads `CREDENTIAL_<NAME>` environment
+Two stores for the instance's credentials are built in. `embedded` reads `CREDENTIAL_<NAME>` environment
 variables. `command` runs a configured command (for example a sops
 decryption), keeps the dotenv lines it prints in memory only and refreshes
 them on an interval or when the output asks for it with `RELOAD_IN`. Under
@@ -100,6 +100,12 @@ Docker the environment ends up in the container configuration on disk; the
 `command` store keeps credentials out of it, and stdio backends receive only
 the values their `credential_env` names. See
 [configuration.md](configuration.md#command-store).
+
+A backend can also use credentials of the calling user: names listed under
+`user_credentials` in its `backends.yaml` entry are read from a separate,
+encrypted store that users fill on the page `/credentials`, and never from the
+instance's store. See
+[Credentials of Users](configuration.md#credentials-of-users).
 
 ### 6. Gate
 

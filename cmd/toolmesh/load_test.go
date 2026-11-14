@@ -71,7 +71,7 @@ backends:
 	buf := &capturedWriter{}
 	logger := slog.New(slog.NewTextHandler(io.MultiWriter(buf), nil))
 	named := make(map[string]backend.ToolBackend)
-	loadRESTBackendsInto(named, backendsPath, dir, nil, creds, nil, nil, logger, nil, nil, nil)
+	loadRESTBackendsInto(named, backendsPath, dir, nil, creds, nil, nil, logger, nil, nil, nil, nil)
 	for k, v := range named {
 		composite.AddNamed(k, v)
 	}
@@ -112,7 +112,7 @@ backends:
 	_ = os.WriteFile(backendsPath, yaml, 0o600)
 
 	named := make(map[string]backend.ToolBackend)
-	loadRESTBackendsInto(named, backendsPath, dir, nil, credentials.NewEmbeddedStore(), nil, nil, quietLogger(), nil, nil, nil)
+	loadRESTBackendsInto(named, backendsPath, dir, nil, credentials.NewEmbeddedStore(), nil, nil, quietLogger(), nil, nil, nil, nil)
 	// Should still load without panic.
 }
 
@@ -127,7 +127,7 @@ func TestLoadRESTBackends_AbsoluteDADLPath(t *testing.T) {
 	_ = os.WriteFile(backendsPath, yaml, 0o600)
 
 	named := make(map[string]backend.ToolBackend)
-	loadRESTBackendsInto(named, backendsPath, "/some/other/dir", nil, credentials.NewEmbeddedStore(), nil, nil, quietLogger(), nil, nil, nil)
+	loadRESTBackendsInto(named, backendsPath, "/some/other/dir", nil, credentials.NewEmbeddedStore(), nil, nil, quietLogger(), nil, nil, nil, nil)
 }
 
 // TestLoadRESTBackends_ExposeTools verifies that the expose_tools list from
@@ -159,7 +159,7 @@ backends:
 
 	composite := backend.NewCompositeBackend(map[string]backend.ToolBackend{})
 	named := make(map[string]backend.ToolBackend)
-	loadRESTBackendsInto(named, backendsPath, dir, nil, credentials.NewEmbeddedStore(), nil, nil, quietLogger(), nil, nil, nil)
+	loadRESTBackendsInto(named, backendsPath, dir, nil, credentials.NewEmbeddedStore(), nil, nil, quietLogger(), nil, nil, nil, nil)
 	for k, v := range named {
 		composite.AddNamed(k, v)
 	}

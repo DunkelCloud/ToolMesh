@@ -18,7 +18,8 @@
 //
 // Credentials of users reach ToolMesh on this page only. No tool takes one
 // as a parameter, so a secret never passes through a model. The page shows
-// what is stored and when, never a value.
+// what is stored and when, and never a secret. The limit a user set for an
+// account is no secret and is shown.
 package enroll
 
 import (
@@ -310,6 +311,24 @@ type fieldView struct {
 	Label string
 	Hint  string
 	Basic bool
+	// ACL is set for a value that limits the account and is no secret
+	// (format acl): the page shows what is stored.
+	ACL bool
+	// Optional is set when an account may go without the credential.
+	Optional bool
+}
+
+// shownView is a stored value of an account that is no secret.
+type shownView struct {
+	Label string
+	// Value is the stored value, "" when the account holds none.
+	Value string
+	// Unreadable is set when a value is stored and cannot be read.
+	Unreadable bool
+	// Invalid is set when the stored value is not what the field takes,
+	// one JSON object. It is not shown then: it may be a secret from a
+	// time when the entry had another format.
+	Invalid bool
 }
 
 // accountView is one stored account.
@@ -319,6 +338,9 @@ type accountView struct {
 	// Usable is false when the account lacks a credential or one of its
 	// credentials cannot be read.
 	Usable bool
+	// Shown are the account's values that are no secrets, such as a limit
+	// of what it reaches.
+	Shown []shownView
 }
 
 // backendView is one backend on the page.
@@ -788,54 +810,66 @@ func singleLine(v string) bool {
 	return !strings.ContainsAny(v, "\r\n\x00")
 }
 
-// submitted reads the credentials a save form carries for backend b, by
-// key. Fields left empty are absent. The error is a message for the user.
-func submitted(r *http.Request, b Backend) (map[string]string, error) {
-	values := map[string]string{}
+// submitted reads what a save form carries for backend b: the credentials
+// entered, by key, and the keys of optional credentials the form asks to
+// remove. Fields left empty are absent. The error is a message for the
+// user.
+func submitted(r *http.Request, b Backend) (values map[string]string, removed map[string]bool, err error) {
+	values = map[string]string{}
+	removed = map[string]bool{}
 	for _, c := range b.Credentials {
 		key := strings.ToUpper(c.Name)
 		var value string
-		if c.Format == backend.UserCredentialFormatBasic {
+		switch c.Format {
+		case backend.UserCredentialFormatACL:
+			entered := strings.TrimSpace(r.PostFormValue("a." + key))
+			remove := c.Optional && r.PostFormValue("x."+key) != ""
+			switch {
+			case entered != "" && remove:
+				return nil, nil, fmt.Errorf("%s: either enter a value or remove the stored one, not both", fieldLabel(c))
+			case remove:
+				removed[key] = true
+				continue
+			case entered == "":
+				continue
+			}
+			normalized, nerr := backend.NormalizeACL(entered)
+			if nerr != nil {
+				return nil, nil, fmt.Errorf("%s: %w", fieldLabel(c), nerr)
+			}
+			values[key] = normalized
+			continue
+		case backend.UserCredentialFormatBasic:
 			user := strings.TrimSpace(r.PostFormValue("u." + key))
 			pass := r.PostFormValue("p." + key)
 			if user == "" && pass == "" {
 				continue
 			}
 			if user == "" || pass == "" {
-				return nil, fmt.Errorf("%s: enter both the username and the password", fieldLabel(c))
+				return nil, nil, fmt.Errorf("%s: enter both the username and the password", fieldLabel(c))
 			}
 			if strings.Contains(user, ":") {
-				return nil, fmt.Errorf("%s: the username must not contain a colon", fieldLabel(c))
+				return nil, nil, fmt.Errorf("%s: the username must not contain a colon", fieldLabel(c))
 			}
 			if !singleLine(user) || !singleLine(pass) {
-				return nil, fmt.Errorf("%s: username and password must not contain line breaks", fieldLabel(c))
+				return nil, nil, fmt.Errorf("%s: username and password must not contain line breaks", fieldLabel(c))
 			}
 			value = "Basic " + base64.StdEncoding.EncodeToString([]byte(user+":"+pass))
-		} else {
+		default:
 			value = r.PostFormValue("s." + key)
 			if value == "" {
 				continue
 			}
 			if !singleLine(value) {
-				return nil, fmt.Errorf("%s: the value must not contain line breaks", fieldLabel(c))
+				return nil, nil, fmt.Errorf("%s: the value must not contain line breaks", fieldLabel(c))
 			}
 		}
 		if len(value) > credentials.MaxUserCredentialBytes {
-			return nil, fmt.Errorf("%s: the value is longer than %d bytes", fieldLabel(c), credentials.MaxUserCredentialBytes)
+			return nil, nil, fmt.Errorf("%s: the value is longer than %d bytes", fieldLabel(c), credentials.MaxUserCredentialBytes)
 		}
 		values[key] = value
 	}
-	return values, nil
-}
-
-// earlier is what the credentials of a save held before it.
-type earlier struct {
-	// values holds the earlier value of each credential, nil for none.
-	values map[string]*string
-	// readable is set when the account held a value that could be read,
-	// unreadable when it held one that could not: such an entry cannot be
-	// put back.
-	readable, unreadable bool
+	return values, removed, nil
 }
 
 func (s *Service) handleSave(w http.ResponseWriter, r *http.Request) {
@@ -878,12 +912,12 @@ func (s *Service) handleSave(w http.ResponseWriter, r *http.Request) {
 		refuse("Give the account a label: 1 to 100 letters, digits and @ . _ + -, for example its mail address. Nothing was stored.")
 		return
 	}
-	values, err := submitted(r, b)
+	values, removed, err := submitted(r, b)
 	if err != nil {
 		refuse(capitalize(err.Error()) + ". Nothing was stored.")
 		return
 	}
-	if len(values) == 0 {
+	if len(values) == 0 && len(removed) == 0 {
 		refuse("Nothing was entered. Nothing was stored.")
 		return
 	}
@@ -893,26 +927,50 @@ func (s *Service) handleSave(w http.ResponseWriter, r *http.Request) {
 		s.storeFailed(ctx, w, r, sess, err)
 		return
 	}
-	have := map[string]bool{} // credentials the account holds already
+	have := map[string]bool{} // credentials the account holds and that can be read
+	held := map[string]bool{} // credentials the account holds, readable or not
 	accounts := map[string]bool{}
 	for _, info := range stored {
 		if info.Backend != b.Name {
 			continue
 		}
 		accounts[info.Account] = true
-		if info.Account == account && info.Readable {
-			have[info.Name] = true
+		if info.Account == account {
+			held[info.Name] = true
+			if info.Readable {
+				have[info.Name] = true
+			}
 		}
+	}
+	// Removing what the account does not hold is no change.
+	for key := range removed {
+		if !held[key] {
+			delete(removed, key)
+		}
+	}
+	if len(values) == 0 && len(removed) == 0 {
+		done(notice{Kind: noticeWarn, Text: "The account holds nothing of what the form asked to remove. Nothing was changed."}, false)
+		return
 	}
 	if !accounts[account] && len(accounts) >= maxAccountsPerBackend {
 		refuse(fmt.Sprintf("You have stored %d accounts for this backend, the most this page takes. Remove one first.", maxAccountsPerBackend))
 		return
 	}
 	// An account is stored whole: what is not entered must be there
-	// already.
+	// already. Only a credential the operator declared optional may be
+	// absent.
+	shown := map[string]string{} // values that are no secrets, for the audit
+	var removedLabels []string
 	for _, c := range b.Credentials {
 		key := strings.ToUpper(c.Name)
-		if _, entered := values[key]; !entered && !have[key] {
+		value, entered := values[key]
+		if entered && !c.Secret() {
+			shown[key] = value
+		}
+		if removed[key] {
+			removedLabels = append(removedLabels, fieldLabel(c))
+		}
+		if !entered && !have[key] && !c.Optional {
 			refuse(capitalize(fieldLabel(c)) + " is missing. Nothing was stored.")
 			return
 		}
@@ -922,42 +980,44 @@ func (s *Service) handleSave(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	keys := make([]string, 0, len(values))
+	// keys are the credentials this save changes: those it stores and
+	// those it removes.
+	keys := make([]string, 0, len(values)+len(removed))
 	for k := range values {
 		keys = append(keys, k)
 	}
+	for k := range removed {
+		keys = append(keys, k)
+	}
 	sort.Strings(keys)
+	change := changed{shown: shown, removed: removed}
 
-	// Remember what was there, so a refused check puts it back.
-	before := earlier{values: map[string]*string{}}
+	// What the changed credentials held before, for the notice of a refused
+	// save.
+	heldReadable, heldUnreadable := false, false
+	writes := credentials.UserChange{Put: map[credentials.UserSlot]string{}}
 	for _, k := range keys {
-		old, err := s.store.GetUser(ctx, credentials.UserSlot{UserID: sess.User, Backend: b.Name, Account: account, Name: k})
 		switch {
-		case err == nil:
-			before.values[k] = &old
-			before.readable = true
-		case errors.Is(err, credentials.ErrCredentialNotFound):
-			before.values[k] = nil
-		case errors.Is(err, credentials.ErrUserCredentialUnreadable):
-			before.values[k] = nil
-			before.unreadable = true
-		default:
-			s.storeFailed(ctx, w, r, sess, err)
-			return
+		case have[k]:
+			heldReadable = true
+		case held[k]:
+			heldUnreadable = true
+		}
+		slot := credentials.UserSlot{UserID: sess.User, Backend: b.Name, Account: account, Name: k}
+		if removed[k] {
+			writes.Delete = append(writes.Delete, slot)
+		} else {
+			writes.Put[slot] = values[k]
 		}
 	}
 	start := s.now()
-	for i, k := range keys {
-		err := s.store.PutUser(ctx, credentials.UserSlot{UserID: sess.User, Backend: b.Name, Account: account, Name: k}, values[k])
-		if err == nil {
-			continue
-		}
-		// What this save has written so far is taken back.
-		if rerr := s.restore(ctx, sess.User, b.Name, account, keys[:i], before.values); rerr != nil {
-			err = fmt.Errorf("%w; putting the earlier state back failed as well: %w", err, rerr)
-		}
+	// One write for all of it: an account never exists with a part of what
+	// was entered, such as its secret without its limit. The store keeps
+	// what was there, so a refused check puts it back as it was.
+	before, err := s.store.ChangeUser(ctx, writes)
+	if err != nil {
 		s.forgetAccount(sess.User, b.Name, account)
-		s.record(ctx, auditStore, start, sess.User, b.Name, account, keys, "", err)
+		s.record(ctx, auditStore, start, sess.User, b.Name, account, keys, change, "", err)
 		s.storeFailed(ctx, w, r, sess, err)
 		return
 	}
@@ -967,66 +1027,70 @@ func (s *Service) handleSave(w http.ResponseWriter, r *http.Request) {
 	if s.check != nil {
 		outcome = s.check(ctx, sess.User, b.Name, account)
 	}
+	// What the save did, for the notice of one that stays.
+	onlyRemoves := len(values) == 0
+	gone := strings.Join(removedLabels, ", ")
+	did := fmt.Sprintf("Stored the account %s for %s.", account, b.Name)
+	if onlyRemoves {
+		did = fmt.Sprintf("Removed the %s of the account %s for %s.", gone, account, b.Name)
+	}
 	var n notice
 	var auditErr error
 	switch outcome.Outcome {
 	case backend.UserCheckRefused:
 		s.countRefusal(sess.User)
-		rerr := s.restore(ctx, sess.User, b.Name, account, keys, before.values)
+		// Every entry goes back as it was stored, also one that cannot be
+		// read: an account must not end up without a limit because the
+		// limit it had could not be read.
+		rerr := s.store.RestoreUser(ctx, before)
+		if rerr != nil {
+			s.logger.ErrorContext(ctx, "credentials page: putting the earlier state back failed",
+				"user", sess.User, "backend", b.Name, "account", account, "credentials", strings.Join(keys, ","), "error", rerr)
+		}
 		s.forgetAccount(sess.User, b.Name, account)
 		auditErr = fmt.Errorf("the API refused the credentials: %s", outcome.Detail)
 		text := fmt.Sprintf("%s did not accept these credentials (%s). ", b.Name, outcome.Detail)
+		if onlyRemoves {
+			text = fmt.Sprintf("%s did not accept the account without its %s (%s). ", b.Name, gone, outcome.Detail)
+		}
 		switch {
+		case rerr != nil && onlyRemoves:
+			auditErr = fmt.Errorf("%w; putting the earlier state back failed, the removal is still in place: %w", auditErr, rerr)
+			text += fmt.Sprintf("Putting the earlier state back failed: the account is still without its %s. Store it again or remove the account.", gone)
 		case rerr != nil:
 			auditErr = fmt.Errorf("%w; putting the earlier state back failed, the refused credentials are still stored: %w", auditErr, rerr)
 			text += "Putting the earlier state back failed: the refused credentials are still stored. Remove the account or store it again."
-		case before.unreadable:
-			text += "They were not stored. What the account held before could no longer be read and is gone."
-		case before.readable:
+		case onlyRemoves:
+			text += "Nothing was changed: what the account held before is in place."
+		case heldUnreadable:
+			text += "They were not stored. What the account held before is in place and can still not be read: store the account again."
+		case heldReadable:
 			text += "They were not stored; what the account held before is in place."
 		default:
 			text += "They were not stored."
+		}
+		if len(shown) > 0 {
+			// The check logs in with everything the account holds, so
+			// the refusal may be about the limit and not about the
+			// secret.
+			text += " The API also refuses a limit that is not well-formed or that reaches further than this ToolMesh may."
 		}
 		n = notice{Kind: noticeError, Text: text}
 		s.logger.WarnContext(ctx, "credentials page: the API refused an account",
 			"user", sess.User, "backend", b.Name, "account", account, "credentials", strings.Join(keys, ","), "detail", outcome.Detail)
 	case backend.UserCheckAccepted:
-		n = notice{Kind: noticeOK, Text: fmt.Sprintf("Stored the account %s for %s. The API accepted the credentials.", account, b.Name)}
+		n = notice{Kind: noticeOK, Text: did + " The API accepted the credentials."}
 	case backend.UserCheckUnknown:
-		n = notice{Kind: noticeWarn, Text: fmt.Sprintf("Stored the account %s for %s. Whether the API accepts the credentials could not be checked: %s.", account, b.Name, outcome.Detail)}
+		n = notice{Kind: noticeWarn, Text: fmt.Sprintf("%s Whether the API accepts the credentials could not be checked: %s.", did, outcome.Detail)}
 	default:
-		n = notice{Kind: noticeOK, Text: fmt.Sprintf("Stored the account %s for %s. This backend offers no way to check the credentials; the first call will tell.", account, b.Name)}
+		n = notice{Kind: noticeOK, Text: did + " This backend offers no way to check the credentials; the first call will tell."}
 	}
-	s.record(ctx, auditStore, start, sess.User, b.Name, account, keys, outcome.Outcome, auditErr)
+	s.record(ctx, auditStore, start, sess.User, b.Name, account, keys, change, outcome.Outcome, auditErr)
 	if auditErr == nil {
 		s.logger.InfoContext(ctx, "credentials page: account stored",
 			"user", sess.User, "backend", b.Name, "account", account, "credentials", strings.Join(keys, ","), "check", outcome.Outcome)
 	}
 	done(n, auditErr != nil)
-}
-
-// restore puts back what the credentials named keys held before a save:
-// the earlier value, or nothing. It reports the first failure and goes on
-// with the rest.
-func (s *Service) restore(ctx context.Context, user, backendName, account string, keys []string, previous map[string]*string) error {
-	var first error
-	for _, k := range keys {
-		slot := credentials.UserSlot{UserID: user, Backend: backendName, Account: account, Name: k}
-		var err error
-		if old := previous[k]; old != nil {
-			err = s.store.PutUser(ctx, slot, *old)
-		} else {
-			_, err = s.store.DeleteUser(ctx, slot)
-		}
-		if err != nil {
-			s.logger.ErrorContext(ctx, "credentials page: restoring a credential failed",
-				"user", user, "backend", backendName, "account", account, "credential", k, "error", err)
-			if first == nil {
-				first = err
-			}
-		}
-	}
-	return first
 }
 
 func (s *Service) handleRemove(w http.ResponseWriter, r *http.Request) {
@@ -1063,7 +1127,7 @@ func (s *Service) handleRemove(w http.ResponseWriter, r *http.Request) {
 		slot := credentials.UserSlot{UserID: sess.User, Backend: backendName, Account: account, Name: info.Name}
 		if _, err := s.store.DeleteUser(ctx, slot); err != nil {
 			s.forgetAccount(sess.User, backendName, account)
-			s.record(ctx, auditRemove, start, sess.User, backendName, account, removed, "", err)
+			s.record(ctx, auditRemove, start, sess.User, backendName, account, removed, changed{}, "", err)
 			s.storeFailed(ctx, w, r, sess, err)
 			return
 		}
@@ -1074,7 +1138,7 @@ func (s *Service) handleRemove(w http.ResponseWriter, r *http.Request) {
 		done(notice{Kind: noticeWarn, Text: "There was no such account; nothing was removed."})
 		return
 	}
-	s.record(ctx, auditRemove, start, sess.User, backendName, account, removed, "", nil)
+	s.record(ctx, auditRemove, start, sess.User, backendName, account, removed, changed{}, "", nil)
 	s.logger.InfoContext(ctx, "credentials page: account removed", "user", sess.User, "backend", backendName, "account", account)
 	done(notice{Kind: noticeOK, Text: fmt.Sprintf("Removed the account %s for %s.", account, backendName)})
 }
@@ -1095,9 +1159,18 @@ func (s *Service) storeFailed(ctx context.Context, w http.ResponseWriter, r *htt
 	redirect(w, r)
 }
 
+// changed is what a save did besides storing secrets: the values it stored
+// that are no secrets, by key, and the optional credentials it removed.
+type changed struct {
+	shown   map[string]string
+	removed map[string]bool
+}
+
 // record writes the audit entry of a stored or removed account. It names
-// the account and its credentials, never a value.
-func (s *Service) record(ctx context.Context, action string, start time.Time, user, backendName, account string, names []string, check string, err error) {
+// the account and its credentials and never the value of a secret. A value
+// that is no secret, such as a limit of what the account reaches, is
+// named: the entry then tells which limit applied from when on.
+func (s *Service) record(ctx context.Context, action string, start time.Time, user, backendName, account string, names []string, change changed, check string, err error) {
 	if s.audit == nil {
 		return
 	}
@@ -1105,6 +1178,17 @@ func (s *Service) record(ctx context.Context, action string, start time.Time, us
 		"backend":     backendName,
 		"account":     account,
 		"credentials": strings.ToLower(strings.Join(names, ",")),
+	}
+	for key, value := range change.shown {
+		md["value:"+strings.ToLower(key)] = value
+	}
+	if len(change.removed) > 0 {
+		gone := make([]string, 0, len(change.removed))
+		for key := range change.removed {
+			gone = append(gone, strings.ToLower(key))
+		}
+		sort.Strings(gone)
+		md["removed"] = strings.Join(gone, ",")
 	}
 	if check != "" {
 		md["check"] = check
@@ -1154,7 +1238,12 @@ func (s *Service) renderAccounts(w http.ResponseWriter, r *http.Request, sess se
 		for _, c := range b.Credentials {
 			key := strings.ToUpper(c.Name)
 			declared[key] = true
-			bv.Fields = append(bv.Fields, fieldView{Key: key, Label: fieldLabel(c), Hint: c.Hint, Basic: c.Format == backend.UserCredentialFormatBasic})
+			bv.Fields = append(bv.Fields, fieldView{
+				Key: key, Label: fieldLabel(c), Hint: c.Hint,
+				Basic:    c.Format == backend.UserCredentialFormatBasic,
+				ACL:      c.Format == backend.UserCredentialFormatACL,
+				Optional: c.Optional,
+			})
 		}
 		// Group what is stored for this backend by account.
 		type held struct {
@@ -1187,10 +1276,17 @@ func (s *Service) renderAccounts(w http.ResponseWriter, r *http.Request, sess se
 			h := byAccount[label]
 			shown[staleView{Backend: b.Name, Account: label}] = true
 			av := accountView{Label: label, Usable: true}
-			var missing []string
+			var missing, notALimit []string
 			for _, f := range bv.Fields {
-				if !h.names[f.Key] {
+				if !h.names[f.Key] && !f.Optional {
 					missing = append(missing, f.Label)
+				}
+				if f.ACL {
+					shown := s.shownValue(r.Context(), sess.User, b.Name, label, f, h.names[f.Key])
+					av.Shown = append(av.Shown, shown)
+					if shown.Invalid {
+						notALimit = append(notALimit, f.Label)
+					}
 				}
 			}
 			switch {
@@ -1200,6 +1296,10 @@ func (s *Service) renderAccounts(w http.ResponseWriter, r *http.Request, sess se
 			case len(missing) > 0:
 				av.Usable = false
 				av.Status = "incomplete, missing: " + strings.Join(missing, ", ")
+			case len(notALimit) > 0:
+				// Every call of such an account fails at the login.
+				av.Usable = false
+				av.Status = "stored, but not usable: store its " + strings.Join(notALimit, ", ") + " again"
 			default:
 				av.Status = "stored " + h.latest.UTC().Format("2006-01-02 15:04") + " UTC"
 			}
@@ -1217,6 +1317,28 @@ func (s *Service) renderAccounts(w http.ResponseWriter, r *http.Request, sess se
 		v.Stale = append(v.Stale, key)
 	}
 	s.render(w, r, status, v)
+}
+
+// shownValue reads the value of field f, which is no secret, for the list
+// of accounts. held says whether the account holds one.
+func (s *Service) shownValue(ctx context.Context, user, backendName, account string, f fieldView, held bool) shownView {
+	v := shownView{Label: f.Label}
+	if !held {
+		return v
+	}
+	value, err := s.store.GetUser(ctx, credentials.UserSlot{UserID: user, Backend: backendName, Account: account, Name: f.Key})
+	if err != nil {
+		if !errors.Is(err, credentials.ErrCredentialNotFound) {
+			v.Unreadable = true
+		}
+		return v
+	}
+	if _, err := backend.NormalizeACL(value); err != nil {
+		v.Invalid = true
+		return v
+	}
+	v.Value = value
+	return v
 }
 
 // capitalize upper-cases the first letter of a message.

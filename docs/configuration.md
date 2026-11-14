@@ -1171,7 +1171,9 @@ the value of an HTTP `Authorization` header. It is for a DADL that sends one
 credential as that value, in a session login body or with `type: apikey`,
 `header_name: Authorization` and no `prefix`. A DADL with `type: basic` reads
 two credentials and encodes them itself: list its `username_credential` and
-`password_credential` as two items of the default format.
+`password_credential` as two items of the default format. `format: acl` is for
+a limit of the account and described under
+[Limiting what an account reaches](#limiting-what-an-account-reaches).
 
 - The DADL stays as it is. Which of its credentials are per user is the
   operator's decision; credentials not listed stay with the instance.
@@ -1244,6 +1246,96 @@ OAuth2 access tokens, session tokens and the cookies of a session login are
 kept per user and account, never shared. Only the cookies of the login are
 kept for such sessions; a cookie that a tool response sets is not.
 
+### Limiting what an account reaches
+
+Some APIs let a login say what the session may reach: which mailboxes, which
+calendars, whether it may send. With such an API a user can store a limit next
+to the credentials of an account, for the agents that call with it. ToolMesh
+keeps the limit with the account and hands it to the API at login. The API
+enforces it. ToolMesh does not read it.
+
+The DADL carries the limit as a field of its session login and says that the
+login may go without it:
+
+```yaml
+  auth:
+    type: session
+    login:
+      method: POST
+      path: /session
+      body:
+        login: "credential:mail_login"
+        scope: "credential:mail_scope"
+      optional: [scope]
+```
+
+`optional` lists fields of the body's top level whose value is one credential
+reference. Such a field is left out of the login when its credential has no
+value. Any other failure to read the credential fails the login: a limit that
+is stored and cannot be read is never taken for no limit. The key is a
+ToolMesh extension that DADL spec v0.2 does not define.
+
+In `backends.yaml` the limit is one more entry of `user_credentials`:
+
+```yaml
+  - name: mail
+    transport: rest
+    dadl: mail.dadl
+    user_credentials:
+      - name: mail_login
+        label: Mailbox login
+        format: basic
+      - name: mail_scope
+        label: ACL
+        hint: 'Example: {"mailboxes":["INBOX","Projects/*"],"send":false}'
+        format: acl
+        optional: true
+```
+
+- `format: acl` takes one JSON object of up to 4096 bytes, in the form the API
+  defines, and stores it compact. The login carries it as that object, not as
+  a string. It is no secret: the page shows the stored value, and the audit
+  entry of a change names it. It needs a DADL with `auth.type: session`.
+- `optional: true` lets an account go without the value. Such an account
+  reaches what its credentials reach. Without the key every account has to
+  hold one, and a call of an account that does not fails with
+  `user_credential_incomplete`: the operator decides whether a limit is the
+  user's choice or a condition. `optional: true` is for a limit only
+  (`format: acl`) and needs a DADL that can leave the value out: the
+  credential is the value of a field that `auth.login.optional` lists, and of
+  no other. At least one credential of an entry is not optional.
+- A backend whose entry asks for what its DADL cannot do is not loaded, with
+  the reason in the `backend refused` line.
+
+What follows from this:
+
+- An agent selects an account with `account` and gets what that account's
+  limit allows. It can neither read nor set nor widen the limit: the limit is
+  no tool parameter, and the page asks for the user's password.
+- Two accounts can hold the same credentials and different limits, for example
+  one that reaches every mailbox and one for the inbox.
+- A changed limit applies from the account's next call: storing or removing it
+  ends the session ToolMesh keeps for the account.
+- The check after a save logs in with the limit. When the API answers that
+  login with 400, 401 or 403, as an API does for a limit that is not
+  well-formed or that is wider than it allows this ToolMesh, the page reports
+  the refusal and the account is as it was before. An API that answers
+  otherwise leaves the check undecided: the limit stays stored, and the calls
+  of the account fail at the login until it is corrected. The check tells that
+  the API took the login, not that it honors the limit; the DADL has to send
+  it where the API reads it. The health check of the DADL has to be one a
+  limited session can answer.
+- What a limit can say is up to the API, and so is what happens to a name in it
+  that matches nothing there.
+- Removing or renaming the entry of a limit while the DADL keeps the optional
+  field takes the limits away: the login then reads that name from the
+  instance, which has none. What users stored stays in the store, unused.
+  ToolMesh logs a `WARN` at startup and after every reload for a backend whose
+  users hold values under names it does not ask them for.
+- The limit binds agents that call through this entry. The credentials of the
+  account open everything the account can reach; whoever holds them is not
+  bound.
+
 ### The page
 
 `/credentials` is where a user stores, replaces and removes accounts.
@@ -1259,8 +1351,9 @@ kept for such sessions; a cookie that a tool response sets is not.
 - **What it shows.** The backends with user credentials of which the user may
   call a tool, by the same [authorization](#authorization) as a tool call. Per
   backend the stored accounts with the time they were stored, and a form.
-  Never a stored value. A form is answered with a redirect to the page, so a
-  reload never sends a credential a second time.
+  Never a stored secret. The limit of an account (`format: acl`) is no secret
+  and is shown. A form is answered with a redirect to the page, so a reload
+  never sends a credential a second time.
 - **The check.** After storing, ToolMesh sends the
   [health check](#backend-health-checks) the DADL declares, with the new
   credentials. If the API answers 401 or 403, or refuses the login or token
@@ -1268,15 +1361,22 @@ kept for such sessions; a cookie that a tool response sets is not.
   held before is put back. If the check cannot tell, for example because the
   API does not answer, the account is stored and the page says that it is
   unchecked. A DADL without a health check is stored unchecked. The check
-  runs to its end also when the browser goes away.
+  runs to its end also when the browser goes away. A save is one write to the
+  store, so an account never exists with a part of what was entered, and a
+  refused save is taken back whole: every entry is again what it was, also
+  one that can no longer be read.
 - **Audit.** Every stored and removed account is recorded, with backend
   `toolmesh` and the tool `user_credential_store` or `user_credential_remove`.
   The entry carries the user and, in its metadata, `backend`, `account`,
   `credentials` (the names) and `check` (the outcome). A save the API refused
-  is recorded as an error. Values are never recorded.
+  is recorded as an error. The value of a secret is never recorded. The value
+  of a limit is, as `value:<name>`, also for a save the API refused, and
+  `removed` lists the optional credentials a save took away: the trail tells
+  which limit applied from when on.
 - **Limits.** 50 accounts per user and backend; 20 saves per user in ten
-  minutes, of which the API may refuse 5; 16 KiB per value, no line breaks in a
-  value. The counts are kept per process. They bound how often a user can make
+  minutes, of which the API may refuse 5; 16 KiB per value, 4096 bytes for a
+  limit, no line breaks in a value. The counts are kept per process. They bound
+  how often a user can make
   ToolMesh try credentials against an API.
 
 - **Sessions at the API.** Storing or removing an account ends the token or

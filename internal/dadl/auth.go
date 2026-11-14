@@ -164,6 +164,9 @@ type UserAccounts interface {
 	// ResolveAccount returns the label of the account the call of tenant
 	// uses, or an error that says why there is none.
 	ResolveAccount(ctx context.Context, tenant credentials.TenantInfo) (string, error)
+	// JSONValue reports whether the value of the credential name is a JSON
+	// object that a login body carries as such, not as a string.
+	JSONValue(name string) bool
 }
 
 // userStateKey names the token state of one account of one user.
@@ -938,7 +941,9 @@ func (a *RestAuth) doSessionLogin(ctx context.Context, st *authState, tenant cre
 	// Body is map[string]any, so a JSON-RPC-style login can nest credentials inside
 	// an object — e.g. {"method":"account.login","params":{"user":"credential:..",
 	// "pass":"credential:.."}} — not just at the top level.
-	resolvedBody, err := a.resolveLoginCredentials(ctx, a.config.Login.Body, tenant)
+	// A field listed in login.optional is left out when its credential has no
+	// value (resolveLoginBody).
+	resolvedBody, err := a.resolveLoginBody(ctx, tenant)
 	if err != nil {
 		return err
 	}
@@ -1041,7 +1046,7 @@ func (a *RestAuth) resolveLoginCredentials(ctx context.Context, v any, tenant cr
 		if err != nil {
 			return nil, fmt.Errorf("resolve login credential %q: %w", name, err)
 		}
-		return resolved, nil
+		return a.loginValue(name, resolved)
 	case map[string]any:
 		out := make(map[string]any, len(val))
 		for k, child := range val {

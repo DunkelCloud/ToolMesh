@@ -151,6 +151,11 @@ type UserScopedStore struct {
 	backend   string
 	names     map[string]bool
 	enrollURL string
+	// optional holds the per-user names an account may go without
+	// (WithOptional), jsonValues those whose value is a JSON object
+	// (WithJSONValues).
+	optional   map[string]bool
+	jsonValues map[string]bool
 }
 
 // NewUserScopedStore wraps delegate for the backend entry named backend:
@@ -166,9 +171,52 @@ func NewUserScopedStore(delegate CredentialStore, users UserStore, backend strin
 	return &UserScopedStore{delegate: delegate, users: users, backend: backend, names: set, enrollURL: enrollURL}
 }
 
+// WithOptional marks per-user names as ones an account may go without and
+// returns the store. Get answers such a name that the account does not hold
+// with ErrCredentialNotFound instead of a UserCredentialError, so that a
+// reader which can do without the value, such as an optional field of a
+// session login, leaves it out. A value that is stored and cannot be read
+// stays an error: a limit that cannot be read is not no limit. Names that
+// are not per user are ignored.
+func (s *UserScopedStore) WithOptional(names ...string) *UserScopedStore {
+	s.optional = s.keysOf(names)
+	return s
+}
+
+// WithJSONValues marks per-user names whose value is a JSON object, not a
+// plain secret, and returns the store. Names that are not per user are
+// ignored.
+func (s *UserScopedStore) WithJSONValues(names ...string) *UserScopedStore {
+	s.jsonValues = s.keysOf(names)
+	return s
+}
+
+// keysOf returns the key forms of those names that are per user.
+func (s *UserScopedStore) keysOf(names []string) map[string]bool {
+	set := make(map[string]bool, len(names))
+	for _, n := range names {
+		if k := userCredentialKey(n); k != "" && s.names[k] {
+			set[k] = true
+		}
+	}
+	return set
+}
+
 // PerUser reports whether name is read from the calling user's namespace.
 func (s *UserScopedStore) PerUser(name string) bool {
 	return s.names[userCredentialKey(name)]
+}
+
+// Optional reports whether name is a per-user name an account may go
+// without.
+func (s *UserScopedStore) Optional(name string) bool {
+	return s.optional[userCredentialKey(name)]
+}
+
+// JSONValue reports whether the value of the per-user name is a JSON
+// object.
+func (s *UserScopedStore) JSONValue(name string) bool {
+	return s.jsonValues[userCredentialKey(name)]
 }
 
 // PerUserNames returns the per-user names in their key form, sorted.
@@ -258,12 +306,41 @@ func (s *UserScopedStore) Get(ctx context.Context, logicalName string, tenant Te
 	case err == nil && val != "":
 		return val, nil
 	case err == nil, errors.Is(err, ErrCredentialNotFound):
-		return "", s.fail(tenant, UserCredentialIncomplete, logicalName, nil, nil)
+		if !s.Optional(logicalName) {
+			return "", s.fail(tenant, UserCredentialIncomplete, logicalName, nil, nil)
+		}
+		// The listing has to agree that there is none: a store whose
+		// failure reads as "not found" must not make a value disappear
+		// that a reader may then go without.
+		held, lerr := s.holds(ctx, tenant.UserID, account, logicalName)
+		switch {
+		case lerr != nil:
+			return "", s.fail(tenant, UserCredentialStoreFailed, logicalName, nil, lerr)
+		case held:
+			return "", s.fail(tenant, UserCredentialStoreFailed, logicalName, nil, errors.New("the store lists the credential and does not return it"))
+		}
+		return "", fmt.Errorf("account %q holds no %s, which it may go without: %w", account, userCredentialKey(logicalName), ErrCredentialNotFound)
 	case errors.Is(err, ErrUserCredentialUnreadable):
 		return "", s.fail(tenant, UserCredentialUnreadable, logicalName, nil, nil)
 	default:
 		return "", s.fail(tenant, UserCredentialStoreFailed, logicalName, nil, err)
 	}
+}
+
+// holds reports whether the listing of userID shows a value under name for
+// the account at this backend.
+func (s *UserScopedStore) holds(ctx context.Context, userID, account, name string) (bool, error) {
+	infos, err := s.users.ListUser(ctx, userID)
+	if err != nil {
+		return false, err
+	}
+	key := userCredentialKey(name)
+	for _, info := range infos {
+		if info.Backend == s.backend && info.Account == account && info.Name == key {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // ListByPrefix implements PrefixLister with the delegate's credentials

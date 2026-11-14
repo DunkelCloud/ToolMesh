@@ -108,6 +108,14 @@ type UserStore interface {
 	// ListUser lists what is stored for userID, sorted by backend, account
 	// and name.
 	ListUser(ctx context.Context, userID string) ([]UserCredentialInfo, error)
+	// ChangeUser applies change as one write: all of it or nothing, and no
+	// reader sees a part of it. It returns what the slots of the change
+	// held before, for RestoreUser.
+	ChangeUser(ctx context.Context, change UserChange) (UserSnapshot, error)
+	// RestoreUser puts every slot of snapshot back to what it held when the
+	// snapshot was taken, as one write: the entry as it was stored, also
+	// one that cannot be read, or nothing.
+	RestoreUser(ctx context.Context, snapshot UserSnapshot) error
 }
 
 // ErrUserCredentialUnreadable is returned for a stored user credential that
@@ -574,30 +582,15 @@ func (s *FileUserStore) PutUser(_ context.Context, slot UserSlot, value string) 
 	if err := checkSlot(slot); err != nil {
 		return err
 	}
-	if value == "" {
-		return errors.New("user credential: the value is empty")
+	if err := checkUserValue(value); err != nil {
+		return err
 	}
-	if len(value) > MaxUserCredentialBytes {
-		return fmt.Errorf("user credential: the value is longer than %d bytes", MaxUserCredentialBytes)
-	}
-	// The value is sealed under the lock: ChangeKey replaces the key the
-	// store runs on, and a value sealed under the key of a moment ago would
-	// be unreadable from then on.
+	// The value is sealed under the lock (see seal).
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	nonce := make([]byte, s.aead.NonceSize())
-	if _, err := rand.Read(nonce); err != nil {
-		return fmt.Errorf("user credential: %w", err)
-	}
-	e := userFileEntry{
-		User:      slot.UserID,
-		Backend:   slot.Backend,
-		Account:   slot.Account,
-		Name:      slot.Name,
-		KeyID:     s.keyID,
-		Nonce:     nonce,
-		Value:     s.aead.Seal(nil, nonce, padValue(value), sealAAD(slot)),
-		UpdatedAt: s.now().UTC().Truncate(time.Second),
+	e, err := s.seal(slot, value)
+	if err != nil {
+		return err
 	}
 	prev, had := s.entries[slot]
 	s.entries[slot] = e

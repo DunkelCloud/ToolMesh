@@ -34,9 +34,18 @@ func TestSSRFSafeTransport_InvalidAddr(t *testing.T) {
 	}
 }
 
+// TestValidateBaseURL_PublicHostPasses pins that a public destination passes.
+// The hosts are address literals: the resolver returns a literal unchanged,
+// so the test needs no DNS, and the answer goes through the same checks as
+// the addresses of a host name.
 func TestValidateBaseURL_PublicHostPasses(t *testing.T) {
-	// example.com resolves to a public IP.
-	if err := ValidateBaseURL("https://example.com/api"); err != nil {
-		t.Errorf("expected public host to pass, got %v", err)
+	for _, raw := range []string{
+		"https://93.184.215.14/api",
+		"http://93.184.215.14:8080/api",
+		"https://[2606:4700:4700::1111]/api",
+	} {
+		if err := ValidateBaseURL(raw); err != nil {
+			t.Errorf("ValidateBaseURL(%s) = %v, want a public destination to pass", raw, err)
+		}
 	}
 }

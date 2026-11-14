@@ -500,8 +500,9 @@ func TestMainTLS_ACME(t *testing.T) {
 		t.Errorf("%d certificates issued after a request for another host name", ca.count())
 	}
 
-	// The account key and the certificate are kept below the data directory.
-	entries, err := os.ReadDir(filepath.Join(dataDir, acmeDirName))
+	// The account key and the certificate are kept below the data
+	// directory, in the directory of this authority.
+	entries, err := os.ReadDir(acmeDir(dataDir, ca.srv.URL+"/dir"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -526,6 +527,48 @@ func TestMainTLS_ACME(t *testing.T) {
 	logs2.waitFor(t, tlsReady)
 	if second := tlsSerial(t, ca.root, addr2, tlsHost); second != first {
 		t.Errorf("after a restart the certificate has serial %s, want the kept one, %s", second, first)
+	}
+}
+
+// TestMainTLS_ACME_AuthorityChange pins that each certificate authority has
+// its own place below the data directory: after a change of the directory
+// URL, say from a staging environment to the real one, the certificate
+// comes from the new authority instead of the kept one being served on, and
+// a change back finds the first one again.
+func TestMainTLS_ACME_AuthorityChange(t *testing.T) {
+	staging, prod := newFakeCA(t), newFakeCA(t)
+	dataDir := t.TempDir()
+	obtain := func(ca *fakeCA) string {
+		t.Helper()
+		mt, err := newMainTLS(ca.config(dataDir), quietLogger())
+		if err != nil {
+			t.Fatal(err)
+		}
+		leaf, err := mt.certificate()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := leaf.CheckSignatureFrom(ca.root); err != nil {
+			t.Errorf("the certificate served is not from the configured authority: %v", err)
+		}
+		return leaf.SerialNumber.String() + " of " + ca.srv.URL
+	}
+	first := obtain(staging)
+	if staging.count() != 1 || prod.count() != 0 {
+		t.Fatalf("certificates issued: %d and %d, want 1 and 0", staging.count(), prod.count())
+	}
+	obtain(prod)
+	if staging.count() != 1 || prod.count() != 1 {
+		t.Errorf("after the change of authority: %d and %d certificates issued, want one each", staging.count(), prod.count())
+	}
+	if again := obtain(staging); again != first || staging.count() != 1 {
+		t.Errorf("back at the first authority: certificate %s, %d issued; want the kept one, %s", again, staging.count(), first)
+	}
+	if a, b := acmeDir(dataDir, "https://ca.example.com/acme/one/directory"), acmeDir(dataDir, "https://ca.example.com/acme/two/directory"); a == b || !strings.Contains(a, "ca.example.com-") {
+		t.Errorf("two directories of one host are kept in %q and %q", a, b)
+	}
+	if dir := acmeDir(dataDir, "https://[2001:db8::5]:14000/dir"); strings.ContainsAny(filepath.Base(dir), ":[]") {
+		t.Errorf("directory name %q holds characters of an address", filepath.Base(dir))
 	}
 }
 

@@ -17,8 +17,10 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -50,8 +52,29 @@ const (
 )
 
 // acmeDirName is the directory below TOOLMESH_DATA_DIR that holds the ACME
-// account key and the certificate.
+// account keys and certificates, in a directory per certificate authority.
 const acmeDirName = "acme"
+
+// acmeDir is where the account key and the certificate of the authority at
+// directoryURL are kept: a directory of its own below acme/ in the data
+// directory, named by the authority's host and a digest of the URL. The
+// ACME client names its files by the host name of the certificate alone.
+// In one shared directory, a certificate of one authority would be served
+// on after the operator switched to another, for instance from a staging
+// environment to the real one.
+func acmeDir(dataDir, directoryURL string) string {
+	host := "authority"
+	if u, err := url.Parse(directoryURL); err == nil && u.Hostname() != "" {
+		host = strings.Map(func(r rune) rune {
+			if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '.' || r == '-' {
+				return r
+			}
+			return '_'
+		}, strings.ToLower(u.Hostname()))
+	}
+	sum := sha256.Sum256([]byte(directoryURL))
+	return filepath.Join(dataDir, acmeDirName, host+"-"+hex.EncodeToString(sum[:4]))
+}
 
 // mainTLS is how the main listener serves https, when it does.
 type mainTLS struct {
@@ -79,7 +102,7 @@ func newMainTLS(cfg *config.Config, logger *slog.Logger) (*mainTLS, error) {
 			config: &tls.Config{MinVersion: tls.VersionTLS12, GetCertificate: certs.certificate},
 		}, nil
 	case cfg.TLSACME:
-		dir := filepath.Join(cfg.DataDir, acmeDirName)
+		dir := acmeDir(cfg.DataDir, cfg.TLSACMEDirectory)
 		if err := writableDir(dir); err != nil {
 			return nil, fmt.Errorf("TOOLMESH_TLS_ACME: the certificate is kept in %s, which cannot be written: %w", dir, err)
 		}

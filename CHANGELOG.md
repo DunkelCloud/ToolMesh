@@ -22,7 +22,9 @@ for the full narrative and details.
   `TOOLMESH_TLS_KEY` it serves a certificate from two files and loads them
   again after a change. `TOOLMESH_HTTP_REDIRECT_BIND` adds a plain http
   listener that redirects to the https address and answers ACME HTTP-01
-  challenges. Without these settings ToolMesh serves plain http as before.
+  challenges, which also lets an instance behind a CDN that ends TLS obtain
+  its certificate. Without these settings ToolMesh serves plain http as
+  before.
   See [TLS](docs/configuration.md#tls).
 - A DADL tool can list in `not_ready_on` the 2xx statuses with which its API
   answers a read whose result it is still preparing; GitHub's repository

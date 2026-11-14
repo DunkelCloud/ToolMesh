@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -574,6 +575,21 @@ func main() {
 		IdleTimeout:  120 * time.Second,
 	}
 
+	// TLS on the main listener is optional. Without a certificate it speaks
+	// plain http, as behind a reverse proxy that ends TLS. With one, from
+	// files or from an ACME certificate authority, it serves https itself,
+	// and a plain http listener can stand next to it that redirects there.
+	srvTLS, err := newMainTLS(cfg, logger)
+	if err != nil {
+		logger.Error("failed to set up TLS for the main listener", "error", err)
+		os.Exit(1)
+	}
+	redirectSrv, err := serveHTTPRedirect(ctx, cfg, srvTLS, logger)
+	if err != nil {
+		logger.Error("failed to start the http redirect listener", "error", err)
+		os.Exit(1)
+	}
+
 	// Metrics endpoint runs on a separate listener so a Prometheus scraper does
 	// not need to traverse the public auth-protected MCP port.
 	var metricsSrv *http.Server
@@ -618,6 +634,9 @@ func main() {
 				logger.Error("metrics server shutdown error", "error", err)
 			}
 		}
+		if err := redirectSrv.shutdown(shutdownCtx); err != nil {
+			logger.Error("http redirect listener shutdown error", "error", err)
+		}
 	}()
 
 	// Consolidated security-posture summary: one place that reports every
@@ -632,8 +651,13 @@ func main() {
 			"issuer", cfg.Issuer)
 	}
 
-	logger.Info("ToolMesh MCP server listening", "addr", srv.Addr)
-	if err := srv.ListenAndServe(); err != http.ErrServerClosed {
+	ln, err := (&net.ListenConfig{}).Listen(ctx, "tcp", srv.Addr)
+	if err != nil {
+		logger.Error("http server error", "error", err)
+		os.Exit(1)
+	}
+	logger.Info("ToolMesh MCP server listening", "addr", srv.Addr, "tls", srvTLS.mode)
+	if err := srvTLS.serve(ctx, srv, ln, logger); !errors.Is(err, http.ErrServerClosed) {
 		logger.Error("http server error", "error", err)
 		os.Exit(1)
 	}

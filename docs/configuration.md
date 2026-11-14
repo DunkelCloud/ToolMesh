@@ -6,7 +6,7 @@ All configuration is done via environment variables. Copy `.env.example` to `.en
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `TOOLMESH_PORT` | `8123` | Host-side port for Docker port mapping. The Go binary always listens on 8080 inside the container; this variable controls the `host:container` mapping in `docker-compose.yml`. |
+| `TOOLMESH_PORT` | `8123` | Host-side port for Docker port mapping. The Go binary always listens on 8080 inside the container; this variable controls the `host:container` mapping in `docker-compose.yml`. With [built-in TLS](#tls) set it to `443`. |
 | `TOOLMESH_TRANSPORT` | `http` | Transport mode: `http` or `stdio` |
 | `TOOLMESH_CORS_ORIGINS` | *(empty)* | Comma-separated list of allowed CORS origins (e.g. `https://claude.ai,https://app.example.com`). If unset, any origin is reflected — fine for localhost, not for production. |
 | `TOOLMESH_AUTH_PASSWORD` | *(empty)* | Password for OAuth 2.1 single-user authentication |
@@ -18,6 +18,81 @@ All configuration is done via environment variables. Copy `.env.example` to `.en
 | `TOOLMESH_ROOT_REDIRECT` | *(empty)* | Absolute `http(s)` URL that `GET /` redirects to (302). Unset, the site root serves the built-in page explaining that this host is an MCP endpoint. Only `/` is redirected — `/mcp` always serves the page, since a visitor there needs the URL to copy. An invalid value fails startup. |
 | `TOOLMESH_TRUSTED_PROXIES` | *(empty: loopback only)* | Addresses of the reverse proxies whose `X-Forwarded-For` header is honored, as comma-separated addresses or CIDRs, or `none`. List proxies, not client networks. A request from any other address is identified by its connection address. See [Client address](#client-address). An invalid entry fails startup. |
 | `TOOLMESH_DEV` | `false` | Local-development posture. Reports the startup security-posture summary at `INFO` instead of `WARN`. Relaxes no setting on its own — it only changes the log level of that summary. |
+
+## TLS
+
+By default ToolMesh serves plain http and expects a reverse proxy in front of it that ends TLS. It can also serve https itself, so that an instance needs no proxy. The certificate then comes from two files, or from an ACME certificate authority such as [Let's Encrypt](https://letsencrypt.org), which issues it for the host name of `TOOLMESH_ISSUER` and renews it. All of this is optional: an instance behind a proxy sets none of these variables and runs as before.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `TOOLMESH_TLS_CERT` | *(empty)* | PEM file with the certificate, followed by its intermediate certificates. With it and the key the main listener serves https |
+| `TOOLMESH_TLS_KEY` | *(empty)* | PEM file with the key of that certificate |
+| `TOOLMESH_TLS_ACME` | `false` | `true` obtains the certificate from an ACME certificate authority, for the host name of `TOOLMESH_ISSUER`, and renews it. Setting it accepts the authority's terms of service |
+| `TOOLMESH_TLS_ACME_EMAIL` | *(empty)* | Contact address of the ACME account. Optional |
+| `TOOLMESH_TLS_ACME_DIRECTORY` | Let's Encrypt | Directory URL of another ACME certificate authority, for example Let's Encrypt's staging environment `https://acme-staging-v02.api.letsencrypt.org/directory`, or an authority of your own |
+| `TOOLMESH_HTTP_REDIRECT_BIND` | *(empty)* | Address of a plain http listener next to the https one, such as `:8081`. It redirects to the https address and, with ACME, answers the authority's HTTP-01 challenges. Empty: no such listener |
+
+### Quick start with TLS
+
+You need a host name that resolves to the machine, here `toolmesh.example.com`, and port 443 of that address free for ToolMesh.
+
+1. Set three lines in `.env`:
+
+   ```bash
+   TOOLMESH_ISSUER=https://toolmesh.example.com/
+   TOOLMESH_TLS_ACME=true
+   TOOLMESH_PORT=443
+   ```
+
+   `TOOLMESH_PORT` is the host port Compose publishes. Inside the container ToolMesh listens on 8080 as before.
+
+2. Start ToolMesh and wait for the certificate, which takes a few seconds:
+
+   ```bash
+   docker compose up -d
+   docker compose logs -f toolmesh | grep "TLS certificate"
+   ```
+
+   The line `TLS certificate ready` names the host and the day the certificate ends.
+
+3. Check that it answers, and connect clients to `https://toolmesh.example.com/mcp`:
+
+   ```bash
+   curl https://toolmesh.example.com/health
+   ```
+
+With a certificate of your own, set `TOOLMESH_TLS_CERT` and `TOOLMESH_TLS_KEY` instead of `TOOLMESH_TLS_ACME` and mount the two files into the container; `docker-compose.override.yml.example` has the lines.
+
+### What changes with TLS on
+
+- The main listener speaks https only, TLS 1.2 or later, with HTTP/2 and HTTP/1.1. A plain http request to it is answered `400`. Health checks and scripts that call `/health` or `/mcp` need the https address.
+- `TOOLMESH_ISSUER` has to be an https address. It is the address clients are given, in the OAuth metadata and in links.
+- Nothing stands in front of ToolMesh any more, so no proxy is trusted for the client address: leave `TOOLMESH_TRUSTED_PROXIES` unset. See [Client address](#client-address).
+- The metrics listener is a listener of its own and stays plain http. So does [the credentials page's own listener](#where-the-page-is-served), unless it has certificate files of its own.
+- Failed TLS handshakes are logged at `DEBUG`. A listener on the internet sees them all day, from scanners and from clients that ask for another host name.
+
+### Certificate files
+
+ToolMesh looks at the two files once a minute and loads them again after a change, so a renewed certificate needs no restart. Files that do not load in the middle of a renewal leave the certificate in use and are tried again a minute later.
+
+### Certificates from an ACME certificate authority
+
+- **Terms of service.** `TOOLMESH_TLS_ACME=true` accepts the terms of the certificate authority on your behalf, for Let's Encrypt its subscriber agreement. Read them before you turn it on.
+- **Host name.** The certificate is for the host name of `TOOLMESH_ISSUER` and for no other. A connection that asks for another name, or for none, as a client does that connects to the IP address, gets no certificate and fails. ACME needs a full host name; for an IP address or a name of one label use certificate files.
+- **How the authority validates.** It connects to the host name on port 443 and asks the main listener for proof (TLS-ALPN-01). So port 443 of the host name has to reach the main listener: `TOOLMESH_PORT=443` with the shipped Compose file. If the instance is reached on another port, say `https://toolmesh.example.com:8443/`, set `TOOLMESH_HTTP_REDIRECT_BIND` and publish that listener on port 80; the authority then validates over port 80 (HTTP-01).
+- **Where the certificate is kept.** The account key, the certificate and its key are files in `acme/` below `TOOLMESH_DATA_DIR`, which the shipped Compose file keeps in `./data`. A restart reads them and asks the authority for nothing. ToolMesh does not start when it cannot write there: without the files every start would request a new certificate, and authorities issue only a few per week for one name. Back the directory up like a key.
+- **At the start.** ToolMesh obtains the certificate when it starts, not when the first client connects, and logs `TLS certificate ready`. When the authority issues none, it logs an error and tries again after 2, 5 and 15 minutes, then every hour. Until then https connections fail; a client that connects makes ToolMesh ask the authority as well, at most once a minute. The usual cause is that the authority does not reach the instance under the host name: check the DNS entry and the published ports.
+- **Renewal.** The certificate is renewed 30 days before it ends, or in the last third of a shorter lifetime, without a restart. The log says `TLS certificate renewed`. A certificate that is halfway through that time without a renewal is logged as a warning twice a day.
+- **Trying it out.** Let's Encrypt limits how many certificates it issues and how many validations may fail. Its staging environment has higher limits; its certificates are not trusted by clients. Switching the directory later requests a new certificate.
+- **An authority of your own.** `TOOLMESH_TLS_ACME_DIRECTORY` takes the directory URL of another ACME certificate authority, for example one you run yourself, or [Pebble](https://github.com/letsencrypt/pebble) for tests. ToolMesh has to trust the certificate of that address. The image trusts the public authorities; for a private one, mount its root certificate into a directory and name the directory in `SSL_CERT_DIR`. Authorities that require an external account binding are not supported.
+
+### The http redirect listener
+
+`TOOLMESH_HTTP_REDIRECT_BIND` starts a plain http listener that serves nothing of ToolMesh. It answers `GET` and `HEAD` with a redirect (`308`) to the same path at the https address of `TOOLMESH_ISSUER`, so that a browser that was given the bare host name arrives. Other requests are answered `400`: a client that posts to the plain http address has sent its request in the clear and should be told. With ACME the listener also answers HTTP-01 challenges. Publish it on port 80, for example `"80:8081"` with `TOOLMESH_HTTP_REDIRECT_BIND=:8081`.
+
+### Settings that stop the start
+
+The settings go together, and one that would be ignored is an error: whoever sets it expects https. ToolMesh does not start with one of the two certificate files alone, with files that hold no certificate, with files and `TOOLMESH_TLS_ACME` together, with `TOOLMESH_TLS_ACME_EMAIL` or `TOOLMESH_TLS_ACME_DIRECTORY` but without `TOOLMESH_TLS_ACME=true`, with a redirect listener but no https, with an `http://` issuer while TLS is on, or with ACME while `TOOLMESH_ISSUER` is the placeholder, an IP address or a name of one label.
 
 ## Login Throttling
 
@@ -1386,8 +1461,9 @@ What follows from this:
 ### Where the page is served
 
 By default the page is at `/credentials` of the main listener, next to the MCP
-endpoint. Put it behind TLS like the rest of ToolMesh. That is all an instance
-needs that is reached directly or through a proxy you run yourself.
+endpoint. Put it behind TLS like the rest of ToolMesh, with [built-in TLS](#tls)
+or a proxy. That is all an instance needs that is reached directly or through a
+proxy you run yourself.
 
 Whatever ends TLS in front of the page reads every form sent to it: the
 ToolMesh password at sign-in and each credential a user stores. If that is a

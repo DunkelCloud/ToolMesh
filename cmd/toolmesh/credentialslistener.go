@@ -19,11 +19,10 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"log"
 	"log/slog"
 	"net"
 	"net/http"
-	"os"
-	"sync"
 	"time"
 
 	"github.com/DunkelCloud/ToolMesh/internal/config"
@@ -69,11 +68,12 @@ func serveCredentialsPage(ctx context.Context, cfg *config.Config, mainMux *http
 		},
 	}
 	if cfg.CredentialsTLSCert != "" {
-		certs, err := newCertReloader(cfg.CredentialsTLSCert, cfg.CredentialsTLSKey, logger)
+		certs, err := newCertReloader(certOfCredentialsPage, cfg.CredentialsTLSCert, cfg.CredentialsTLSKey, logger)
 		if err != nil {
 			return nil, err
 		}
 		l.srv.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12, GetCertificate: certs.certificate}
+		l.srv.ErrorLog = log.New(serverLogWriter{logger: logger}, "", 0)
 		l.https = true
 	}
 
@@ -118,82 +118,4 @@ func (l *credentialsListener) shutdown(ctx context.Context) error {
 		return nil
 	}
 	return l.srv.Shutdown(ctx)
-}
-
-// certReloadInterval is how often the certificate files are looked at.
-const certReloadInterval = time.Minute
-
-// certReloader serves the certificate in two PEM files and reads the files
-// again once they changed, so that a renewed certificate is used without a
-// restart.
-type certReloader struct {
-	certFile, keyFile string
-	logger            *slog.Logger
-	now               func() time.Time
-
-	mu      sync.Mutex
-	cert    *tls.Certificate
-	stamp   [2]fileStamp
-	checked time.Time
-}
-
-// fileStamp tells one state of a file from the next.
-type fileStamp struct {
-	modTime time.Time
-	size    int64
-}
-
-// newCertReloader loads the certificate; files that do not hold a
-// certificate and its key are an error.
-func newCertReloader(certFile, keyFile string, logger *slog.Logger) (*certReloader, error) {
-	c := &certReloader{certFile: certFile, keyFile: keyFile, logger: logger, now: time.Now}
-	stamp, err := c.stamps()
-	if err != nil {
-		return nil, fmt.Errorf("certificate of the credentials page: %w", err)
-	}
-	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
-	if err != nil {
-		return nil, fmt.Errorf("certificate of the credentials page: %w", err)
-	}
-	c.cert, c.stamp, c.checked = &cert, stamp, c.now()
-	return c, nil
-}
-
-// stamps returns the state of both files.
-func (c *certReloader) stamps() ([2]fileStamp, error) {
-	var out [2]fileStamp
-	for i, name := range []string{c.certFile, c.keyFile} {
-		info, err := os.Stat(name)
-		if err != nil {
-			return out, err
-		}
-		out[i] = fileStamp{modTime: info.ModTime(), size: info.Size()}
-	}
-	return out, nil
-}
-
-// certificate is the tls.Config.GetCertificate of the page's listener. When
-// the files changed it loads them; files that cannot be loaded, as in the
-// middle of a renewal, leave the certificate in use and are tried again at
-// the next look.
-func (c *certReloader) certificate(*tls.ClientHelloInfo) (*tls.Certificate, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if now := c.now(); now.Sub(c.checked) >= certReloadInterval {
-		c.checked = now
-		stamp, err := c.stamps()
-		switch {
-		case err != nil:
-			c.logger.Warn("certificate of the credentials page: the files cannot be read, keeping the one in use", "error", err)
-		case stamp != c.stamp:
-			cert, err := tls.LoadX509KeyPair(c.certFile, c.keyFile)
-			if err != nil {
-				c.logger.Warn("certificate of the credentials page: the changed files do not load, keeping the one in use", "error", err)
-				break
-			}
-			c.cert, c.stamp = &cert, stamp
-			c.logger.Info("certificate of the credentials page reloaded")
-		}
-	}
-	return c.cert, nil
 }

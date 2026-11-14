@@ -43,7 +43,7 @@ Add to `claude_desktop_config.json`:
 }
 ```
 
-> **Note:** Claude Desktop requires HTTPS. For local development without TLS, edit the JSON file directly (the GUI enforces `https://`). Use Caddy, Cloudflare Tunnel, or nginx as a reverse proxy for production.
+> **Note:** Claude Desktop requires HTTPS. For local development without TLS, edit the JSON file directly (the GUI enforces `https://`). For production, turn on built-in TLS (`TOOLMESH_TLS_ACME=true`, see [docs/configuration.md](docs/configuration.md#tls)) or use Caddy, Cloudflare Tunnel, or nginx as a reverse proxy.
 
 ## Authentication
 

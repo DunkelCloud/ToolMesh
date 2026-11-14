@@ -256,6 +256,23 @@ type Config struct {
 	CredentialsTLSCert string // TOOLMESH_CREDENTIALS_TLS_CERT, PEM file; with the key the listener serves https
 	CredentialsTLSKey  string // TOOLMESH_CREDENTIALS_TLS_KEY, PEM file
 
+	// TLS on the main listener. This is optional: unset, the main listener
+	// speaks plain http, which is right behind a reverse proxy that ends
+	// TLS. With a certificate ToolMesh serves https itself and needs no
+	// proxy. The certificate comes from two PEM files, or from an ACME
+	// certificate authority such as Let's Encrypt, which issues it for the
+	// host name of TOOLMESH_ISSUER and renews it.
+	TLSCert          string // TOOLMESH_TLS_CERT, PEM file; with the key the main listener serves https
+	TLSKey           string // TOOLMESH_TLS_KEY, PEM file
+	TLSACME          bool   // TOOLMESH_TLS_ACME, default false: certificate from an ACME certificate authority
+	TLSACMEEmail     string // TOOLMESH_TLS_ACME_EMAIL, optional contact address of the ACME account
+	TLSACMEDirectory string // TOOLMESH_TLS_ACME_DIRECTORY, the authority's directory URL; default Let's Encrypt
+	TLSACMEHost      string // the host name the certificate is for, taken from TOOLMESH_ISSUER
+	// HTTPRedirectBind adds a plain http listener next to a main listener
+	// that serves https. It sends browsers to the https address and, with
+	// TLSACME, answers the authority's HTTP-01 challenges.
+	HTTPRedirectBind string // TOOLMESH_HTTP_REDIRECT_BIND, e.g. ":8081"; empty: no such listener
+
 	// Settings of the credential store "command", passed to it unparsed; the
 	// store checks them. They live outside CREDENTIAL_<NAME>, which is the
 	// namespace of the credentials themselves.
@@ -399,6 +416,9 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 	if err := cfg.checkCredentialsPage(); err != nil {
+		return nil, err
+	}
+	if err := cfg.loadTLS(); err != nil {
 		return nil, err
 	}
 	codeMax, err := envIntStrict("TOOLMESH_CODE_MAX_CONCURRENT", defaultCodeMaxConcurrent)
@@ -663,14 +683,10 @@ func (c *Config) checkCredentialsPage() error {
 		}
 		return nil
 	}
-	_, bindPort, err := net.SplitHostPort(c.CredentialsBind)
-	if err != nil {
-		return fmt.Errorf("invalid %s %q: want an address to listen on such as \":8444\" or \"10.0.0.5:8444\": %w", envCredentialsBind, c.CredentialsBind, err)
-	}
 	// Without a port, or with port 0, the system would pick one: the page
 	// would be neither where its address says nor on the main listener.
-	if n, err := strconv.Atoi(bindPort); err != nil || n < 1 || n > 65535 {
-		return fmt.Errorf("invalid %s %q: want a port from 1 to 65535, as in \":8444\"", envCredentialsBind, c.CredentialsBind)
+	if err := checkListenAddr(envCredentialsBind, c.CredentialsBind, "8444"); err != nil {
+		return err
 	}
 	if c.CredentialsURL == "" {
 		return fmt.Errorf("%s needs %s: the address users open the page at, such as https://toolmesh.internal.example:8444. Messages that send users to the page name it, and the page accepts forms from it only", envCredentialsBind, envCredentialsURL)
@@ -705,6 +721,146 @@ func (c *Config) checkCredentialsPage() error {
 	}
 	if c.CredentialsTLSCert != "" && u.Scheme != schemeHTTPS {
 		return fmt.Errorf("%s is %q, but with %s the page's listener serves https", envCredentialsURL, c.CredentialsURL, envCredentialsTLSCert)
+	}
+	return nil
+}
+
+// checkListenAddr checks the address of a listener of its own, such as
+// ":8444" or "10.0.0.5:8444", set in the variable name. The port has to be
+// given: with none, or with port 0, the system would pick one, and the
+// listener would not be where the operator published it. examplePort is the
+// port the error message shows.
+func checkListenAddr(name, addr, examplePort string) error {
+	_, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return fmt.Errorf("invalid %s %q: want an address to listen on such as \":%s\" or \"10.0.0.5:%s\": %w", name, addr, examplePort, examplePort, err)
+	}
+	if n, err := strconv.Atoi(port); err != nil || n < 1 || n > 65535 {
+		return fmt.Errorf("invalid %s %q: want a port from 1 to 65535, as in \":%s\"", name, addr, examplePort)
+	}
+	return nil
+}
+
+// Settings of TLS on the main listener.
+const (
+	envIssuer           = "TOOLMESH_ISSUER"
+	envTLSCert          = "TOOLMESH_TLS_CERT"
+	envTLSKey           = "TOOLMESH_TLS_KEY" //nolint:gosec // G101: the name of a setting, not a credential
+	envTLSACME          = "TOOLMESH_TLS_ACME"
+	envTLSACMEEmail     = "TOOLMESH_TLS_ACME_EMAIL"
+	envTLSACMEDirectory = "TOOLMESH_TLS_ACME_DIRECTORY"
+	envHTTPRedirectBind = "TOOLMESH_HTTP_REDIRECT_BIND"
+)
+
+// DefaultACMEDirectory is the ACME directory of Let's Encrypt, the
+// certificate authority TOOLMESH_TLS_ACME uses unless
+// TOOLMESH_TLS_ACME_DIRECTORY names another.
+const DefaultACMEDirectory = "https://acme-v02.api.letsencrypt.org/directory"
+
+// TLSEnabled reports whether the main listener serves https itself, with a
+// certificate from files or from an ACME certificate authority.
+func (c *Config) TLSEnabled() bool {
+	return c.TLSCert != "" || c.TLSACME
+}
+
+// loadTLS reads and checks the settings of TLS on the main listener. TLS is
+// off unless a certificate is configured, so an instance behind a reverse
+// proxy starts as before. A setting that would be ignored stops the start:
+// whoever set one expects https, and an instance that silently serves plain
+// http instead sends passwords and keys in the clear.
+func (c *Config) loadTLS() error {
+	c.TLSCert = strings.TrimSpace(envStr(envTLSCert, ""))
+	c.TLSKey = strings.TrimSpace(envStr(envTLSKey, ""))
+	c.TLSACMEEmail = strings.TrimSpace(envStr(envTLSACMEEmail, ""))
+	c.TLSACMEDirectory = strings.TrimSpace(envStr(envTLSACMEDirectory, ""))
+	c.HTTPRedirectBind = strings.TrimSpace(envStr(envHTTPRedirectBind, ""))
+	acme, err := envBoolStrict(envTLSACME, false)
+	if err != nil {
+		return err
+	}
+	c.TLSACME = acme
+
+	if (c.TLSCert == "") != (c.TLSKey == "") {
+		return fmt.Errorf("%s and %s go together: set both for https on the main listener, or neither", envTLSCert, envTLSKey)
+	}
+	if c.TLSCert != "" && c.TLSACME {
+		return fmt.Errorf("%s and %s are both set: the certificate comes from the files or from the ACME certificate authority, not from both", envTLSCert, envTLSACME)
+	}
+	if !c.TLSACME {
+		for _, other := range []struct{ name, value string }{
+			{envTLSACMEEmail, c.TLSACMEEmail},
+			{envTLSACMEDirectory, c.TLSACMEDirectory},
+		} {
+			if other.value != "" {
+				return fmt.Errorf("%s is set without %s=true: it applies to a certificate from an ACME certificate authority, which %s turns on", other.name, envTLSACME, envTLSACME)
+			}
+		}
+	}
+	if !c.TLSEnabled() {
+		if c.HTTPRedirectBind != "" {
+			return fmt.Errorf("%s is set, but the main listener does not serve https: the listener redirects to https, which %s and %s or %s turn on", envHTTPRedirectBind, envTLSCert, envTLSKey, envTLSACME)
+		}
+		return nil
+	}
+
+	// From here on the main listener serves https, and the address clients
+	// are given has to say so.
+	issuer, err := url.Parse(c.Issuer)
+	if err != nil {
+		return fmt.Errorf("invalid %s: %w", envIssuer, err)
+	}
+	placeholder := c.IssuerIsPlaceholder()
+	if !placeholder && !strings.EqualFold(issuer.Scheme, schemeHTTPS) {
+		return fmt.Errorf("%s is %q, but the main listener serves https: set it to the https address clients use", envIssuer, c.Issuer)
+	}
+	if c.TLSACME {
+		if err := c.checkACME(issuer, placeholder); err != nil {
+			return err
+		}
+	}
+	if c.HTTPRedirectBind != "" {
+		if err := checkListenAddr(envHTTPRedirectBind, c.HTTPRedirectBind, "8081"); err != nil {
+			return err
+		}
+		if placeholder {
+			return fmt.Errorf("%s needs %s: the listener redirects to that address, and it is still the placeholder", envHTTPRedirectBind, envIssuer)
+		}
+	}
+	return nil
+}
+
+// checkACME checks the settings of a certificate from an ACME certificate
+// authority and fills in TLSACMEHost and the default directory. The
+// certificate is issued for the host name of the issuer, the address clients
+// use, so that there is one place to name it.
+func (c *Config) checkACME(issuer *url.URL, placeholder bool) error {
+	if placeholder {
+		return fmt.Errorf("%s needs %s: the certificate is requested for its host name, and it is still the placeholder. Set it to the public address of this instance, such as https://toolmesh.example.com/", envTLSACME, envIssuer)
+	}
+	host := strings.ToLower(issuer.Hostname())
+	if _, err := netip.ParseAddr(host); err == nil {
+		return fmt.Errorf("%s is %q, an IP address: %s requests a certificate for a host name. Use a host name, or certificate files (%s, %s)", envIssuer, c.Issuer, envTLSACME, envTLSCert, envTLSKey)
+	}
+	if !strings.Contains(strings.Trim(host, "."), ".") {
+		return fmt.Errorf("%s is %q: %s requests a certificate for a full host name such as toolmesh.example.com. Use such a name, or certificate files (%s, %s)", envIssuer, c.Issuer, envTLSACME, envTLSCert, envTLSKey)
+	}
+	c.TLSACMEHost = host
+
+	if c.TLSACMEDirectory == "" {
+		c.TLSACMEDirectory = DefaultACMEDirectory
+	}
+	dir, err := url.Parse(c.TLSACMEDirectory)
+	if err != nil {
+		return fmt.Errorf("invalid %s: %w", envTLSACMEDirectory, err)
+	}
+	if !strings.EqualFold(dir.Scheme, schemeHTTPS) || dir.Hostname() == "" {
+		return fmt.Errorf("invalid %s %q: want the https address of an ACME directory, such as %s", envTLSACMEDirectory, c.TLSACMEDirectory, DefaultACMEDirectory)
+	}
+	if e := c.TLSACMEEmail; e != "" {
+		at := strings.LastIndex(e, "@")
+		if at <= 0 || at == len(e)-1 || strings.ContainsAny(e, " \t<>,;:") {
+			return fmt.Errorf("invalid %s %q: want one mail address, such as admin@example.com", envTLSACMEEmail, e)
+		}
 	}
 	return nil
 }

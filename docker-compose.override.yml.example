@@ -54,6 +54,23 @@ services:
   #     - ./certs/credentials.crt:/run/certs/credentials.crt:ro
   #     - ./certs/credentials.key:/run/certs/credentials.key:ro
 
+  # --- Built-in TLS (TOOLMESH_TLS_ACME or TOOLMESH_TLS_CERT) ---
+  # ToolMesh serves https itself, without a reverse proxy. See
+  # docs/configuration.md, "TLS". With TOOLMESH_PORT=443 in .env the main
+  # listener is published on port 443 already; a certificate from an ACME
+  # certificate authority needs nothing from this file. Uncomment the port
+  # for the http redirect listener (TOOLMESH_HTTP_REDIRECT_BIND=:8081), and
+  # the volumes for a certificate of your own (TOOLMESH_TLS_CERT,
+  # TOOLMESH_TLS_KEY). If you use other sections for toolmesh as well, put
+  # them into one toolmesh: entry.
+  #
+  # toolmesh:
+  #   ports:
+  #     - "80:8081"
+  #   volumes:
+  #     - ./certs/toolmesh.crt:/run/certs/toolmesh.crt:ro
+  #     - ./certs/toolmesh.key:/run/certs/toolmesh.key:ro
+
   # --- External OpenFGA server (TOOLMESH_AUTHZ_MODE=external) ---
   # Authorization runs inside ToolMesh by default. Uncomment all three services
   # only to run your own OpenFGA server; see the Authorization section in .env
@@ -104,6 +121,7 @@ services:
   #     start_period: 30s
 
   # --- Reverse proxy (HTTPS / Claude.ai access) ---
+  # Not needed with built-in TLS (section above).
   # caddy:
   #   image: caddy:2-alpine
   #   ports:

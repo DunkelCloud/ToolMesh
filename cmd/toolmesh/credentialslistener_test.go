@@ -274,7 +274,7 @@ func TestCertReloader(t *testing.T) {
 	dir := t.TempDir()
 	certFile, keyFile, first := listenCert(t, dir, "first")
 	var logs bytes.Buffer
-	c, err := newCertReloader(certFile, keyFile, slog.New(slog.NewTextHandler(&logs, nil)))
+	c, err := newCertReloader(certOfCredentialsPage, certFile, keyFile, slog.New(slog.NewTextHandler(&logs, nil)))
 	if err != nil {
 		t.Fatal(err)
 	}

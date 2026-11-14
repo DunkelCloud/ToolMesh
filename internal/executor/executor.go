@@ -68,6 +68,8 @@ type Executor struct {
 	// kitHolder tells which kits a caller has been granted; nil when kits
 	// cannot be granted.
 	kitHolder KitHolder
+	// now dates hint proofs; nil means the wall clock (see SetClock).
+	now func() time.Time
 }
 
 // KitHolder tells which kits a caller holds at the moment, whole and in part:
@@ -199,6 +201,10 @@ type ExecuteToolRequest struct {
 	CallerID    string `json:"callerId,omitempty"`
 	CallerName  string `json:"callerName,omitempty"`
 	CallerClass string `json:"callerClass,omitempty"`
+	// HintProofs are the proofs the caller presents that it has received a
+	// backend's hint (backend.HintProof). A script passes the proofs it
+	// asserted; a direct tool call has none.
+	HintProofs []string `json:"-"`
 }
 
 // ExecuteTool runs the full pipeline: AuthZ → Credentials → Gate pre → Backend → Gate post → Audit.
@@ -307,6 +313,32 @@ func (e *Executor) ExecuteTool(ctx context.Context, req ExecuteToolRequest) (*ba
 		if kit = e.appliedKit(authzReq); kit != "" {
 			addMetadata(&entry, metaKitApplied, kit)
 		}
+	}
+
+	// Step 1b: Hint precondition. A tool of an access class the operator
+	// listed under hint_required_for runs only with the day's proof that
+	// the backend's hint was received; without it the refusal delivers
+	// the hint. After authorization, so that a caller without the right
+	// to call the tool learns nothing from it.
+	if hintBackend, refusal := e.hintRefusal(req.ToolName, toolAccess, req.HintProofs); refusal != "" {
+		e.logger.InfoContext(ctx, "call refused without hint proof, hint delivered",
+			"tool", req.ToolName,
+			"backend", hintBackend,
+			"user", uc.UserID,
+		)
+		entry.DurationMs = time.Since(start).Milliseconds()
+		entry.Status = statusDenied
+		entry.Error = errHintProofMissing
+		addMetadata(&entry, metaHintRequired, hintBackend)
+		e.recordAudit(ctx, entry)
+		return &backend.ToolResult{
+			IsError: true,
+			Content: []any{map[string]any{
+				contentKeyType: contentKeyText,
+				contentKeyText: refusal,
+			}},
+			Metadata: map[string]any{backend.MetadataKeyHintRequired: hintBackend},
+		}, nil
 	}
 
 	// Step 2: Argument check against the tool's declaration, before the

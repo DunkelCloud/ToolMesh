@@ -712,69 +712,77 @@ func (a *RESTAdapter) Execute(ctx context.Context, toolName string, params map[s
 		return nil, fmt.Errorf("execute REST tool %q: %w", toolName, err)
 	}
 
-	// Check for errors
+	// Check for errors. A response stands for an error when its status is
+	// one the tool lists in not_ready_on (the API is still preparing the
+	// result) or, with an errors config, any non-2xx status.
 	errConfig := a.effectiveErrorConfig(&tool)
+	var mapper *dadl.ErrorMapper
 	if errConfig != nil {
-		mapper := dadl.NewErrorMapper(*errConfig)
-		apiErr, retryable := mapper.CheckResponse(resp.StatusCode, body)
-		if apiErr != nil {
-			if retryable && !dadl.CanAutoRetry(&tool) {
-				// Spec §8 retry safety: a POST/PATCH without idempotency and
-				// without retry_unsafe fails on the first retryable error —
-				// the provider may already have executed the operation.
-				return a.apiErrorResultNote(apiErr,
-					"automatic retry suppressed: non-idempotent write without idempotency or retry_unsafe (DADL spec 8)"), nil
-			}
-			if retryable {
-				// Retry with backoff
-				if errConfig.RetryStrategy != nil {
-					retryer := dadl.NewRetryer(*errConfig.RetryStrategy, a.logger)
-					retryResp, retryErr := retryer.Do(ctx, func() (*http.Response, error) { //nolint:bodyclose // closed inside doRequest
-						r, b, e := a.doRequest(ctx, &tool, params, idemKey) //nolint:bodyclose // closed inside doRequest
-						if e != nil {
-							return nil, e
-						}
-						retryApiErr, retryRetryable := mapper.CheckResponse(r.StatusCode, b)
-						if retryApiErr != nil {
-							if retryRetryable {
-								return nil, retryApiErr
-							}
-							// Terminal error during retry
-							return r, nil
-						}
-						body = b
-						return r, nil
-					})
-					if retryErr != nil {
-						return a.apiErrorResult(retryErr), nil
-					}
-					resp = retryResp
-				}
-			}
+		mapper = dadl.NewErrorMapper(*errConfig)
+	}
+	classify := func(status int, b []byte) (retryable bool, apiErr error) {
+		if notReady := tool.NotReadyError(status); notReady != nil {
+			return true, notReady
+		}
+		if mapper == nil {
+			return false, nil
+		}
+		apiErr, retryable = mapper.CheckResponse(status, b)
+		return retryable, apiErr
+	}
 
-			// Re-check after retries
-			apiErr, _ = mapper.CheckResponse(resp.StatusCode, body)
-			if apiErr != nil {
-				// Handle 401 for session auth
-				if resp.StatusCode == 401 {
-					if err := a.auth.HandleUnauthorized(ctx); err == nil {
-						// Retry once after re-auth
-						resp, body, err = a.doRequest(ctx, &tool, params, idemKey) //nolint:bodyclose // closed inside doRequest
-						if err != nil {
-							return &ToolResult{
-								Content: []any{textContent(fmt.Sprintf("Error after re-auth: %s", err))},
-								IsError: true,
-							}, nil
-						}
-						apiErr, _ = mapper.CheckResponse(resp.StatusCode, body)
-					}
+	retryable, apiErr := classify(resp.StatusCode, body)
+	if apiErr != nil && retryable {
+		if !dadl.CanAutoRetry(&tool) {
+			// Spec §8 retry safety: a POST/PATCH without idempotency and
+			// without retry_unsafe fails on the first retryable error —
+			// the provider may already have executed the operation.
+			return a.apiErrorResultNote(apiErr,
+				"automatic retry suppressed: non-idempotent write without idempotency or retry_unsafe (DADL spec 8)"), nil
+		}
+		if strategy, ok := retryStrategyFor(errConfig, tool.NotReadyError(resp.StatusCode) != nil); ok {
+			// Send the request again with backoff. A not-ready status and
+			// a status in retry_on draw on the same max_retries.
+			retryer := dadl.NewRetryer(strategy, a.logger)
+			_, retryErr := retryer.Retry(ctx, apiErr, func() (*http.Response, error) { //nolint:bodyclose // closed inside doRequest
+				r, b, e := a.doRequest(ctx, &tool, params, idemKey) //nolint:bodyclose // closed inside doRequest
+				if e != nil {
+					return nil, e
 				}
-				if apiErr != nil {
-					return a.apiErrorResult(apiErr), nil
+				if again, retryApiErr := classify(r.StatusCode, b); retryApiErr != nil && again {
+					return nil, retryApiErr
 				}
+				// A success or a terminal error ends the retries; either
+				// way the call now stands on this response.
+				resp, body = r, b
+				return r, nil
+			})
+			if retryErr != nil {
+				return a.apiErrorResult(retryErr), nil
+			}
+			_, apiErr = classify(resp.StatusCode, body)
+		}
+	}
+	if apiErr != nil {
+		// Handle 401 for session auth
+		if resp.StatusCode == 401 {
+			if err := a.auth.HandleUnauthorized(ctx); err == nil {
+				// Retry once after re-auth
+				resp, body, err = a.doRequest(ctx, &tool, params, idemKey) //nolint:bodyclose // closed inside doRequest
+				if err != nil {
+					return &ToolResult{
+						Content: []any{textContent(fmt.Sprintf("Error after re-auth: %s", err))},
+						IsError: true,
+					}, nil
+				}
+				_, apiErr = classify(resp.StatusCode, body)
 			}
 		}
-	} else if resp.StatusCode >= 400 {
+		if apiErr != nil {
+			return a.apiErrorResult(apiErr), nil
+		}
+	}
+	if mapper == nil && resp.StatusCode >= 400 {
 		// No errors config: no retry semantics, but the §8.2 semantic code
 		// still applies so error-handling code can branch uniformly.
 		code := dadl.DefaultSemanticCode(resp.StatusCode)
@@ -1584,6 +1592,20 @@ func (a *RESTAdapter) effectiveErrorConfig(tool *dadl.ToolDef) *dadl.ErrorConfig
 		return tool.Errors
 	}
 	return a.spec.Backend.Defaults.Errors
+}
+
+// retryStrategyFor returns the strategy under which a retryable response is
+// answered with another request, and false when the request is not sent
+// again. A declared errors.retry_strategy always applies. Without one, a
+// status in errors.retry_on is not retried, while a not-ready status is: a
+// tool that declares not_ready_on asks for the request to be repeated, so
+// the Retryer's defaults stand in (three retries, exponential backoff
+// starting at one second).
+func retryStrategyFor(errConfig *dadl.ErrorConfig, notReady bool) (dadl.RetryStrategyConfig, bool) {
+	if errConfig != nil && errConfig.RetryStrategy != nil {
+		return *errConfig.RetryStrategy, true
+	}
+	return dadl.RetryStrategyConfig{}, notReady
 }
 
 // apiErrorResult builds the error ToolResult for a failed call. When the

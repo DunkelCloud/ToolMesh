@@ -1188,6 +1188,26 @@ These rules apply to every REST backend, whatever its `backends.yaml` options:
 - **Error texts.** A transport error names only scheme and host of the request URL, never its path or query, which can hold a query-injected credential; this includes OAuth2 token and session login requests. The text of an error result has userinfo, query and fragment removed from every URL in it. The audit log and the tool result see the same reduced form.
 - **Private addresses.** With `allow_private_url: false` a backend may not resolve to loopback, private, link-local, carrier-grade NAT (`100.64.0.0/10`), documentation, benchmarking (`198.18.0.0/15`), multicast or reserved addresses, nor to a NAT64 (`64:ff9b::/96`), 6to4 or IPv4-compatible (`::/96`) address embedding one of them, nor to site-local `fec0::/10`. `allow_private_url` defaults to `true` for backends in `backends.yaml`, since the operator configures their URLs. It covers only the destinations the configuration names: the host and port of `base_url` (or the `backends.yaml` `url`), of `token_url` and of absolute tool paths. Any other destination, such as the target of a redirect, must resolve to a public address, checked when the connection is made. The redirect and credential rules above hold either way.
 
+### Results that are not ready yet
+
+Some APIs answer a read with a 2xx status other than `200` while they are still preparing the result, and expect the same request again a little later. GitHub's repository statistics, for example, send `202` with an empty body until their cache is filled. Left alone, such a response is a success, and the caller gets the empty body as the result.
+
+A DADL tool names these statuses in `not_ready_on`:
+
+```yaml
+get_stats_contributors:
+  method: GET
+  path: /repos/{owner}/{repo}/stats/contributors
+  not_ready_on: [202]
+```
+
+- **What happens.** A response with a listed status is not passed on. ToolMesh sends the same request again under the tool's effective `errors.retry_strategy` and waits before each retry; without a declared strategy it retries three times with exponential backoff, starting at one second. A status from `errors.retry_on` that turns up in between draws on the same `max_retries`.
+- **When the result does not arrive.** The call fails with the error code `not_ready` and the last status, so the caller can tell "ask again later" from an empty result. The waits count toward `TOOLMESH_EXEC_TIMEOUT`.
+- **Where it is allowed.** On `GET` and `HEAD` tools only, with 2xx statuses other than `200`; a DADL whose tool declares it with another method or status is refused when it is parsed, as is the combination with a streamed binary response. On a write, `202` usually says the operation was accepted, and a second request would start it again. The key belongs to one tool: under `defaults` it is an unknown key, reported and ignored. A non-2xx status to retry belongs in `errors.retry_on`.
+- **What it does not do.** It repeats one request. It does not follow a `Location` header, call another endpoint or read a job state from the body; an API that hands out a job to poll is outside its scope.
+
+`not_ready_on` is a ToolMesh extension: DADL spec v0.2 does not define the key. A ToolMesh version that does not know it warns and ignores it, and the tool then returns the not-ready response as its result; a validator that checks strictly against the v0.2 schema rejects the file.
+
 ### Backend health checks
 
 A DADL can declare a health check ([DADL spec §4.6](dadl-spec-v0.2.md#46-health-check-since-v02)):

@@ -15,7 +15,9 @@
 package backend
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -39,7 +41,17 @@ const (
 	// stores "Basic <base64(user:password)>", the value of an HTTP
 	// Authorization header.
 	UserCredentialFormatBasic = "basic"
+	// UserCredentialFormatACL asks for a JSON object that limits what the
+	// account reaches, in the form the API defines, and stores it in
+	// compact form. It is no secret: the credentials page shows the stored
+	// value and the audit entry of a change names it. The login of the
+	// backend's DADL carries it as an object; the API enforces it, ToolMesh
+	// does not read it.
+	UserCredentialFormatACL = "acl"
 )
+
+// MaxUserACLBytes bounds a value of format acl.
+const MaxUserACLBytes = 4096
 
 // UserCredential is one entry of user_credentials in backends.yaml: a
 // credential name of the backend's DADL that every user stores for
@@ -53,6 +65,10 @@ const (
 //	    label: Mailbox login
 //	    hint: Your mail address and an app password.
 //	    format: basic
+//	  - name: mail_scope
+//	    label: ACL
+//	    format: acl
+//	    optional: true
 type UserCredential struct {
 	// Name is the credential name as the DADL's auth block writes it.
 	Name string
@@ -60,9 +76,37 @@ type UserCredential struct {
 	// the page shows the name.
 	Label string
 	Hint  string
-	// Format is UserCredentialFormatSecret (default) or
-	// UserCredentialFormatBasic.
+	// Format is UserCredentialFormatSecret (default),
+	// UserCredentialFormatBasic or UserCredentialFormatACL.
 	Format string
+	// Optional lets an account go without this credential. The DADL has to
+	// allow leaving it out (auth.login.optional); without Optional every
+	// account must hold a value.
+	Optional bool
+}
+
+// Secret reports whether the value is one the credentials page never shows
+// and the audit never names: every format but acl.
+func (u UserCredential) Secret() bool {
+	return u.Format != UserCredentialFormatACL
+}
+
+// NormalizeACL checks a value of format acl as a user entered it and
+// returns it in the form that is stored: one JSON object, compact. The
+// error is a message for the user and does not repeat the value.
+func NormalizeACL(value string) (string, error) {
+	trimmed := strings.TrimSpace(value)
+	if !strings.HasPrefix(trimmed, "{") || !json.Valid([]byte(trimmed)) {
+		return "", errors.New(`the value must be one JSON object, such as {"mailboxes":["INBOX"]}`)
+	}
+	var compact bytes.Buffer
+	if err := json.Compact(&compact, []byte(trimmed)); err != nil {
+		return "", errors.New("the value must be one JSON object")
+	}
+	if compact.Len() > MaxUserACLBytes {
+		return "", fmt.Errorf("the value is longer than %d bytes", MaxUserACLBytes)
+	}
+	return compact.String(), nil
 }
 
 // userCredentialFieldName is the key of a user_credentials mapping that
@@ -100,12 +144,16 @@ func (u *UserCredential) UnmarshalYAML(node *yaml.Node) error {
 				u.Hint = val.Value
 			case "format":
 				u.Format = val.Value
+			case "optional":
+				if val.Tag != "!!bool" || val.Decode(&u.Optional) != nil {
+					return fmt.Errorf("line %d: user_credentials: optional must be true or false", val.Line)
+				}
 			default:
-				return fmt.Errorf("line %d: user_credentials: field %s not found (use %s, label, hint, format)", key.Line, key.Value, userCredentialFieldName)
+				return fmt.Errorf("line %d: user_credentials: field %s not found (use %s, label, hint, format, optional)", key.Line, key.Value, userCredentialFieldName)
 			}
 		}
 	default:
-		return fmt.Errorf("line %d: user_credentials: an entry is a credential name or a mapping with name, label, hint, format", node.Line)
+		return fmt.Errorf("line %d: user_credentials: an entry is a credential name or a mapping with name, label, hint, format, optional", node.Line)
 	}
 	u.Name = strings.TrimSpace(u.Name)
 	u.Label = strings.TrimSpace(u.Label)
@@ -123,8 +171,11 @@ func (u UserCredential) validate() error {
 	if !userCredentialNameRe.MatchString(u.Name) {
 		return fmt.Errorf("user_credentials: %q is not a credential name: use letters, digits and _ only", u.Name)
 	}
-	if u.Format != UserCredentialFormatSecret && u.Format != UserCredentialFormatBasic {
-		return fmt.Errorf("user_credentials: %s: format %q is not known (use %s or %s)", u.Name, u.Format, UserCredentialFormatSecret, UserCredentialFormatBasic)
+	switch u.Format {
+	case UserCredentialFormatSecret, UserCredentialFormatBasic, UserCredentialFormatACL:
+	default:
+		return fmt.Errorf("user_credentials: %s: format %q is not known (use %s, %s or %s)", u.Name, u.Format,
+			UserCredentialFormatSecret, UserCredentialFormatBasic, UserCredentialFormatACL)
 	}
 	if len([]rune(u.Label)) > maxUserCredentialLabelRunes {
 		return fmt.Errorf("user_credentials: %s: label is longer than %d characters", u.Name, maxUserCredentialLabelRunes)
@@ -179,6 +230,7 @@ func bindUserCredentials(spec *dadl.Spec, creds credentials.CredentialStore, b *
 	seen := map[string]bool{}
 	names := make([]string, 0, len(b.Credentials))
 	bound := make([]UserCredential, 0, len(b.Credentials))
+	var optional, jsonValues []string
 	for _, uc := range b.Credentials {
 		if err := uc.validate(); err != nil {
 			return nil, nil, err
@@ -192,12 +244,36 @@ func bindUserCredentials(spec *dadl.Spec, creds credentials.CredentialStore, b *
 				uc.Name, strings.Join(spec.Backend.Auth.CredentialNames(), ", "))
 		case remapped[key]:
 			return nil, nil, fmt.Errorf("user_credentials: %s is also remapped by env: of the entry; a credential comes either from the users or from the instance", uc.Name)
+		case uc.Format == UserCredentialFormatACL && !spec.Backend.Auth.IsSessionLogin():
+			// Only a login body can carry the value as the object it is.
+			return nil, nil, fmt.Errorf("user_credentials: %s has format %s, which needs a DADL with auth.type session: the value is sent as an object in the login body",
+				uc.Name, UserCredentialFormatACL)
+		case uc.Optional && uc.Format != UserCredentialFormatACL:
+			// The page offers the removal of a limit and of nothing else.
+			return nil, nil, fmt.Errorf("user_credentials: %s is optional, which needs format %s: an account may go without a limit, not without a secret",
+				uc.Name, UserCredentialFormatACL)
+		case uc.Optional && !spec.Backend.Auth.CanOmitCredential(uc.Name):
+			// Without this an account that lacks the value would fail
+			// every call, or the value would be sent empty.
+			return nil, nil, fmt.Errorf("user_credentials: %s is optional, but the DADL cannot leave it out: it has to be the value of a field of auth.login.body that auth.login.optional lists, and of no other",
+				uc.Name)
 		}
 		seen[key] = true
 		names = append(names, uc.Name)
 		bound = append(bound, uc)
+		if uc.Optional {
+			optional = append(optional, uc.Name)
+		}
+		if uc.Format == UserCredentialFormatACL {
+			jsonValues = append(jsonValues, uc.Name)
+		}
 	}
-	return credentials.NewUserScopedStore(creds, b.Store, spec.Backend.Name, names, b.EnrollURL), bound, nil
+	if len(optional) == len(bound) {
+		return nil, nil, errors.New("user_credentials: every credential is optional; an account is one that holds at least one credential that is not")
+	}
+	store := credentials.NewUserScopedStore(creds, b.Store, spec.Backend.Name, names, b.EnrollURL).
+		WithOptional(optional...).WithJSONValues(jsonValues...)
+	return store, bound, nil
 }
 
 // userCredentialNote is added to the description of a backend with user
@@ -487,6 +563,9 @@ func (a *RESTAdapter) CheckUserCredentials(ctx context.Context, account string) 
 		}
 		var missing *credentials.UserCredentialError
 		if errors.As(at.err, &missing) {
+			if missing.Reason == credentials.UserCredentialUnreadable {
+				return UserCredentialCheck{Outcome: UserCheckUnknown, Detail: "a stored credential of the account can no longer be read"}
+			}
 			return UserCredentialCheck{Outcome: UserCheckUnknown, Detail: "not all credentials of the backend are stored yet"}
 		}
 		if at.setup {

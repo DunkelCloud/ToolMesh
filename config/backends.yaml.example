@@ -94,6 +94,13 @@ backends:
   #   #   - name: vikunja_token          # ... or a mapping with the texts the page shows
   #   #     label: Vikunja API token
   #   #     hint: Create one under Settings, API tokens.
+  #   # For an API whose session login takes a limit of the session, a user
+  #   # can store one per account: a JSON object in the API's form, shown on
+  #   # the page, enforced by the API. Without "optional" every account needs one.
+  #   #   - name: mail_scope
+  #   #     label: ACL
+  #   #     format: acl
+  #   #     optional: true
   #   # Optional, for DADLs that declare a health check: how ToolMesh monitors
   #   # it. Without this block the check runs at startup, after a reload and
   #   # every 15 minutes; failures show up on /health and in the metrics.

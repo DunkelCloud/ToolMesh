@@ -269,6 +269,7 @@ func main() {
 	// credentials page; replaced on every reload.
 	userBackends := &userBackendRegistry{}
 	userBackends.set(res.named)
+	warnUnusedUserValues(ctx, users, userBackends, logger)
 	tc.SetMCPServerCount(res.mcpAdapter.BackendCount())
 
 	// Load unit-backends. Each unit appears in the composite under its own
@@ -293,6 +294,7 @@ func main() {
 		newRes.named["echo"] = echoBackend
 		compositeBackend.Swap(newRes.named, newRes.passthroughs)
 		userBackends.set(newRes.named)
+		warnUnusedUserValues(ctx, users, userBackends, logger)
 		healthMonitor.Replace(ctx, newRes.healthTargets)
 		tc.SetMCPServerCount(newRes.mcpAdapter.BackendCount())
 		logger.Info("backends hot-reloaded successfully")

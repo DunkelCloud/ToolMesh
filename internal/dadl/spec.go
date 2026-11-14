@@ -321,6 +321,11 @@ type SessionLogin struct {
 	Path    string            `yaml:"path"`
 	Body    map[string]any    `yaml:"body"`    // values (any depth) can be credential refs
 	Extract map[string]string `yaml:"extract"` // token name → JSONPath
+	// Optional names fields of Body, at its top level, that the login may
+	// go without: each has a credential reference as its value, and the
+	// field is left out of the request when that credential has no value.
+	// A ToolMesh extension that DADL spec v0.2 does not define.
+	Optional []string `yaml:"optional"`
 }
 
 // InjectRule describes how to inject a session token into requests.

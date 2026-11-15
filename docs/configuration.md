@@ -1696,6 +1696,10 @@ Logging is deprecated as well, but a backend is not reported for it: servers bui
 
 A tool parameter that a backend marks with `x-mcp-header` is repeated in the `Mcp-Param-…` header of ToolMesh's request to that backend, as the revision asks. The mark is not passed on in the schema ToolMesh lists for the tool.
 
+Where the name of one MCP backend starts the name of another, as `git` and `git_hub` do, a tool name belongs to the backend with the longest name that starts it: `git_hub_search` is the tool `search` of `git_hub`, on every call. That is the rule the rights of a call are checked by. A call that this backend does not offer fails; it is not passed on to the backend with the shorter name. A tool of the shorter backend whose name falls under the longer one (`hub_search` of `git`) cannot be called. It is not listed and not promoted, and the log names it with the warning `tool is not reachable: its name is routed to another backend`. Renaming one of the two backends makes it reachable again.
+
+A backend that returns its tool list in pages is read to the end of the list, for at most 100 pages. A backend that returns a cursor even then is cut off there, with the warning `tool list cut off`.
+
 ### Requests to REST backends
 
 These rules apply to every REST backend, whatever its `backends.yaml` options:

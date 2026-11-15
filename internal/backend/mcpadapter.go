@@ -488,30 +488,105 @@ func (a *MCPAdapter) credentialEnv(entry BackendEntry) ([]string, error) {
 	return env, nil
 }
 
+// maxToolListPages bounds how many pages of a backend's tool list discovery
+// follows. A backend that still returns a cursor after this many pages is
+// taken to return one with every answer, and discovery would never end.
+const maxToolListPages = 100
+
+// listAllTools returns the tool list of a backend, following the cursor of
+// each answer until the backend sends none. An error on any page is the
+// error of the listing as a whole: a list with a gap would hide tools
+// without a trace of which. A backend that still returns a cursor on page
+// maxToolListPages is cut off there with a warning and keeps the tools
+// listed up to that page.
+//
+// The loop asks page by page instead of ranging over ClientSession.Tools,
+// which follows a cursor without any bound.
+func (a *MCPAdapter) listAllTools(ctx context.Context, name string, session *mcp.ClientSession) ([]*mcp.Tool, error) {
+	var tools []*mcp.Tool
+	params := &mcp.ListToolsParams{}
+	for page := 1; ; page++ {
+		result, err := session.ListTools(ctx, params)
+		if err != nil {
+			if page == 1 {
+				return nil, fmt.Errorf("list tools: %w", err)
+			}
+			return nil, fmt.Errorf("list tools, page %d: %w", page, err)
+		}
+		tools = append(tools, result.Tools...)
+		if result.NextCursor == "" {
+			return tools, nil
+		}
+		if page == maxToolListPages {
+			a.logger.Warn("tool list cut off: the backend returns a cursor with every page, tools of further pages are missing",
+				"backend", name,
+				"pages", page,
+				"tools", len(tools),
+			)
+			return tools, nil
+		}
+		params.Cursor = result.NextCursor
+	}
+}
+
+// shadowedBy names the backend that a call of tool on the backend name is
+// routed to instead, or "" when the call reaches that backend. A tool is
+// shadowed when its prefixed name starts with the longer name of another
+// backend: tool "hub_search" of "git" is called "git_hub_search", and that
+// name belongs to a backend "git_hub" (see matchBackend). Callers hold the
+// adapter lock.
+func (a *MCPAdapter) shadowedBy(name, tool string) string {
+	owner, _, _ := a.matchBackend(name + "_" + tool)
+	if owner == name {
+		return ""
+	}
+	return owner
+}
+
+// discoverTools reads the tool list of a connected backend, all pages of it,
+// and records the tools the backend exposes: those include_tools admits and
+// that a call can reach. A tool shadowed by another backend's name is left
+// out with a warning, so that nothing is listed or promoted under a name
+// that is routed to a different backend. Callers hold the adapter lock.
 func (a *MCPAdapter) discoverTools(ctx context.Context, name string, conn *backendConn) error {
 	if conn.session == nil {
 		return fmt.Errorf("not connected")
 	}
 
-	result, err := conn.session.ListTools(ctx, nil)
+	listed, err := a.listAllTools(ctx, name, conn.session)
 	if err != nil {
-		return fmt.Errorf("list tools: %w", err)
+		return err
 	}
 
-	a.logger.Debug("raw tools from backend", "backend", name, "count", len(result.Tools))
+	a.logger.Debug("raw tools from backend", "backend", name, "count", len(listed))
 
 	// upstream holds every name the backend offered, before include_tools is
 	// applied. The validation below needs it to tell "you excluded this
 	// yourself" apart from "the backend has no such tool".
-	upstream := make(map[string]struct{}, len(result.Tools))
-	conn.tools = make([]ToolDescriptor, 0, len(result.Tools))
+	upstream := make(map[string]struct{}, len(listed))
+	conn.tools = make([]ToolDescriptor, 0, len(listed))
 	hidden := 0
-	for _, t := range result.Tools {
+	for _, t := range listed {
+		// A name the backend lists more than once, on one page or across
+		// pages, is kept once: a call resolves a name to one tool anyway.
+		if _, dup := upstream[t.Name]; dup {
+			a.logger.Debug("tool listed more than once, keeping the first", "backend", name, "tool", t.Name)
+			continue
+		}
 		upstream[t.Name] = struct{}{}
 
 		if !conn.included(t.Name) {
 			hidden++
 			a.logger.Debug("tool hidden by include_tools", "backend", name, "tool", t.Name)
+			continue
+		}
+
+		if owner := a.shadowedBy(name, t.Name); owner != "" {
+			a.logger.Warn("tool is not reachable: its name is routed to another backend, rename one of the two backends to expose it",
+				"backend", name,
+				"tool", t.Name,
+				"routed_to", owner,
+			)
 			continue
 		}
 
@@ -585,7 +660,9 @@ func (a *MCPAdapter) validateSurfaceConfig(name string, conn *backendConn, upstr
 }
 
 // Execute routes a tool call to the appropriate backend via MCP.
-// Tool names use underscore as separator: "backend_toolname".
+// Tool names use underscore as separator: "backend_toolname". Where several
+// backend names match, the longest wins (see matchBackend); a call that this
+// backend refuses fails and is never sent to another one.
 func (a *MCPAdapter) Execute(ctx context.Context, toolName string, params map[string]any) (*ToolResult, error) {
 	a.mu.RLock()
 	// Debug: log all registered backend names for matching
@@ -900,40 +977,62 @@ func (a *MCPAdapter) RegisterTools(backendName string, tools []ToolDescriptor) {
 // ("backendname_tooltoolname"). Upstream MCP servers do not currently emit
 // an access classification, so the returned descriptor's Access is empty —
 // policies that need an explicit value should treat it as unclassified.
+//
+// The backend is the one Execute sends the call to (see matchBackend). A
+// tool that backend does not list is not found, whatever a backend with a
+// shorter name lists.
 func (a *MCPAdapter) LookupTool(toolName string) (ToolDescriptor, bool) {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
-	for name, conn := range a.backends {
-		prefix := name + "_"
-		if !strings.HasPrefix(toolName, prefix) {
-			continue
-		}
-		realTool := strings.TrimPrefix(toolName, prefix)
-		for _, t := range conn.tools {
-			if t.Name == realTool {
-				return ToolDescriptor{
-					Name:        toolName,
-					Description: t.Description,
-					InputSchema: t.InputSchema,
-					Backend:     "mcp:" + name,
-					Access:      t.Access,
-				}, true
-			}
+	name, realTool, conn := a.matchBackend(toolName)
+	if conn == nil {
+		return ToolDescriptor{}, false
+	}
+	for _, t := range conn.tools {
+		if t.Name == realTool {
+			return ToolDescriptor{
+				Name:        toolName,
+				Description: t.Description,
+				InputSchema: t.InputSchema,
+				Backend:     "mcp:" + name,
+				Access:      t.Access,
+			}, true
 		}
 	}
 	return ToolDescriptor{}, false
 }
 
-// matchBackend finds the backend whose name is a prefix of the tool name.
-// Returns the backend name, the real tool name (without prefix), and the connection.
+// matchBackend finds the backend a tool name is routed to: one whose name
+// plus "_" starts the tool name. It returns the backend name, the real tool
+// name (without the prefix) and the connection; conn is nil when no backend
+// matches. Callers hold the adapter lock.
+//
+// Where the names of several backends match, as "git" and "git_hub" both do
+// for "git_hub_search", the longest name wins, the rule of
+// CompositeBackend.longestPrefix. The choice depends on the backend names
+// alone, never on which backend offers the tool: a name that starts with
+// "git_hub_" belongs to "git_hub" also when "git_hub" has no tool "search"
+// and "git" has a tool "hub_search". The call then fails as a tool "git_hub"
+// does not have; it does not fall back to "git". The executor names the
+// backend of a call by the same rule when it checks the caller's rights, so
+// a fallback would run the call on a backend those rights were not checked
+// for. Discovery leaves a tool that this rule makes unreachable out of the
+// shorter backend's list (see discoverTools).
 func (a *MCPAdapter) matchBackend(toolName string) (name, realTool string, conn *backendConn) {
-	for name, conn := range a.backends {
-		prefix := name + "_"
-		if strings.HasPrefix(toolName, prefix) {
-			return name, strings.TrimPrefix(toolName, prefix), conn
+	for candidate, c := range a.backends {
+		if !strings.HasPrefix(toolName, candidate+"_") {
+			continue
+		}
+		// Two names that both match differ in length, so the result does
+		// not depend on the order of the map.
+		if conn == nil || len(candidate) > len(name) {
+			name, conn = candidate, c
 		}
 	}
-	return "", toolName, nil
+	if conn == nil {
+		return "", toolName, nil
+	}
+	return name, strings.TrimPrefix(toolName, name+"_"), conn
 }
 
 // contentToMap converts an MCP Content interface to a JSON-friendly map.

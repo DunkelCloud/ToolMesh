@@ -138,6 +138,19 @@ for the full narrative and details.
   out with the unresolved `{{token}}` of an inject rule when another call's
   401 has just discarded the session; and a login whose answer lacks a token
   leaves no partial session behind.
+- MCP backends of which one name starts another, such as `git` and
+  `git_hub`: a call of `git_hub_search` went to one or the other from call
+  to call, so it could run on a backend other than the one the caller's
+  rights were checked for. The backend with the longest matching name now
+  gets the call every time, the rule that already held between backends of
+  different kinds, and a call that backend does not offer fails instead of
+  running on the other one. A tool of the shorter backend whose name falls
+  under the longer one (`hub_search` of `git`) cannot be called; it is no
+  longer listed or promoted, and a warning in the log names it.
+- An MCP backend that returns its tool list in pages lost every tool after
+  the first page, without a line in the log. ToolMesh now follows the cursor
+  to the end of the list, for at most 100 pages; a backend that returns a
+  cursor even then is cut off there with a warning.
 
 ## [0.6.0] - 2026-11-10
 

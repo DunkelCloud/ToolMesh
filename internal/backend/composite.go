@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -56,6 +57,20 @@ type CompositeBackend struct {
 	// message appears at most once per canonical name even though
 	// PromotedTools is called on every tools/list request.
 	warnedReservedAlias sync.Map // key: canonical "<backend>_<tool>", value: struct{}
+}
+
+// sortedNames returns the names of the named backends in ascending order.
+// Everything a client is shown is built by walking the backends in this
+// order: a map has none, and a tool list that came out differently on every
+// request could not be cached, neither by the client nor in the prompt of
+// the model that reads it.
+func (s *compositeState) sortedNames() []string {
+	names := make([]string, 0, len(s.backends))
+	for name := range s.backends {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // NewCompositeBackend creates a CompositeBackend from named backends.
@@ -241,7 +256,8 @@ func (c *CompositeBackend) ListTools(ctx context.Context) ([]ToolDescriptor, err
 
 	// Named backends — prefix tool names with underscore separator
 	// (MCP spec requires tool names to match [a-zA-Z0-9_-])
-	for name, b := range s.backends {
+	for _, name := range s.sortedNames() {
+		b := s.backends[name]
 		tools, err := b.ListTools(ctx)
 		if err != nil {
 			continue
@@ -421,8 +437,8 @@ func (c *CompositeBackend) BackendSummaries() []BackendInfo {
 	s := c.state.Load()
 
 	var all []BackendInfo
-	for _, b := range s.backends {
-		if sum, ok := b.(BackendSummarizer); ok {
+	for _, name := range s.sortedNames() {
+		if sum, ok := s.backends[name].(BackendSummarizer); ok {
 			all = append(all, sum.BackendSummaries()...)
 		}
 	}
@@ -463,8 +479,8 @@ func (c *CompositeBackend) PromotedTools() []Promotion {
 	}
 
 	all := make([]Promotion, 0, len(s.backends)+len(s.passthroughs))
-	for _, b := range s.backends {
-		all = append(all, collect(b)...)
+	for _, name := range s.sortedNames() {
+		all = append(all, collect(s.backends[name])...)
 	}
 	for _, b := range s.passthroughs {
 		all = append(all, collect(b)...)

@@ -358,7 +358,6 @@ func TestMCPAdapter_ReconnectBackend_ClosesOldSession(t *testing.T) {
 		},
 		logger: slog.Default(),
 		creds:  credentials.NewEmbeddedStore(),
-		client: client,
 	}
 
 	// reconnectBackend should close the old session and attempt a new connection.

@@ -67,7 +67,6 @@ func newIncludeTestAdapter(t *testing.T, entry BackendEntry, toolNames ...string
 		backends: map[string]*backendConn{entry.Name: conn},
 		creds:    credentials.NewEmbeddedStore(),
 		logger:   slog.Default(),
-		client:   client,
 	}
 	if err := adapter.discoverTools(ctx, entry.Name, conn); err != nil {
 		t.Fatalf("discover tools: %v", err)

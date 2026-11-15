@@ -85,6 +85,7 @@ func TestNilRegistry_IsSafe(t *testing.T) {
 	r.RecordLogin("api_key", testLoginResultSuccess)
 	r.RecordToolCall("any", "thing", testLoginResultSuccess, time.Second)
 	r.RecordCodeScript(metrics.ScriptOutcomeOK)
+	r.RecordMCPRequest("tools/list", metrics.MCPProtocolUnspecified)
 	r.RecordSwallowedError(testBackendShop, metrics.SwallowedDispatch)
 	r.InitSwallowedErrors([]string{testBackendShop})
 

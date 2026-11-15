@@ -199,13 +199,24 @@ type MCPAdapter struct {
 	backends map[string]*backendConn
 	creds    credentials.CredentialStore
 	logger   *slog.Logger
-	client   *mcp.Client
+
+	// flagged holds what has been reported about a backend already, so that
+	// a deprecated feature is logged once and not on every reconnect.
+	flagMu  sync.Mutex
+	flagged map[string]struct{}
+
+	// probeTimeout replaces mcpProbeTimeout when set; tests shorten it.
+	probeTimeout time.Duration
 }
 
 type backendConn struct {
 	entry   BackendEntry
 	session *mcp.ClientSession
 	tools   []ToolDescriptor
+	// handshakeOnly remembers that the backend could only be connected with
+	// the initialize handshake on a connection of its own (see openSession).
+	// Guarded by the adapter lock, like session.
+	handshakeOnly bool
 	// include is the include_tools allow-set, or nil when the backend places
 	// no restriction on its surface. It is built once at registration and
 	// never mutated afterwards — unlike session and tools, which discovery
@@ -251,6 +262,18 @@ func buildMCPIncludeSet(names []string) map[string]bool {
 		set[name] = true
 	}
 	return set
+}
+
+// sortedBackendNames returns the names of the configured backends in
+// ascending order, so that what is listed for a client comes out the same on
+// every request. Callers hold the adapter lock.
+func (a *MCPAdapter) sortedBackendNames() []string {
+	names := make([]string, 0, len(a.backends))
+	for name := range a.backends {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // BackendCount returns the number of configured MCP server backends.
@@ -320,7 +343,7 @@ func newEmptyMCPAdapter(creds credentials.CredentialStore, logger *slog.Logger) 
 		backends: make(map[string]*backendConn),
 		creds:    creds,
 		logger:   logger,
-		client:   mcp.NewClient(&mcp.Implementation{Name: "toolmesh", Version: "0.1.0"}, nil),
+		flagged:  make(map[string]struct{}),
 	}
 }
 
@@ -352,21 +375,14 @@ func (a *MCPAdapter) connectBackend(ctx context.Context, name string, conn *back
 		"command", conn.entry.Command,
 	)
 
-	transport, err := a.createTransport(ctx, conn.entry)
+	session, err := a.openSession(ctx, name, conn)
 	if err != nil {
-		return fmt.Errorf("create transport: %w", err)
-	}
-
-	connectCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	defer cancel()
-
-	session, err := a.client.Connect(connectCtx, transport, nil)
-	if err != nil {
-		return fmt.Errorf("connect to %s: %w", name, err)
+		return err
 	}
 
 	conn.session = session
-	a.logger.Info("connected to backend", "name", name, "transport", conn.entry.Transport)
+	a.logger.Info("connected to backend", "name", name, "transport", conn.entry.Transport, "protocol", sessionRevision(session))
+	a.flagDeprecated(name, conn.entry)
 
 	// Discover tools
 	if err := a.discoverTools(ctx, name, conn); err != nil {
@@ -504,6 +520,7 @@ func (a *MCPAdapter) discoverTools(ctx context.Context, name string, conn *backe
 			schemaBytes, _ := json.Marshal(t.InputSchema)
 			_ = json.Unmarshal(schemaBytes, &schema)
 		}
+		stripHeaderAnnotations(schema)
 
 		a.logger.Debug("discovered tool", "backend", name, "tool", t.Name, "schema", schema)
 		conn.tools = append(conn.tools, ToolDescriptor{
@@ -676,6 +693,14 @@ func (a *MCPAdapter) Execute(ctx context.Context, toolName string, params map[st
 		}
 	}
 
+	if result.NeedsInput() {
+		a.logger.WarnContext(ctx, "backend answered a tool call with a request for client input",
+			"backend", backendName,
+			"tool", realTool,
+		)
+		return a.inputRequiredResult(backendName, realTool, result), nil
+	}
+
 	// Convert MCP Content to our ToolResult format
 	content := make([]any, 0, len(result.Content))
 	for _, c := range result.Content {
@@ -709,7 +734,8 @@ func (a *MCPAdapter) ListTools(ctx context.Context) ([]ToolDescriptor, error) {
 	defer a.mu.RUnlock()
 
 	var all []ToolDescriptor
-	for name, conn := range a.backends {
+	for _, name := range a.sortedBackendNames() {
+		conn := a.backends[name]
 		for _, tool := range conn.tools {
 			all = append(all, ToolDescriptor{
 				Name:        name + "_" + tool.Name,
@@ -803,7 +829,8 @@ func (a *MCPAdapter) BackendSummaries() []BackendInfo {
 	defer a.mu.RUnlock()
 
 	infos := make([]BackendInfo, 0, len(a.backends))
-	for _, conn := range a.backends {
+	for _, name := range a.sortedBackendNames() {
+		conn := a.backends[name]
 		infos = append(infos, BackendInfo{
 			Name:            conn.entry.Name,
 			Hint:            conn.entry.Hint,
@@ -825,7 +852,8 @@ func (a *MCPAdapter) PromotedTools() []Promotion {
 	defer a.mu.RUnlock()
 
 	var out []Promotion
-	for name, conn := range a.backends {
+	for _, name := range a.sortedBackendNames() {
+		conn := a.backends[name]
 		if len(conn.entry.ExposeTools) == 0 {
 			continue
 		}

@@ -81,7 +81,7 @@ The script runs in a sandbox (goja) inside ToolMesh, and each `toolmesh.*` call 
 
 ToolMesh is at version 0.x. A minor release can still change the configuration; the [changelog](CHANGELOG.md) lists under *Changed* and *Deprecated* what an operator has to adjust.
 
-`docker compose up` pulls the latest release (`ghcr.io/dunkelcloud/toolmesh:latest`, at present v0.6.0). This README describes `main`; when `main` is ahead of the latest release, this section names what the release does not have yet. At present that is the credentials of users (`user_credentials` in `backends.yaml` and the page `/credentials`) and built-in TLS (`TOOLMESH_TLS_ACME`, `TOOLMESH_TLS_CERT`).
+`docker compose up` pulls the latest release (`ghcr.io/dunkelcloud/toolmesh:latest`, at present v0.6.0). This README describes `main`; when `main` is ahead of the latest release, this section names what the release does not have yet. At present that is the credentials of users (`user_credentials` in `backends.yaml` and the page `/credentials`), built-in TLS (`TOOLMESH_TLS_ACME`, `TOOLMESH_TLS_CERT`) and MCP revision 2026-07-28; the release speaks the revisions up to 2025-11-25.
 
 ## Getting started
 
@@ -171,7 +171,7 @@ backends:
     api_key_env: "NOTES_API_KEY"
 ```
 
-with `CREDENTIAL_NOTES_API_KEY=...` in `.env`. A local MCP server runs with `transport: stdio`, `command` and `args`; [config/backends.yaml.example](config/backends.yaml.example) shows all fields.
+with `CREDENTIAL_NOTES_API_KEY=...` in `.env`. A local MCP server runs with `transport: stdio`, `command` and `args`; [config/backends.yaml.example](config/backends.yaml.example) shows all fields. The server may speak MCP revision 2026-07-28 or an older one with the `initialize` handshake; ToolMesh finds out when it connects ([MCP server backends](docs/configuration.md#mcp-server-backends)).
 
 ## What it does not do
 
@@ -221,6 +221,8 @@ Claude Desktop, in its MCP config:
 For local development without a proxy, `http://localhost:8123/mcp` works if you edit `claude_desktop_config.json` by hand (the settings dialog requires `https://`).
 
 claude.ai (custom connector) and ChatGPT sign in with OAuth 2.1 (PKCE S256); use the public HTTPS URL as the MCP endpoint.
+
+The endpoint speaks MCP revision 2026-07-28, which has no sessions and no handshake, and the older revisions that open with `initialize`. It tells them apart per request, so clients of both kinds use the same URL and nothing is set for it. ToolMesh keeps no session in either case, and several instances need no session affinity. See [Protocol revisions](docs/configuration.md#protocol-revisions).
 
 ## Authentication
 

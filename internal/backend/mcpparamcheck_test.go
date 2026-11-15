@@ -228,7 +228,6 @@ func newMCPParamCheckAdapter(t *testing.T, schema map[string]any, calls *atomic.
 		backends: map[string]*backendConn{entry.Name: conn},
 		creds:    credentials.NewEmbeddedStore(),
 		logger:   slog.Default(),
-		client:   client,
 	}
 	if err := adapter.discoverTools(ctx, entry.Name, conn); err != nil {
 		t.Fatalf("discover tools: %v", err)

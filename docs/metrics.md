@@ -201,6 +201,23 @@ without a known expiry has no series. Same label as above.
 
 The series of a backend disappear when it is removed from `backends.yaml`.
 
+### `toolmesh_mcp_requests_total` (counter)
+
+Authenticated requests of the MCP endpoint, by method and by the protocol
+revision they were served in
+([configuration](configuration.md#protocol-revisions)). It shows which
+revisions the clients of an instance speak, and how many requests are turned
+away over their revision or their routing headers.
+
+| Label      | Values |
+| ---------- | ------ |
+| `method`   | `initialize`, `ping`, `server/discover`, `tools/list`, `tools/call`, `subscriptions/listen`, `notification` (any JSON-RPC notification), `other` (a method the endpoint does not have) |
+| `protocol` | `2026-07-28`; for a request of the generation with the `initialize` handshake the revision its `MCP-Protocol-Version` header names (`2025-11-25`, `2025-06-18`, `2025-03-26`, `2024-11-05`), or `unspecified` when it names none, as every `initialize` does; `refused` for a request turned away over its revision or its headers |
+
+Both labels take values from these lists only, whatever a client sends. A
+request without a valid credential is not counted here but in
+`toolmesh_logins_total`.
+
 ### `toolmesh_credential_store_runs_total` (counter)
 
 Runs of the command of the `command` credential store

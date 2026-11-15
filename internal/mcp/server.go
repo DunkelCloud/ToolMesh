@@ -43,7 +43,6 @@ import (
 	"github.com/DunkelCloud/ToolMesh/internal/health"
 	"github.com/DunkelCloud/ToolMesh/internal/metrics"
 	"github.com/DunkelCloud/ToolMesh/internal/userctx"
-	"github.com/DunkelCloud/ToolMesh/internal/version"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -269,7 +268,7 @@ func (s *Server) cors(next http.HandlerFunc) http.HandlerFunc {
 				w.Header().Set("Access-Control-Allow-Origin", origin)
 				w.Header().Set("Access-Control-Allow-Credentials", "true")
 				w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-				w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, Mcp-Protocol-Version")
+				w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, Mcp-Protocol-Version, Mcp-Method, Mcp-Name")
 				// Without this a client running in a browser cannot read the
 				// challenge of a 401 and has to guess where the metadata is.
 				w.Header().Set("Access-Control-Expose-Headers", "WWW-Authenticate")
@@ -340,6 +339,16 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A browser names the page a request comes from. Where the operator has
+	// said which pages may talk to this server, a request from any other is
+	// refused before its credential is looked at. Clients that are no
+	// browser send no Origin and are not affected.
+	if origin := r.Header.Get("Origin"); origin != "" && len(s.cfg.CORSAllowedOrigins) > 0 && !s.originAllowed(origin) {
+		s.logger.InfoContext(ctx, "mcp request rejected: origin not allowed", logKeyRemote, auth.ClientIP(r), "origin", truncateForLog(origin))
+		writeJSON(w, http.StatusForbidden, jsonRPCErrorEnvelope(nil, codeInvalidRequest, "Origin not allowed"))
+		return
+	}
+
 	// Authenticate
 	uc, err := s.authenticate(r)
 	if writeThrottled(w, err, func(msg string) {
@@ -383,46 +392,127 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.logger.InfoContext(ctx, "mcp request", "method", req.Method, "id", req.ID)
 	s.logger.DebugContext(ctx, "mcp request payload", "method", req.Method, "id", req.ID, "params", req.Params)
 
 	// JSON-RPC notifications have no "id" field.
 	// Per MCP Streamable HTTP spec, respond with 202 Accepted (no body).
+	// Nothing is done with a notification, and no revision asks for routing
+	// headers on one; a header that is there and names another method than
+	// the body is refused all the same.
 	if req.ID == nil {
-		s.logger.DebugContext(ctx, "mcp notification (no id)", "method", req.Method)
+		if perr := checkMethodHeader(r, req.Method, false); perr != nil {
+			s.rejectRequest(w, r, &req, perr)
+			return
+		}
+		s.recordRequest(r, &req, eraHandshake, false)
+		s.logger.InfoContext(ctx, "mcp notification", "method", req.Method)
 		w.WriteHeader(http.StatusAccepted)
 		return
 	}
 
-	switch req.Method {
-	case "initialize":
-		s.handleInitialize(w, &req)
-	case "tools/list":
-		s.handleToolsList(w, ctx, &req)
-	case "tools/call":
-		// A tool call can run far longer than the default WriteTimeout — a
-		// reasoning model, a slow upstream, or a committee of backend calls
-		// inside execute_code. Clear the per-request write deadline so the
-		// transport does not silently truncate a legitimately long call at
-		// 60s; the executor and code-runner timeouts remain the real bound.
-		// Best-effort: ResponseController returns ErrNotSupported behind a
-		// writer that cannot expose the deadline (e.g. a test recorder).
-		if derr := http.NewResponseController(w).SetWriteDeadline(time.Time{}); derr != nil && !errors.Is(derr, http.ErrNotSupported) {
-			s.logger.DebugContext(ctx, "could not clear write deadline for tool call", outcomeError, derr)
-		}
-		// When the client advertises SSE (every MCP Streamable HTTP client
-		// does), stream the response and emit keepalives so the client's idle
-		// timer cannot fire mid-call. Otherwise fall back to buffered JSON.
-		if flusher, ok := unwrapFlusher(w); ok && acceptsSSE(r) {
-			s.handleToolsCallStreaming(w, ctx, &req, flusher)
-		} else {
-			s.handleToolsCall(w, ctx, &req)
-		}
-	case "ping":
-		s.writeJSONRPCResult(w, req.ID, map[string]any{})
-	default:
-		s.writeJSONRPCError(w, req.ID, -32601, fmt.Sprintf("Method not found: %s", req.Method))
+	// Which generation of the protocol the request belongs to is decided
+	// from the request alone, and what its headers say has to be what its
+	// body says before anything is executed.
+	era, perr := negotiateProtocol(r, &req)
+	if perr == nil {
+		perr = validateRequest(r, &req, era)
 	}
+	if perr != nil {
+		s.rejectRequest(w, r, &req, perr)
+		return
+	}
+	req.era = era
+	s.recordRequest(r, &req, era, false)
+	s.logger.InfoContext(ctx, "mcp request", "method", req.Method, "id", req.ID, "protocol", metricsProtocol(r, era, false))
+
+	switch {
+	case req.Method == methodToolsList:
+		s.handleToolsList(w, ctx, &req)
+	case req.Method == methodToolsCall:
+		s.serveToolsCall(w, r, ctx, &req)
+	case era == eraStateless && req.Method == methodDiscover:
+		s.handleDiscover(w, &req)
+	case era == eraStateless && req.Method == methodSubscriptionsListen:
+		s.handleSubscriptionsListen(w, r, &req)
+	case era == eraHandshake && req.Method == methodInitialize:
+		s.handleInitialize(w, &req)
+	case era == eraHandshake && req.Method == methodPing:
+		s.writeResult(w, &req, map[string]any{})
+	default:
+		s.writeError(w, &req, codeMethodNotFound, methodNotFoundMessage(&req))
+	}
+}
+
+// rejectRequest answers a request that is turned away over its protocol
+// revision or its routing headers, before anything of it was executed.
+func (s *Server) rejectRequest(w http.ResponseWriter, r *http.Request, req *jsonRPCRequest, perr *rpcError) {
+	s.recordRequest(r, req, eraHandshake, true)
+	s.logger.InfoContext(r.Context(), "mcp request rejected: protocol",
+		"method", truncateForLog(req.Method), "id", req.ID, oauthCode, perr.code, logKeyReason, perr.message, logKeyRemote, auth.ClientIP(r))
+	envelope := jsonRPCErrorEnvelope(req.ID, perr.code, perr.message)
+	if perr.data != nil {
+		envelope[outcomeError].(map[string]any)["data"] = perr.data
+	}
+	writeJSON(w, perr.status, envelope)
+}
+
+// methodNotFoundMessage is the answer to a method the endpoint does not
+// have in the generation of the request. A client that sends initialize
+// while naming the stateless revision is told which revisions are spoken:
+// it may have no other way to find out.
+func methodNotFoundMessage(req *jsonRPCRequest) string {
+	msg := "Method not found: " + echoValue(req.Method)
+	if req.era == eraStateless && req.Method == methodInitialize {
+		msg += ". Protocol version " + protocolVersion20260728 + " has no initialize handshake; this server speaks " +
+			strings.Join(supportedProtocolVersions, " and ") + ", the older one with initialize and without a protocol version in _meta"
+	}
+	return msg
+}
+
+// serveToolsCall runs a tools/call. That the headers of the request name
+// the same tool as its body has been checked before it gets here.
+func (s *Server) serveToolsCall(w http.ResponseWriter, r *http.Request, ctx context.Context, req *jsonRPCRequest) {
+	name, arguments, ok := toolCallParams(req)
+	if !ok {
+		s.writeError(w, req, codeInvalidParams, "Invalid params")
+		return
+	}
+
+	// A tool call can run far longer than the default WriteTimeout — a
+	// reasoning model, a slow upstream, or a committee of backend calls
+	// inside execute_code. Clear the per-request write deadline so the
+	// transport does not silently truncate a legitimately long call at
+	// 60s; the executor and code-runner timeouts remain the real bound.
+	// Best-effort: ResponseController returns ErrNotSupported behind a
+	// writer that cannot expose the deadline (e.g. a test recorder).
+	if derr := http.NewResponseController(w).SetWriteDeadline(time.Time{}); derr != nil && !errors.Is(derr, http.ErrNotSupported) {
+		s.logger.DebugContext(ctx, "could not clear write deadline for tool call", outcomeError, derr)
+	}
+	// When the client advertises SSE (every MCP Streamable HTTP client
+	// does), stream the response and emit keepalives so the client's idle
+	// timer cannot fire mid-call. Otherwise fall back to buffered JSON.
+	if flusher, ok := unwrapFlusher(w); ok && acceptsSSE(r) {
+		s.handleToolsCallStreaming(w, ctx, req, name, arguments, flusher)
+	} else {
+		s.handleToolsCall(w, ctx, req, name, arguments)
+	}
+}
+
+// toolCallParams reads the tool name and the arguments from the params of a
+// tools/call. It reports false when the params do not have that form.
+func toolCallParams(req *jsonRPCRequest) (name string, arguments map[string]any, ok bool) {
+	var params struct {
+		Name      string         `json:"name"`
+		Arguments map[string]any `json:"arguments"`
+	}
+	paramsJSON, err := json.Marshal(req.Params)
+	if err != nil {
+		return "", nil, false
+	}
+	if err := json.Unmarshal(paramsJSON, &params); err != nil {
+		return "", nil, false
+	}
+	return params.Name, params.Arguments, true
 }
 
 // credentialConfigured reports whether any credential is configured: a
@@ -432,25 +522,20 @@ func (s *Server) credentialConfigured() bool {
 	return s.cfg.AuthPassword != "" || s.cfg.APIKey != "" || s.userStore != nil || s.apiKeys != nil
 }
 
+// handleInitialize answers the handshake of the revisions up to 2025-11-25,
+// with that revision. A client of the stateless revision does not send it.
 func (s *Server) handleInitialize(w http.ResponseWriter, req *jsonRPCRequest) {
-	s.writeJSONRPCResult(w, req.ID, map[string]any{
-		"protocolVersion": "2025-11-25",
-		"capabilities": map[string]any{
-			"tools": map[string]any{
-				"listChanged": false,
-			},
-		},
-		"serverInfo": map[string]any{
-			jsonKeyName: "toolmesh",
-			"version":   version.Version,
-		},
+	s.writeResult(w, req, map[string]any{
+		"protocolVersion": protocolVersion20251125,
+		"capabilities":    serverCapabilities(),
+		"serverInfo":      serverInfo(),
 	})
 }
 
 func (s *Server) handleToolsList(w http.ResponseWriter, ctx context.Context, req *jsonRPCRequest) {
 	tools, err := s.handler.BuildToolList(ctx)
 	if err != nil {
-		s.writeJSONRPCError(w, req.ID, -32603, fmt.Sprintf("Failed to list tools: %s", err))
+		s.writeError(w, req, -32603, fmt.Sprintf("Failed to list tools: %s", err))
 		return
 	}
 
@@ -463,36 +548,26 @@ func (s *Server) handleToolsList(w http.ResponseWriter, ctx context.Context, req
 		})
 	}
 
-	s.writeJSONRPCResult(w, req.ID, map[string]any{
+	result := map[string]any{
 		"tools": mcpTools,
-	})
+	}
+	if req.era == eraStateless {
+		// The list is the caller's own: it holds only what they may use.
+		cacheable(result)
+	}
+	s.writeResult(w, req, result)
 }
 
-func (s *Server) handleToolsCall(w http.ResponseWriter, ctx context.Context, req *jsonRPCRequest) {
-	var params struct {
-		Name      string         `json:"name"`
-		Arguments map[string]any `json:"arguments"`
-	}
-
-	paramsJSON, err := json.Marshal(req.Params)
-	if err != nil {
-		s.writeJSONRPCError(w, req.ID, -32602, "Invalid params")
-		return
-	}
-	if err := json.Unmarshal(paramsJSON, &params); err != nil {
-		s.writeJSONRPCError(w, req.ID, -32602, "Invalid params")
-		return
-	}
-
-	result, err := s.handler.HandleToolCall(ctx, params.Name, params.Arguments)
+func (s *Server) handleToolsCall(w http.ResponseWriter, ctx context.Context, req *jsonRPCRequest, name string, arguments map[string]any) {
+	result, err := s.handler.HandleToolCall(ctx, name, arguments)
 	if err != nil {
 		// M-17: Log full error server-side, return a safe message to client.
-		s.logger.ErrorContext(ctx, "tool call failed", logKeyTool, params.Name, outcomeError, err)
-		s.writeJSONRPCError(w, req.ID, -32603, toolCallErrorMessage(err))
+		s.logger.ErrorContext(ctx, "tool call failed", logKeyTool, name, outcomeError, err)
+		s.writeError(w, req, -32603, toolCallErrorMessage(err))
 		return
 	}
 
-	s.writeJSONRPCResult(w, req.ID, toolResultToMCP(result))
+	s.writeResult(w, req, toolResultToMCP(result))
 }
 
 // sseKeepaliveInterval is how often a comment ping is written to a streaming
@@ -510,20 +585,7 @@ const sseKeepaliveInterval = 10 * time.Second
 // — because the result is delivered the moment the call returns — preserves
 // partial results from execute_code that the buffered path would lose if the
 // client gave up early.
-func (s *Server) handleToolsCallStreaming(w http.ResponseWriter, ctx context.Context, req *jsonRPCRequest, flusher http.Flusher) {
-	var params struct {
-		Name      string         `json:"name"`
-		Arguments map[string]any `json:"arguments"`
-	}
-	paramsJSON, err := json.Marshal(req.Params)
-	if err == nil {
-		err = json.Unmarshal(paramsJSON, &params)
-	}
-	if err != nil {
-		s.writeJSONRPCError(w, req.ID, -32602, "Invalid params")
-		return
-	}
-
+func (s *Server) handleToolsCallStreaming(w http.ResponseWriter, ctx context.Context, req *jsonRPCRequest, name string, arguments map[string]any, flusher http.Flusher) {
 	// SSE handshake: announce the stream and flush headers immediately so the
 	// client starts reading before the (possibly slow) tool call completes.
 	h := w.Header()
@@ -541,7 +603,7 @@ func (s *Server) handleToolsCallStreaming(w http.ResponseWriter, ctx context.Con
 	}
 	resCh := make(chan callResult, 1)
 	go func() {
-		result, callErr := s.handler.HandleToolCall(ctx, params.Name, params.Arguments)
+		result, callErr := s.handler.HandleToolCall(ctx, name, arguments)
 		resCh <- callResult{result, callErr}
 	}()
 
@@ -553,13 +615,13 @@ func (s *Server) handleToolsCallStreaming(w http.ResponseWriter, ctx context.Con
 		case <-ctx.Done():
 			// Client disconnected or server is shutting down; the background
 			// call observes the same canceled context and unwinds.
-			s.logger.DebugContext(ctx, "sse tool call canceled before completion", logKeyTool, params.Name)
+			s.logger.DebugContext(ctx, "sse tool call canceled before completion", logKeyTool, name)
 			return
 		case <-ticker.C:
 			// SSE comment line: invisible to the JSON-RPC layer but the bytes
 			// reset the client's read-idle timer (the standard SSE keepalive).
 			if _, werr := io.WriteString(w, ": keepalive\n\n"); werr != nil {
-				s.logger.DebugContext(ctx, "sse keepalive write failed; client gone", logKeyTool, params.Name, outcomeError, werr)
+				s.logger.DebugContext(ctx, "sse keepalive write failed; client gone", logKeyTool, name, outcomeError, werr)
 				return
 			}
 			flusher.Flush()
@@ -567,13 +629,13 @@ func (s *Server) handleToolsCallStreaming(w http.ResponseWriter, ctx context.Con
 			var envelope map[string]any
 			if cr.err != nil {
 				// M-17: log full error server-side, return a safe message.
-				s.logger.ErrorContext(ctx, "tool call failed", logKeyTool, params.Name, outcomeError, cr.err)
+				s.logger.ErrorContext(ctx, "tool call failed", logKeyTool, name, outcomeError, cr.err)
 				envelope = jsonRPCErrorEnvelope(req.ID, -32603, toolCallErrorMessage(cr.err))
 			} else {
-				envelope = jsonRPCResultEnvelope(req.ID, toolResultToMCP(cr.result))
+				envelope = jsonRPCResultEnvelope(req.ID, finishResult(req, toolResultToMCP(cr.result)))
 			}
 			if werr := writeSSEMessage(w, flusher, envelope); werr != nil {
-				s.logger.DebugContext(ctx, "sse final message write failed; client gone", logKeyTool, params.Name, outcomeError, werr)
+				s.logger.DebugContext(ctx, "sse final message write failed; client gone", logKeyTool, name, outcomeError, werr)
 			}
 			return
 		}
@@ -1943,17 +2005,17 @@ func (s *Server) renderLoginForm(w http.ResponseWriter, status int, form loginFo
 // emit byte-identical envelopes.
 func jsonRPCResultEnvelope(id, result any) map[string]any {
 	return map[string]any{
-		"jsonrpc": "2.0",
-		"id":      id,
-		"result":  result,
+		jsonRPCKey: jsonRPCVersion,
+		"id":       id,
+		"result":   result,
 	}
 }
 
 // jsonRPCErrorEnvelope builds a JSON-RPC 2.0 error response object.
 func jsonRPCErrorEnvelope(id any, code int, message string) map[string]any {
 	return map[string]any{
-		"jsonrpc": "2.0",
-		"id":      id,
+		jsonRPCKey: jsonRPCVersion,
+		"id":       id,
 		outcomeError: map[string]any{
 			oauthCode: code,
 			"message": message,
@@ -1971,11 +2033,28 @@ func (s *Server) writeJSONRPCError(w http.ResponseWriter, id any, code int, mess
 	writeJSON(w, http.StatusOK, jsonRPCErrorEnvelope(id, code, message))
 }
 
+// writeResult answers a request with a result, in the form the protocol
+// revision of the request asks for.
+func (s *Server) writeResult(w http.ResponseWriter, req *jsonRPCRequest, result map[string]any) {
+	s.writeJSONRPCResult(w, req.ID, finishResult(req, result))
+}
+
+// writeError answers a request with a JSON-RPC error, with the HTTP status
+// the protocol revision of the request asks for.
+func (s *Server) writeError(w http.ResponseWriter, req *jsonRPCRequest, code int, message string) {
+	s.logger.Debug("mcp error response", "id", req.ID, "code", code, "message", message)
+	writeJSON(w, rpcErrorStatus(req.era, code), jsonRPCErrorEnvelope(req.ID, code, message))
+}
+
 type jsonRPCRequest struct {
 	JSONRPC string `json:"jsonrpc"`
 	ID      any    `json:"id"`
 	Method  string `json:"method"`
 	Params  any    `json:"params"`
+
+	// era is the generation of the protocol the request is served in. It is
+	// set once the request has been checked, never read from the body.
+	era protocolEra
 }
 
 func writeJSON(w http.ResponseWriter, status int, data any) {

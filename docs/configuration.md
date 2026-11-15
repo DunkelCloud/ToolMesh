@@ -8,7 +8,7 @@ All configuration is done via environment variables. Copy `.env.example` to `.en
 |----------|---------|-------------|
 | `TOOLMESH_PORT` | `8123` | Host-side port for Docker port mapping. The Go binary always listens on 8080 inside the container; this variable controls the `host:container` mapping in `docker-compose.yml`. With [built-in TLS](#tls) set it to `443`. |
 | `TOOLMESH_TRANSPORT` | `http` | Transport mode: `http` or `stdio` |
-| `TOOLMESH_CORS_ORIGINS` | *(empty)* | Comma-separated list of allowed CORS origins (e.g. `https://claude.ai,https://app.example.com`). If unset, any origin is reflected — fine for localhost, not for production. |
+| `TOOLMESH_CORS_ORIGINS` | *(empty)* | Comma-separated list of allowed CORS origins (e.g. `https://claude.ai,https://app.example.com`). If unset, any origin is reflected — fine for localhost, not for production. With a list set, `/mcp` refuses a request that names another origin; see [Protocol revisions](#protocol-revisions). |
 | `TOOLMESH_AUTH_PASSWORD` | *(empty)* | Password for OAuth 2.1 single-user authentication |
 | `TOOLMESH_API_KEY` | *(empty)* | Static API key (bypasses OAuth when set). Used only when there is no `apikeys.yaml`; see [API Keys](#api-keys). |
 | `TOOLMESH_AUTH_USER` | `owner` | User identity in simple auth mode (password/single API key) |
@@ -18,6 +18,36 @@ All configuration is done via environment variables. Copy `.env.example` to `.en
 | `TOOLMESH_ROOT_REDIRECT` | *(empty)* | Absolute `http(s)` URL that `GET /` redirects to (302). Unset, the site root serves the built-in page explaining that this host is an MCP endpoint. Only `/` is redirected — `/mcp` always serves the page, since a visitor there needs the URL to copy. An invalid value fails startup. |
 | `TOOLMESH_TRUSTED_PROXIES` | *(empty: loopback only)* | Addresses of the reverse proxies whose `X-Forwarded-For` header is honored, as comma-separated addresses or CIDRs, or `none`. List proxies, not client networks. A request from any other address is identified by its connection address. See [Client address](#client-address). An invalid entry fails startup. |
 | `TOOLMESH_DEV` | `false` | Local-development posture. Reports the startup security-posture summary at `INFO` instead of `WARN`. Relaxes no setting on its own — it only changes the log level of that summary. |
+
+### Protocol revisions
+
+The MCP endpoint speaks two generations of the protocol and decides per request which one a request belongs to. A client needs no setting for it, and neither does ToolMesh.
+
+- **2026-07-28**, the revision without sessions and without an `initialize` handshake. Every request names the revision and the client's capabilities in the `_meta` of its params, and repeats the revision, the method and, on a tool call, the tool name in the headers `MCP-Protocol-Version`, `Mcp-Method` and `Mcp-Name`. A client may ask `server/discover` first; it does not have to.
+- **2025-11-25** and the revisions before it, which open with `initialize`. A request that names no revision in its body, and none or one of these in its `MCP-Protocol-Version` header, is answered as before.
+
+ToolMesh keeps nothing between two requests in either generation, so several instances behind a load balancer need no session affinity.
+
+What a request of revision 2026-07-28 says in its headers has to be what it says in its body. A proxy may route, limit or admit a request by the headers alone, so a request whose body says something else is refused before anything of it runs:
+
+| Request | Status | JSON-RPC error |
+|---------|--------|----------------|
+| A header is missing, occurs twice, or names another revision, method or tool than the body | `400` | `-32020` (`HeaderMismatch`) |
+| `_meta` lacks the revision or the client capabilities | `400` | `-32602` |
+| The revision is one ToolMesh does not speak | `400` | `-32022`, with the revisions it does speak in `data.supported` |
+| The method does not exist in this revision, `initialize` and `ping` among them | `404` | `-32601` |
+
+The credential is checked first: a request without a valid one gets the `401` described under [Unauthenticated Requests](#unauthenticated-requests), whatever its headers say.
+
+A request of the older revisions has no `Mcp-Method` and no `Mcp-Name`, and none is asked of it. One that carries them anyway is held to them in the same way and answered `400` when they differ from its body, so that leaving the revision out is no way around the check.
+
+What the headers do not tell: a call of `execute_code` names `execute_code` in `Mcp-Name`, and the tools its script calls appear in no header. A proxy that decides by tool name sees that a script runs, not what it reaches. Which tools a caller may use is decided inside ToolMesh, per call of the script, by [authorization](#authorization) and [gate policies](#gate-policies).
+
+Results of this revision carry `resultType`. The tool list and the result of `server/discover` carry `ttlMs` (60 seconds) and `cacheScope: "private"`: the tool list holds only what the caller may use, so it is never offered to a cache that callers share. While backends and rights stay the same the tool list is the same bytes on every request, in both generations, so a client can keep it and a model that reads it keeps its prompt cache. ToolMesh sends no change notifications; `subscriptions/listen` is acknowledged with an empty set and ended.
+
+- **In the log.** A request turned away over its revision or its headers is logged at `INFO` as `mcp request rejected: protocol`, with the JSON-RPC `code` and the `reason`. The `mcp request` line of every other request names the revision in `protocol`.
+- **In the metrics.** `toolmesh_mcp_requests_total` counts requests by method and revision, and the refused ones as `protocol="refused"`; see [metrics.md](metrics.md). It shows which revisions the clients of an instance speak.
+- **Origins.** With `TOOLMESH_CORS_ORIGINS` set, a request to `/mcp` whose `Origin` header names a page outside the list is answered `403` before its credential is looked at. Clients that are no browser send no `Origin` and are not affected. Without a list no origin is refused.
 
 ## TLS
 
@@ -1650,6 +1680,25 @@ Limits:
 - A fixed script without a model behind it cannot react to the refusal. Do not list access classes that such callers use.
 - Calls a composite tool makes on its own are not checked; the access class of the composite decides.
 - `hint_required_for` without a `hint` is a configuration error: ToolMesh does not start with such a `backends.yaml`, and a reload keeps the previous backends.
+
+### MCP server backends
+
+ToolMesh connects to an MCP server (`transport: http` or `stdio`) in revision 2026-07-28 where the server speaks it, and with the `initialize` handshake of 2025-11-25 where it does not. Nothing is configured for that: ToolMesh asks `server/discover` first, and a server of the older generation that answers with an error gets the handshake. A stdio server that says nothing to a request before `initialize`, or ends on it, is started again and gets the handshake directly; that costs up to ten seconds at the first connect and nothing afterwards. The `connected to backend` log line names the revision in `protocol`.
+
+ToolMesh announces no client features to a backend: no roots, no sampling, no elicitation. A backend that asks for one of them anyway, with a request of its own or by answering a tool call with `input_required`, gets no input; the tool call fails with a message that names what was asked for.
+
+Revision 2026-07-28 deprecates parts of MCP that a later revision may remove, among them the HTTP+SSE transport (a `url` that ends in `/sse`), roots and sampling. ToolMesh logs a warning, once per backend and feature, when a backend uses one of them, so that the log tells which backends that will concern:
+
+- `backend uses a part of MCP that revision 2026-07-28 deprecates`, with `feature` (`http+sse transport`), when the backend is connected
+- `backend asked its client for input, which ToolMesh does not provide`, with `method` (`sampling/createMessage`, `roots/list`, `elicitation/create`), when the backend asks
+
+Logging is deprecated as well, but a backend is not reported for it: servers built with an SDK announce the capability whether they log or not.
+
+A tool parameter that a backend marks with `x-mcp-header` is repeated in the `Mcp-Param-…` header of ToolMesh's request to that backend, as the revision asks. The mark is not passed on in the schema ToolMesh lists for the tool.
+
+Where the name of one MCP backend starts the name of another, as `git` and `git_hub` do, a tool name belongs to the backend with the longest name that starts it: `git_hub_search` is the tool `search` of `git_hub`, on every call. That is the rule the rights of a call are checked by. A call that this backend does not offer fails; it is not passed on to the backend with the shorter name. A tool of the shorter backend whose name falls under the longer one (`hub_search` of `git`) cannot be called. It is not listed and not promoted, and the log names it with the warning `tool is not reachable: its name is routed to another backend`. Renaming one of the two backends makes it reachable again.
+
+A backend that returns its tool list in pages is read to the end of the list, for at most 100 pages. A backend that returns a cursor even then is cut off there, with the warning `tool list cut off`.
 
 ### Requests to REST backends
 

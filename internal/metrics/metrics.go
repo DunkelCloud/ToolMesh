@@ -66,6 +66,23 @@ const (
 	SwallowedToolError = "tool_error"
 )
 
+// Values of the labels on toolmesh_mcp_requests_total that are not a method
+// or a protocol revision themselves.
+const (
+	// MCPMethodNotification is the method label of a JSON-RPC notification,
+	// whatever it notifies of.
+	MCPMethodNotification = "notification"
+	// MCPMethodOther is the method label of a request for a method the
+	// endpoint does not know.
+	MCPMethodOther = "other"
+	// MCPProtocolUnspecified is the protocol label of a request of the
+	// handshake generation that names no revision, as every initialize does.
+	MCPProtocolUnspecified = "unspecified"
+	// MCPProtocolRefused is the protocol label of a request that was turned
+	// away over its revision or its routing headers.
+	MCPProtocolRefused = "refused"
+)
+
 // restLatencyBuckets are histogram buckets tuned to typical REST backend
 // latencies — finer-grained at the low end where most ToolMesh calls land,
 // with a 30 s ceiling that matches the default executor timeout.
@@ -90,6 +107,7 @@ type Registry struct {
 	healthUp         *prometheus.GaugeVec
 	healthDegraded   *prometheus.GaugeVec
 	authExpiry       *prometheus.GaugeVec
+	mcpRequests      *prometheus.CounterVec
 	labelTool        bool
 }
 
@@ -155,7 +173,13 @@ func New(opts Options) *Registry {
 		Help:      "Unix time at which a backend credential expires, from the health check response or backends.yaml auth_expires_at. Absent when unknown.",
 	}, []string{labelBackend})
 
-	reg.MustRegister(logins, toolCalls, toolCallDuration, codeScripts, swallowedErrors, healthUp, healthDegraded, authExpiry)
+	mcpRequests := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: metricsNamespace,
+		Name:      "mcp_requests_total",
+		Help:      "Authenticated requests of the MCP endpoint by method and by the protocol revision they were served in. protocol is a revision such as 2026-07-28, unspecified (no revision named, as on initialize) or refused (turned away over the revision or the routing headers).",
+	}, []string{"method", "protocol"})
+
+	reg.MustRegister(logins, toolCalls, toolCallDuration, codeScripts, swallowedErrors, healthUp, healthDegraded, authExpiry, mcpRequests)
 
 	// Pre-initialize all login label combinations to zero so a fresh scrape
 	// returns informative output (HELP/TYPE plus zero counters) before the
@@ -180,6 +204,7 @@ func New(opts Options) *Registry {
 		healthUp:         healthUp,
 		healthDegraded:   healthDegraded,
 		authExpiry:       authExpiry,
+		mcpRequests:      mcpRequests,
 		labelTool:        opts.LabelTool,
 	}
 }
@@ -212,6 +237,20 @@ func (r *Registry) RecordToolCall(backendName, toolName, result string, duration
 	}
 	r.toolCalls.WithLabelValues(backendName, tool, result).Inc()
 	r.toolCallDuration.WithLabelValues(backendName, tool).Observe(duration.Seconds())
+}
+
+// RecordMCPRequest counts one authenticated request of the MCP endpoint.
+// method is a method of the endpoint, [MCPMethodNotification] or
+// [MCPMethodOther]; protocol is the revision the request was served in,
+// [MCPProtocolUnspecified] or [MCPProtocolRefused]. Callers pass values from
+// a closed set only, never a value the client chose.
+//
+// Safe to call on a nil receiver.
+func (r *Registry) RecordMCPRequest(method, protocol string) {
+	if r == nil {
+		return
+	}
+	r.mcpRequests.WithLabelValues(method, protocol).Inc()
 }
 
 // RecordCodeScript counts one execute_code script by how it ended: one of

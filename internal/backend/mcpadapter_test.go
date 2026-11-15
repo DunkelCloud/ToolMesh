@@ -153,7 +153,6 @@ func TestMCPAdapter_Connect_MissingCredential(t *testing.T) {
 		},
 		creds:  creds,
 		logger: logger,
-		client: mcp.NewClient(&mcp.Implementation{Name: testBackendNameTest, Version: testVersion01}, nil),
 	}
 
 	// Connect should log an error but not panic

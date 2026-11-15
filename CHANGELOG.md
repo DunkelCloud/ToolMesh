@@ -13,6 +13,28 @@ for the full narrative and details.
 
 ### Added
 
+- MCP revision 2026-07-28. The MCP endpoint serves the revision without
+  sessions and without the `initialize` handshake next to the older ones,
+  and tells them apart per request: clients of both kinds use the same URL,
+  and nothing is configured. For a request of the new revision, what the
+  headers `MCP-Protocol-Version`, `Mcp-Method` and `Mcp-Name` say has to be
+  what the body says; a request that differs is refused with `400` before
+  anything of it runs. `server/discover` is answered, results carry
+  `resultType`, and the tool list carries `ttlMs` and
+  `cacheScope: "private"`. Requests of the older revisions are answered as
+  before. See [Protocol revisions](docs/configuration.md#protocol-revisions)
+  and [ADR-0006](docs/adr/0006-two-generations-of-mcp-on-one-endpoint.md).
+- MCP server backends of revision 2026-07-28. ToolMesh asks a backend in the
+  new way first and falls back to the `initialize` handshake, for stdio
+  servers with a process of its own where the first attempt fails. The
+  `connected to backend` log line names the revision. A warning, once per
+  backend and feature, names the backends that use a part of MCP the
+  revision deprecates: the HTTP+SSE transport, or a request for roots or
+  sampling. See
+  [MCP server backends](docs/configuration.md#mcp-server-backends).
+- The metric `toolmesh_mcp_requests_total` counts the requests of the MCP
+  endpoint by method and protocol revision, and the ones refused over their
+  revision or headers. See [docs/metrics.md](docs/metrics.md).
 - Built-in TLS. The main listener serves https itself once it has a
   certificate, so an instance needs no reverse proxy: with
   `TOOLMESH_TLS_ACME=true` ToolMesh obtains a certificate from Let's Encrypt,
@@ -79,8 +101,26 @@ for the full narrative and details.
   `auth.login.optional` is a ToolMesh extension that DADL spec v0.2 does not
   define. See `docs/configuration.md`, "Limiting what an account reaches".
 
+### Changed
+
+- With `TOOLMESH_CORS_ORIGINS` set, a request to `/mcp` whose `Origin`
+  header names a page outside the list is answered `403`. Until now such a
+  request only got no CORS headers. Clients that are no browser send no
+  `Origin` and are not affected; without a list no origin is refused.
+- A request to `/mcp` whose `MCP-Protocol-Version` header names a revision
+  ToolMesh does not know is answered `400` with the revisions it speaks.
+  Until now the header was not read.
+- ToolMesh no longer announces the roots capability to MCP server backends.
+  It never had roots to list. A backend that answers a tool call by asking
+  the client for input now fails that call with a message that says so.
+- The MCP Go SDK is at v1.8.0.
+
 ### Fixed
 
+- The answer to `tools/list` named backends and their exposed tools in an
+  order that changed from request to request. A client could not keep the
+  list, and a model that read it lost its prompt cache. The list is now the
+  same bytes on every request while backends and rights stay the same.
 - The first retry of a REST call waits `errors.retry_strategy.initial_delay`
   like every later one, and `max_retries` is the number of retries. Until
   now the first retry went out at once, and one request more than declared
@@ -98,6 +138,19 @@ for the full narrative and details.
   out with the unresolved `{{token}}` of an inject rule when another call's
   401 has just discarded the session; and a login whose answer lacks a token
   leaves no partial session behind.
+- MCP backends of which one name starts another, such as `git` and
+  `git_hub`: a call of `git_hub_search` went to one or the other from call
+  to call, so it could run on a backend other than the one the caller's
+  rights were checked for. The backend with the longest matching name now
+  gets the call every time, the rule that already held between backends of
+  different kinds, and a call that backend does not offer fails instead of
+  running on the other one. A tool of the shorter backend whose name falls
+  under the longer one (`hub_search` of `git`) cannot be called; it is no
+  longer listed or promoted, and a warning in the log names it.
+- An MCP backend that returns its tool list in pages lost every tool after
+  the first page, without a line in the log. ToolMesh now follows the cursor
+  to the end of the list, for at most 100 pages; a backend that returns a
+  cursor even then is cut off there with a warning.
 
 ## [0.6.0] - 2026-11-10
 

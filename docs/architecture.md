@@ -87,6 +87,7 @@ The MCPAdapter connects to multiple external MCP servers and aggregates their to
 - Tools are prefixed with the backend name: `memorizer_retrieve_knowledge`
 - Routing is automatic based on the prefix
 - Both HTTP (Streamable HTTP) and STDIO transports are supported
+- Servers of MCP revision 2026-07-28 and of the older revisions with the `initialize` handshake are connected alike; see [ADR-0006](adr/0006-two-generations-of-mcp-on-one-endpoint.md)
 
 ### 5. Credential Store
 

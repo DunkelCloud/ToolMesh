@@ -16,7 +16,6 @@ package executor
 
 import (
 	"context"
-	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -31,7 +30,12 @@ const (
 	hintGateText        = "Page names follow the naming rules; read them before creating a page."
 	hintGateRead        = "wiki_read_page"
 	hintGateWrite       = "wiki_create_page"
-	hintGatePlain       = "wiki_ping"
+	// hintGateWriteBare is hintGateWrite as the backend calls it.
+	hintGateWriteBare = "create_page"
+	hintGateEdit      = "wiki_edit_page"
+	hintGatePlain     = "wiki_ping"
+	// hintGateOtherProof is a proof for a backend the gateway does not know.
+	hintGateOtherProof = "tickets:0123456789abcdef"
 )
 
 // hintGateBackend is a backend whose tools carry access classes and whose
@@ -63,7 +67,7 @@ func (b *hintGateBackend) LookupTool(toolName string) (backend.ToolDescriptor, b
 	switch toolName {
 	case hintGateRead:
 		return backend.ToolDescriptor{Name: toolName, Access: testAccessRead}, true
-	case hintGateWrite:
+	case hintGateWrite, hintGateEdit:
 		return backend.ToolDescriptor{Name: toolName, Access: testAccessWrite}, true
 	case hintGatePlain:
 		return backend.ToolDescriptor{Name: toolName}, true
@@ -94,6 +98,11 @@ func hintGateCtx() context.Context {
 	})
 }
 
+// proofsArg is the argument a refusal prints for the given proofs.
+func proofsArg(proofs ...string) string {
+	return proofsArgument(proofs)
+}
+
 func TestExecuteTool_HintPrecondition(t *testing.T) {
 	day := time.Date(2026, 3, 14, 10, 0, 0, 0, time.UTC)
 	current := backend.HintProof(hintGateBackendName, hintGateText, day)
@@ -114,6 +123,8 @@ func TestExecuteTool_HintPrecondition(t *testing.T) {
 		{"read is not listed", []string{testAccessWrite}, hintGateRead, nil, false},
 		{"unclassified tool is not matched by a class", []string{testAccessWrite}, hintGatePlain, nil, false},
 		{"all covers an unclassified tool", []string{backend.HintAccessAll}, hintGatePlain, nil, true},
+		{"tool listed by name", []string{hintGateWriteBare}, hintGateWrite, nil, true},
+		{"another tool of the class of a listed tool", []string{hintGateWriteBare}, hintGateEdit, nil, false},
 		{"hint as advice only", nil, hintGateWrite, nil, false},
 	}
 
@@ -151,7 +162,7 @@ func TestExecuteTool_HintPrecondition(t *testing.T) {
 			text := resultText(result)
 			for _, want := range []string{
 				"[ToolMesh note: " + hintGateBackendName + "] " + hintGateText,
-				`toolmesh.assert_proofs(["` + current + `"]);`,
+				proofsArg(current),
 			} {
 				if !strings.Contains(text, want) {
 					t.Errorf("refusal lacks %q:\n%s", want, text)
@@ -202,8 +213,9 @@ func TestExecuteTool_HintProofExpiresWithTheDay(t *testing.T) {
 		t.Fatal("executed with the proof of the day before")
 	}
 	next := backend.HintProof(hintGateBackendName, hintGateText, now)
-	if next == evening || !strings.Contains(resultText(result), next) {
-		t.Errorf("refusal does not carry the new day's proof %q:\n%s", next, resultText(result))
+	text := resultText(result)
+	if next == evening || !strings.Contains(text, proofsArg(next)) {
+		t.Errorf("refusal does not print the new day's proof alone, %s:\n%s", proofsArg(next), text)
 	}
 }
 
@@ -225,61 +237,117 @@ func TestExecuteTool_HintComesAfterAuthorization(t *testing.T) {
 	}
 }
 
-func TestCheckHintProofs(t *testing.T) {
+// The check before a script runs: what the proofs passed with it and the
+// tools it names add up to.
+func TestHintPreflight(t *testing.T) {
 	day := time.Date(2026, 3, 14, 10, 0, 0, 0, time.UTC)
 	current := backend.HintProof(hintGateBackendName, hintGateText, day)
 	stale := backend.HintProof(hintGateBackendName, hintGateText, day.AddDate(0, 0, -1))
+	older := backend.HintProof(hintGateBackendName, hintGateText, day.AddDate(0, 0, -2))
+	note := "[ToolMesh note: " + hintGateBackendName + "] " + hintGateText
+	const noneRan = "none of the script's calls has run"
 
 	cases := []struct {
 		name        string
 		requiredFor []string
+		tools       []string
 		proofs      []string
-		wantErr     []string // substrings of the error; nil means no error
+		want        []string // substrings of the refusal; nil means the script may run
+		wantAudited string   // tool of the audit entry, "" for none
 	}{
-		{"current proof", []string{testAccessWrite}, []string{current}, nil},
-		{"no proofs", []string{testAccessWrite}, nil, nil},
-		{"stale proof names the note and the new line", []string{testAccessWrite}, []string{stale},
-			[]string{"no longer valid", hintGateText, `toolmesh.assert_proofs(["` + current + `"]);`}},
-		{"not a proof", []string{testAccessWrite}, []string{"0123456789abcdef"}, []string{"is not a proof"}},
-		{"backend that requires none", nil, []string{stale}, nil},
-		{"unknown backend", []string{testAccessWrite}, []string{"tickets:0123456789abcdef"}, nil},
+		{"names a tool that needs a proof", []string{testAccessWrite}, []string{hintGateRead, hintGateWrite}, nil,
+			[]string{note, noneRan, "The script calls " + hintGateWrite + ", which needs proof", proofsArg(current)}, hintGateWrite},
+		{"names two such tools", []string{testAccessWrite}, []string{hintGateWrite, hintGateEdit, hintGateWrite}, nil,
+			[]string{"The script calls " + hintGateWrite + ", " + hintGateEdit + ", which need proof", proofsArg(current)}, hintGateEdit},
+		{"carries the day's proof", []string{testAccessWrite}, []string{hintGateWrite}, []string{current}, nil, ""},
+		{"names only tools that are not listed", []string{testAccessWrite}, []string{hintGateRead, hintGatePlain}, nil, nil, ""},
+		{"names a tool listed by name", []string{hintGateWriteBare}, []string{hintGateWrite}, nil,
+			[]string{note, proofsArg(current)}, hintGateWrite},
+		{"names another tool of that class", []string{hintGateWriteBare}, []string{hintGateEdit}, nil, nil, ""},
+		{"stale proof and the tool", []string{testAccessWrite}, []string{hintGateWrite}, []string{stale},
+			[]string{note, noneRan, "which needs proof", "The proof passed for " + hintGateBackendName + " is no longer valid", proofsArg(current)}, hintGateWrite},
+		{"stale proof, no such tool named", []string{testAccessWrite}, []string{hintGateRead}, []string{stale},
+			[]string{note, "is no longer valid", proofsArg(current)}, ""},
+		{"two stale proofs become one current", []string{testAccessWrite}, nil, []string{older, stale},
+			[]string{proofsArg(current)}, ""},
+		{"a stale proof next to the current one", []string{testAccessWrite}, []string{hintGateWrite}, []string{stale, current}, nil, ""},
+		{"proofs of other backends stay in the argument", []string{testAccessWrite}, []string{hintGateWrite}, []string{hintGateOtherProof},
+			[]string{proofsArg(hintGateOtherProof, current)}, hintGateWrite},
+		{"not a proof", []string{testAccessWrite}, nil, []string{"0123456789abcdef"}, []string{"is not a proof"}, ""},
+		{"stale proof for a backend that requires none", nil, []string{hintGateWrite}, []string{stale}, nil, ""},
+		{"proof for an unknown backend", []string{testAccessWrite}, []string{hintGateRead}, []string{hintGateOtherProof}, nil, ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			exec := New(nil, nil, newHintGateBackend(tc.requiredFor...), nil, nil, 30*time.Second, newTestLogger(), nil, nil)
+			be := newHintGateBackend(tc.requiredFor...)
+			rec := &recordingAudit{}
+			exec := New(nil, nil, be, nil, rec, 30*time.Second, newTestLogger(), nil, nil)
 			exec.SetClock(func() time.Time { return day })
 
-			err := exec.CheckHintProofs(tc.proofs)
-			if tc.wantErr == nil {
-				if err != nil {
-					t.Fatalf("CheckHintProofs: %v", err)
+			refusal := exec.HintPreflight(hintGateCtx(), tc.tools, tc.proofs)
+			if tc.want == nil && refusal != "" {
+				t.Fatalf("script refused:\n%s", refusal)
+			}
+			if tc.want != nil && refusal == "" {
+				t.Fatal("script may run, want a refusal")
+			}
+			for _, want := range tc.want {
+				if !strings.Contains(refusal, want) {
+					t.Errorf("refusal lacks %q:\n%s", want, refusal)
+				}
+			}
+			if strings.Count(refusal, note) > 1 {
+				t.Errorf("refusal carries the note more than once:\n%s", refusal)
+			}
+			if len(be.executed) != 0 {
+				t.Errorf("backend executed %v, want no call", be.executed)
+			}
+
+			if tc.wantAudited == "" {
+				if rec.last.Tool != "" {
+					t.Errorf("audit entry for %q, want none", rec.last.Tool)
 				}
 				return
 			}
-			if err == nil {
-				t.Fatal("CheckHintProofs accepted the proofs")
+			if rec.last.Tool != tc.wantAudited || rec.last.Status != statusDenied || rec.last.Error != errHintProofMissing {
+				t.Errorf("audit entry = %q, %q, %q, want %q, %q, %q",
+					rec.last.Tool, rec.last.Status, rec.last.Error, tc.wantAudited, statusDenied, errHintProofMissing)
 			}
-			for _, want := range tc.wantErr {
-				if !strings.Contains(err.Error(), want) {
-					t.Errorf("error lacks %q:\n%v", want, err)
-				}
+			if got := rec.last.Metadata[metaHintRequired]; got != hintGateBackendName {
+				t.Errorf("audit metadata %s = %q, want %q", metaHintRequired, got, hintGateBackendName)
 			}
 		})
 	}
 }
 
+// A caller that may not call the tool is not refused here: the script runs
+// into the denial at the call, and the hint stays with callers that may act
+// on it.
+func TestHintPreflight_ComesAfterAuthorization(t *testing.T) {
+	be := newHintGateBackend(testAccessWrite)
+	rec := &recordingAudit{}
+	exec := New(denyAll{}, nil, be, nil, rec, 30*time.Second, newTestLogger(), nil, nil)
+
+	if refusal := exec.HintPreflight(hintGateCtx(), []string{hintGateWrite}, nil); refusal != "" {
+		t.Errorf("script refused with the hint:\n%s", refusal)
+	}
+	if rec.last.Tool != "" {
+		t.Errorf("audit entry for %q, want none", rec.last.Tool)
+	}
+}
+
 // A backend set that cannot name the backend of a tool or report hints has
-// no hint precondition; calls run as before.
+// no hint precondition; calls and scripts run as before.
 func TestExecuteTool_NoHintPreconditionWithoutSummaries(t *testing.T) {
 	exec := New(nil, nil, &mockBackend{}, nil, nil, 30*time.Second, newTestLogger(), nil, nil)
 	result, err := exec.ExecuteTool(hintGateCtx(), ExecuteToolRequest{ToolName: hintGateWrite})
 	if err != nil || result.IsError {
 		t.Fatalf("ExecuteTool = %v, %v, want an executed call", result, err)
 	}
-	if err := exec.CheckHintProofs([]string{"wiki:0123456789abcdef"}); err != nil {
-		t.Errorf("CheckHintProofs: %v", err)
+	if refusal := exec.HintPreflight(hintGateCtx(), []string{hintGateWrite}, []string{hintGateOtherProof}); refusal != "" {
+		t.Errorf("HintPreflight refused:\n%s", refusal)
 	}
-	if err := exec.CheckHintProofs([]string{"nonsense"}); err == nil || errors.Is(err, context.Canceled) {
-		t.Errorf("CheckHintProofs accepted a malformed proof: %v", err)
+	if refusal := exec.HintPreflight(hintGateCtx(), nil, []string{"nonsense"}); !strings.Contains(refusal, "is not a proof") {
+		t.Errorf("HintPreflight accepted a malformed proof: %q", refusal)
 	}
 }

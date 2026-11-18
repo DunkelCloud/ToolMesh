@@ -21,11 +21,13 @@ backends:
   #   # Optional: make the hint a precondition. Without this line the hint is
   #   # advice, attached to the first call each user makes into the backend; a
   #   # second conversation of the same user does not get it. With it, a call
-  #   # to a tool of a listed access class (read, write, admin, dangerous, or
-  #   # "all" for every tool) is refused until the caller shows that it has
-  #   # received the hint: the refusal carries the hint and a line to put at
-  #   # the top of an execute_code script. The line is valid for the day, so
-  #   # every conversation gets the hint before its first such call. See
+  #   # to a listed tool is refused until the caller shows that it has
+  #   # received the hint. List access classes (read, write, admin,
+  #   # dangerous), single tools by name (create_page), or "all" for every
+  #   # tool. The refusal carries the hint and a "proofs" argument for
+  #   # execute_code; a script is refused before it runs and is then run
+  #   # again, unchanged, with that argument. The proof is valid for the day,
+  #   # so every conversation gets the hint before its first such call. See
   #   # docs/configuration.md, "Backend hints".
   #   hint_required_for: [write, dangerous, admin]
   #   # Optional: restrict the surface to exactly these upstream tool names.

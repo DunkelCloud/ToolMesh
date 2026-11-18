@@ -57,12 +57,13 @@ for the full narrative and details.
   `GET` and `HEAD` tools. The key is a ToolMesh extension that DADL spec
   v0.2 does not define. See `docs/configuration.md`.
 - `hint_required_for` in `backends.yaml` makes a backend's `hint` a
-  precondition for tools of the listed access classes. A call without proof
-  is refused with the hint and a line for the top of an `execute_code`
-  script (`toolmesh.assert_proofs`); the line is valid for the day. Every
-  conversation gets the hint before its first such call, where the notice
-  on a user's first call reached only the first conversation. See
-  [Backend hints](docs/configuration.md#backend-hints).
+  precondition for the tools it lists, by access class or by name. A script
+  that calls such a tool without proof is refused before it runs, with the
+  hint and a `proofs` argument for `execute_code`; the proof is valid for the
+  day. Every conversation gets the hint before its first such call, where
+  the notice on a user's first call reached only the first conversation. The
+  proof is no part of the script, so a script whose text is fixed needs no
+  change. See [Backend hints](docs/configuration.md#backend-hints).
 - Credentials of users. A REST backend can list credential names of its DADL
   under `user_credentials` in `backends.yaml`; every user then stores the
   credentials of their own accounts on the new page `/credentials`, signed in

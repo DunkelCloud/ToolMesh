@@ -13,6 +13,23 @@ for the full narrative and details.
 
 ### Added
 
+- Commands on hosts over SSH. A backend with `transport: ssh` reads a command
+  file: named commands with a fixed argument vector and typed parameters. Each
+  command is a tool; a call fills in the parameters and ToolMesh builds the
+  command line, with every argument in quotes for the shell of the host, so a
+  value stays one argument whatever it contains. A string parameter needs a
+  pattern or a list of values, and a value that starts with `-` is refused.
+  ToolMesh connects per call, logs in with a key from the credential store or
+  a file (the passphrase of the key from the credential store), runs the
+  command without a terminal and returns exit code, stdout and stderr. A host
+  is connected to only when its key is in the entry's `known_hosts` file;
+  there is no setting that turns the check off. One backend serves one host or
+  several, which a call selects with the parameter `host`. Authorization,
+  kits, hints, policies and the audit log apply as to any tool. The health
+  check of such a backend connects to every host and logs in. See
+  [SSH backends](docs/configuration.md#ssh-backends),
+  [config/ssh/linux-host.yaml.example](config/ssh/linux-host.yaml.example) and
+  [ADR-0007](docs/adr/0007-commands-over-ssh-as-templates.md).
 - MCP revision 2026-07-28. The MCP endpoint serves the revision without
   sessions and without the `initialize` handshake next to the older ones,
   and tells them apart per request: clients of both kinds use the same URL,

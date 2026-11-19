@@ -16,6 +16,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -111,6 +112,7 @@ func NewHandler(exec *executor.Executor, back backend.ToolBackend, coercer *tsde
 		runner.backends = resolver
 	}
 	runner.initSwallowedErrors(tools)
+	warnUnmatchedHintEntries(back, tools, logger)
 	return h
 }
 
@@ -564,7 +566,18 @@ func (h *Handler) handleExecuteCode(ctx context.Context, params map[string]any) 
 		}
 	}
 
-	result, err := h.codeRunner.ExecuteWithOptions(ctx, code, ExecuteOptions{IncludeResults: includeResults})
+	proofs, ok := proofsParam(params[argNameProofs])
+	if !ok {
+		return &backend.ToolResult{
+			IsError: true,
+			Content: []any{map[string]any{
+				contentKeyType: contentKeyText,
+				contentKeyText: "Parameter 'proofs' must be a list of strings, as a refused call prints it",
+			}},
+		}
+	}
+
+	result, err := h.codeRunner.ExecuteWithOptions(ctx, code, ExecuteOptions{IncludeResults: includeResults, Proofs: proofs})
 	if err != nil {
 		h.logger.WarnContext(ctx, "execute_code failed", outcomeError, err)
 		// If we got a partial result (e.g. some calls succeeded before error),
@@ -588,6 +601,73 @@ func (h *Handler) handleExecuteCode(ctx context.Context, params map[string]any) 
 	}
 
 	return result
+}
+
+// proofsParam reads the proofs argument of execute_code: a list of proof
+// strings. A single string is taken as one proof, and a string that holds
+// a JSON list as that list, since some clients serialize lists as strings.
+// It is false for anything else.
+func proofsParam(arg any) ([]string, bool) {
+	switch v := arg.(type) {
+	case nil:
+		return nil, true
+	case []string:
+		return v, true
+	case []any:
+		out := make([]string, 0, len(v))
+		for _, item := range v {
+			s, ok := item.(string)
+			if !ok {
+				return nil, false
+			}
+			out = append(out, s)
+		}
+		return out, true
+	case string:
+		text := strings.TrimSpace(v)
+		if text == "" {
+			return nil, true
+		}
+		if strings.HasPrefix(text, "[") {
+			var out []string
+			if err := json.Unmarshal([]byte(text), &out); err != nil {
+				return nil, false
+			}
+			return out, true
+		}
+		return []string{text}, true
+	}
+	return nil, false
+}
+
+// warnUnmatchedHintEntries logs the hint_required_for entries that cover no
+// tool of their backend, such as a misspelled tool name. The operator meant
+// those calls to be refused until the hint was received, and nothing is.
+func warnUnmatchedHintEntries(back backend.ToolBackend, tools []backend.ToolDescriptor, logger *slog.Logger) {
+	resolver, hasResolver := back.(backend.BackendNameResolver)
+	summarizer, hasSummaries := back.(backend.BackendSummarizer)
+	if !hasResolver || !hasSummaries {
+		return
+	}
+	byBackend := map[string][]backend.ToolDescriptor{}
+	for _, t := range tools {
+		if name, ok := resolver.ResolveBackendName(t.Name); ok {
+			byBackend[name] = append(byBackend[name], t)
+		}
+	}
+	for _, info := range summarizer.BackendSummaries() {
+		owned := byBackend[info.Name]
+		if len(owned) == 0 {
+			// A backend that has not delivered its tools yet proves nothing.
+			continue
+		}
+		for _, entry := range info.UnmatchedHintEntries(owned) {
+			logger.Warn("hint_required_for entry covers no tool of the backend",
+				argNameBackend, info.Name,
+				"entry", entry,
+			)
+		}
+	}
 }
 
 // BuildToolList returns all tools including Code Mode tools.
@@ -649,6 +729,11 @@ func (h *Handler) BuildToolList(ctx context.Context) ([]ToolDefinition, error) {
 					argNameIncludeResults: map[string]any{
 						contentKeyType:       jsonTypeBoolean,
 						schemaKeyDescription: "Include the full result of every tool call in the response even when the code returns a value. Default false: with an explicit return, successful calls are compacted to {tool, status, resultBytes} and only the return value carries data.",
+					},
+					argNameProofs: map[string]any{
+						contentKeyType:       jsonTypeArray,
+						"items":              map[string]any{contentKeyType: jsonTypeString},
+						schemaKeyDescription: "Proofs that you have received the notes of backends, as a refused call prints them. Leave it out until a call is refused with a note; then pass the printed list with every execute_code call. A proof is valid until the end of the day (UTC).",
 					},
 				},
 				schemaKeyRequired: []string{argNameCode},

@@ -24,13 +24,14 @@ import (
 )
 
 // stoppedEntries runs a script that reads and then writes without a proof,
-// and returns the call entries of its partial result.
+// under a name it computes so that the refusal comes at the call, and
+// returns the call entries of its partial result.
 func stoppedEntries(t *testing.T, opts ExecuteOptions) ([]map[string]any, error) {
 	t.Helper()
 	runner, _ := newProofRunner(t, time.Date(2026, 3, 14, 10, 0, 0, 0, time.UTC))
 	result, err := runner.ExecuteWithOptions(ctxForUser("alice"), `
 		await toolmesh.test_bar({});
-		await toolmesh.test_foo({title: "New page"});
+		`+proofTestComputedWrite+`
 		return "done";
 	`, opts)
 	if err == nil {

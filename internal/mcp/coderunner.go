@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -40,10 +41,15 @@ import (
 const (
 	sandboxDiscoverFn = "discover"
 	sandboxDescribeFn = "describe"
-	// sandboxAssertProofsFn presents hint proofs for the calls of one run;
-	// see CodeRunner.installProofs.
-	sandboxAssertProofsFn = "assert_proofs"
 )
+
+// toolRefPattern finds the members a script reads from the toolmesh object:
+// toolmesh.name, toolmesh?.name and toolmesh["name"] with a literal name.
+// It is a search in the text, not a parse: a name in a comment or a string
+// counts as well, and a name the script computes is not found.
+var toolRefPattern = regexp.MustCompile(
+	`\btoolmesh\s*\??\.\s*([A-Za-z_$][A-Za-z0-9_$]*)` +
+		`|\btoolmesh\s*(?:\?\.)?\s*\[\s*(?:"([^"\\]+)"|'([^'\\]+)'|` + "`([^`\\\\$]+)`" + `)\s*\]`)
 
 // maxCodeCalls is the maximum number of toolmesh.* calls allowed per execution.
 const maxCodeCalls = 50
@@ -247,6 +253,12 @@ type ExecuteOptions struct {
 	// explicit return value compacts successful call entries to
 	// {tool, status, resultBytes}.
 	IncludeResults bool
+	// Proofs are the hint proofs the caller passes with the run
+	// (backend.HintProof): they show that the caller has received the hints
+	// of the backends whose tools the script calls. They hold for this run
+	// only and are no part of the script, which therefore cannot present a
+	// proof on its own.
+	Proofs []string
 }
 
 // Execute runs code with default options — see ExecuteWithOptions.
@@ -283,6 +295,21 @@ func (r *CodeRunner) ExecuteWithOptions(ctx context.Context, code string, opts E
 		}, nil
 	}
 
+	// Hint preconditions, before anything runs: a script that names a tool
+	// whose backend hint the caller has yet to receive is refused here with
+	// the hint, so that it does not stop halfway at that call.
+	if r.executor != nil {
+		if refusal := r.executor.HintPreflight(ctx, r.namedTools(code), opts.Proofs); refusal != "" {
+			return &backend.ToolResult{
+				IsError: true,
+				Content: []any{map[string]any{
+					contentKeyType: contentKeyText,
+					contentKeyText: refusal,
+				}},
+			}, nil
+		}
+	}
+
 	release, err := r.acquireSlot(ctx)
 	if err != nil {
 		r.logger.WarnContext(ctx, "execute_code refused", outcomeError, err)
@@ -309,9 +336,6 @@ func (r *CodeRunner) ExecuteWithOptions(ctx context.Context, code string, opts E
 		results   []any
 		console   []string
 		failed    = map[failedCall]struct{}{}
-		// proofs are the hint proofs the script asserted; they hold for
-		// this run only.
-		proofs []string
 	)
 
 	rt := goja.New()
@@ -399,13 +423,10 @@ func (r *CodeRunner) ExecuteWithOptions(ctx context.Context, code string, opts E
 			}
 
 			// Execute the tool
-			mu.Lock()
-			held := slices.Clone(proofs)
-			mu.Unlock()
 			result, err := r.executor.ExecuteTool(ctx, executor.ExecuteToolRequest{
 				ToolName:   cn,
 				Params:     toolParams,
-				HintProofs: held,
+				HintProofs: opts.Proofs,
 			})
 			if err != nil {
 				r.logger.DebugContext(ctx, "execute_code tool error",
@@ -432,7 +453,8 @@ func (r *CodeRunner) ExecuteWithOptions(ctx context.Context, code string, opts E
 			// refusal carries the backend's hint, which the caller is meant
 			// to read before it goes on; handed to the script as an error
 			// value, a script that does not check its results would carry on
-			// and report success.
+			// and report success. The preflight has refused every script
+			// that names such a tool, so this one computed the name.
 			if hintBackend, refused := hintRefused(result); refused {
 				mu.Lock()
 				ran := len(results)
@@ -453,7 +475,11 @@ func (r *CodeRunner) ExecuteWithOptions(ctx context.Context, code string, opts E
 					resultKeyParams: executor.SanitizeParams(toolParams),
 				})
 				mu.Unlock()
-				panic(rt.NewGoError(errors.New(hintStopText(result, ran, cut))))
+				// An interrupt, not an exception: a script cannot catch it,
+				// so the run ends here whatever the script does with errors,
+				// and the refusal reaches the caller.
+				rt.Interrupt(&hintStop{text: hintStopText(result, ran, cut)})
+				return goja.Undefined()
 			}
 
 			// Log result
@@ -539,15 +565,6 @@ func (r *CodeRunner) ExecuteWithOptions(ctx context.Context, code string, opts E
 	// maxCodeCalls budget.
 	r.installDiscovery(ctx, rt, tmObj)
 
-	// toolmesh.assert_proofs(proofs) presents hint proofs for the calls
-	// that follow in this run. It runs locally and does not count toward
-	// the maxCodeCalls budget.
-	r.installProofs(rt, tmObj, func(asserted []string) {
-		mu.Lock()
-		proofs = append(proofs, asserted...)
-		mu.Unlock()
-	})
-
 	// Guard against the common LLM mistake of invoking discover_tools or
 	// execute_code from inside the JS sandbox. Both are top-level MCP tools,
 	// not toolmesh.* members. The descriptions say "call discover_tools
@@ -594,6 +611,9 @@ func (r *CodeRunner) ExecuteWithOptions(ctx context.Context, code string, opts E
 		outcome = failedOutcome(ctx)
 		var interrupt *goja.InterruptedError
 		if errors.As(err, &interrupt) {
+			if stop, ok := interrupt.Value().(*hintStop); ok {
+				return r.errorResult(results, console), errors.New(stop.text)
+			}
 			return r.errorResult(results, console),
 				fmt.Errorf("execute_code: interrupted: %s", interrupt.Value())
 		}
@@ -738,51 +758,27 @@ func (r *CodeRunner) installDiscovery(ctx context.Context, rt *goja.Runtime, tmO
 	}
 }
 
-// installProofs registers toolmesh.assert_proofs on the toolmesh object. A
-// script presents with it the proofs that it has received the hints of the
-// backends it is about to call (backends.yaml hint_required_for); hold
-// takes the proofs for the run. A stale or malformed proof ends the script
-// at that line, before the calls that depend on it, with the hint in force
-// and the proof to use. A backend tool with the same sanitized name takes
-// precedence, in which case the helper is not installed.
-func (r *CodeRunner) installProofs(rt *goja.Runtime, tmObj *goja.Object, hold func([]string)) {
-	if _, taken := r.nameMap[sandboxAssertProofsFn]; taken {
-		return
-	}
-	_ = tmObj.Set(sandboxAssertProofsFn, func(call goja.FunctionCall) goja.Value {
-		asserted, err := proofArguments(call.Argument(0).Export())
-		if err != nil {
-			panic(rt.NewGoError(err))
-		}
-		if r.executor != nil {
-			if err := r.executor.CheckHintProofs(asserted); err != nil {
-				panic(rt.NewGoError(err))
+// namedTools returns the backend tools a script names as members of the
+// toolmesh object, in the order of their first mention.
+func (r *CodeRunner) namedTools(code string) []string {
+	var tools []string
+	for _, m := range toolRefPattern.FindAllStringSubmatch(code, -1) {
+		for _, name := range m[1:] {
+			if name == "" {
+				continue
+			}
+			if canonical, ok := r.nameMap[name]; ok && !slices.Contains(tools, canonical) {
+				tools = append(tools, canonical)
 			}
 		}
-		hold(asserted)
-		return rt.ToValue(asserted)
-	})
+	}
+	return tools
 }
 
-// proofArguments reads the argument of toolmesh.assert_proofs: an array of
-// proof strings, or a single one.
-func proofArguments(arg any) ([]string, error) {
-	const usage = "toolmesh.assert_proofs: pass the proofs as an array of strings, e.g. toolmesh.assert_proofs([\"<backend>:<digest>\"])"
-	switch v := arg.(type) {
-	case string:
-		return []string{v}, nil
-	case []any:
-		out := make([]string, 0, len(v))
-		for _, item := range v {
-			s, ok := item.(string)
-			if !ok {
-				return nil, errors.New(usage)
-			}
-			out = append(out, s)
-		}
-		return out, nil
-	}
-	return nil, errors.New(usage)
+// hintStop is what a run is interrupted with when one of its calls was
+// refused for want of a hint proof: the text the caller gets.
+type hintStop struct {
+	text string
 }
 
 // hintRefused reports whether a result is the refusal of a call that lacked

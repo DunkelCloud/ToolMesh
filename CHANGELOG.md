@@ -54,6 +54,13 @@ for the full narrative and details.
   suffix off a path segment or read a backslash as `/`: `..;` would then
   walk up the path, and `42;x` name another object than the one a gate
   policy saw.
+- A DADL tool path with a `{placeholder}` after `?` or `#`, such as
+  `/search?q={q}`, is refused when the DADL is parsed and when the backend
+  is loaded; `lint-dadl` reports it. A path parameter is escaped as a path
+  segment, which leaves `&` and `=` as they are, so a value there could add
+  query parameters that no declaration names and no gate policy sees.
+  Declare the parameter with `in: query` instead. No DADL in the registry
+  uses such a path.
 
 ### Added
 

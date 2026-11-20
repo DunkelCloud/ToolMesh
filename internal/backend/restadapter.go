@@ -196,10 +196,15 @@ func NewRESTAdapter(spec *dadl.Spec, creds credentials.CredentialStore, logger *
 	}
 
 	// A placeholder in the host of an absolute tool path would let the caller
-	// pick where the request, with its credentials, goes. dadl.Validate
-	// refuses such paths; specs built in code are checked here as well.
+	// pick where the request, with its credentials, goes, and one in the
+	// query part of a path would let a value add query parameters of its
+	// own. dadl.Validate refuses such paths; specs built in code are checked
+	// here as well.
 	for name, tool := range spec.Backend.Tools {
 		if err := dadl.CheckToolPathAuthority(tool.Path); err != nil {
+			return nil, fmt.Errorf("REST backend %q: tool %q: %w", spec.Backend.Name, name, err)
+		}
+		if err := dadl.CheckToolPathQuery(tool.Path); err != nil {
 			return nil, fmt.Errorf("REST backend %q: tool %q: %w", spec.Backend.Name, name, err)
 		}
 	}

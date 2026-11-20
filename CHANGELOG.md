@@ -11,6 +11,19 @@ for the full narrative and details.
 
 ## [Unreleased]
 
+### Security
+
+- The example for `TOOLMESH_TRUSTED_PROXIES` in `.env.example`,
+  `docs/configuration.md` and `docker-compose.yml` no longer lists the
+  Compose network (`172.18.0.0/16`). The network contains its gateway, and
+  with Docker Desktop, rootless Docker or a userland proxy, direct
+  connections to ToolMesh's published port come from that gateway; with the
+  network listed, such a connection could choose its client address through
+  `X-Forwarded-For`. List the proxy container's own fixed address and
+  publish ToolMesh's port on `127.0.0.1` only, or not at all. If your
+  setting follows the old example, change it. See
+  [Proxy in a container](docs/configuration.md#proxy-in-a-container).
+
 ### Added
 
 - MCP revision 2026-07-28. The MCP endpoint serves the revision without

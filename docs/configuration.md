@@ -156,12 +156,49 @@ The client address is used for the login and API key limits, the registration li
 `TOOLMESH_TRUSTED_PROXIES` lists the addresses your reverse proxies connect from, not the networks your clients are in: a client whose own address is listed can choose the address it is counted under.
 
 - **Reverse proxy on the same host** (Caddy, nginx, Traefik as a host service): nothing to set.
-- **Reverse proxy in a container** in the same Compose network: list the proxy container's address, or the Compose network if the address changes, for example `TOOLMESH_TRUSTED_PROXIES=172.18.0.0/16`. Only the proxy may share that network with ToolMesh then.
+- **Reverse proxy in a container** in the same Compose network: list the proxy container's own address, fixed in the Compose file, for example `TOOLMESH_TRUSTED_PROXIES=172.18.0.10`. Do not list the Compose network; see [Proxy in a container](#proxy-in-a-container).
 - **Proxy or CDN on other machines** (a load balancer, Cloudflare): list its addresses or published ranges.
 - **No proxy, ports published directly** with rootful Docker on Linux: nothing to set; Docker keeps the client's source address. With Docker Desktop, rootless Docker or a userland proxy every connection comes from a gateway address instead, so all clients share one address's limits. That fails safe, but a lockout then hits everyone; put a reverse proxy in front, or raise the per-address limits.
 - **Not configured but behind a proxy:** every client is counted under the proxy's address. ToolMesh logs `X-Forwarded-For from an address that is not a trusted proxy is ignored` at `WARN` (at most once an hour, with `remote`) when such a header arrives from an address that is not listed. The `remote` field of the request log shows which address ToolMesh uses.
 - The proxy closest to ToolMesh must append the real client address to `X-Forwarded-For`, which common reverse proxies do. `none` honors no `X-Forwarded-For` at all.
 - The startup log names the trusted addresses: `X-Forwarded-For honored from ...`.
+
+#### Proxy in a container
+
+A reverse proxy that runs as a container next to ToolMesh is listed with its own address, not with the Compose network. The network contains its gateway (for example `172.18.0.1`), and with Docker Desktop, rootless Docker or a userland proxy, direct connections to ToolMesh's published port arrive from that gateway. With the network listed, such a connection counts as coming from a trusted proxy, and whoever opens it chooses the address the limits count it under.
+
+Give the proxy a fixed address and list that address alone. The proxy reaches ToolMesh over the Compose network, so ToolMesh's port is published on `127.0.0.1` only, or not at all:
+
+```yaml
+# docker-compose.yml, the parts that change
+services:
+  proxy:
+    image: caddy:2-alpine
+    ports:
+      - "443:443"
+    networks:
+      default:
+        ipv4_address: 172.18.0.10
+  toolmesh:
+    ports:
+      - "127.0.0.1:${TOOLMESH_PORT:-8123}:8080"
+
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 172.18.0.0/24       # a subnet no other Docker network uses
+          ip_range: 172.18.0.128/25   # automatic addresses for the other containers
+```
+
+```bash
+# .env
+TOOLMESH_TRUSTED_PROXIES=172.18.0.10
+```
+
+The `ip_range` keeps Docker from giving the proxy's address to another container. The proxy forwards to `http://toolmesh:8080`.
+
+On an existing installation, changing the network's `ipam` makes `docker compose up -d` create the network anew, but it re-creates only the services whose configuration changed. The others are attached to the new network without their service name: ToolMesh then no longer finds Redis as `keydb`, logs `Redis not reachable` and runs with its file token store only. After such a change, run `docker compose up -d --force-recreate` and check that the start log shows `Redis connected`.
 
 ### Failed API keys
 

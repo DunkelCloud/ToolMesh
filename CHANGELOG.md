@@ -68,6 +68,14 @@ for the full narrative and details.
   256 bytes, when it lists more than 16 `redirect_uris` or one longer than
   2048 bytes, or when its body is larger than 64 KiB (until now 1 MiB,
   stored as sent).
+- The login page shows a client's self-declared name without quotation
+  marks of any kind and without characters that are not printed: control
+  characters, direction overrides, zero-width characters. The page sets the
+  name in quotation marks under a note that it is not verified; a name
+  could close that quotation and continue as if ToolMesh said it, or
+  reverse the direction of the line. The page also states its charset
+  (`text/html; charset=utf-8`), so a browser does not guess an encoding
+  from text a client supplied.
 
 ### Added
 

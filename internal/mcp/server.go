@@ -1952,7 +1952,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 
 var loginTmpl = template.Must(template.New("login").Parse(`<!DOCTYPE html>
 <html>
-<head><title>ToolMesh Login</title>
+<head><meta charset="utf-8"><title>ToolMesh Login</title>
 <style>body{font-family:system-ui;max-width:400px;margin:80px auto;padding:20px}
 input{width:100%;padding:8px;margin:8px 0;box-sizing:border-box}
 button{width:100%;padding:10px;background:#2563eb;color:white;border:none;border-radius:4px;cursor:pointer}
@@ -2006,25 +2006,13 @@ type loginForm struct {
 	RedirectHost string
 }
 
-// clientDisplayName returns the self-declared client_name of client, cut to
-// a length that fits the login page, or "" when there is none.
-func clientDisplayName(client *auth.OAuthClient) string {
-	if client == nil {
-		return ""
-	}
-	name := strings.TrimSpace(client.ClientName)
-	if r := []rune(name); len(r) > 80 {
-		name = string(r[:80]) + "…"
-	}
-	return name
-}
-
 // renderLoginForm writes the login page with the given status. A 401 goes out
 // without a WWW-Authenticate challenge on purpose: there is no scheme that
 // describes an HTML form, and "Basic" would make the browser put its own
-// password dialog in front of the page.
+// password dialog in front of the page. The charset is stated, so a browser
+// never guesses an encoding from the text the client supplied.
 func (s *Server) renderLoginForm(w http.ResponseWriter, status int, form loginForm) {
-	w.Header().Set("Content-Type", "text/html")
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(status)
 	if err := loginTmpl.Execute(w, form); err != nil {
 		s.logger.Error("failed to render login form", outcomeError, err)

@@ -30,7 +30,10 @@ import (
 // cut a ";..." suffix off a path segment would read "..;" as "..", and
 // servers that read "\" as "/" would read "..\" the same way: the dot
 // segments that are refused as plain values would arrive after all. Other
-// punctuation stays allowed and reaches the API as one segment.
+// punctuation stays allowed and reaches the API as one segment. The same
+// goes for a dot segment with white space around it, which a layer may
+// trim, and for control characters, which no ID holds and at which a layer
+// may cut the value.
 func TestRESTAdapter_PathParamSegmentSeparators(t *testing.T) {
 	var mu sync.Mutex
 	var paths []string
@@ -62,7 +65,8 @@ func TestRESTAdapter_PathParamSegmentSeparators(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	refused := []string{"..;", "..;x=1", ".;", ";", "42;x", `..\`, `..\..\admin`, `a\b`, `\`}
+	refused := []string{"..;", "..;x=1", ".;", ";", "42;x", `..\`, `..\..\admin`, `a\b`, `\`,
+		".. ", " ..", "..\t", " . ", "..\x00", "a\x00b", "x\ny", "id\x7f"}
 	for _, v := range refused {
 		result, err := a.Execute(context.Background(), tool, map[string]any{"id": v})
 		if err == nil && (result == nil || !result.IsError) {
@@ -79,6 +83,7 @@ func TestRESTAdapter_PathParamSegmentSeparators(t *testing.T) {
 		"group/project": "/api/v4/projects/group%2Fproject/issues",
 		"a:b,c=d":       "/api/v4/projects/a:b%2Cc=d/issues",
 		"v1.2..3":       "/api/v4/projects/v1.2..3/issues",
+		" padded id ":   "/api/v4/projects/%20padded%20id%20/issues",
 	}
 	for v, want := range allowed {
 		mu.Lock()

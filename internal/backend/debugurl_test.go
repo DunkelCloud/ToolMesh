@@ -20,6 +20,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -85,6 +86,62 @@ func TestRESTAdapter_DebugLogHidesQueryKey(t *testing.T) {
 	for _, want := range []string{keyParam + "=%5BREDACTED%5D", "term=ToolMesh"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("the debug log lacks %q:\n%s", want, out)
+		}
+	}
+}
+
+// TestRESTAdapter_LoggableURL pins the two cases the plain case does not
+// show: a DADL without query_param sends the key under an empty name, and
+// a base URL can carry a password.
+func TestRESTAdapter_LoggableURL(t *testing.T) {
+	const secret = "s3cr3t-value-9876543210"
+	parse := func(raw string) *url.URL {
+		t.Helper()
+		u, err := url.Parse(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return u
+	}
+	adapter := func(auth dadl.AuthConfig) *RESTAdapter {
+		return &RESTAdapter{spec: &dadl.Spec{Backend: dadl.BackendDef{Auth: auth}}}
+	}
+	cases := []struct {
+		name string
+		auth dadl.AuthConfig
+		url  string
+		want string
+	}{
+		{"named parameter", dadl.AuthConfig{InjectInto: authInjectQuery, QueryParam: "key"},
+			"https://api.example.com/x?key=" + secret + "&term=a", "https://api.example.com/x?key=%5BREDACTED%5D&term=a"},
+		{"empty parameter name", dadl.AuthConfig{InjectInto: authInjectQuery},
+			"https://api.example.com/x?=" + secret + "&term=a", "https://api.example.com/x?=%5BREDACTED%5D&term=a"},
+		{"password in the URL", dadl.AuthConfig{},
+			"https://svc:" + secret + "@api.example.com/x?term=a", "https://svc:xxxxx@api.example.com/x?term=a"},
+		{"header auth leaves the query alone", dadl.AuthConfig{InjectInto: "header"},
+			"https://api.example.com/x?key=visible", "https://api.example.com/x?key=visible"},
+	}
+	for _, c := range cases {
+		got := adapter(c.auth).loggableURL(parse(c.url))
+		if got != c.want || strings.Contains(got, secret) {
+			t.Errorf("%s: loggableURL = %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
+// TestLoggableEndpoint pins what a log line shows of a backend's configured
+// URL: no query string and no password, where a credential may sit.
+func TestLoggableEndpoint(t *testing.T) {
+	const endpoint = "https://tools.example.org/stream"
+	cases := map[string]string{
+		"":                                    "",
+		endpoint:                              endpoint,
+		endpoint + "?api_key=s3cr3t&x=1#frag": endpoint,
+		"https://user:s3cr3t@mcp.example.com/mcp": "https://user@mcp.example.com/mcp",
+	}
+	for raw, want := range cases {
+		if got := loggableEndpoint(raw); got != want {
+			t.Errorf("loggableEndpoint(%q) = %q, want %q", raw, got, want)
 		}
 	}
 }

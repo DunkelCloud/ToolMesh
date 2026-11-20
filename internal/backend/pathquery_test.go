@@ -75,4 +75,18 @@ func TestRESTAdapter_PlaceholderInQueryOfPath(t *testing.T) {
 	if got := query.Load(); got == nil || *got != "q=x%26admin%3Dtrue" {
 		t.Errorf("query = %v, want the value as one escaped parameter", got)
 	}
+
+	// A path with a query of its own, as the refusal above leads to when
+	// only part of the query is fixed, is continued with "&".
+	a, err = NewRESTAdapter(spec("/search?kind=issue", paramInQuery), &testCredStore{}, slog.Default(), testRESTOpts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err = a.Execute(context.Background(), tool, map[string]any{"q": "x"})
+	if err != nil || result.IsError {
+		t.Fatalf("Execute: %v %v", err, result)
+	}
+	if got := query.Load(); got == nil || *got != "kind=issue&q=x" {
+		t.Errorf("query = %v, want the path's query continued with the parameter", got)
+	}
 }

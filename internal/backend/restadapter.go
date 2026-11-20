@@ -31,6 +31,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+	"unicode"
 
 	"github.com/DunkelCloud/ToolMesh/internal/blob"
 	"github.com/DunkelCloud/ToolMesh/internal/composite"
@@ -1124,21 +1125,20 @@ func (a *RESTAdapter) doRequest(ctx context.Context, tool *dadl.ToolDef, params 
 // loggableURL returns the URL of a backend request as the debug log shows
 // it: complete, except that the value of the query parameter that carries
 // the backend's API key (auth.inject_into: query) is replaced by
-// dadl.RedactedPlaceholder. That the key was sent, and under which name,
-// stays visible, which is what diagnosing an auth problem needs.
+// dadl.RedactedPlaceholder, and a password in the URL by "xxxxx". That the
+// key was sent, and under which name, stays visible, which is what
+// diagnosing an auth problem needs. The parameter name may be empty: a
+// DADL without query_param sends the key as "=key", and that is the DADL
+// an operator turns the trace on for.
 func (a *RESTAdapter) loggableURL(u *url.URL) string {
-	auth := a.spec.Backend.Auth
-	if auth.InjectInto != authInjectQuery || auth.QueryParam == "" {
-		return u.String()
-	}
-	q := u.Query()
-	if !q.Has(auth.QueryParam) {
-		return u.String()
-	}
-	q.Set(auth.QueryParam, dadl.RedactedPlaceholder)
 	shown := *u
-	shown.RawQuery = q.Encode()
-	return shown.String()
+	if auth := a.spec.Backend.Auth; auth.InjectInto == authInjectQuery {
+		if q := u.Query(); q.Has(auth.QueryParam) {
+			q.Set(auth.QueryParam, dadl.RedactedPlaceholder)
+			shown.RawQuery = q.Encode()
+		}
+	}
+	return shown.Redacted()
 }
 
 // buildHTTPRequest assembles the full HTTP request for a tool invocation:
@@ -1159,9 +1159,15 @@ func (a *RESTAdapter) buildHTTPRequest(ctx context.Context, tool *dadl.ToolDef, 
 		return nil, err
 	}
 
+	// A tool path may carry a query of its own ("/search?kind=issue"); the
+	// query parameters then continue it.
 	query := a.buildQuery(tool, params)
 	if query != "" {
-		urlStr += "?" + query
+		sep := "?"
+		if strings.Contains(urlStr, "?") {
+			sep = "&"
+		}
+		urlStr += sep + query
 	}
 
 	bodyReader, contentTypeOverride, contentLen, err := a.buildRequestBody(ctx, tool, params)
@@ -1409,8 +1415,16 @@ func (a *RESTAdapter) buildPath(tool *dadl.ToolDef, params map[string]any) (stri
 		// segment of its own ({id}.json); such values are not legitimate
 		// IDs. An encoded slash in a value (a%2F..%2Fb) stays one segment
 		// here; see the DADL docs on proxies that decode %2F.
-		if str == "." || str == ".." {
+		// The same holds for a dot segment with white space around it,
+		// which a server or proxy may trim.
+		if trimmed := strings.TrimSpace(str); trimmed == "." || trimmed == ".." {
 			return "", fmt.Errorf("path parameter %q cannot be %q", name, str)
+		}
+		// No ID holds a control character, and a layer that cuts a value at
+		// a NUL or drops such characters would see another value, ".."
+		// among them.
+		if strings.IndexFunc(str, unicode.IsControl) >= 0 {
+			return "", fmt.Errorf("path parameter %q cannot contain control characters", name)
 		}
 		// A server can read more into a segment than the URL says. Many
 		// (Tomcat, Jetty and what is built on them) cut a ";..." suffix off

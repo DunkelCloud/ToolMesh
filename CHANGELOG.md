@@ -47,8 +47,9 @@ for the full narrative and details.
   customers each have a subdomain, such a host can be another customer's,
   and until now nothing showed that a DADL used one. A host listed in
   `allowed_hosts:` is confirmed and no longer reported.
-- A path parameter value that contains `;` or a backslash is refused
-  before a request is sent, like the values `.` and `..`.
+- A path parameter value that contains `;`, a backslash or a control
+  character is refused before a request is sent, like the values `.` and
+  `..`, which are now refused with white space around them as well.
   Such a value went out percent-encoded (`%3B`, `%5C`). A server, or a
   proxy in front of it, that decodes these before it routes can cut a `;`
   suffix off a path segment or read a backslash as `/`: `..;` would then
@@ -60,7 +61,9 @@ for the full narrative and details.
   segment, which leaves `&` and `=` as they are, so a value there could add
   query parameters that no declaration names and no gate policy sees.
   Declare the parameter with `in: query` instead. No DADL in the registry
-  uses such a path.
+  uses such a path. A tool path with a query of its own (`/search?kind=a`)
+  is now continued with `&` when the tool also has `in: query` parameters;
+  until now a second `?` was sent.
 - Client registration (`/register`) keeps its limit of 5 per hour and
   address when Redis cannot be reached: the count in process memory decides
   then. Until now such a registration was allowed without a limit. A
@@ -101,8 +104,9 @@ for the full narrative and details.
 - A DADL is refused when it is parsed if a parameter of a tool or composite
   has no `type`, a type other than those of the DADL schema (`string`,
   `integer`, `number`, `boolean`, `array`, `object`, `file_url`), or a
-  `default` that does not fit its type. Such a parameter took any value
-  unchecked, so a gate policy saw whatever the caller sent. A default that
+  `default` that does not fit its type, an infinite or NaN number
+  included. Such a parameter took any value unchecked, so a gate policy
+  saw whatever the caller sent. A default that
   is filled in now takes the same form before the gate as a value the
   caller sends: the default `"5"` of an `integer` parameter becomes `5`,
   the default `42` of a `string` parameter `"42"`. No DADL in the registry
@@ -121,7 +125,9 @@ for the full narrative and details.
 - The debug trace of a backend request (`LOG_LEVEL=debug`, or the
   per-backend debug file) no longer carries an API key that the backend
   sends in its query string (`auth.inject_into: query`): the value is
-  logged as `[REDACTED]`, the parameter name stays.
+  logged as `[REDACTED]`, the parameter name stays. A password in a
+  backend URL is logged as `xxxxx`, and the debug line about connecting to
+  an MCP server backend shows its URL without the query string.
 
 ### Added
 

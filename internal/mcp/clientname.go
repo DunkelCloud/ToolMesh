@@ -26,9 +26,9 @@ const (
 	// page shows.
 	clientNameRunes = 80
 	// clientNameMarks is how many combining marks may follow one letter
-	// or digit. Writing systems need one or two; a stack of them draws
+	// or digit. Writing systems need up to three; a stack of them draws
 	// over the lines above and below.
-	clientNameMarks = 2
+	clientNameMarks = 3
 	// clientNamePunctuation is the punctuation a client name keeps.
 	clientNamePunctuation = "-_.,()+&/:@#!"
 )
@@ -41,7 +41,8 @@ const (
 // sets it apart in a box of its own; this function keeps to what a name is
 // made of, so that nothing in it can pass for a mark of the page: letters
 // and digits of any script, combining marks on them (clientNameMarks at
-// most), single spaces, and the punctuation of clientNamePunctuation.
+// most, none that encloses its letter or selects an emoji form), single
+// spaces, and the punctuation of clientNamePunctuation.
 // Everything else is dropped: quotation marks and what is drawn like one,
 // dashes and other symbols, controls, the bidirectional and other format
 // characters, letters that are drawn as a blank, unassigned and private-use
@@ -62,7 +63,7 @@ func clientDisplayName(client *auth.OAuthClient) string {
 			marks = -1
 			continue
 		case unicode.IsMark(r):
-			if marks < 0 || marks >= clientNameMarks || isQuoteLike(r) {
+			if marks < 0 || marks >= clientNameMarks || isQuoteLike(r) || isDecoration(r) {
 				continue
 			}
 			marks++
@@ -86,6 +87,14 @@ func clientDisplayName(client *auth.OAuthClient) string {
 		name = strings.TrimSpace(string(r[:clientNameRunes])) + "…"
 	}
 	return name
+}
+
+// isDecoration reports whether the combining mark r turns the character
+// before it into something else than a letter of a name: an enclosing mark
+// draws a circle, a keycap or a warning triangle around it, and a variation
+// selector asks for its emoji form.
+func isDecoration(r rune) bool {
+	return unicode.Is(unicode.Me, r) || unicode.Is(unicode.Variation_Selector, r)
 }
 
 // isBlankLetter reports whether r is a letter that is drawn as empty space:

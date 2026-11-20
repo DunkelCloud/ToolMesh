@@ -36,6 +36,10 @@ const (
 	cnEllipsis   = "\U00002026" // horizontal ellipsis
 	cnAcute      = "\U00000301" // combining acute accent
 	cnPlain      = "Claude"     // a name that needs no cleaning
+
+	// cnEnclosed is a letter in an enclosing triangle, a keycap digit and a
+	// letter with an emoji selector in an enclosing circle.
+	cnEnclosed = "A\U000020e4 1\U0000fe0f\U000020e3 i\U0000fe0f\U000020dd"
 )
 
 // TestClientDisplayName pins what the login page shows of a client's
@@ -65,7 +69,8 @@ func TestClientDisplayName(t *testing.T) {
 		{"other spaces", "  A\U000000a0B\U00003000C\U00002003D  ", "A B C D"},
 		{"blank letters", "A\U00003164\U00003164B \U0000115f\U00002800 C", "AB C"},
 		{"mark without a letter", cnAcute + "a " + cnAcute + "b", "a b"},
-		{"stacked marks", "a" + strings.Repeat(cnAcute, 6) + "b", "a" + cnAcute + cnAcute + "b"},
+		{"stacked marks", "a" + strings.Repeat(cnAcute, 6) + "b", "a" + strings.Repeat(cnAcute, clientNameMarks) + "b"},
+		{"enclosing marks and emoji selectors", cnEnclosed, "A 1 i"},
 		{"invalid UTF-8", "Cl\xffau\xc3de", cnPlain},
 		{"private use and unassigned", "A\U0000e000B\U000e0041C", "ABC"},
 		{"only dropped characters", "\"" + cnRLO + "\U0000200b\x01'", ""},

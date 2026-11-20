@@ -32,6 +32,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/crypto/scrypt"
@@ -66,6 +67,10 @@ type Server struct {
 	blobStore      *blob.Store
 	uploadLimits   blob.UploadLimits
 	health         HealthReporter
+
+	// unlistedProxyWarned is when warnLimitBehindUnlistedProxy last logged,
+	// in Unix nanoseconds; 0 means never.
+	unlistedProxyWarned atomic.Int64
 
 	// ownerFP caches the credential fingerprint of the single-password
 	// owner for the password it was derived from (ownerFPFor).
@@ -765,10 +770,43 @@ func (s *Server) reserveBearerSlot(r *http.Request, slot *bearerSlot) error {
 	if !a.Allowed {
 		s.logger.InfoContext(r.Context(), "bearer authentication throttled",
 			logKeyRemote, ip, "retry_after", retryAfterSeconds(a.RetryAfter))
+		s.warnLimitBehindUnlistedProxy(r, ip, "failed API keys")
 		return &errBearerThrottled{retryAfter: a.RetryAfter}
 	}
 	slot.attempt, slot.reserved = a, true
 	return nil
+}
+
+// unlistedProxyWarnInterval spaces out the warning of
+// warnLimitBehindUnlistedProxy.
+const unlistedProxyWarnInterval = time.Minute
+
+// msgLimitBehindUnlistedProxy is the warning of warnLimitBehindUnlistedProxy.
+const msgLimitBehindUnlistedProxy = "a per-address limit is refusing requests from an address that sends X-Forwarded-For but is not a trusted proxy; " +
+	"if this address is your reverse proxy, all clients behind it are counted as one and are locked out together: " +
+	"add the proxy's address to TOOLMESH_TRUSTED_PROXIES"
+
+// warnLimitBehindUnlistedProxy logs, at most once a minute, that a
+// per-address limit has just refused a request that carries an
+// X-Forwarded-For header ToolMesh does not honor. That is the picture of a
+// reverse proxy missing from TOOLMESH_TRUSTED_PROXIES: all clients behind
+// it are counted under its address, so the failures of one of them, or of
+// anyone who reaches the proxy, lock every one of them out. The hourly note
+// about an ignored header says that this can happen; this line says that it
+// is happening, when it does, and names the limit.
+func (s *Server) warnLimitBehindUnlistedProxy(r *http.Request, ip, limit string) {
+	if !auth.ForwardedForIgnored(r) {
+		return
+	}
+	now := time.Now().UnixNano()
+	last := s.unlistedProxyWarned.Load()
+	if last != 0 && now-last < int64(unlistedProxyWarnInterval) {
+		return
+	}
+	if !s.unlistedProxyWarned.CompareAndSwap(last, now) {
+		return
+	}
+	s.logger.WarnContext(r.Context(), msgLimitBehindUnlistedProxy, logKeyRemote, ip, "limit", limit)
 }
 
 // settleBearerSlot settles a reservation once the bearer was checked: an
@@ -1153,6 +1191,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 				outcomeError, err, logKeyRemote, ip)
 		}
 		if !allowed {
+			s.warnLimitBehindUnlistedProxy(r, ip, "client registrations")
 			writeJSON(w, http.StatusTooManyRequests, map[string]string{outcomeError: oauthErrTooManyRequests})
 			return
 		}
@@ -1908,6 +1947,7 @@ func (s *Server) handleRevoke(w http.ResponseWriter, r *http.Request) {
 				outcomeError, err, logKeyRemote, ip)
 		}
 		if !allowed {
+			s.warnLimitBehindUnlistedProxy(r, ip, "token revocations")
 			w.Header().Set("Retry-After", strconv.Itoa(retryAfterSeconds(s.revokeLimiter.Window())))
 			writeJSON(w, http.StatusTooManyRequests, map[string]string{outcomeError: oauthErrTooManyRequests})
 			return

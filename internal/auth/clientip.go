@@ -45,11 +45,18 @@ const untrustedForwardedWarnInterval = time.Hour
 // nanoseconds; 0 means none yet.
 var lastUntrustedForwardedWarn atomic.Int64
 
+// ignoredForwarded counts the requests whose X-Forwarded-For header was
+// ignored since the last warning about it.
+var ignoredForwarded atomic.Int64
+
 // warnUntrustedForwarded logs, at most once per interval, that a request
-// from remote carried X-Forwarded-For which was ignored. Behind a reverse
+// from remote carried X-Forwarded-For which was ignored, and how many
+// requests that was true of since the last such line. Behind a reverse
 // proxy that is not listed every client shares the proxy's address, and this
-// line is what tells the operator.
+// line is what tells the operator; the count shows whether it is one stray
+// request or all of the traffic.
 func warnUntrustedForwarded(remote string) {
+	n := ignoredForwarded.Add(1)
 	now := time.Now().UnixNano()
 	last := lastUntrustedForwardedWarn.Load()
 	if last != 0 && now-last < int64(untrustedForwardedWarnInterval) {
@@ -58,8 +65,33 @@ func warnUntrustedForwarded(remote string) {
 	if !lastUntrustedForwardedWarn.CompareAndSwap(last, now) {
 		return
 	}
+	ignoredForwarded.Add(-n)
 	slog.Warn("X-Forwarded-For from an address that is not a trusted proxy is ignored; if ToolMesh runs behind a reverse proxy at this address, add the proxy's address to TOOLMESH_TRUSTED_PROXIES, otherwise every client shares its per-address limits",
-		"remote", remote)
+		"remote", remote, "requests", n)
+}
+
+// peerAddr returns the address a request's connection comes from, as text
+// and parsed; ok is false when it is no IP address.
+func peerAddr(r *http.Request) (host string, addr netip.Addr, ok bool) {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	addr, err = netip.ParseAddr(host)
+	return host, addr, err == nil
+}
+
+// ForwardedForIgnored reports whether r carries an X-Forwarded-For header
+// that ClientIP does not honor because the connection comes from no trusted
+// proxy. Such a request is counted under the address of its connection. If
+// that address is a reverse proxy nobody listed, all clients behind it are
+// counted as one, and the failures of one of them use up the limit of all.
+func ForwardedForIgnored(r *http.Request) bool {
+	if len(r.Header.Values("X-Forwarded-For")) == 0 {
+		return false
+	}
+	_, addr, ok := peerAddr(r)
+	return !ok || !isTrustedProxy(addr)
 }
 
 // trustedProxies holds the list installed by SetTrustedProxies; nil means
@@ -124,13 +156,9 @@ func parseForwardedAddr(entry string) (netip.Addr, bool) {
 // walk at the last trusted hop read so far, the peer at first: everything
 // to its left may have been written by the client.
 func ClientIP(r *http.Request) string {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		host = r.RemoteAddr
-	}
+	host, remote, ok := peerAddr(r)
 	values := r.Header.Values("X-Forwarded-For")
-	remote, err := netip.ParseAddr(host)
-	if err != nil || !isTrustedProxy(remote) {
+	if !ok || !isTrustedProxy(remote) {
 		if len(values) > 0 {
 			warnUntrustedForwarded(host)
 		}

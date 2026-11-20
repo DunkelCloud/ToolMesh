@@ -90,6 +90,14 @@ for the full narrative and details.
   Redis store reported an unreachable Redis as "not found" when a refresh
   token or code was consumed, which hid the outage from this logic; it now
   reports the error.
+- Behind a reverse proxy that `TOOLMESH_TRUSTED_PROXIES` does not list, all
+  clients are counted under the proxy's address, and a few wrong API keys
+  from anyone lock out every client behind it. Only an hourly `WARN` about
+  the ignored `X-Forwarded-For` header pointed to this. That line now
+  carries `requests`, the number of requests it stands for, and when a
+  per-address limit (failed API keys, failed logins, registrations,
+  revocations) refuses a request that carries such a header, a `WARN` names
+  the address, the limit and the setting, at most once a minute.
 
 ### Added
 

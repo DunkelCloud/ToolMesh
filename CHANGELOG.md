@@ -98,6 +98,15 @@ for the full narrative and details.
   per-address limit (failed API keys, failed logins, registrations,
   revocations) refuses a request that carries such a header, a `WARN` names
   the address, the limit and the setting, at most once a minute.
+- A DADL is refused when it is parsed if a parameter of a tool or composite
+  has no `type`, a type other than those of the DADL schema (`string`,
+  `integer`, `number`, `boolean`, `array`, `object`, `file_url`), or a
+  `default` that does not fit its type. Such a parameter took any value
+  unchecked, so a gate policy saw whatever the caller sent. A default that
+  is filled in now takes the same form before the gate as a value the
+  caller sends: the default `"5"` of an `integer` parameter becomes `5`,
+  the default `42` of a `string` parameter `"42"`. No DADL in the registry
+  is affected.
 
 ### Added
 

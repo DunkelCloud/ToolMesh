@@ -235,9 +235,13 @@ const maxExactInteger = 1 << 53
 // numbers, and numbers and booleans of string parameters become the text
 // the request carries ([FormatScalar]: 42 becomes "42", true "true"). A gate
 // policy then sees the values the API receives: a default it would
-// otherwise never see, 0 rather than "0", and "42" rather than 42. An
-// integer string beyond 2^53 stays a string, since a number could not hold
-// it exactly. Other values pass unchanged; params itself is not modified.
+// otherwise never see, 0 rather than "0", and "42" rather than 42. A
+// default takes the same form as a supplied value: a DADL may write the
+// default of an integer parameter as "5" or that of a string parameter as
+// 42, and the policy must not see another type for the default than for
+// the same value sent by the caller. An integer string beyond 2^53 stays a
+// string, since a number could not hold it exactly. Other values pass
+// unchanged; params itself is not modified.
 func NormalizeParams(declared map[string]ParamDef, params map[string]any) map[string]any {
 	out := make(map[string]any, len(params)+len(declared))
 	for name, val := range params {
@@ -246,19 +250,25 @@ func NormalizeParams(declared map[string]ParamDef, params map[string]any) map[st
 	for name, def := range declared {
 		val, present := out[name]
 		if def.Default != nil && (!present || (val == nil && def.In != paramInBody)) {
-			out[name] = def.Default
+			out[name] = normalizeValue(def.Type, def.Default)
 			continue
 		}
 		if !present || val == nil {
 			continue
 		}
-		if want := strings.ToLower(def.Type); want == jsTypeString {
-			out[name] = normalizeString(val)
-		} else {
-			out[name] = normalizeNumeric(want, val)
-		}
+		out[name] = normalizeValue(def.Type, val)
 	}
 	return out
+}
+
+// normalizeValue puts a value of a parameter into the form its declared
+// type takes before the gate.
+func normalizeValue(declared string, val any) any {
+	want := strings.ToLower(declared)
+	if want == jsTypeString {
+		return normalizeString(val)
+	}
+	return normalizeNumeric(want, val)
 }
 
 // normalizeString converts a number or boolean of a string parameter to the
@@ -616,3 +626,53 @@ func editDistance(a, b string) int {
 	}
 	return prev[len(rb)]
 }
+
+// paramTypes are the parameter types a DADL may declare: the ones of the
+// DADL schema, and "file", which earlier DADLs used for a local path.
+var paramTypes = map[string]bool{
+	jsTypeString:     true,
+	jsTypeInteger:    true,
+	jsTypeNumber:     true,
+	jsTypeBoolean:    true,
+	jsTypeArray:      true,
+	jsTypeObject:     true,
+	ParamTypeFileURL: true,
+	paramTypeFile:    true,
+}
+
+// paramTypeFile is the legacy parameter type of a local file path.
+const paramTypeFile = "file"
+
+// validateParamDecls checks what a tool or composite declares for its
+// parameters: every parameter has one of the types of the DADL schema, and
+// a default fits the type of its parameter. where names the tool or
+// composite.
+//
+// The argument check and the form a value takes before the gate both go by
+// the declared type. A parameter without a type, or with one the runtime
+// does not know ("bool", "int"), takes any value as it comes, so a policy
+// that tests it would see whatever the caller sent. A default of another
+// type than its parameter, such as "false" for a boolean, would reach the
+// policy and the API in a form no caller is allowed to send.
+func validateParamDecls(where string, params map[string]ParamDef) error {
+	names := make([]string, 0, len(params))
+	for name := range params {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		p := params[name]
+		switch {
+		case p.Type == "":
+			return fmt.Errorf("%s: parameter %q has no type; use one of %s", where, name, paramTypeList)
+		case !paramTypes[p.Type]:
+			return fmt.Errorf("%s: parameter %q has the unknown type %q; use one of %s", where, name, p.Type, paramTypeList)
+		case p.Default != nil && !valueFitsType(p.Type, p.Default):
+			return fmt.Errorf("%s: parameter %q is declared %s, but its default is a %s", where, name, p.Type, jsonTypeName(p.Default))
+		}
+	}
+	return nil
+}
+
+// paramTypeList names the parameter types for error messages.
+const paramTypeList = "string, integer, number, boolean, array, object, file_url"

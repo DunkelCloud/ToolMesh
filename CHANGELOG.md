@@ -23,6 +23,11 @@ for the full narrative and details.
   publish ToolMesh's port on `127.0.0.1` only, or not at all. If your
   setting follows the old example, change it. See
   [Proxy in a container](docs/configuration.md#proxy-in-a-container).
+- The documentation says plainly that a password change ends sessions only
+  after a restart: `users.yaml` and `TOOLMESH_AUTH_PASSWORD` are read at
+  startup, and until then the old password signs in and its sessions keep
+  working. Restart ToolMesh right after changing a password that someone
+  else may know. See [Tokens](docs/configuration.md#tokens).
 
 ### Added
 

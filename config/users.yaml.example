@@ -1,3 +1,6 @@
+# Read when ToolMesh starts: restart it after a change. A changed password
+# signs in only after the restart, and only then do the sessions issued for
+# the old password end. See docs/configuration.md ("Tokens").
 users:
   - username: admin
     password_hash: "$2a$10$..."  # generate with: htpasswd -nbBC 10 "" "my-password" | cut -d: -f2

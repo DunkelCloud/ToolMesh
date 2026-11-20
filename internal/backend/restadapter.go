@@ -1363,6 +1363,17 @@ func (a *RESTAdapter) buildPath(tool *dadl.ToolDef, params map[string]any) (stri
 		if str == "." || str == ".." {
 			return "", fmt.Errorf("path parameter %q cannot be %q", name, str)
 		}
+		// A server can read more into a segment than the URL says. Many
+		// (Tomcat, Jetty and what is built on them) cut a ";..." suffix off
+		// every segment before they route, and some read "\" as "/".
+		// url.PathEscape sends the two as %3B and %5C; a server, or a proxy
+		// in front of it, that decodes them first would read "..;" and
+		// "..\" as the dot segments refused above, and "42;x" as another ID
+		// than the one a policy has seen. Both characters are refused
+		// wherever they stand in the value.
+		if i := strings.IndexAny(str, `;\`); i >= 0 {
+			return "", fmt.Errorf("path parameter %q cannot contain %q", name, str[i:i+1])
+		}
 		path = strings.ReplaceAll(path, "{"+name+"}", url.PathEscape(str))
 	}
 	return path, nil

@@ -47,6 +47,13 @@ for the full narrative and details.
   customers each have a subdomain, such a host can be another customer's,
   and until now nothing showed that a DADL used one. A host listed in
   `allowed_hosts:` is confirmed and no longer reported.
+- A path parameter value that contains `;` or a backslash is refused
+  before a request is sent, like the values `.` and `..`.
+  Such a value went out percent-encoded (`%3B`, `%5C`). A server, or a
+  proxy in front of it, that decodes these before it routes can cut a `;`
+  suffix off a path segment or read a backslash as `/`: `..;` would then
+  walk up the path, and `42;x` name another object than the one a gate
+  policy saw.
 
 ### Added
 

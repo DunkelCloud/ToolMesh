@@ -24,6 +24,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // maxDeclaredParamsListed bounds how many declared parameter names a
@@ -396,7 +397,7 @@ func valueFitsType(declared string, val any) bool {
 		case json.Number:
 			return isDecimalLiteral(string(v))
 		}
-		return isNumeric(val)
+		return isFiniteNumber(val)
 	case jsTypeArray:
 		return isList(val)
 	case jsTypeObject:
@@ -438,6 +439,19 @@ func isNumeric(val any) bool {
 		return true
 	}
 	return false
+}
+
+// isFiniteNumber reports whether val is a Go numeric value other than an
+// infinity or NaN. JSON has no form for those, so no caller can send them;
+// a YAML default can (".inf", ".nan").
+func isFiniteNumber(val any) bool {
+	switch v := val.(type) {
+	case float64:
+		return !math.IsNaN(v) && !math.IsInf(v, 0)
+	case float32:
+		return !math.IsNaN(float64(v)) && !math.IsInf(float64(v), 0)
+	}
+	return isNumeric(val)
 }
 
 // isWholeNumber reports whether val is a numeric value without a fraction.
@@ -668,10 +682,25 @@ func validateParamDecls(where string, params map[string]ParamDef) error {
 		case !paramTypes[p.Type]:
 			return fmt.Errorf("%s: parameter %q has the unknown type %q; use one of %s", where, name, p.Type, paramTypeList)
 		case p.Default != nil && !valueFitsType(p.Type, p.Default):
-			return fmt.Errorf("%s: parameter %q is declared %s, but its default is a %s", where, name, p.Type, jsonTypeName(p.Default))
+			return fmt.Errorf("%s: parameter %q is declared %s, but its default is %s", where, name, p.Type, defaultKind(p.Default))
 		}
 	}
 	return nil
+}
+
+// defaultKind says what kind of value a default is, for the message about
+// one that does not fit its parameter.
+func defaultKind(val any) string {
+	switch v := val.(type) {
+	case time.Time:
+		// YAML reads an unquoted 2026-01-31 as a date.
+		return "a date; write it in quotes to make it a string"
+	case float64:
+		if math.IsNaN(v) || math.IsInf(v, 0) {
+			return "not a finite number"
+		}
+	}
+	return "a " + jsonTypeName(val)
 }
 
 // paramTypeList names the parameter types for error messages.

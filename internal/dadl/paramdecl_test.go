@@ -97,6 +97,10 @@ func TestParse_ParamTypesAndDefaults(t *testing.T) {
 		{"whole number with fraction default", "type: integer\ndefault: 1.5", "declared integer, but its default is a number"},
 		{"list with scalar default", "type: array\ndefault: a", "declared array, but its default is a string"},
 		{"text with list default", "type: string\ndefault: [a]", "declared string, but its default is a array"},
+		{"decimal with infinite default", "type: number\ndefault: .inf", "its default is not a finite number"},
+		{"decimal with NaN default", "type: number\ndefault: .nan", "its default is not a finite number"},
+		{"text with an unquoted date", "type: string\ndefault: 2026-01-31", "its default is a date; write it in quotes"},
+		{"text with a quoted date", "type: string\ndefault: \"2026-01-31\"", ""},
 	}
 	for _, c := range cases {
 		for _, composite := range []bool{false, true} {

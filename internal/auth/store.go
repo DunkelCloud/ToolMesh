@@ -115,6 +115,14 @@ type PairLookup interface {
 	RefreshTokenOf(ctx context.Context, accessToken string) (string, error)
 }
 
+// TokenHolder is implemented by token stores that can say, from memory and
+// without asking another store, whether they hold a token. Revocation uses
+// it to serve a real token also from an address whose requests are being
+// limited.
+type TokenHolder interface {
+	Holds(token string) bool
+}
+
 // ErrNotFound is returned when a key does not exist in the store.
 var ErrNotFound = errors.New("not found")
 

@@ -33,20 +33,16 @@ type fileState struct {
 	Clients       map[string]*OAuthClient `json:"clients"`
 	AccessTokens  map[string]*TokenInfo   `json:"access_tokens,omitempty"`
 	RefreshTokens map[string]*TokenInfo   `json:"refresh_tokens,omitempty"`
-	// Removed holds the removals another store has not been told about
-	// (see FileTokenStore.removed).
+	// Removed holds the removals another store may not know about: the
+	// kind followed by the token, and the time the entry expires (see
+	// removals).
 	Removed map[string]time.Time `json:"removed,omitempty"`
 }
 
-// removedKind is the kind of entry a removal is remembered for.
-type removedKind string
-
-// Kinds of entries whose removal a FileTokenStore remembers.
-const (
-	removedAccess  removedKind = "access:"
-	removedRefresh removedKind = "refresh:"
-	removedCode    removedKind = "code:"
-)
+// removalReconcileInterval is how often Cleanup tells the primary store
+// about removals it has not been told about. With nothing to tell, a tick
+// costs one atomic read.
+const removalReconcileInterval = 30 * time.Second
 
 // FileTokenStore implements TokenStore backed by a JSON file on disk.
 // All state is kept in-memory for fast access and persisted atomically
@@ -62,16 +58,26 @@ type FileTokenStore struct {
 	// access token, so that RefreshTokenOf looks the pair up instead of
 	// walking every refresh token while it holds mu.
 	refreshByAccess map[string]string
-	// removed remembers entries that were deleted or consumed here while
-	// another store, which holds a copy of them, could not be told: the
-	// key is the kind followed by the token or code, the value the time
-	// the entry expires and with it the copy. Until then the removal has
-	// to stand against that copy; see HybridTokenStore. It is persisted,
-	// so a restart does not forget it.
-	removed map[string]time.Time
-	// removedCount is len(removed), readable without mu, so that the
-	// common case of no pending removal costs no lock.
-	removedCount atomic.Int64
+	// fromDisk holds the tokens that were restored from disk at startup.
+	// They are the ones a primary store can hold a copy of when this
+	// process never reached it (see RememberRemovals).
+	fromDisk map[string]bool
+
+	// removed remembers removals another store may not know about. It is
+	// persisted with the state and has a lock of its own.
+	removed *removals
+	// standalone reports that removals made here are to be remembered
+	// because a primary store exists that this process does not use (see
+	// RememberRemovals).
+	standalone atomic.Bool
+	// primary is the store Cleanup tells about remembered removals, once
+	// WarmUp has named it.
+	primary atomic.Pointer[primaryStore]
+}
+
+// primaryStore names the store a FileTokenStore keeps told about removals.
+type primaryStore struct {
+	TokenStore
 }
 
 // NewFileTokenStore creates a new file-backed token store. It creates the
@@ -88,7 +94,8 @@ func NewFileTokenStore(dataDir string) (*FileTokenStore, error) {
 		accessTokens:    make(map[string]*TokenInfo),
 		refreshTokens:   make(map[string]*TokenInfo),
 		refreshByAccess: make(map[string]string),
-		removed:         make(map[string]time.Time),
+		fromDisk:        make(map[string]bool),
+		removed:         newRemovals(),
 	}
 
 	if err := s.loadState(); err != nil {
@@ -138,6 +145,7 @@ func (s *FileTokenStore) loadState() error {
 		for k, v := range state.AccessTokens {
 			if v.ExpiresAt.After(now) {
 				s.accessTokens[k] = v
+				s.fromDisk[k] = true
 				restored++
 			}
 		}
@@ -154,6 +162,7 @@ func (s *FileTokenStore) loadState() error {
 				if v.AccessToken != "" {
 					s.refreshByAccess[v.AccessToken] = k
 				}
+				s.fromDisk[k] = true
 				restored++
 			}
 		}
@@ -162,12 +171,7 @@ func (s *FileTokenStore) loadState() error {
 		}
 	}
 
-	for k, until := range state.Removed {
-		if until.After(now) {
-			s.removed[k] = until
-		}
-	}
-	s.removedCount.Store(int64(len(s.removed)))
+	s.removed.load(state.Removed, now)
 
 	return nil
 }
@@ -179,7 +183,7 @@ func (s *FileTokenStore) saveState() {
 		Clients:       s.clients,
 		AccessTokens:  s.accessTokens,
 		RefreshTokens: s.refreshTokens,
-		Removed:       s.removed,
+		Removed:       s.removed.snapshot(),
 	}
 
 	data, err := json.MarshalIndent(state, "", "  ")
@@ -196,6 +200,13 @@ func (s *FileTokenStore) saveState() {
 	if err := os.Rename(tmpPath, s.statePath()); err != nil {
 		slog.Warn("failed to rename OAuth state file", "error", err)
 	}
+}
+
+// persist writes the state to disk.
+func (s *FileTokenStore) persist() {
+	s.mu.Lock()
+	s.saveState()
+	s.mu.Unlock()
 }
 
 // SaveClient stores an OAuth client registration.
@@ -256,6 +267,7 @@ func (s *FileTokenStore) GetToken(_ context.Context, accessToken string) (*Token
 	ti, ok := s.accessTokens[accessToken]
 	if ok && ti.ExpiresAt.Before(time.Now()) {
 		delete(s.accessTokens, accessToken)
+		delete(s.fromDisk, accessToken)
 		s.saveState()
 		ok = false
 	}
@@ -279,6 +291,22 @@ func (s *FileTokenStore) RefreshTokenOf(_ context.Context, accessToken string) (
 		return rt, nil
 	}
 	return "", ErrNotFound
+}
+
+// Holds implements TokenHolder: it reports whether token is an access or
+// refresh token stored here, or the access token of a stored refresh
+// token. It costs a lookup in memory.
+func (s *FileTokenStore) Holds(token string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.accessTokens[token]; ok {
+		return true
+	}
+	if _, ok := s.refreshTokens[token]; ok {
+		return true
+	}
+	_, ok := s.refreshByAccess[token]
+	return ok
 }
 
 // putRefreshLocked stores the refresh token of ti and records which access
@@ -308,7 +336,9 @@ func (s *FileTokenStore) dropRefreshLocked(rt string) *TokenInfo {
 
 // DeleteToken removes an access token from the store.
 func (s *FileTokenStore) DeleteToken(_ context.Context, accessToken string) error {
-	s.deleteToken(accessToken)
+	if ti := s.deleteToken(accessToken); ti != nil {
+		s.rememberStandalone(removedAccess, accessToken, ti.ExpiresAt)
+	}
 	return nil
 }
 
@@ -323,68 +353,6 @@ func (s *FileTokenStore) deleteToken(accessToken string) *TokenInfo {
 	return ti
 }
 
-// markRemoved remembers until the time until that the entry of the given
-// kind was deleted or consumed here while another store could not be told.
-// A time that has passed is not remembered: the copy has expired with it.
-func (s *FileTokenStore) markRemoved(kind removedKind, token string, until time.Time) {
-	if !until.After(time.Now()) {
-		return
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.removed[string(kind)+token] = until
-	s.removedCount.Store(int64(len(s.removed)))
-	s.saveState()
-}
-
-// isRemoved reports whether a removal of the entry is remembered.
-func (s *FileTokenStore) isRemoved(kind removedKind, token string) bool {
-	if s.removedCount.Load() == 0 {
-		return false
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	until, ok := s.removed[string(kind)+token]
-	return ok && until.After(time.Now())
-}
-
-// clearRemoved forgets the removal of the entry, once the other store has
-// dropped its copy, and reports whether one was remembered.
-func (s *FileTokenStore) clearRemoved(kind removedKind, token string) bool {
-	if s.removedCount.Load() == 0 {
-		return false
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	key := string(kind) + token
-	if _, ok := s.removed[key]; !ok {
-		return false
-	}
-	delete(s.removed, key)
-	s.removedCount.Store(int64(len(s.removed)))
-	s.saveState()
-	return true
-}
-
-// pendingRemovals returns the remembered removals as kind and token.
-func (s *FileTokenStore) pendingRemovals() [][2]string {
-	if s.removedCount.Load() == 0 {
-		return nil
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	out := make([][2]string, 0, len(s.removed))
-	for key := range s.removed {
-		for _, kind := range []removedKind{removedAccess, removedRefresh, removedCode} {
-			if token, ok := strings.CutPrefix(key, string(kind)); ok {
-				out = append(out, [2]string{string(kind), token})
-				break
-			}
-		}
-	}
-	return out
-}
-
 // SaveRefreshToken stores a refresh token.
 func (s *FileTokenStore) SaveRefreshToken(_ context.Context, ti *TokenInfo) error {
 	s.mu.Lock()
@@ -396,16 +364,78 @@ func (s *FileTokenStore) SaveRefreshToken(_ context.Context, ti *TokenInfo) erro
 
 // ConsumeRefreshToken atomically retrieves and deletes a refresh token.
 func (s *FileTokenStore) ConsumeRefreshToken(_ context.Context, refreshToken string) (*TokenInfo, error) {
+	ti := s.consumeRefreshToken(refreshToken)
+	if ti == nil {
+		return nil, ErrNotFound
+	}
+	s.rememberStandalone(removedRefresh, refreshToken, ti.RefreshExpiry())
+	return ti, nil
+}
+
+// consumeRefreshToken removes a refresh token and returns its record, or
+// nil when it was not stored.
+func (s *FileTokenStore) consumeRefreshToken(refreshToken string) *TokenInfo {
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	ti := s.dropRefreshLocked(refreshToken)
 	if ti != nil {
 		s.saveState()
 	}
-	s.mu.Unlock()
-	if ti == nil {
-		return nil, ErrNotFound
+	return ti
+}
+
+// RememberRemovals makes the store remember the removal of every token it
+// restored from disk. Call it when a primary store is configured that this
+// process does not use, such as a Redis that did not answer at startup.
+//
+// That store may hold a copy of the tokens issued before this process
+// started, and this process cannot tell it when one of them is revoked or
+// spent. Without a record, the copy would count again in the next process
+// that does reach the store: WarmUp would find nothing to remove there.
+// Tokens issued by this process never reach the other store and need no
+// record.
+func (s *FileTokenStore) RememberRemovals() {
+	s.standalone.Store(true)
+}
+
+// rememberStandalone remembers the removal of a token that was restored
+// from disk, when RememberRemovals is in force.
+func (s *FileTokenStore) rememberStandalone(kind removedKind, token string, until time.Time) {
+	if !s.standalone.Load() {
+		return
 	}
-	return ti, nil
+	s.mu.Lock()
+	restored := s.fromDisk[token]
+	delete(s.fromDisk, token)
+	s.mu.Unlock()
+	if restored {
+		s.markRemoved(kind, token, until)
+	}
+}
+
+// markRemoved remembers until the time until that the entry of the given
+// kind was deleted or consumed here while another store could not be told.
+func (s *FileTokenStore) markRemoved(kind removedKind, token string, until time.Time) {
+	if s.removed.mark(kind, token, until, time.Now()) {
+		s.persist()
+	}
+}
+
+// isRemoved reports whether a removal of the entry is remembered. It does
+// not wait for the store's lock.
+func (s *FileTokenStore) isRemoved(kind removedKind, token string) bool {
+	return s.removed.has(kind, token, time.Now())
+}
+
+// dropRemoved forgets the removal of the entry and reports whether one was
+// remembered. Use it only where no copy of the entry can be left or in
+// flight in the other store.
+func (s *FileTokenStore) dropRemoved(kind removedKind, token string) bool {
+	if !s.removed.drop(kind, token) {
+		return false
+	}
+	s.persist()
+	return true
 }
 
 // WarmUp copies all current in-memory state to dst. Call this after
@@ -415,7 +445,8 @@ func (s *FileTokenStore) ConsumeRefreshToken(_ context.Context, refreshToken str
 // Refresh tokens that have expired but were not cleaned up yet are not
 // copied, so a restart cannot bring one back. Removals that dst was not told
 // about while it was unreachable are applied to it, so a token revoked or
-// spent during an outage does not come back with dst either.
+// spent during an outage does not come back with dst either. From then on
+// Cleanup keeps dst told about removals.
 func (s *FileTokenStore) WarmUp(ctx context.Context, dst TokenStore) {
 	s.mu.Lock()
 	now := time.Now()
@@ -452,41 +483,56 @@ func (s *FileTokenStore) WarmUp(ctx context.Context, dst TokenStore) {
 			slog.Warn("warm-up: failed to copy refresh token to primary store", "error", err)
 		}
 	}
+	s.primary.Store(&primaryStore{dst})
 	applied := s.applyRemovals(ctx, dst)
 	slog.Info("warm-up: file store state copied to primary store",
 		"clients", len(clients), "access_tokens", len(tokens), "refresh_tokens", len(refreshTokens),
 		"removals", applied)
 }
 
-// applyRemovals removes from dst every entry whose removal is remembered,
-// forgets the ones dst no longer holds, and returns how many those were.
+// applyRemovals removes from dst every entry whose removal dst has not been
+// told about, and returns how many it could tell. The removals stay
+// remembered until their entries expire: a request may have fetched a copy
+// from dst before it was removed there.
 func (s *FileTokenStore) applyRemovals(ctx context.Context, dst TokenStore) int {
 	applied := 0
-	for _, r := range s.pendingRemovals() {
-		kind, token := removedKind(r[0]), r[1]
+	for _, r := range s.removed.pendingList() {
 		var err error
-		switch kind {
+		switch r.kind {
 		case removedAccess:
-			err = dst.DeleteToken(ctx, token)
+			err = dst.DeleteToken(ctx, r.token)
 		case removedRefresh:
-			_, err = dst.ConsumeRefreshToken(ctx, token)
+			_, err = dst.ConsumeRefreshToken(ctx, r.token)
 		case removedCode:
-			_, err = dst.ConsumeAuthCode(ctx, token)
+			_, err = dst.ConsumeAuthCode(ctx, r.token)
 		}
 		if err != nil && !errors.Is(err, ErrNotFound) {
-			slog.Warn("warm-up: failed to apply a removal to the primary store", "kind", strings.TrimSuffix(string(kind), ":"), "error", err)
+			slog.Warn("failed to apply a removal to the primary store", "kind", strings.TrimSuffix(string(r.kind), ":"), "error", err)
 			continue
 		}
-		s.clearRemoved(kind, token)
+		s.removed.setApplied(r.kind, r.token)
 		applied++
 	}
 	return applied
 }
 
-// Cleanup periodically removes expired entries. Run as a goroutine.
+// reconcile tells the primary store about the removals it has not been
+// told about. A token that was revoked while that store was unreachable
+// goes from it this way without anyone presenting it here, which matters
+// where another process reads the same store.
+func (s *FileTokenStore) reconcile(ctx context.Context) {
+	if p := s.primary.Load(); p != nil && s.removed.hasPending() {
+		s.applyRemovals(ctx, p.TokenStore)
+	}
+}
+
+// Cleanup periodically removes expired entries and keeps the primary store
+// told about removals. Run as a goroutine.
 func (s *FileTokenStore) Cleanup(ctx context.Context) {
 	ticker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()
+	reconcile := time.NewTicker(removalReconcileInterval)
+	defer reconcile.Stop()
 
 	for {
 		select {
@@ -494,6 +540,8 @@ func (s *FileTokenStore) Cleanup(ctx context.Context) {
 			return
 		case <-ticker.C:
 			s.removeExpired(time.Now())
+		case <-reconcile.C:
+			s.reconcile(ctx)
 		}
 	}
 }
@@ -519,22 +567,20 @@ func (s *FileTokenStore) removeExpired(now time.Time) {
 	for k, v := range s.accessTokens {
 		if v.ExpiresAt.Before(now) {
 			delete(s.accessTokens, k)
+			delete(s.fromDisk, k)
 			dirty = true
 		}
 	}
 	for k, v := range s.refreshTokens {
 		if v.RefreshExpiry().Before(now) {
 			s.dropRefreshLocked(k)
+			delete(s.fromDisk, k)
 			dirty = true
 		}
 	}
-	for k, until := range s.removed {
-		if !until.After(now) {
-			delete(s.removed, k)
-			dirty = true
-		}
+	if s.removed.expire(now) {
+		dirty = true
 	}
-	s.removedCount.Store(int64(len(s.removed)))
 
 	if dirty {
 		s.saveState()

@@ -89,10 +89,15 @@ for the full narrative and details.
   worked again once Redis answered; a refresh token or authorization code
   used during the outage could be used a second time afterwards. ToolMesh
   now notes such a removal in `oauth-state.json` until the token expires,
-  refuses the copy Redis kept and removes it, also after a restart. The
-  Redis store reported an unreachable Redis as "not found" when a refresh
-  token or code was consumed, which hid the outage from this logic; it now
-  reports the error.
+  refuses the copy Redis kept and removes it within half a minute of Redis
+  answering again, also after a restart and when it was started while
+  Redis did not answer. The Redis store reported an unreachable Redis as
+  "not found" when a refresh token or code was consumed, which hid the
+  outage from this logic; it now reports the error.
+- Logins, token refreshes and client registrations work while Redis cannot
+  be reached: what they write is kept in the file store, where reads
+  already fall back to. Until now they failed with `500`, and a refresh
+  spent its refresh token without returning a new pair.
 - Behind a reverse proxy that `TOOLMESH_TRUSTED_PROXIES` does not list, all
   clients are counted under the proxy's address, and a few wrong API keys
   from anyone lock out every client behind it. Only an hourly `WARN` about

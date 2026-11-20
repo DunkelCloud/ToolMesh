@@ -379,7 +379,7 @@ func (a *MCPAdapter) connectBackend(ctx context.Context, name string, conn *back
 	a.logger.Debug("connecting to backend",
 		"name", name,
 		"transport", conn.entry.Transport,
-		"url", conn.entry.URL,
+		"url", loggableEndpoint(conn.entry.URL),
 		"command", conn.entry.Command,
 	)
 

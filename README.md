@@ -286,7 +286,9 @@ users:
 htpasswd -nbBC 10 "" "my-password" | cut -d: -f2
 ```
 
-and API keys in `config/apikeys.yaml`, each named by the SHA-256 of the key:
+ToolMesh reads `users.yaml` when it starts. Restart it after a change: a new password signs in only then, and only then do the sessions issued for the old password end.
+
+Add API keys in `config/apikeys.yaml`, each named by the SHA-256 of the key:
 
 ```yaml
 keys:

@@ -101,9 +101,13 @@ func TestCredentialOwners_EdgeForms(t *testing.T) {
 		{Rule: RuleHostBinding, Host: "evil.example:8443"},
 		{Rule: RuleCredentialNamespace, Credential: "x_y", Owners: []string{"other\"]#, bad: [1\nnext: line"}},
 	}}
-	for _, l := range e.FixLines() {
+	lines := append(e.FixLines(), e.CautionLines()...)
+	if len(lines) != 2 {
+		t.Fatalf("lines = %q, want the port entry and the credential of the other entry", lines)
+	}
+	for _, l := range lines {
 		if strings.Contains(l, "\n") {
-			t.Errorf("fix line spans lines: %q", l)
+			t.Errorf("line spans lines: %q", l)
 		}
 	}
 }

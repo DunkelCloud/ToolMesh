@@ -23,6 +23,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/DunkelCloud/ToolMesh/internal/auth"
 	"github.com/DunkelCloud/ToolMesh/internal/config"
 )
 
@@ -139,7 +140,7 @@ func TestRegister_RedirectHostAllowlist(t *testing.T) {
 		{"https://claude.ai.evil.example/cb", http.StatusBadRequest},
 	}
 	for _, tc := range cases {
-		ts.redis.FlushAll() // keep the per-address registration limit out of the way
+		ts.srv.rateLimiter = auth.NewLocalDCRRateLimiter() // keep the per-address registration limit out of the way
 		if w := registerClient(t, ts.mux, "x", tc.uri); w.Code != tc.want {
 			t.Errorf("register %s: status %d, want %d", tc.uri, w.Code, tc.want)
 		}
@@ -225,7 +226,7 @@ func TestRegister_RedirectURIShapes(t *testing.T) {
 		{"http://localhost:33418/callback", http.StatusCreated},
 	}
 	for _, tc := range cases {
-		ts.redis.FlushAll()
+		ts.srv.rateLimiter = auth.NewLocalDCRRateLimiter()
 		if w := registerClient(t, ts.mux, "x", tc.uri); w.Code != tc.want {
 			t.Errorf("register %q: status %d, want %d", tc.uri, w.Code, tc.want)
 		}

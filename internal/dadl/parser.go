@@ -444,6 +444,9 @@ func validateTool(name string, tool *ToolDef, defaults *DefaultsConfig) error {
 	if err := CheckToolPathAuthority(tool.Path); err != nil {
 		return fmt.Errorf("tool %q: %w", name, err)
 	}
+	if err := CheckToolPathQuery(tool.Path); err != nil {
+		return fmt.Errorf("tool %q: %w", name, err)
+	}
 
 	// Check that path params referenced in the path template are declared in params
 	pathParams := pathParamRe.FindAllStringSubmatch(tool.Path, -1)
@@ -459,6 +462,9 @@ func validateTool(name string, tool *ToolDef, defaults *DefaultsConfig) error {
 	}
 
 	if err := refuseCredentialDefaults(fmt.Sprintf("tool %q", name), tool.Params); err != nil {
+		return err
+	}
+	if err := validateParamDecls(fmt.Sprintf("tool %q", name), tool.Params); err != nil {
 		return err
 	}
 
@@ -530,6 +536,21 @@ func CheckToolPathAuthority(path string) error {
 		return fmt.Errorf("path %q has a placeholder in its scheme, host or port; only the path and query may hold parameters", path)
 	}
 	return nil
+}
+
+// CheckToolPathQuery returns an error when a tool path has a {placeholder}
+// in its query or fragment, that is after its first "?" or "#". A path
+// parameter is escaped as a path segment, which leaves "&" and "=" as they
+// are: in the query part of a template such as "/search?q={q}", the value
+// "x&admin=true" would add a query parameter of its own, one that no
+// declaration names and no policy sees. A parameter that belongs in the
+// query is declared with "in: query"; its value is then escaped as one.
+func CheckToolPathQuery(path string) error {
+	i := strings.IndexAny(path, "?#")
+	if i < 0 || !strings.Contains(path[i:], "{") {
+		return nil
+	}
+	return fmt.Errorf("path %q has a placeholder in its query or fragment; declare the parameter with in: query and leave it out of the path", path)
 }
 
 // validateIdempotency checks a tool's idempotency block (spec §6.6): the
@@ -693,6 +714,9 @@ func validateComposite(name string, comp *CompositeDef, tools map[string]ToolDef
 		return fmt.Errorf("composite %q: code must not be empty", name)
 	}
 	if err := refuseCredentialDefaults(fmt.Sprintf("composite %q", name), comp.Params); err != nil {
+		return err
+	}
+	if err := validateParamDecls(fmt.Sprintf("composite %q", name), comp.Params); err != nil {
 		return err
 	}
 

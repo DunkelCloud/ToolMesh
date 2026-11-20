@@ -116,14 +116,78 @@ func TestCheckScope_NamesOwner(t *testing.T) {
 	if !strings.Contains(err.Error(), `namespace of entry "github-enterprise"`) {
 		t.Errorf("error does not name the owner: %v", err)
 	}
-	lines := se.FixLines()
-	if len(lines) != 1 || !strings.Contains(lines[0], `entry "github-enterprise"`) {
-		t.Fatalf("fix lines %q do not name the owner", lines)
-	}
+	// The line to copy gives the backend a credential of its own. The line
+	// that reads the other entry's credential is kept apart and names the
+	// owner.
 	var got struct {
-		Credentials []string `yaml:"credentials"`
+		Credentials []string          `yaml:"credentials"`
+		Env         map[string]string `yaml:"env"`
 	}
-	if err := yaml.Unmarshal([]byte(lines[0]), &got); err != nil || len(got.Credentials) != 1 || got.Credentials[0] != gheToken {
-		t.Errorf("line %q reads back as %v (%v)", lines[0], got.Credentials, err)
+	lines := se.FixLines()
+	if len(lines) != 1 {
+		t.Fatalf("fix lines = %q, want the env: line alone", lines)
+	}
+	const ownEnv = "CREDENTIAL_GITHUB_GITHUB_ENTERPRISE_TOKEN"
+	if err := yaml.Unmarshal([]byte(lines[0]), &got); err != nil || len(got.Credentials) != 0 ||
+		len(got.Env) != 1 || got.Env["CREDENTIAL_GITHUB_ENTERPRISE_TOKEN"] != ownEnv {
+		t.Fatalf("fix line %q reads back as %+v (%v)", lines[0], got, err)
+	}
+	own, err := NewCredentialScope(ghEntry, nil, got.Env, NewCredentialOwners(ghEntry, gheEntry))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := CheckScope(spec, own, hosts); err != nil {
+		t.Errorf("with the fix line: %v", err)
+	}
+
+	caution := se.CautionLines()
+	if len(caution) != 1 || !strings.Contains(caution[0], `entry "github-enterprise"`) || !strings.Contains(caution[0], "sends it to its own hosts") {
+		t.Fatalf("caution lines %q do not name the owner and what the line does", caution)
+	}
+	got.Env = nil
+	if err := yaml.Unmarshal([]byte(caution[0]), &got); err != nil || len(got.Credentials) != 1 || got.Credentials[0] != gheToken {
+		t.Errorf("caution line %q reads back as %v (%v)", caution[0], got.Credentials, err)
+	}
+	if !strings.Contains(se.Error(), "a credential of its own") {
+		t.Errorf("error does not lead with a credential of the backend's own: %v", se)
+	}
+}
+
+// TestCredentialScope_OwnEnvKey pins the variable an env: fix line maps a
+// foreign credential to: in the entry's own namespace, and a name an
+// environment variable can have whatever the entry is called.
+func TestCredentialScope_OwnEnvKey(t *testing.T) {
+	cases := []struct{ entry, name, want string }{
+		{"gateway", "openai_api_key", "CREDENTIAL_GATEWAY_OPENAI_API_KEY"},
+		{"my-wiki.example", "wiki_token", "CREDENTIAL_MY_WIKI_EXAMPLE_WIKI_TOKEN"},
+		{" Spaced Name ", "X", "CREDENTIAL_SPACED_NAME_X"},
+	}
+	for _, c := range cases {
+		s, err := NewCredentialScope(c.entry, nil, nil, NewCredentialOwners(c.entry))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := s.ownEnvKey(c.name); got != c.want {
+			t.Errorf("entry %q: ownEnvKey(%q) = %q, want %q", c.entry, c.name, got, c.want)
+		}
+	}
+	var none *CredentialScope
+	if got := none.ownEnvKey("x"); got != "" {
+		t.Errorf("nil scope: ownEnvKey = %q, want none", got)
+	}
+
+	// An env: line reads its variable whatever namespace it is in. A
+	// variable that belongs to another entry is no credential of the
+	// entry's own, so none is offered.
+	owners := NewCredentialOwners(ghEntry, gheEntry, "enterprise")
+	gh, err := NewCredentialScope(ghEntry, nil, nil, owners)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := gh.ownEnvKey("enterprise_token"); got != "" {
+		t.Errorf("ownEnvKey = %q, a variable of entry %q", got, gheEntry)
+	}
+	if got := gh.ownEnvKey("other_token"); got != "CREDENTIAL_GITHUB_OTHER_TOKEN" {
+		t.Errorf("ownEnvKey = %q, want the variable of the entry's own", got)
 	}
 }

@@ -115,9 +115,15 @@ backends:
   #   # CREDENTIAL_VIKUNJA_* here, unless a longer entry name (vikunja-x)
   #   # owns part of it. A DADL that reads others, or sends them to a host
   #   # outside base_url's registrable domain, is refused at load until the
-  #   # entry allows it explicitly (the refusal log names the exact line):
+  #   # entry allows it explicitly. The refusal log names the lines, and
+  #   # sets apart, with a warning, the ones that let the backend read a
+  #   # variable other entries own or list, or send credentials further:
   #   # credentials: [vikunja_legacy_token]       # names outside the namespace
   #   # allowed_hosts: [files.vikunja-cdn.example, "*.cdn.example", media.example:8443]
+  #   # A second entry on this DADL, named vikunja-staging, would read this
+  #   # entry's vikunja_token. It gets a credential of its own instead:
+  #   # env:
+  #   #   CREDENTIAL_VIKUNJA_TOKEN: CREDENTIAL_VIKUNJA_STAGING_VIKUNJA_TOKEN
   #   # Optional: credentials that every user stores for themselves on the
   #   # page /credentials, instead of one value for all callers. A call then
   #   # authenticates as the calling user and fails, with a pointer to the

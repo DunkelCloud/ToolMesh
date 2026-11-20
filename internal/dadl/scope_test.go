@@ -143,11 +143,24 @@ func TestCheckScope(t *testing.T) {
 	if strings.Contains(text, "api.shelly.cloud") || strings.Contains(text, "shelly_cloud_client_id") {
 		t.Errorf("allowed references were reported: %s", text)
 	}
+	// The credential is in no entry's namespace and can be listed. The
+	// hosts are outside the domain of base_url: their line is no fix to
+	// copy, it comes apart from the fix lines and with a warning.
 	lines := strings.Join(se.FixLines(), "\n")
-	for _, want := range []string{"credentials: [github_token]", "allowed_hosts: [auth.evil.example, evil.example]"} {
-		if !strings.Contains(lines, want) {
-			t.Errorf("fix lines %q lack %q", lines, want)
+	if lines != "credentials: [github_token]" {
+		t.Errorf("fix lines = %q, want the credentials line alone", lines)
+	}
+	caution := strings.Join(se.CautionLines(), "\n")
+	for _, want := range []string{"allowed_hosts: [auth.evil.example, evil.example]", "outside the domain of base_url", "credentials are sent there"} {
+		if !strings.Contains(caution, want) {
+			t.Errorf("caution lines %q lack %q", caution, want)
 		}
+	}
+	if strings.Contains(caution, "\n") {
+		t.Errorf("caution lines span more than one line: %q", caution)
+	}
+	if !strings.Contains(text, "if you know it belongs to the API") {
+		t.Errorf("error does not warn about the foreign hosts: %s", text)
 	}
 
 	// The fix lines make it pass.

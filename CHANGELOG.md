@@ -28,6 +28,19 @@ for the full narrative and details.
   startup, and until then the old password signs in and its sessions keep
   working. Restart ToolMesh right after changing a password that someone
   else may know. See [Tokens](docs/configuration.md#tokens).
+- The `backend refused` log line no longer offers every line that would
+  load the backend as a line to add. Under `add_to_backends_yaml_entry` it
+  keeps the lines that leave the binding as it is: another port of the
+  backend's own host or domain, a credential no entry owns, and for a
+  credential that another entry owns an `env:` line that gives the backend
+  a credential of its own. The lines that widen the binding come apart
+  under `check_before_adding`, with a `warning`: `allowed_hosts:` for a
+  host outside the registrable domain of `base_url`, and `credentials:` for
+  another entry's credential. Until now a second backend on the DADL of
+  another service was told to add `credentials: [<that service's key>]`,
+  which sent that key to the second backend's host. If you added such a
+  line, give the backend a key of its own. See
+  [Lines the refusal names](docs/configuration.md#lines-the-refusal-names).
 
 ### Added
 

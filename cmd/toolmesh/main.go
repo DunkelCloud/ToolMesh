@@ -997,10 +997,7 @@ func loadRESTBackendsInto(named map[string]backend.ToolBackend, backendsConfigPa
 		var scopeErr *dadl.ScopeError
 		if errors.As(err, &scopeErr) {
 			logger.Error("backend refused: its DADL reaches outside the credentials or hosts allowed for it; the other backends keep running",
-				"name", entry.Name,
-				"dadl", entry.DADL,
-				"error", err,
-				"add_to_backends_yaml_entry", scopeErr.FixLines(),
+				scopeRefusalAttrs(entry.Name, entry.DADL, scopeErr)...,
 			)
 			refused = append(refused, entry.Name)
 			continue

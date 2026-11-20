@@ -427,6 +427,11 @@ type hostDecision struct {
 	// allow is the allowed_hosts: entry that would allow it, or "" when
 	// none can (a downgrade to http, a scheme other than http(s)).
 	allow string
+	// foreign reports a host that is neither the backend's host nor in its
+	// registrable domain. Allowing it sends the backend's credentials to a
+	// host that may be someone else's; another port of the backend's own
+	// host or domain is not foreign.
+	foreign bool
 }
 
 // check decides whether credentials may be sent to scheme://host:port; port
@@ -470,7 +475,7 @@ func (s *HostScope) check(scheme, host, port string) hostDecision {
 	if h == s.baseHost || sameDomain {
 		return hostDecision{reason: fmt.Sprintf("port %s of host %q is not the backend's port", p, h), allow: allow}
 	}
-	return hostDecision{reason: fmt.Sprintf("host %q is outside the backend's hosts", h), allow: allow}
+	return hostDecision{reason: fmt.Sprintf("host %q is outside the backend's hosts", h), allow: allow, foreign: true}
 }
 
 // hostEntry is the allowed_hosts: entry for host h on port p.
@@ -542,18 +547,62 @@ type ScopeViolation struct {
 	// Owners are the entries whose namespace holds Credential; allowing it
 	// lets this backend read a credential of theirs.
 	Owners []string
+	// OwnEnv is the environment variable of a credential of the entry's
+	// own that an env: line can map Credential to. It is set when
+	// Credential belongs to other entries (Owners): the backend then gets
+	// a credential of its own instead of reading theirs.
+	OwnEnv string
+	// Foreign reports that Host is outside the registrable domain of the
+	// base_url. Allowing it sends the backend's credentials to a host that
+	// may be someone else's.
+	Foreign bool
 }
 
-// fixLine returns the backends.yaml line that allows v, or "".
+// widens reports whether the line that allows v hands something to another
+// party: a credential of another entry to this backend's hosts, or this
+// backend's credentials to a host outside its domain. Such a line is not a
+// fix to copy from a log. The DADL chose the name and the host; whether
+// they belong to the API is for the operator to check.
+func (v ScopeViolation) widens() bool {
+	return (v.Credential != "" && len(v.Owners) > 0) || (v.Host != "" && v.Foreign)
+}
+
+// fixLine returns the backends.yaml line that resolves v without widening
+// the binding to another party, or "": a credential of the entry's own
+// through env:, a credential in no entry's namespace, another port of the
+// backend's own host or domain.
 func (v ScopeViolation) fixLine() string {
 	switch {
+	case v.Credential != "" && len(v.Owners) > 0:
+		if v.OwnEnv == "" {
+			return ""
+		}
+		return yamlFlowMapLine("env", [][2]string{{credentialEnvKey(v.Credential), v.OwnEnv}})
 	case v.Credential != "":
-		return yamlFlowLine("credentials", []string{v.Credential}) + ownerComment([]ScopeViolation{v})
-	case v.Host != "":
+		return yamlFlowLine("credentials", []string{v.Credential})
+	case v.Host != "" && !v.Foreign:
 		return yamlFlowLine("allowed_hosts", []string{v.Host})
 	}
 	return ""
 }
+
+// wideningLine returns the backends.yaml line that allows v by widening
+// the binding (see widens), without a comment, or "".
+func (v ScopeViolation) wideningLine() string {
+	switch {
+	case !v.widens():
+		return ""
+	case v.Credential != "":
+		return yamlFlowLine("credentials", []string{v.Credential})
+	}
+	return yamlFlowLine("allowed_hosts", []string{v.Host})
+}
+
+// Comments that mark a widening line where it is printed for copying.
+const (
+	foreignHostComment = "  # outside the domain of base_url: this backend's credentials are sent there; add only hosts you know belong to the API"
+	sharedCredComment  = ": this backend reads that credential and sends it to its own hosts" //nolint:gosec // comment text, not a credential
+)
 
 // ownerComment returns a YAML comment naming the entries that own the
 // credentials of vs, or "" when no other entry owns one. Entry names are
@@ -568,7 +617,29 @@ func ownerComment(vs []ScopeViolation) string {
 	if len(parts) == 0 {
 		return ""
 	}
-	return "  # " + strings.Join(parts, "; ")
+	return "  # " + strings.Join(parts, "; ") + sharedCredComment
+}
+
+// credentialEnvKey is the env: key that remaps the credential name:
+// CREDENTIAL_<NAME>.
+func credentialEnvKey(name string) string {
+	return credentials.EnvKeyPrefix + credentialKey(name)
+}
+
+// envNameRe matches the characters an environment variable name does not
+// take.
+var envNameRe = regexp.MustCompile(`[^A-Z0-9_]`)
+
+// ownEnvKey returns the environment variable of a credential in the
+// entry's own namespace that stands in for the credential name:
+// CREDENTIAL_<ENTRY>_<NAME>, with every character of the entry name that a
+// variable name does not take as "_". A nil scope, or one without an entry
+// name, has none.
+func (s *CredentialScope) ownEnvKey(name string) string {
+	if s == nil || s.entry == "" {
+		return ""
+	}
+	return credentials.EnvKeyPrefix + envNameRe.ReplaceAllString(namespacePrefix(s.entry), "_") + credentialKey(name)
 }
 
 // yamlFlowLine renders "key: [item, ...]" with the YAML encoder, so every
@@ -577,9 +648,29 @@ func ownerComment(vs []ScopeViolation) string {
 func yamlFlowLine(key string, items []string) string {
 	seq := &yaml.Node{Kind: yaml.SequenceNode, Style: yaml.FlowStyle}
 	for _, it := range items {
-		seq.Content = append(seq.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: it})
+		seq.Content = append(seq.Content, yamlStr(it))
 	}
-	doc := &yaml.Node{Kind: yaml.MappingNode, Content: []*yaml.Node{{Kind: yaml.ScalarNode, Tag: "!!str", Value: key}, seq}}
+	return yamlLine(key, seq)
+}
+
+// yamlFlowMapLine renders "key: {name: value, ...}" with the YAML encoder,
+// like yamlFlowLine.
+func yamlFlowMapLine(key string, pairs [][2]string) string {
+	m := &yaml.Node{Kind: yaml.MappingNode, Style: yaml.FlowStyle}
+	for _, p := range pairs {
+		m.Content = append(m.Content, yamlStr(p[0]), yamlStr(p[1]))
+	}
+	return yamlLine(key, m)
+}
+
+// yamlStr is the YAML string node of s.
+func yamlStr(s string) *yaml.Node {
+	return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: s}
+}
+
+// yamlLine renders the one-line mapping "key: value".
+func yamlLine(key string, value *yaml.Node) string {
+	doc := &yaml.Node{Kind: yaml.MappingNode, Content: []*yaml.Node{yamlStr(key), value}}
 	out, err := yaml.Marshal(doc)
 	if err != nil {
 		return ""
@@ -598,29 +689,85 @@ type ScopeError struct {
 func (e *ScopeError) Error() string {
 	parts := make([]string, 0, len(e.Violations))
 	for _, v := range e.Violations {
-		if fix := v.fixLine(); fix != "" {
-			parts = append(parts, fmt.Sprintf("%s: %s (allow it with `%s` in the backends.yaml entry)", v.Rule, v.What, fix))
-		} else {
-			parts = append(parts, fmt.Sprintf("%s: %s (only a change to the DADL can fix this)", v.Rule, v.What))
+		fix, wide := v.fixLine(), v.wideningLine()
+		var how string
+		switch {
+		case wide != "" && v.Credential != "" && fix != "":
+			how = fmt.Sprintf("give this backend a credential of its own with `%s` in the backends.yaml entry; `%s` instead lets it read the other entry's credential and send it to its own hosts", fix, wide)
+		case wide != "" && v.Credential != "":
+			how = fmt.Sprintf("`%s` in the backends.yaml entry lets it read the other entry's credential and send it to its own hosts", wide)
+		case wide != "":
+			how = fmt.Sprintf("the host is outside the domain of base_url and would receive this backend's credentials; if you know it belongs to the API, allow it with `%s` in the backends.yaml entry", wide)
+		case fix != "":
+			how = fmt.Sprintf("allow it with `%s` in the backends.yaml entry", fix)
+		default:
+			how = "only a change to the DADL can fix this"
 		}
+		parts = append(parts, fmt.Sprintf("%s: %s (%s)", v.Rule, v.What, how))
 	}
 	return fmt.Sprintf("backend %q reaches outside the credentials or hosts allowed for it: %s", e.Backend, strings.Join(parts, "; "))
 }
 
-// FixLines returns the backends.yaml lines that would allow every violation
-// a line can allow, merged per key. They are built from the structured
-// Credential and Host fields, never from DADL text.
+// FixLines returns the backends.yaml lines that resolve the violations
+// without widening the binding to another party, merged per key: env: for
+// credentials that belong to other entries (a credential of the backend's
+// own takes their place), credentials: for names in no entry's namespace,
+// allowed_hosts: for other ports of the backend's own host or domain. The
+// lines that hand something to another party are CautionLines. All of them
+// are built from the structured fields, never from DADL text.
 func (e *ScopeError) FixLines() []string {
+	var creds, hosts []string
+	var env [][2]string
+	seen := map[string]bool{}
+	for _, v := range e.Violations {
+		if v.fixLine() == "" {
+			continue
+		}
+		switch {
+		case v.Credential != "" && seen["c:"+v.Credential]:
+		case v.Credential != "" && len(v.Owners) > 0:
+			seen["c:"+v.Credential] = true
+			env = append(env, [2]string{credentialEnvKey(v.Credential), v.OwnEnv})
+		case v.Credential != "":
+			seen["c:"+v.Credential] = true
+			creds = append(creds, v.Credential)
+		case !seen["h:"+v.Host]:
+			seen["h:"+v.Host] = true
+			hosts = append(hosts, v.Host)
+		}
+	}
+	var out []string
+	if len(env) > 0 {
+		out = append(out, yamlFlowMapLine("env", env))
+	}
+	if len(creds) > 0 {
+		out = append(out, yamlFlowLine("credentials", creds))
+	}
+	if len(hosts) > 0 {
+		out = append(out, yamlFlowLine("allowed_hosts", hosts))
+	}
+	return out
+}
+
+// CautionLines returns the backends.yaml lines that allow the violations
+// FixLines leaves out, merged per key, each with a comment that says what
+// the line hands over: credentials: for names that belong to other entries
+// (the backend would read their credential and send it to its own hosts),
+// allowed_hosts: for hosts outside the registrable domain of the base_url
+// (the backend's credentials would be sent there). They are for an operator
+// who has checked the DADL, not for copying.
+func (e *ScopeError) CautionLines() []string {
 	var creds, hosts []string
 	var credViolations []ScopeViolation
 	seen := map[string]bool{}
 	for _, v := range e.Violations {
 		switch {
+		case !v.widens():
 		case v.Credential != "" && !seen["c:"+v.Credential]:
 			seen["c:"+v.Credential] = true
 			creds = append(creds, v.Credential)
 			credViolations = append(credViolations, v)
-		case v.Host != "" && !seen["h:"+v.Host]:
+		case v.Credential == "" && !seen["h:"+v.Host]:
 			seen["h:"+v.Host] = true
 			hosts = append(hosts, v.Host)
 		}
@@ -630,7 +777,7 @@ func (e *ScopeError) FixLines() []string {
 		out = append(out, yamlFlowLine("credentials", creds)+ownerComment(credViolations))
 	}
 	if len(hosts) > 0 {
-		out = append(out, yamlFlowLine("allowed_hosts", hosts))
+		out = append(out, yamlFlowLine("allowed_hosts", hosts)+foreignHostComment)
 	}
 	return out
 }
@@ -819,12 +966,16 @@ func CheckScopeOf(spec *Spec, creds *CredentialScope, hosts *HostScope, reachabl
 		}
 		if !creds.Allows(ref.name) {
 			owners := creds.ownersOf(ref.name)
-			violations = append(violations, ScopeViolation{
+			v := ScopeViolation{
 				Rule:       RuleCredentialNamespace,
 				What:       fmt.Sprintf("%s %q (%s)", ref.where, ref.name, ownerNote(owners)),
 				Credential: strings.ToLower(ref.name),
 				Owners:     owners,
-			})
+			}
+			if len(owners) > 0 {
+				v.OwnEnv = creds.ownEnvKey(ref.name)
+			}
+			violations = append(violations, v)
 		}
 	}
 	checkURL := func(where, raw string) {
@@ -837,9 +988,10 @@ func CheckScopeOf(spec *Spec, creds *CredentialScope, hosts *HostScope, reachabl
 			return
 		}
 		violations = append(violations, ScopeViolation{
-			Rule: RuleHostBinding,
-			What: fmt.Sprintf("%s %s://%s: %s", where, u.Scheme, u.Host, d.reason),
-			Host: d.allow,
+			Rule:    RuleHostBinding,
+			What:    fmt.Sprintf("%s %s://%s: %s", where, u.Scheme, u.Host, d.reason),
+			Host:    d.allow,
+			Foreign: d.foreign,
 		})
 	}
 	checkURL("base_url", spec.Backend.BaseURL)

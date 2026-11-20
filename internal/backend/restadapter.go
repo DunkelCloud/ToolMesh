@@ -235,6 +235,7 @@ func NewRESTAdapter(spec *dadl.Spec, creds credentials.CredentialStore, logger *
 		if err := dadl.CheckScopeOf(spec, credScope, hostScope, reachable); err != nil {
 			return nil, err
 		}
+		logSiblingHosts(logger, spec, hostScope, reachable)
 	}
 
 	// Credentials the operator declared per user are read from the calling
@@ -455,6 +456,21 @@ func WarnPlainHTTPBase(logger *slog.Logger, entry BackendEntry, spec *dadl.Spec)
 	}
 	logger.Warn("credentials go out over plain http: the DADL's base_url is http and the backends.yaml entry sets no url; set url: to an https address if the API offers one",
 		"name", entry.Name, "host", u.Host)
+}
+
+// logSiblingHosts says, when a backend is loaded, which hosts other than
+// its own receive its credentials only because they share the registrable
+// domain of its base_url. The binding allows them on purpose; on a domain
+// whose customers each have a subdomain they can be other customers'
+// hosts, so the operator gets to see them. A host listed in allowed_hosts:
+// is confirmed and no longer reported.
+func logSiblingHosts(logger *slog.Logger, spec *dadl.Spec, hosts *dadl.HostScope, reachable func(tool string) bool) {
+	siblings := dadl.SiblingHosts(spec, hosts, reachable)
+	if len(siblings) == 0 {
+		return
+	}
+	logger.Info("backend sends its credentials to other hosts of its base_url's domain as well; they are allowed because they share that domain. Check that they belong to the API, in particular on a domain shared with other customers; a host listed in allowed_hosts: is no longer reported",
+		"name", spec.Backend.Name, "domain", hosts.Domain(), "hosts", siblings)
 }
 
 // reachableTools reports which tools of spec a backend can send requests

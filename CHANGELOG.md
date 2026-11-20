@@ -41,6 +41,12 @@ for the full narrative and details.
   which sent that key to the second backend's host. If you added such a
   line, give the backend a key of its own. See
   [Lines the refusal names](docs/configuration.md#lines-the-refusal-names).
+- A REST backend whose DADL sends credentials to other hosts of its
+  `base_url`'s registrable domain says so when it is loaded: an `INFO` line
+  lists the hosts. The binding allows them as before. On a domain whose
+  customers each have a subdomain, such a host can be another customer's,
+  and until now nothing showed that a DADL used one. A host listed in
+  `allowed_hosts:` is confirmed and no longer reported.
 
 ### Added
 

@@ -432,6 +432,10 @@ type hostDecision struct {
 	// host that may be someone else's; another port of the backend's own
 	// host or domain is not foreign.
 	foreign bool
+	// sibling reports a host that is allowed only because it shares the
+	// registrable domain of the backend's host: it is not that host, and
+	// no allowed_hosts: entry names it.
+	sibling bool
 }
 
 // check decides whether credentials may be sent to scheme://host:port; port
@@ -469,7 +473,7 @@ func (s *HostScope) check(scheme, host, port string) hostDecision {
 	}
 	sameDomain := s.domain != "" && registrableDomain(h) == s.domain
 	if h != s.baseHost && sameDomain && p == dp {
-		return hostDecision{ok: true}
+		return hostDecision{ok: true, sibling: true}
 	}
 	allow := hostEntry(h, p, dp)
 	if h == s.baseHost || sameDomain {
@@ -978,11 +982,7 @@ func CheckScopeOf(spec *Spec, creds *CredentialScope, hosts *HostScope, reachabl
 			violations = append(violations, v)
 		}
 	}
-	checkURL := func(where, raw string) {
-		u, ok := absoluteURLOrigin(raw)
-		if !ok {
-			return
-		}
+	walkStaticOrigins(spec, reachable, func(where string, u *url.URL) {
 		d := hosts.check(u.Scheme, u.Hostname(), u.Port())
 		if d.ok {
 			return
@@ -993,18 +993,7 @@ func CheckScopeOf(spec *Spec, creds *CredentialScope, hosts *HostScope, reachabl
 			Host:    d.allow,
 			Foreign: d.foreign,
 		})
-	}
-	checkURL("base_url", spec.Backend.BaseURL)
-	checkURL("auth.token_url", spec.Backend.Auth.TokenURL)
-	for name, tool := range spec.Backend.Tools {
-		if reachable != nil && !reachable(name) {
-			continue
-		}
-		checkURL(fmt.Sprintf("tool %q path", name), tool.Path)
-	}
-	if spec.Backend.Health != nil {
-		checkURL("health.path", spec.Backend.Health.Path)
-	}
+	})
 	if strings.EqualFold(spec.Backend.Auth.Type, authTypeSession) && spec.Backend.Auth.Login != nil {
 		if _, err := sessionLoginURL(spec.Backend.BaseURL, spec.Backend.Auth.Login.Path); err != nil {
 			violations = append(violations, ScopeViolation{Rule: RuleHostBinding, What: "auth.login.path: " + err.Error()})
@@ -1015,4 +1004,67 @@ func CheckScopeOf(spec *Spec, creds *CredentialScope, hosts *HostScope, reachabl
 	}
 	sort.Slice(violations, func(i, j int) bool { return violations[i].What < violations[j].What })
 	return &ScopeError{Backend: spec.Backend.Name, Violations: violations}
+}
+
+// walkStaticOrigins calls fn with the origin of every absolute URL the
+// DADL names statically: base_url, token_url, the absolute paths of the
+// tools for which reachable reports true (nil: of every tool) and an
+// absolute health check path. where names the DADL field.
+func walkStaticOrigins(spec *Spec, reachable func(tool string) bool, fn func(where string, u *url.URL)) {
+	visit := func(where, raw string) {
+		if u, ok := absoluteURLOrigin(raw); ok {
+			fn(where, u)
+		}
+	}
+	visit("base_url", spec.Backend.BaseURL)
+	visit("auth.token_url", spec.Backend.Auth.TokenURL)
+	for name, tool := range spec.Backend.Tools {
+		if reachable != nil && !reachable(name) {
+			continue
+		}
+		visit(fmt.Sprintf("tool %q path", name), tool.Path)
+	}
+	if spec.Backend.Health != nil {
+		visit("health.path", spec.Backend.Health.Path)
+	}
+}
+
+// SiblingHosts returns the hosts the DADL sends the backend's credentials
+// to only because they share the registrable domain of the base_url: the
+// hosts of token_url, absolute tool paths and an absolute health check
+// path that are neither the backend's own host nor named by an
+// allowed_hosts: entry. Each host is listed once, sorted. reachable is as
+// in CheckScopeOf.
+//
+// The rule that allows them is deliberate: an API often spreads over a few
+// hosts of one domain. On a domain whose customers each get a subdomain and
+// that the public suffix list does not know as such, the same rule reaches
+// the hosts of other customers, so a backend that uses it says so when it
+// is loaded.
+func SiblingHosts(spec *Spec, hosts *HostScope, reachable func(tool string) bool) []string {
+	if hosts == nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	var out []string
+	walkStaticOrigins(spec, reachable, func(_ string, u *url.URL) {
+		if d := hosts.check(u.Scheme, u.Hostname(), u.Port()); !d.sibling {
+			return
+		}
+		if h := canonicalHost(u.Hostname()); !seen[h] {
+			seen[h] = true
+			out = append(out, h)
+		}
+	})
+	sort.Strings(out)
+	return out
+}
+
+// Domain returns the registrable domain of the backend's base_url host, or
+// "" when it has none (an IP address, a name such as "localhost").
+func (s *HostScope) Domain() string {
+	if s == nil {
+		return ""
+	}
+	return s.domain
 }

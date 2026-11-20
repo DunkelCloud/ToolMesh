@@ -107,6 +107,12 @@ for the full narrative and details.
   caller sends: the default `"5"` of an `integer` parameter becomes `5`,
   the default `42` of a `string` parameter `"42"`. No DADL in the registry
   is affected.
+- A call whose path parameter values turn a relative tool path into an
+  absolute URL is refused before a request is sent. A path parameter keeps
+  its `:`, so a tool path of the form `{a}//{b}/x` became a URL on a host
+  the caller chose. The credential binding kept the backend's credentials
+  from going there; a backend without credentials sent the request. Only a
+  path the DADL writes as an absolute URL names another host.
 
 ### Added
 

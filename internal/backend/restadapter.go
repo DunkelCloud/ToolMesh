@@ -1132,6 +1132,9 @@ func (a *RESTAdapter) buildHTTPRequest(ctx context.Context, tool *dadl.ToolDef, 
 	if err != nil {
 		return nil, err
 	}
+	if err := checkPathStaysRelative(tool.Path, toolPath); err != nil {
+		return nil, err
+	}
 	urlStr, err := joinURL(a.spec.Backend.BaseURL, toolPath)
 	if err != nil {
 		return nil, err
@@ -1313,6 +1316,28 @@ func joinURL(baseURL, toolPath string) (string, error) {
 		return "", fmt.Errorf("tool path %q resolves outside the base URL path %q", toolPath, base.EscapedPath())
 	}
 	return resolved.String(), nil
+}
+
+// checkPathStaysRelative refuses a tool path that is an absolute URL only
+// after its parameters were filled in. joinURL sends an absolute path to
+// the host it names, which is meant for a DADL that writes that host
+// itself. url.PathEscape leaves ":" as it is, so a template such as
+// "{a}//{b}/x" turns into "https://other.example/x" with the values
+// "https:" and "other.example": a URL on a host of the caller's choosing.
+// The credential binding would keep the backend's credentials from going
+// there, but a backend without credentials would send the request.
+func checkPathStaysRelative(template, path string) error {
+	if isAbsoluteHTTPPath(template) || !isAbsoluteHTTPPath(path) {
+		return nil
+	}
+	return fmt.Errorf("path parameter values turn the tool path %q into an absolute URL; only a path the DADL writes as one may name another host", template)
+}
+
+// isAbsoluteHTTPPath reports whether the tool path p is an absolute http or
+// https URL with a host.
+func isAbsoluteHTTPPath(p string) bool {
+	u, err := url.Parse(p)
+	return err == nil && isAbsoluteHTTPURL(u)
 }
 
 // isAbsoluteHTTPURL reports whether u is an absolute http or https URL with a

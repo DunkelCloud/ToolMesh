@@ -2048,7 +2048,10 @@ button:hover{background:#1d4ed8}
 .error{color:#b91c1c}
 .consent{border:1px solid #d1d5db;border-radius:6px;padding:12px;margin:12px 0}
 .host{font-size:1.4em;font-weight:bold;word-break:break-all;margin:4px 0}
-.note{color:#6b7280;font-size:.9em}
+.note{color:#6b7280;font-size:.9em;margin:4px 0 0}
+.name{margin:12px 0 4px}
+.clientname{margin:0;padding:6px 8px;border:1px dashed #9ca3af;border-radius:4px;background:#f9fafb;font-family:ui-monospace,monospace;line-height:2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.clientname.none{color:#6b7280;font-family:inherit}
 .confirm{display:block;margin:12px 0}
 .confirm input{width:auto;margin-right:6px}</style></head>
 <body>
@@ -2057,8 +2060,10 @@ button:hover{background:#1d4ed8}
 <p>An application asks for access to your ToolMesh tools.</p>
 <p>After you sign in, access is handed to:</p>
 <p class="host">{{.RedirectHost}}</p>
-<p class="name">Name given by the application: &ldquo;{{if .ClientName}}{{.ClientName}}{{else}}none{{end}}&rdquo;<br>
-<span class="note">The application chose this name itself; ToolMesh has not verified it.</span></p>
+<p class="name">Name given by the application:</p>
+{{if .ClientName}}<p class="clientname"><bdi>{{.ClientName}}</bdi></p>
+{{else}}<p class="clientname none">no name given</p>
+{{end}}<p class="note">The application chose this name itself; ToolMesh has not verified it.</p>
 </div>
 <p>Continue only if you started this connection yourself and trust <strong>{{.RedirectHost}}</strong>.</p>
 {{if .Error}}<p class="error" role="alert">{{.Error}}</p>

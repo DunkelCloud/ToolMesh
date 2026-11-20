@@ -61,6 +61,13 @@ for the full narrative and details.
   query parameters that no declaration names and no gate policy sees.
   Declare the parameter with `in: query` instead. No DADL in the registry
   uses such a path.
+- Client registration (`/register`) keeps its limit of 5 per hour and
+  address when Redis cannot be reached: the count in process memory decides
+  then. Until now such a registration was allowed without a limit. A
+  registration is refused with `400` when its `client_name` is longer than
+  256 bytes, when it lists more than 16 `redirect_uris` or one longer than
+  2048 bytes, or when its body is larger than 64 KiB (until now 1 MiB,
+  stored as sent).
 
 ### Added
 

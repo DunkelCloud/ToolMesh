@@ -1115,6 +1115,20 @@ func (s *Server) issuerBase() string {
 	return strings.TrimRight(s.cfg.Issuer, "/")
 }
 
+// Bounds on a client registration. Real clients send a short name and a
+// handful of redirect URIs; the limits are generous for them and keep a
+// stored registration small.
+const (
+	// maxRegisterBodyBytes bounds the request body.
+	maxRegisterBodyBytes = 64 << 10
+	// maxClientNameBytes bounds client_name. The login page shows less.
+	maxClientNameBytes = 256
+	// maxRedirectURIs bounds the number of redirect_uris.
+	maxRedirectURIs = 16
+	// maxRedirectURIBytes bounds one redirect_uri.
+	maxRedirectURIBytes = 2048
+)
+
 func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
@@ -1123,16 +1137,18 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// DCR Rate Limiting. Fails open: an outage of Redis must not take
-	// registration, and with it every new connection, down with it.
+	// DCR rate limit. When Redis cannot be asked, the limiter's count in
+	// process memory decides: an outage of Redis neither lifts the limit
+	// nor takes registration, and with it every new connection, down.
 	if s.rateLimiter != nil {
 		ip := auth.ClientIP(r)
 		allowed, err := s.rateLimiter.Allow(ctx, ip)
 		if err != nil {
-			s.logger.WarnContext(ctx, "dcr rate limit unavailable, registration allowed without limit (fail-open)",
-				outcomeError, err, "remote", ip)
-		} else if !allowed {
-			writeJSON(w, http.StatusTooManyRequests, map[string]string{outcomeError: "too_many_requests"})
+			s.logger.WarnContext(ctx, "dcr rate limit: redis unavailable, registrations counted in process memory",
+				outcomeError, err, logKeyRemote, ip)
+		}
+		if !allowed {
+			writeJSON(w, http.StatusTooManyRequests, map[string]string{outcomeError: oauthErrTooManyRequests})
 			return
 		}
 	}
@@ -1144,7 +1160,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// M-3: Limit request body size
-	r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1 MB
+	r.Body = http.MaxBytesReader(w, r.Body, maxRegisterBodyBytes)
 
 	var req struct {
 		RedirectURIs []string `json:"redirect_uris"`
@@ -1155,8 +1171,23 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// What is stored for a client is bounded: every registration is kept
+	// until the client expires, and anyone may register.
+	if len(req.ClientName) > maxClientNameBytes {
+		writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: oauthErrInvalidClientMetadata, oauthErrorDescription: fmt.Sprintf("client_name is longer than %d bytes", maxClientNameBytes)})
+		return
+	}
+	if len(req.RedirectURIs) > maxRedirectURIs {
+		writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: oauthErrInvalidRedURI, oauthErrorDescription: fmt.Sprintf("more than %d redirect_uris", maxRedirectURIs)})
+		return
+	}
+
 	// Validate redirect_uri schemes — only HTTPS (or http://localhost for dev)
 	for _, uri := range req.RedirectURIs {
+		if len(uri) > maxRedirectURIBytes {
+			writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: oauthErrInvalidRedURI, oauthErrorDescription: fmt.Sprintf("a redirect_uri is longer than %d bytes", maxRedirectURIBytes)})
+			return
+		}
 		parsed, err := url.Parse(uri)
 		if err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: oauthErrInvalidRedURI, oauthErrorDescription: fmt.Sprintf("malformed URI: %s", uri)})

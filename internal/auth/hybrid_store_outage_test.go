@@ -17,6 +17,8 @@ package auth
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net"
 	"testing"
 	"time"
 )
@@ -28,13 +30,44 @@ import (
 // afterFetch, when set, runs once inside the next read or consume, after
 // the store has handed its copy out and before the caller sees it. A test
 // puts a second request there, the way two requests overlap in a server.
+// failOnce, when set, makes the next call fail and runs inside it, with the
+// store answering again for whatever it does: the edge of an outage.
 type outagePrimary struct {
 	*fakePrimary
 	down       bool
+	refused    bool // while down, fail as a refused connection
 	afterFetch func()
+	failOnce   func()
+	calls      int
 }
 
+// failure is the error of a call that failed.
+func (o *outagePrimary) failure() error {
+	if o.refused {
+		return errPrimaryRefused
+	}
+	return errPrimaryDown
+}
+
+// unreachable reports whether a call is to fail, counting the call and
+// running failOnce inside it when that is set.
+func (o *outagePrimary) unreachable() bool {
+	o.calls++
+	if hook := o.failOnce; hook != nil {
+		o.failOnce = nil
+		hook()
+		return true
+	}
+	return o.down
+}
+
+// errPrimaryDown is the failure of a primary store that is down. It does
+// not say whether the call was carried out, as a timeout does not.
 var errPrimaryDown = errors.New("primary down")
+
+// errPrimaryRefused is the failure of a primary store that cannot be
+// connected to: the call certainly was not carried out.
+var errPrimaryRefused = &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("connection refused")}
 
 // fetched runs afterFetch once.
 func (o *outagePrimary) fetched() {
@@ -45,29 +78,29 @@ func (o *outagePrimary) fetched() {
 }
 
 func (o *outagePrimary) SaveClient(ctx context.Context, c *OAuthClient) error {
-	if o.down {
-		return errPrimaryDown
+	if o.unreachable() {
+		return o.failure()
 	}
 	return o.fakePrimary.SaveClient(ctx, c)
 }
 
 func (o *outagePrimary) GetClient(ctx context.Context, id string) (*OAuthClient, error) {
-	if o.down {
-		return nil, errPrimaryDown
+	if o.unreachable() {
+		return nil, o.failure()
 	}
 	return o.fakePrimary.GetClient(ctx, id)
 }
 
 func (o *outagePrimary) SaveAuthCode(ctx context.Context, ac *AuthCode) error {
-	if o.down {
-		return errPrimaryDown
+	if o.unreachable() {
+		return o.failure()
 	}
 	return o.fakePrimary.SaveAuthCode(ctx, ac)
 }
 
 func (o *outagePrimary) ConsumeAuthCode(ctx context.Context, code string) (*AuthCode, error) {
-	if o.down {
-		return nil, errPrimaryDown
+	if o.unreachable() {
+		return nil, o.failure()
 	}
 	ac, err := o.fakePrimary.ConsumeAuthCode(ctx, code)
 	if err == nil {
@@ -77,15 +110,15 @@ func (o *outagePrimary) ConsumeAuthCode(ctx context.Context, code string) (*Auth
 }
 
 func (o *outagePrimary) SaveToken(ctx context.Context, ti *TokenInfo) error {
-	if o.down {
-		return errPrimaryDown
+	if o.unreachable() {
+		return o.failure()
 	}
 	return o.fakePrimary.SaveToken(ctx, ti)
 }
 
 func (o *outagePrimary) GetToken(ctx context.Context, t string) (*TokenInfo, error) {
-	if o.down {
-		return nil, errPrimaryDown
+	if o.unreachable() {
+		return nil, o.failure()
 	}
 	ti, err := o.fakePrimary.GetToken(ctx, t)
 	if err == nil {
@@ -95,22 +128,22 @@ func (o *outagePrimary) GetToken(ctx context.Context, t string) (*TokenInfo, err
 }
 
 func (o *outagePrimary) DeleteToken(ctx context.Context, t string) error {
-	if o.down {
-		return errPrimaryDown
+	if o.unreachable() {
+		return o.failure()
 	}
 	return o.fakePrimary.DeleteToken(ctx, t)
 }
 
 func (o *outagePrimary) SaveRefreshToken(ctx context.Context, ti *TokenInfo) error {
-	if o.down {
-		return errPrimaryDown
+	if o.unreachable() {
+		return o.failure()
 	}
 	return o.fakePrimary.SaveRefreshToken(ctx, ti)
 }
 
 func (o *outagePrimary) ConsumeRefreshToken(ctx context.Context, t string) (*TokenInfo, error) {
-	if o.down {
-		return nil, errPrimaryDown
+	if o.unreachable() {
+		return nil, o.failure()
 	}
 	ti, err := o.fakePrimary.ConsumeRefreshToken(ctx, t)
 	if err == nil {
@@ -500,10 +533,18 @@ func TestHybridStore_OutageRemembersOnlyHeldEntries(t *testing.T) {
 		t.Errorf("made-up tokens left %d remembered removals", n)
 	}
 
+	// A revocation the primary store takes part in is on record only for
+	// the requests that may have fetched the copy before: it is not
+	// pending, and gone after the grace period, long before the tokens
+	// would have expired.
 	s.primary.down = false
 	s.revoke(t)
+	if s.file.removed.hasPending() {
+		t.Error("a revocation the primary store took part in is waiting for it")
+	}
+	s.file.removeExpired(time.Now().Add(removalGrace + time.Minute))
 	if n := s.file.removed.size(); n != 0 {
-		t.Errorf("a revocation the primary store took part in left %d remembered removals", n)
+		t.Errorf("%d removals remembered after the grace period", n)
 	}
 
 	// A removal is remembered until the entry expires, not longer.
@@ -518,5 +559,168 @@ func TestHybridStore_OutageRemembersOnlyHeldEntries(t *testing.T) {
 	s.file.removeExpired(time.Now().Add(2 * time.Minute))
 	if n := s.file.removed.size(); n != 0 {
 		t.Errorf("%d removals remembered after their entries expired", n)
+	}
+}
+
+// TestHybridStore_OutageEdge pins the moment at which the primary store
+// fails for one request and answers the next. The request that met the
+// failure takes the file store's copy; a request that overlaps it gets the
+// primary store's copy. Only one of them may come back with the token, and
+// a process that dies in that moment must find the removal on disk.
+func TestHybridStore_OutageEdge(t *testing.T) {
+	ctx := context.Background()
+	t.Run("refresh token handed out once", func(t *testing.T) {
+		s := newOutageStore(t)
+		var second error
+		s.primary.failOnce = func() {
+			_, second = s.h.ConsumeRefreshToken(ctx, s.pair.RefreshToken)
+		}
+		_, first := s.h.ConsumeRefreshToken(ctx, s.pair.RefreshToken)
+		if (first == nil) == (second == nil) {
+			t.Errorf("first request: %v, overlapping request: %v; want the token handed out to exactly one", first, second)
+		}
+	})
+	t.Run("code handed out once", func(t *testing.T) {
+		s := newOutageStore(t)
+		var second error
+		s.primary.failOnce = func() {
+			_, second = s.h.ConsumeAuthCode(ctx, s.code.Code)
+		}
+		_, first := s.h.ConsumeAuthCode(ctx, s.code.Code)
+		if (first == nil) == (second == nil) {
+			t.Errorf("first request: %v, overlapping request: %v; want the code handed out to exactly one", first, second)
+		}
+	})
+	t.Run("deletion on disk before the primary store is asked", func(t *testing.T) {
+		s := newOutageStore(t)
+		s.primary.failOnce = func() {
+			// The process dies while it waits for the primary store: the
+			// next start reads what is on disk now.
+			restarted, err := NewFileTokenStore(s.dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := restarted.GetToken(ctx, s.pair.AccessToken); !errors.Is(err, ErrNotFound) {
+				t.Errorf("the deleted access token is on disk: %v", err)
+			}
+			if !restarted.isRemoved(removedAccess, s.pair.AccessToken) {
+				t.Error("the deletion is not on record on disk while the primary store is being asked")
+			}
+		}
+		if err := s.h.DeleteToken(ctx, s.pair.AccessToken); err != nil {
+			t.Errorf("DeleteToken: %v", err)
+		}
+		if !s.file.removed.hasPending() {
+			t.Error("the deletion the primary store did not take is not waiting for it")
+		}
+	})
+}
+
+// TestHybridStore_HangingPrimaryIsLeftAlone pins that a primary store whose
+// call timed out is not asked again for a moment. A request makes several
+// calls, and each would wait for the timeout again; a token refresh would
+// outlast the patience of its client. A call that fails at once starts no
+// pause: trying again costs nothing.
+func TestHybridStore_HangingPrimaryIsLeftAlone(t *testing.T) {
+	s := newOutageStore(t)
+	ctx := context.Background()
+	now := time.Now()
+	s.h.now = func() time.Time { return now }
+
+	// A failure that comes back at once.
+	s.primary.failOnce = func() {}
+	before := s.primary.calls
+	if _, err := s.h.GetToken(ctx, s.pair.AccessToken); err != nil {
+		t.Fatalf("GetToken with a failing primary store: %v", err)
+	}
+	if _, err := s.h.GetToken(ctx, s.pair.AccessToken); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.primary.calls - before; got != 2 {
+		t.Errorf("after a fast failure the primary store was asked %d times for two requests, want 2", got)
+	}
+
+	// A failure after the call hung.
+	s.primary.failOnce = func() { now = now.Add(3 * time.Second) }
+	before = s.primary.calls
+	for range 5 {
+		if _, err := s.h.GetToken(ctx, s.pair.AccessToken); err != nil {
+			t.Fatalf("GetToken while the primary store hangs: %v", err)
+		}
+	}
+	if got := s.primary.calls - before; got != 1 {
+		t.Errorf("the hanging primary store was asked %d times for five requests, want once", got)
+	}
+	// Writes and removals work on the file store meanwhile.
+	pair := &TokenInfo{ //nolint:gosec // test tokens, not credentials
+		AccessToken: "paused-access", RefreshToken: "paused-refresh",
+		ExpiresAt: now.Add(time.Hour), RefreshExpiresAt: now.Add(24 * time.Hour),
+	}
+	if err := s.h.SaveToken(ctx, pair); err != nil {
+		t.Errorf("SaveToken during the pause: %v", err)
+	}
+	if _, err := s.h.GetToken(ctx, pair.AccessToken); err != nil {
+		t.Errorf("GetToken during the pause: %v", err)
+	}
+
+	now = now.Add(primaryPause)
+	before = s.primary.calls
+	if _, err := s.h.GetToken(ctx, s.pair.AccessToken); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.primary.calls - before; got != 1 {
+		t.Errorf("after the pause the primary store was asked %d times, want once", got)
+	}
+}
+
+// TestHybridStore_NoRecordForWhatThePrimaryNeverHeld pins that tokens
+// issued while the primary store refuses connections leave no record when
+// they are removed: the primary store certainly has no copy of them. Every
+// refresh during a long outage would otherwise add two records that live
+// as long as the tokens would. A write that failed without saying whether
+// it was carried out gets its record: the primary store may hold the token.
+func TestHybridStore_NoRecordForWhatThePrimaryNeverHeld(t *testing.T) {
+	s := newOutageStore(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	s.primary.down, s.primary.refused = true, true
+	for i := range 20 {
+		pair := &TokenInfo{
+			AccessToken: fmt.Sprintf("during-access-%d", i), RefreshToken: fmt.Sprintf("during-refresh-%d", i),
+			ExpiresAt: now.Add(time.Hour), RefreshExpiresAt: now.Add(24 * time.Hour),
+		}
+		if err := s.h.SaveToken(ctx, pair); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.h.SaveRefreshToken(ctx, pair); err != nil {
+			t.Fatal(err)
+		}
+		revokePair(t, s.h, pair.AccessToken)
+	}
+	if n := s.file.removed.size(); n != 0 {
+		t.Errorf("%d removals on record for tokens the primary store never held", n)
+	}
+	if n := len(s.h.missed); n != 0 {
+		t.Errorf("%d tokens still noted as missed by the primary store after their removal", n)
+	}
+	// The pair from before the outage does get its record.
+	s.revoke(t)
+	if n := s.file.removed.size(); n != 2 {
+		t.Errorf("%d removals on record, want those of the pair the primary store holds", n)
+	}
+
+	// A write that failed like a timeout may have reached the primary
+	// store, so the removal of that token is on record.
+	s.primary.refused = false
+	unknown := &TokenInfo{ //nolint:gosec // test tokens, not credentials
+		AccessToken: "unknown-access", RefreshToken: "unknown-refresh",
+		ExpiresAt: now.Add(time.Hour), RefreshExpiresAt: now.Add(24 * time.Hour),
+	}
+	_ = s.h.SaveToken(ctx, unknown)
+	_ = s.h.SaveRefreshToken(ctx, unknown)
+	revokePair(t, s.h, unknown.AccessToken)
+	if n := s.file.removed.size(); n != 4 {
+		t.Errorf("%d removals on record, want also those of the pair whose write may have reached the primary store", n)
 	}
 }

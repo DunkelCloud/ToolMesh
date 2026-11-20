@@ -101,7 +101,9 @@ for the full narrative and details.
 - Logins, token refreshes and client registrations work while Redis cannot
   be reached: what they write is kept in the file store, where reads
   already fall back to. Until now they failed with `500`, and a refresh
-  spent its refresh token without returning a new pair.
+  spent its refresh token without returning a new pair. A Redis that
+  hangs is left alone for five seconds after a call to it timed out, so a
+  request waits for it once and not for each of its calls.
 - Behind a reverse proxy that `TOOLMESH_TRUSTED_PROXIES` does not list, all
   clients are counted under the proxy's address, and a few wrong API keys
   from anyone lock out every client behind it. Only an hourly `WARN` about

@@ -240,16 +240,28 @@ func (s *FileTokenStore) SaveAuthCode(_ context.Context, ac *AuthCode) error {
 
 // ConsumeAuthCode atomically retrieves and deletes an authorization code.
 func (s *FileTokenStore) ConsumeAuthCode(_ context.Context, code string) (*AuthCode, error) {
-	s.mu.Lock()
-	ac, ok := s.authCodes[code]
-	if ok {
-		delete(s.authCodes, code)
-	}
-	s.mu.Unlock()
-	if !ok {
+	ac := s.removeCode(code, false)
+	if ac == nil {
 		return nil, ErrNotFound
 	}
 	return ac, nil
+}
+
+// removeCode removes an authorization code and returns it, or nil when it
+// was not stored. With remember the removal is remembered in the same step
+// (see removeAccess).
+func (s *FileTokenStore) removeCode(code string, remember bool) *AuthCode {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ac, ok := s.authCodes[code]
+	if !ok {
+		return nil
+	}
+	delete(s.authCodes, code)
+	if remember && s.removed.mark(removedCode, code, ac.ExpiresAt, time.Now()) {
+		s.saveState()
+	}
+	return ac
 }
 
 // SaveToken stores an access token.
@@ -336,19 +348,25 @@ func (s *FileTokenStore) dropRefreshLocked(rt string) *TokenInfo {
 
 // DeleteToken removes an access token from the store.
 func (s *FileTokenStore) DeleteToken(_ context.Context, accessToken string) error {
-	if ti := s.deleteToken(accessToken); ti != nil {
-		s.rememberStandalone(removedAccess, accessToken, ti.ExpiresAt)
-	}
+	s.removeAccess(accessToken, false)
 	return nil
 }
 
-// deleteToken removes an access token and returns its record, or nil when
-// it was not stored.
-func (s *FileTokenStore) deleteToken(accessToken string) *TokenInfo {
+// removeAccess removes an access token and returns its record, or nil when
+// it was not stored. With remember, or when the store stands alone and
+// restored the token from disk (see RememberRemovals), the removal is
+// remembered in the same step and the same write to disk. There is no
+// moment at which the token is gone and its removal is not on record yet,
+// for another request or for a crash to fall into.
+func (s *FileTokenStore) removeAccess(accessToken string, remember bool) *TokenInfo {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	ti := s.accessTokens[accessToken]
 	delete(s.accessTokens, accessToken)
+	if ti != nil && (remember || s.restoredStandaloneLocked(accessToken)) {
+		s.removed.mark(removedAccess, accessToken, ti.ExpiresAt, time.Now())
+	}
+	delete(s.fromDisk, accessToken)
 	s.saveState()
 	return ti
 }
@@ -364,23 +382,27 @@ func (s *FileTokenStore) SaveRefreshToken(_ context.Context, ti *TokenInfo) erro
 
 // ConsumeRefreshToken atomically retrieves and deletes a refresh token.
 func (s *FileTokenStore) ConsumeRefreshToken(_ context.Context, refreshToken string) (*TokenInfo, error) {
-	ti := s.consumeRefreshToken(refreshToken)
+	ti := s.removeRefresh(refreshToken, false)
 	if ti == nil {
 		return nil, ErrNotFound
 	}
-	s.rememberStandalone(removedRefresh, refreshToken, ti.RefreshExpiry())
 	return ti, nil
 }
 
-// consumeRefreshToken removes a refresh token and returns its record, or
-// nil when it was not stored.
-func (s *FileTokenStore) consumeRefreshToken(refreshToken string) *TokenInfo {
+// removeRefresh removes a refresh token and returns its record, or nil
+// when it was not stored. The removal is remembered as removeAccess says.
+func (s *FileTokenStore) removeRefresh(refreshToken string, remember bool) *TokenInfo {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	ti := s.dropRefreshLocked(refreshToken)
-	if ti != nil {
-		s.saveState()
+	if ti == nil {
+		return nil
 	}
+	if remember || s.restoredStandaloneLocked(refreshToken) {
+		s.removed.mark(removedRefresh, refreshToken, ti.RefreshExpiry(), time.Now())
+	}
+	delete(s.fromDisk, refreshToken)
+	s.saveState()
 	return ti
 }
 
@@ -398,19 +420,11 @@ func (s *FileTokenStore) RememberRemovals() {
 	s.standalone.Store(true)
 }
 
-// rememberStandalone remembers the removal of a token that was restored
-// from disk, when RememberRemovals is in force.
-func (s *FileTokenStore) rememberStandalone(kind removedKind, token string, until time.Time) {
-	if !s.standalone.Load() {
-		return
-	}
-	s.mu.Lock()
-	restored := s.fromDisk[token]
-	delete(s.fromDisk, token)
-	s.mu.Unlock()
-	if restored {
-		s.markRemoved(kind, token, until)
-	}
+// restoredStandaloneLocked reports whether the removal of token is to be
+// remembered because RememberRemovals is in force and the token was
+// restored from disk. Callers must hold s.mu.
+func (s *FileTokenStore) restoredStandaloneLocked(token string) bool {
+	return s.standalone.Load() && s.fromDisk[token]
 }
 
 // markRemoved remembers until the time until that the entry of the given
@@ -425,17 +439,6 @@ func (s *FileTokenStore) markRemoved(kind removedKind, token string, until time.
 // not wait for the store's lock.
 func (s *FileTokenStore) isRemoved(kind removedKind, token string) bool {
 	return s.removed.has(kind, token, time.Now())
-}
-
-// dropRemoved forgets the removal of the entry and reports whether one was
-// remembered. Use it only where no copy of the entry can be left or in
-// flight in the other store.
-func (s *FileTokenStore) dropRemoved(kind removedKind, token string) bool {
-	if !s.removed.drop(kind, token) {
-		return false
-	}
-	s.persist()
-	return true
 }
 
 // WarmUp copies all current in-memory state to dst. Call this after
@@ -491,9 +494,10 @@ func (s *FileTokenStore) WarmUp(ctx context.Context, dst TokenStore) {
 }
 
 // applyRemovals removes from dst every entry whose removal dst has not been
-// told about, and returns how many it could tell. The removals stay
-// remembered until their entries expire: a request may have fetched a copy
-// from dst before it was removed there.
+// told about, and returns how many it could tell. It stops at the first
+// entry dst cannot be told about: dst is unreachable then, and every
+// further attempt would wait for it again. The removals stay remembered for
+// a while after dst was told (removalGrace).
 func (s *FileTokenStore) applyRemovals(ctx context.Context, dst TokenStore) int {
 	applied := 0
 	for _, r := range s.removed.pendingList() {
@@ -508,9 +512,9 @@ func (s *FileTokenStore) applyRemovals(ctx context.Context, dst TokenStore) int 
 		}
 		if err != nil && !errors.Is(err, ErrNotFound) {
 			slog.Warn("failed to apply a removal to the primary store", "kind", strings.TrimSuffix(string(r.kind), ":"), "error", err)
-			continue
+			break
 		}
-		s.removed.setApplied(r.kind, r.token)
+		s.removed.setApplied(r.kind, r.token, time.Now())
 		applied++
 	}
 	return applied

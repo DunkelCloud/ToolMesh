@@ -35,15 +35,20 @@ const (
 // removedKinds lists the kinds, for walking them.
 var removedKinds = []removedKind{removedAccess, removedRefresh, removedCode}
 
+// removalGrace is how long a removal stays remembered after the other
+// store has been told. A request may have fetched the copy from that store
+// just before it was removed there, and has to find the record when it
+// looks. That is a matter of the time one request takes.
+const removalGrace = 5 * time.Minute
+
 // removal is one remembered removal.
 type removal struct {
-	// until is when the entry expires, and with it the copy another store
-	// may hold. The removal is remembered that long.
+	// until is when the removal is forgotten: when the entry expires, and
+	// with it the copy another store may hold, or removalGrace after that
+	// store was told, whichever is first.
 	until time.Time
-	// applied reports that the other store has been told since. The
-	// removal stays remembered all the same: a request may have fetched
-	// the copy before it was removed there. It is not persisted, so a
-	// restart tells the other store again.
+	// applied reports that the other store has been told since. It is not
+	// persisted, so a restart tells the other store again.
 	applied bool
 }
 
@@ -116,18 +121,8 @@ func (r *removals) has(kind removedKind, token string, now time.Time) bool {
 	return ok && rm.until.After(now)
 }
 
-// drop forgets the removal of the entry and reports whether one was
-// remembered. Use it only where no copy of the entry can be left or in
-// flight; otherwise the removal has to stay until it expires.
-func (r *removals) drop(kind removedKind, token string) bool {
-	if r.counts[kind].Load() == 0 {
-		return false
-	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.dropLocked(kind, token)
-}
-
+// dropLocked forgets the removal of the entry and reports whether one was
+// remembered. Callers must hold r.mu.
 func (r *removals) dropLocked(kind removedKind, token string) bool {
 	rm, ok := r.byKind[kind][token]
 	if !ok {
@@ -141,13 +136,23 @@ func (r *removals) dropLocked(kind removedKind, token string) bool {
 	return true
 }
 
-// setApplied records that the other store has been told about the removal.
-func (r *removals) setApplied(kind removedKind, token string) {
+// setApplied records that the other store has been told about the removal
+// at now, or holds no copy. The removal is then remembered for removalGrace
+// more, if it was to be remembered longer.
+func (r *removals) setApplied(kind removedKind, token string, now time.Time) {
+	if r.counts[kind].Load() == 0 {
+		return
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if rm, ok := r.byKind[kind][token]; ok && !rm.applied {
-		rm.applied = true
-		r.pending.Add(-1)
+	rm, ok := r.byKind[kind][token]
+	if !ok || rm.applied {
+		return
+	}
+	rm.applied = true
+	r.pending.Add(-1)
+	if grace := now.Add(removalGrace); grace.Before(rm.until) {
+		rm.until = grace
 	}
 }
 

@@ -19,7 +19,6 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
-	"slices"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -100,14 +99,37 @@ var trustedProxies atomic.Pointer[[]netip.Prefix]
 
 // SetTrustedProxies sets the proxy addresses whose X-Forwarded-For header
 // ClientIP honors (TOOLMESH_TRUSTED_PROXIES). An empty, non-nil list trusts no proxy;
-// nil restores DefaultTrustedProxies.
+// nil restores DefaultTrustedProxies. An IPv4-mapped IPv6 entry counts as the
+// IPv4 network it stands for (see UnmapProxyPrefix).
 func SetTrustedProxies(prefixes []netip.Prefix) {
 	if prefixes == nil {
 		trustedProxies.Store(nil)
 		return
 	}
-	cp := slices.Clone(prefixes)
+	cp := make([]netip.Prefix, len(prefixes))
+	for i, p := range prefixes {
+		cp[i], _ = UnmapProxyPrefix(p)
+	}
 	trustedProxies.Store(&cp)
+}
+
+// UnmapProxyPrefix returns an IPv4-mapped IPv6 prefix such as
+// "::ffff:172.18.0.10/128" as the IPv4 prefix it stands for,
+// "172.18.0.10/32"; ok is false for a mapped prefix shorter than /96,
+// which names no IPv4 network. Any other prefix is returned as it is.
+//
+// Addresses are compared in their IPv4 form, and an IPv4 address matches no
+// IPv6 prefix. A proxy listed the way a dual-stack listener reports it,
+// "::ffff:172.18.0.10", would therefore never be trusted, and nothing would
+// say so: every client behind it would be counted under its address.
+func UnmapProxyPrefix(p netip.Prefix) (unmapped netip.Prefix, ok bool) {
+	if !p.Addr().Is4In6() {
+		return p, true
+	}
+	if p.Bits() < 96 {
+		return p, false
+	}
+	return netip.PrefixFrom(p.Addr().Unmap(), p.Bits()-96), true
 }
 
 // isTrustedProxy reports whether addr belongs to a trusted proxy network.

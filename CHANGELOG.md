@@ -113,6 +113,11 @@ for the full narrative and details.
   the caller chose. The credential binding kept the backend's credentials
   from going there; a backend without credentials sent the request. Only a
   path the DADL writes as an absolute URL names another host.
+- An entry of `TOOLMESH_TRUSTED_PROXIES` in IPv4-mapped IPv6 form, such as
+  `::ffff:172.18.0.10`, now counts as the IPv4 address or network it stands
+  for. Such an entry matched no connection, so the proxy stayed untrusted
+  and every client behind it was counted under its address, without a
+  message. A mapped prefix shorter than `/96` fails startup.
 
 ### Added
 

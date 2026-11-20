@@ -57,6 +57,12 @@ func TestLoad_TrustedProxies(t *testing.T) {
 		{"10.1.0.0/16, 203.0.113.7", []string{"10.1.0.0/16", "203.0.113.7/32"}, false},
 		{"2001:db8::1", []string{"2001:db8::1/128"}, false},
 		{"10.1.2.3/16", []string{"10.1.0.0/16"}, false},
+		// IPv4-mapped entries, as a dual-stack listener reports a peer,
+		// are the IPv4 addresses they stand for.
+		{"::ffff:172.18.0.10", []string{"172.18.0.10/32"}, false},
+		{"::ffff:172.18.0.0/112, ::ffff:10.0.0.0/104", []string{"172.18.0.0/16", "10.0.0.0/8"}, false},
+		{"::ffff:10.0.0.0/90", nil, true},
+		{"fe80::1%eth0", []string{"fe80::1/128"}, false},
 		{"not-an-ip", nil, true},
 	}
 	for _, tc := range cases {

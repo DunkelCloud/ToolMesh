@@ -118,6 +118,10 @@ for the full narrative and details.
   for. Such an entry matched no connection, so the proxy stayed untrusted
   and every client behind it was counted under its address, without a
   message. A mapped prefix shorter than `/96` fails startup.
+- The debug trace of a backend request (`LOG_LEVEL=debug`, or the
+  per-backend debug file) no longer carries an API key that the backend
+  sends in its query string (`auth.inject_into: query`): the value is
+  logged as `[REDACTED]`, the parameter name stays.
 
 ### Added
 

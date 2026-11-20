@@ -38,10 +38,13 @@ const (
 	contentTypeText = "text"
 
 	// DADL ParamDef "in:" values.
-	paramInPath   = "path"
-	paramInQuery  = "query"
-	paramInBody   = "body"
-	paramInHeader = "header"
+	paramInPath  = "path"
+	paramInQuery = "query"
+	// authInjectQuery is the auth.inject_into value that puts an API key
+	// into the query string.
+	authInjectQuery = paramInQuery
+	paramInBody     = "body"
+	paramInHeader   = "header"
 
 	// DADL ParamDef "type:" value for file uploads.
 	paramTypeFile = "file"

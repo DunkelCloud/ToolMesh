@@ -1082,15 +1082,14 @@ func (a *RESTAdapter) doRequest(ctx context.Context, tool *dadl.ToolDef, params 
 		req.Header.Set(tool.Idempotency.Header, idemKey)
 	}
 
-	// Debug-level request trace. Header-based auth is not in the URL, but a
-	// query-injected API key (auth.inject_into: query) is — so this line can
-	// contain a credential at debug level. That is intentional for diagnosing
-	// auth problems; the default LOG_LEVEL is "info" so it is not emitted unless
-	// an operator explicitly opts into debug logging.
+	// Debug-level request trace. Header-based auth is not in the URL; a
+	// query-injected API key (auth.inject_into: query) is, and loggableURL
+	// takes its value out. A debug log is read, kept and passed around like
+	// any other log.
 	a.logger.DebugContext(ctx, "REST request",
 		"backend", a.spec.Backend.Name,
 		"method", req.Method,
-		"url", req.URL.String(),
+		"url", a.loggableURL(req.URL),
 	)
 
 	resp, err := a.httpClient.Do(req)
@@ -1120,6 +1119,26 @@ func (a *RESTAdapter) doRequest(ctx context.Context, tool *dadl.ToolDef, params 
 	}
 
 	return resp, body, nil
+}
+
+// loggableURL returns the URL of a backend request as the debug log shows
+// it: complete, except that the value of the query parameter that carries
+// the backend's API key (auth.inject_into: query) is replaced by
+// dadl.RedactedPlaceholder. That the key was sent, and under which name,
+// stays visible, which is what diagnosing an auth problem needs.
+func (a *RESTAdapter) loggableURL(u *url.URL) string {
+	auth := a.spec.Backend.Auth
+	if auth.InjectInto != authInjectQuery || auth.QueryParam == "" {
+		return u.String()
+	}
+	q := u.Query()
+	if !q.Has(auth.QueryParam) {
+		return u.String()
+	}
+	q.Set(auth.QueryParam, dadl.RedactedPlaceholder)
+	shown := *u
+	shown.RawQuery = q.Encode()
+	return shown.String()
 }
 
 // buildHTTPRequest assembles the full HTTP request for a tool invocation:
@@ -2086,7 +2105,7 @@ func (a *RESTAdapter) doRequestRaw(ctx context.Context, tool *dadl.ToolDef, para
 	a.logger.DebugContext(ctx, "REST streaming request",
 		"backend", a.spec.Backend.Name,
 		"method", req.Method,
-		"url", req.URL.String(),
+		"url", a.loggableURL(req.URL),
 	)
 
 	resp, err := a.streamingHTTPClient.Do(req)

@@ -1887,7 +1887,7 @@ HTTP status or the transport error, never response content.
 | `DEBUG_BACKENDS` | *(empty)* | Comma-separated backend names for per-backend debug file logging |
 | `DEBUG_FILE` | *(empty)* | Path to the debug log file (e.g. `debug.log`). Both `DEBUG_BACKENDS` and `DEBUG_FILE` must be set to activate. |
 
-**Secure default.** The default level is `info`, which does not log request payloads. Raise it to `debug` only while diagnosing an MCP communication issue: at `debug` level ToolMesh logs complete request URLs and request/response payloads, which for query-string API keys means the credential is written to the log. **Do not run `debug` in production.** Prefer the per-backend debug file (below) to scope tracing to a single backend without turning on global debug.
+**Secure default.** The default level is `info`, which does not log request payloads. Raise it to `debug` only while diagnosing an MCP communication issue: at `debug` level ToolMesh logs request URLs and request/response payloads. In the URL of a backend request, the value of a query-string API key (`auth.inject_into: query`) is replaced by `[REDACTED]`; payloads and other parameters are logged as they are and can hold what callers and APIs send. **Do not run `debug` in production.** Prefer the per-backend debug file (below) to scope tracing to a single backend without turning on global debug.
 
 At `debug` level, ToolMesh logs the complete request/response flow between clients and backends:
 - Incoming JSON-RPC method, params, and request ID

@@ -42,6 +42,10 @@ type FileTokenStore struct {
 	authCodes     map[string]*AuthCode
 	accessTokens  map[string]*TokenInfo
 	refreshTokens map[string]*TokenInfo
+	// refreshByAccess names the refresh token issued together with an
+	// access token, so that RefreshTokenOf looks the pair up instead of
+	// walking every refresh token while it holds mu.
+	refreshByAccess map[string]string
 }
 
 // NewFileTokenStore creates a new file-backed token store. It creates the
@@ -52,11 +56,12 @@ func NewFileTokenStore(dataDir string) (*FileTokenStore, error) {
 	}
 
 	s := &FileTokenStore{
-		dataDir:       dataDir,
-		clients:       make(map[string]*OAuthClient),
-		authCodes:     make(map[string]*AuthCode),
-		accessTokens:  make(map[string]*TokenInfo),
-		refreshTokens: make(map[string]*TokenInfo),
+		dataDir:         dataDir,
+		clients:         make(map[string]*OAuthClient),
+		authCodes:       make(map[string]*AuthCode),
+		accessTokens:    make(map[string]*TokenInfo),
+		refreshTokens:   make(map[string]*TokenInfo),
+		refreshByAccess: make(map[string]string),
 	}
 
 	if err := s.loadState(); err != nil {
@@ -119,6 +124,9 @@ func (s *FileTokenStore) loadState() error {
 		for k, v := range state.RefreshTokens {
 			if v.RefreshExpiry().After(now) {
 				s.refreshTokens[k] = v
+				if v.AccessToken != "" {
+					s.refreshByAccess[v.AccessToken] = k
+				}
 				restored++
 			}
 		}
@@ -232,12 +240,35 @@ func (s *FileTokenStore) RefreshTokenOf(_ context.Context, accessToken string) (
 	if ti, ok := s.accessTokens[accessToken]; ok && ti.RefreshToken != "" {
 		return ti.RefreshToken, nil
 	}
-	for rt, ti := range s.refreshTokens {
-		if ti.AccessToken == accessToken {
-			return rt, nil
-		}
+	if rt, ok := s.refreshByAccess[accessToken]; ok {
+		return rt, nil
 	}
 	return "", ErrNotFound
+}
+
+// putRefreshLocked stores the refresh token of ti and records which access
+// token it was issued with. Callers must hold s.mu.
+func (s *FileTokenStore) putRefreshLocked(ti *TokenInfo) {
+	s.dropRefreshLocked(ti.RefreshToken)
+	s.refreshTokens[ti.RefreshToken] = ti
+	if ti.AccessToken != "" {
+		s.refreshByAccess[ti.AccessToken] = ti.RefreshToken
+	}
+}
+
+// dropRefreshLocked removes the refresh token rt together with its entry in
+// refreshByAccess and returns its record, or nil when it is not stored.
+// Callers must hold s.mu.
+func (s *FileTokenStore) dropRefreshLocked(rt string) *TokenInfo {
+	ti, ok := s.refreshTokens[rt]
+	if !ok {
+		return nil
+	}
+	delete(s.refreshTokens, rt)
+	if s.refreshByAccess[ti.AccessToken] == rt {
+		delete(s.refreshByAccess, ti.AccessToken)
+	}
+	return ti
 }
 
 // DeleteToken removes an access token from the store.
@@ -252,7 +283,7 @@ func (s *FileTokenStore) DeleteToken(_ context.Context, accessToken string) erro
 // SaveRefreshToken stores a refresh token.
 func (s *FileTokenStore) SaveRefreshToken(_ context.Context, ti *TokenInfo) error {
 	s.mu.Lock()
-	s.refreshTokens[ti.RefreshToken] = ti
+	s.putRefreshLocked(ti)
 	s.saveState()
 	s.mu.Unlock()
 	return nil
@@ -261,13 +292,12 @@ func (s *FileTokenStore) SaveRefreshToken(_ context.Context, ti *TokenInfo) erro
 // ConsumeRefreshToken atomically retrieves and deletes a refresh token.
 func (s *FileTokenStore) ConsumeRefreshToken(_ context.Context, refreshToken string) (*TokenInfo, error) {
 	s.mu.Lock()
-	ti, ok := s.refreshTokens[refreshToken]
-	if ok {
-		delete(s.refreshTokens, refreshToken)
+	ti := s.dropRefreshLocked(refreshToken)
+	if ti != nil {
 		s.saveState()
 	}
 	s.mu.Unlock()
-	if !ok {
+	if ti == nil {
 		return nil, ErrNotFound
 	}
 	return ti, nil
@@ -360,7 +390,7 @@ func (s *FileTokenStore) removeExpired(now time.Time) {
 	}
 	for k, v := range s.refreshTokens {
 		if v.RefreshExpiry().Before(now) {
-			delete(s.refreshTokens, k)
+			s.dropRefreshLocked(k)
 			dirty = true
 		}
 	}

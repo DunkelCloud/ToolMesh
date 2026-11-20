@@ -103,6 +103,12 @@ func NewRevokeRateLimiter(rdb *redis.Client) *AddressRateLimiter {
 	return newAddressRateLimiter(rdb, prefixRevokeRate, revokeRateLimit, revokeRateWindow)
 }
 
+// Window returns the length of the window the limit counts in, which is
+// also the longest a refused client has to wait.
+func (rl *AddressRateLimiter) Window() time.Duration {
+	return rl.window
+}
+
 // allowLocal counts one request from ip in process memory. An IPv6 address
 // counts as its /64, like the login throttle's per-address limit.
 func (rl *AddressRateLimiter) allowLocal(ip string) bool {

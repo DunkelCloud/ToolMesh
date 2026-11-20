@@ -49,13 +49,15 @@ import (
 // Server is the ToolMesh MCP server that handles Streamable HTTP transport,
 // OAuth 2.1 authentication, and tool call routing.
 type Server struct {
-	handler       *Handler
-	cfg           *config.Config
-	logger        *slog.Logger
-	tokenStore    auth.TokenStore
-	userStore     *auth.UserStore
-	apiKeys       *auth.APIKeyStore
-	rateLimiter   *auth.DCRRateLimiter
+	handler     *Handler
+	cfg         *config.Config
+	logger      *slog.Logger
+	tokenStore  auth.TokenStore
+	userStore   *auth.UserStore
+	apiKeys     *auth.APIKeyStore
+	rateLimiter *auth.DCRRateLimiter
+	// revokeLimiter limits revocation requests per client address.
+	revokeLimiter *auth.AddressRateLimiter
 	loginThrottle *auth.LoginThrottle
 	// bearerThrottle limits failed bearer credentials per client address.
 	bearerThrottle *auth.LoginThrottle
@@ -105,6 +107,7 @@ func NewServer(handler *Handler, cfg *config.Config, logger *slog.Logger, tokenS
 		userStore:      userStore,
 		apiKeys:        apiKeys,
 		rateLimiter:    rateLimiter,
+		revokeLimiter:  auth.NewRevokeRateLimiter(nil),
 		loginThrottle:  auth.NewLoginThrottle(loginThrottleConfig(cfg), nil, logger),
 		bearerThrottle: auth.NewLoginThrottle(bearerThrottleConfig(cfg), nil, logger),
 		callerClasses:  callerClasses,
@@ -112,12 +115,14 @@ func NewServer(handler *Handler, cfg *config.Config, logger *slog.Logger, tokenS
 	}
 }
 
-// UseRedisLoginThrottle moves the failed-login counters from process memory,
-// where NewServer keeps them, to Redis, so the limits hold across replicas and
-// restarts. Call it before the server starts handling requests.
+// UseRedisLoginThrottle moves the failed-login counters and the count of
+// revocation requests from process memory, where NewServer keeps them, to
+// Redis, so the limits hold across replicas and restarts. Call it before the
+// server starts handling requests.
 func (s *Server) UseRedisLoginThrottle(rdb *redis.Client) {
 	s.loginThrottle = auth.NewLoginThrottle(loginThrottleConfig(s.cfg), rdb, s.logger)
 	s.bearerThrottle = auth.NewLoginThrottle(bearerThrottleConfig(s.cfg), rdb, s.logger)
+	s.revokeLimiter = auth.NewRevokeRateLimiter(rdb)
 }
 
 // bearerThrottleConfig limits failed bearer credentials per client address
@@ -1885,12 +1890,29 @@ func (s *Server) currentIdentity(userID string) (id tokenIdentity, ok bool) {
 // it: the clients are public (token_endpoint_auth_method none), and revoking
 // only takes access away. Revoking either token of a pair revokes both. The
 // answer is 200 whether or not the token was known (RFC 7009 section 2.2).
+//
+// The endpoint takes no credential and every request makes the token store
+// look a token up, so the requests of one client address are limited. A
+// client revokes when a user signs out; the limit is far above that.
 func (s *Server) handleRevoke(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	w.Header().Set("Cache-Control", "no-store")
+	if s.revokeLimiter != nil {
+		ip := auth.ClientIP(r)
+		allowed, err := s.revokeLimiter.Allow(r.Context(), ip)
+		if err != nil {
+			s.logger.WarnContext(r.Context(), "revocation rate limit: redis unavailable, requests counted in process memory",
+				outcomeError, err, logKeyRemote, ip)
+		}
+		if !allowed {
+			w.Header().Set("Retry-After", strconv.Itoa(retryAfterSeconds(s.revokeLimiter.Window())))
+			writeJSON(w, http.StatusTooManyRequests, map[string]string{outcomeError: oauthErrTooManyRequests})
+			return
+		}
+	}
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1 MB limit
 	if err := r.ParseForm(); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: oauthErrInvalidReq})

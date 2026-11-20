@@ -76,6 +76,11 @@ for the full narrative and details.
   reverse the direction of the line. The page also states its charset
   (`text/html; charset=utf-8`), so a browser does not guess an encoding
   from text a client supplied.
+- Token revocation (`/revoke`) answers one client address at most 60 times
+  a minute and further requests with `429` and `Retry-After`. The endpoint
+  takes no credential and was not limited. Without Redis, a revocation with
+  an unknown token walked every stored refresh token while it held the
+  token store's lock; the pair is now looked up by key.
 
 ### Added
 

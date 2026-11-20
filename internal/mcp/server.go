@@ -1931,29 +1931,16 @@ func (s *Server) currentIdentity(userID string) (id tokenIdentity, ok bool) {
 // answer is 200 whether or not the token was known (RFC 7009 section 2.2).
 //
 // The endpoint takes no credential and every request makes the token store
-// look a token up, so the requests of one client address are limited. A
-// client revokes when a user signs out; the limit is far above that.
+// look a token up, so the requests of one client address are limited (see
+// revocationAllowed). A client revokes when a user signs out; the limit is
+// far above that.
 func (s *Server) handleRevoke(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	w.Header().Set("Cache-Control", "no-store")
-	if s.revokeLimiter != nil {
-		ip := auth.ClientIP(r)
-		allowed, err := s.revokeLimiter.Allow(r.Context(), ip)
-		if err != nil {
-			s.logger.WarnContext(r.Context(), "revocation rate limit: redis unavailable, requests counted in process memory",
-				outcomeError, err, logKeyRemote, ip)
-		}
-		if !allowed {
-			s.warnLimitBehindUnlistedProxy(r, ip, "token revocations")
-			w.Header().Set("Retry-After", strconv.Itoa(retryAfterSeconds(s.revokeLimiter.Window())))
-			writeJSON(w, http.StatusTooManyRequests, map[string]string{outcomeError: oauthErrTooManyRequests})
-			return
-		}
-	}
-	r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1 MB limit
+	r.Body = http.MaxBytesReader(w, r.Body, maxRevokeBodyBytes)
 	if err := r.ParseForm(); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: oauthErrInvalidReq})
 		return
@@ -1963,10 +1950,49 @@ func (s *Server) handleRevoke(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: oauthErrInvalidReq, oauthErrorDescription: "token is required"})
 		return
 	}
+	if !s.revocationAllowed(w, r, token) {
+		return
+	}
 	if s.tokenStore != nil {
 		s.revokeToken(r, token)
 	}
 	w.WriteHeader(http.StatusOK)
+}
+
+// maxRevokeBodyBytes bounds the body of a revocation request, which holds
+// one token and at most a hint about its type.
+const maxRevokeBodyBytes = 16 << 10
+
+// revocationAllowed counts a revocation request against the limit of its
+// client address and reports whether it may go on. When it may not, the
+// answer has been written.
+//
+// A request over the limit is still served when the token is one this
+// process holds. A sign-out must not fail because others at the same
+// address, behind a shared proxy or a hosted client's egress, have used
+// the limit up: the token would stay valid. Telling such a token from a
+// made-up one is a lookup in memory, so the limit keeps what it is for:
+// requests with tokens nobody holds stop reaching the token store.
+func (s *Server) revocationAllowed(w http.ResponseWriter, r *http.Request, token string) bool {
+	if s.revokeLimiter == nil {
+		return true
+	}
+	ip := auth.ClientIP(r)
+	allowed, err := s.revokeLimiter.Allow(r.Context(), ip)
+	if err != nil {
+		s.logger.WarnContext(r.Context(), "revocation rate limit: redis unavailable, requests counted in process memory",
+			outcomeError, err, logKeyRemote, ip)
+	}
+	if allowed {
+		return true
+	}
+	if holder, ok := s.tokenStore.(auth.TokenHolder); ok && holder.Holds(token) {
+		return true
+	}
+	s.warnLimitBehindUnlistedProxy(r, ip, "token revocations")
+	w.Header().Set("Retry-After", strconv.Itoa(retryAfterSeconds(s.revokeLimiter.Window())))
+	writeJSON(w, http.StatusTooManyRequests, map[string]string{outcomeError: oauthErrTooManyRequests})
+	return false
 }
 
 // revokeToken removes token, as access or refresh token, together with the

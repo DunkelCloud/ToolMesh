@@ -41,6 +41,9 @@ const (
 	// without bound.
 	maxLocalRateWindows = 50_000
 
+	// localEvictionBatch is how many windows a full table gives up at once.
+	localEvictionBatch = maxLocalRateWindows / 16
+
 	// rateLimitRedisTimeout bounds the counter operation in Redis, so a
 	// Redis that does not answer delays a request by at most this much
 	// before the process-local count decides.
@@ -128,22 +131,28 @@ func (rl *AddressRateLimiter) allowLocal(ip string) bool {
 	return w.count <= rl.limit
 }
 
-// evictLocked makes room in a full table: expired windows go first, then the
-// one that ends soonest. Callers must hold rl.mu.
+// evictLocked makes room in a full table: expired windows go first, and
+// when none has expired, a batch of windows goes, so that the next
+// addresses do not each pay for a walk through the whole table. Which
+// windows go is left to the order of the map. A table this full is a flood
+// from tens of thousands of addresses, and an address that loses its window
+// gets a fresh one. Callers must hold rl.mu.
 func (rl *AddressRateLimiter) evictLocked(now time.Time) {
-	var oldestKey string
-	var oldest time.Time
 	for k, w := range rl.local {
 		if !now.Before(w.resetAt) {
 			delete(rl.local, k)
-			continue
-		}
-		if oldestKey == "" || w.resetAt.Before(oldest) {
-			oldestKey, oldest = k, w.resetAt
 		}
 	}
-	if len(rl.local) >= maxLocalRateWindows && oldestKey != "" {
-		delete(rl.local, oldestKey)
+	if len(rl.local) < maxLocalRateWindows {
+		return
+	}
+	batch := localEvictionBatch
+	for k := range rl.local {
+		if batch == 0 {
+			break
+		}
+		delete(rl.local, k)
+		batch--
 	}
 }
 
@@ -160,11 +169,14 @@ var rateLimitScript = redis.NewScript(`
 // Allow counts one request from ip and reports whether it is within the
 // limit.
 //
-// With Redis the verdict is Redis's. When Redis cannot be asked, the verdict
-// is the process-local count's, and the error is returned with it for the
-// caller to log: the request is then limited per process instead of across
-// replicas, never without a limit. The local count sees every request of
-// this process, so it does not start from zero when Redis fails.
+// A request is allowed when neither count is over the limit. Redis counts
+// the requests of all replicas; the process-local count sees every request
+// of this process, also the ones Redis missed while it could not be asked.
+// So an outage does not reset the count in either direction: it does not
+// start from zero when Redis fails, and what was counted during the outage
+// still counts when Redis answers again. When Redis cannot be asked, the
+// local count alone decides, and the error is returned with the verdict
+// for the caller to log.
 func (rl *AddressRateLimiter) Allow(ctx context.Context, ip string) (bool, error) {
 	local := rl.allowLocal(ip)
 	if rl.rdb == nil {
@@ -179,5 +191,5 @@ func (rl *AddressRateLimiter) Allow(ctx context.Context, ip string) (bool, error
 	if err != nil {
 		return local, fmt.Errorf("rate limit check in redis: %w", err)
 	}
-	return count <= int64(rl.limit), nil
+	return local && count <= int64(rl.limit), nil
 }

@@ -15,49 +15,9 @@
 package auth
 
 import (
-	"bytes"
-	"log/slog"
 	"net/netip"
-	"strings"
 	"testing"
-	"time"
 )
-
-// TestClientIP_WarningCountsIgnoredRequests pins that the warning about an
-// ignored X-Forwarded-For header says how many requests it stands for: the
-// line is logged at most once per interval, and the count tells one stray
-// request from all of the traffic arriving through a proxy nobody listed.
-func TestClientIP_WarningCountsIgnoredRequests(t *testing.T) {
-	t.Cleanup(func() { SetTrustedProxies(nil) })
-	SetTrustedProxies(nil)
-	var buf bytes.Buffer
-	prev := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
-	t.Cleanup(func() { slog.SetDefault(prev) })
-	reset := func() {
-		lastUntrustedForwardedWarn.Store(0)
-		ignoredForwarded.Store(0)
-	}
-	reset()
-	t.Cleanup(reset)
-
-	const proxy = "172.18.0.5:1"
-	for range 3 {
-		_ = ClientIP(clientIPRequest(proxy, "198.51.100.8"))
-	}
-	if out := buf.String(); strings.Count(out, "TOOLMESH_TRUSTED_PROXIES") != 1 || !strings.Contains(out, "requests=1") {
-		t.Fatalf("first warning: %s", out)
-	}
-
-	// An interval later the next request logs again, with the requests
-	// that were ignored in between.
-	buf.Reset()
-	lastUntrustedForwardedWarn.Store(time.Now().Add(-2 * untrustedForwardedWarnInterval).UnixNano())
-	_ = ClientIP(clientIPRequest(proxy, "198.51.100.9"))
-	if out := buf.String(); strings.Count(out, "TOOLMESH_TRUSTED_PROXIES") != 1 || !strings.Contains(out, "requests=3") {
-		t.Errorf("second warning does not count the requests since the first: %s", out)
-	}
-}
 
 // TestForwardedForIgnored pins when a request counts as carrying a header
 // ClientIP does not honor.

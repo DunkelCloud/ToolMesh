@@ -66,7 +66,8 @@ for the full narrative and details.
   until now a second `?` was sent.
 - Client registration (`/register`) keeps its limit of 5 per hour and
   address when Redis cannot be reached: the count in process memory decides
-  then. Until now such a registration was allowed without a limit. A
+  then, and what it counted still counts when Redis answers again. Until
+  now such a registration was allowed without a limit. A
   registration is refused with `400` when its `client_name` is longer than
   256 bytes, when it lists more than 16 `redirect_uris` or one longer than
   2048 bytes, or when its body is larger than 64 KiB (until now 1 MiB,
@@ -80,8 +81,9 @@ for the full narrative and details.
   (`text/html; charset=utf-8`), so a browser does not guess an encoding
   from text a client supplied.
 - Token revocation (`/revoke`) answers one client address at most 60 times
-  a minute and further requests with `429` and `Retry-After`. The endpoint
-  takes no credential and was not limited. Without Redis, a revocation with
+  a minute and further requests with `429` and `Retry-After`, unless the
+  token is one the instance holds: a real token is always revoked. The
+  endpoint takes no credential and was not limited. Without Redis, a revocation with
   an unknown token walked every stored refresh token while it held the
   token store's lock; the pair is now looked up by key.
 - A revocation holds through an outage of Redis. When a token was revoked
@@ -101,8 +103,7 @@ for the full narrative and details.
 - Behind a reverse proxy that `TOOLMESH_TRUSTED_PROXIES` does not list, all
   clients are counted under the proxy's address, and a few wrong API keys
   from anyone lock out every client behind it. Only an hourly `WARN` about
-  the ignored `X-Forwarded-For` header pointed to this. That line now
-  carries `requests`, the number of requests it stands for, and when a
+  the ignored `X-Forwarded-For` header pointed to this. Now, when a
   per-address limit (failed API keys, failed logins, registrations,
   revocations) refuses a request that carries such a header, a `WARN` names
   the address, the limit and the setting, at most once a minute.

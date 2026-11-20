@@ -44,18 +44,11 @@ const untrustedForwardedWarnInterval = time.Hour
 // nanoseconds; 0 means none yet.
 var lastUntrustedForwardedWarn atomic.Int64
 
-// ignoredForwarded counts the requests whose X-Forwarded-For header was
-// ignored since the last warning about it.
-var ignoredForwarded atomic.Int64
-
 // warnUntrustedForwarded logs, at most once per interval, that a request
-// from remote carried X-Forwarded-For which was ignored, and how many
-// requests that was true of since the last such line. Behind a reverse
-// proxy that is not listed every client shares the proxy's address, and this
-// line is what tells the operator; the count shows whether it is one stray
-// request or all of the traffic.
+// from remote carried X-Forwarded-For which was ignored. Behind a reverse
+// proxy that is not listed every client shares the proxy's address, and
+// this line is what tells the operator.
 func warnUntrustedForwarded(remote string) {
-	n := ignoredForwarded.Add(1)
 	now := time.Now().UnixNano()
 	last := lastUntrustedForwardedWarn.Load()
 	if last != 0 && now-last < int64(untrustedForwardedWarnInterval) {
@@ -64,9 +57,8 @@ func warnUntrustedForwarded(remote string) {
 	if !lastUntrustedForwardedWarn.CompareAndSwap(last, now) {
 		return
 	}
-	ignoredForwarded.Add(-n)
 	slog.Warn("X-Forwarded-For from an address that is not a trusted proxy is ignored; if ToolMesh runs behind a reverse proxy at this address, add the proxy's address to TOOLMESH_TRUSTED_PROXIES, otherwise every client shares its per-address limits",
-		"remote", remote, "requests", n)
+		"remote", remote)
 }
 
 // peerAddr returns the address a request's connection comes from, as text
@@ -106,9 +98,14 @@ func SetTrustedProxies(prefixes []netip.Prefix) {
 		trustedProxies.Store(nil)
 		return
 	}
-	cp := make([]netip.Prefix, len(prefixes))
-	for i, p := range prefixes {
-		cp[i], _ = UnmapProxyPrefix(p)
+	cp := make([]netip.Prefix, 0, len(prefixes))
+	for _, p := range prefixes {
+		// A mapped prefix shorter than /96 names no IPv4 network, and as
+		// an IPv6 prefix it would cover addresses nobody meant. It is
+		// left out; the configuration refuses it at startup.
+		if unmapped, ok := UnmapProxyPrefix(p); ok {
+			cp = append(cp, unmapped)
+		}
 	}
 	trustedProxies.Store(&cp)
 }

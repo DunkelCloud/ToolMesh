@@ -16,7 +16,9 @@ package auth
 
 import (
 	"context"
+	"fmt"
 	"testing"
+	"time"
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
@@ -42,7 +44,7 @@ func TestAddressRateLimiter_RedisOutage(t *testing.T) {
 		}
 	}
 
-	mr.Close()
+	mr.SetError("LOADING Redis is loading the dataset in memory")
 	for i := before; i < dcrRateLimit; i++ {
 		ok, err := rl.Allow(ctx, addr)
 		if err == nil {
@@ -57,6 +59,33 @@ func TestAddressRateLimiter_RedisOutage(t *testing.T) {
 	}
 	if ok, _ := rl.Allow(ctx, "198.51.100.20"); !ok {
 		t.Error("another address must keep its own limit during the outage")
+	}
+
+	// Redis is back and has counted only the requests before the outage.
+	// What was counted here during the outage still counts.
+	mr.SetError("")
+	if ok, err := rl.Allow(ctx, addr); err != nil || ok {
+		t.Errorf("request over the limit after the outage: allowed=%v err=%v, want refused", ok, err)
+	}
+}
+
+// TestAddressRateLimiter_FullTableEvictsABatch pins that a full table makes
+// room for more than one address at a time: each new address would
+// otherwise walk the whole table.
+func TestAddressRateLimiter_FullTableEvictsABatch(t *testing.T) {
+	rl := NewLocalDCRRateLimiter()
+	now := time.Unix(1_700_000_000, 0)
+	rl.now = func() time.Time { return now }
+	ctx := context.Background()
+	for i := range maxLocalRateWindows {
+		_, _ = rl.Allow(ctx, fmt.Sprintf("10.%d.%d.%d", i>>16&0xff, i>>8&0xff, i&0xff))
+	}
+	if n := len(rl.local); n != maxLocalRateWindows {
+		t.Fatalf("table holds %d windows, want it full at %d", n, maxLocalRateWindows)
+	}
+	_, _ = rl.Allow(ctx, "192.0.2.1")
+	if n := len(rl.local); n != maxLocalRateWindows-localEvictionBatch+1 {
+		t.Errorf("after one more address the table holds %d windows, want %d", n, maxLocalRateWindows-localEvictionBatch+1)
 	}
 }
 

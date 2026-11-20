@@ -55,12 +55,21 @@ func (c *countingTokenStore) RefreshTokenOf(ctx context.Context, accessToken str
 	return "", auth.ErrNotFound
 }
 
+// Holds implements auth.TokenHolder through the wrapped store. It is the
+// lookup in memory a request over the limit is allowed, so it is not
+// counted.
+func (c *countingTokenStore) Holds(token string) bool {
+	holder, ok := c.TokenStore.(auth.TokenHolder)
+	return ok && holder.Holds(token)
+}
+
 // TestRevoke_LimitedPerAddress pins that the revocation endpoint, which
 // takes no credential and makes the token store look a token up on every
-// request, answers one client address only a bounded number of times per
-// minute: the requests over the limit get 429 with Retry-After and do not
-// reach the store, another address is served, and a real token is still
-// revoked within the limit.
+// request, lets one client address reach the store only a bounded number
+// of times per minute with tokens nobody holds: the requests over the limit
+// get 429 with Retry-After and cost no lookup. A real token is revoked all
+// the same, from that address too: a sign-out must not fail because others
+// at the address have used the limit up.
 func TestRevoke_LimitedPerAddress(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	fs, err := auth.NewFileTokenStore(t.TempDir())
@@ -114,20 +123,22 @@ func TestRevoke_LimitedPerAddress(t *testing.T) {
 
 	lookups := store.lookups.Load()
 	for range 20 {
-		if w := revoke(flooder, ti.AccessToken); w.Code != http.StatusTooManyRequests {
+		if w := revoke(flooder, generateID()); w.Code != http.StatusTooManyRequests {
 			t.Fatalf("request over the limit: status %d, want 429", w.Code)
 		}
 	}
 	if got := store.lookups.Load(); got != lookups {
 		t.Errorf("refused requests reached the token store: %d lookups", got-lookups)
 	}
-	if _, err := fs.GetToken(ctx, ti.AccessToken); err != nil {
-		t.Fatal("a refused request revoked the token")
+
+	// Another address is served.
+	if w := revoke(other, generateID()); w.Code != http.StatusOK {
+		t.Fatalf("another address: status %d, want 200", w.Code)
 	}
 
-	// Another address is served and revokes the pair.
-	if w := revoke(other, ti.AccessToken); w.Code != http.StatusOK {
-		t.Fatalf("another address: status %d, want 200", w.Code)
+	// The real token is revoked from the address that is over its limit.
+	if w := revoke(flooder, ti.AccessToken); w.Code != http.StatusOK {
+		t.Fatalf("real token from the address over its limit: status %d, want 200", w.Code)
 	}
 	if _, err := fs.GetToken(ctx, ti.AccessToken); err == nil {
 		t.Error("the access token survived its revocation")

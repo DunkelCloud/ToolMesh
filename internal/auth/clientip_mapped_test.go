@@ -41,6 +41,20 @@ func TestClientIP_MappedTrustedProxyEntries(t *testing.T) {
 	}
 }
 
+// TestSetTrustedProxies_DropsShortMappedPrefix pins that a mapped prefix
+// shorter than /96 trusts nobody. Kept as an IPv6 prefix it would cover
+// "::1" and every other address that starts with zeros.
+func TestSetTrustedProxies_DropsShortMappedPrefix(t *testing.T) {
+	t.Cleanup(func() { SetTrustedProxies(nil) })
+	SetTrustedProxies([]netip.Prefix{netip.MustParsePrefix("::ffff:10.0.0.0/8")})
+	const client = "198.51.100.24"
+	for _, remote := range []string{"[::1]:4711", "10.0.0.5:4711", "[::ffff:10.0.0.5]:4711"} {
+		if got := ClientIP(clientIPRequest(remote, client)); got == client {
+			t.Errorf("peer %s was trusted through a mapped /8", remote)
+		}
+	}
+}
+
 func TestUnmapProxyPrefix(t *testing.T) {
 	cases := []struct {
 		in, want string

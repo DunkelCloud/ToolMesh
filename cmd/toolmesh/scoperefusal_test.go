@@ -43,9 +43,9 @@ func refusalAttr(t *testing.T, attrs []any, key string) []string {
 
 // TestScopeRefusalAttrs pins what the "backend refused" log line offers for
 // copying. A second backend that uses the DADL of another service reads
-// that service's credential by default, and a tool path can name any host:
-// neither the line that shares the other entry's credential nor the line
-// that allows a host outside the domain of base_url may stand among the
+// that service's credential by default, and a tool path can name any host
+// and port: neither the line that lists the other entry's credential nor
+// a line that allows a destination the DADL names may stand among the
 // lines to add. They come apart, with a warning, and the line to add for
 // the credential gives the backend one of its own.
 func TestScopeRefusalAttrs(t *testing.T) {
@@ -75,24 +75,14 @@ func TestScopeRefusalAttrs(t *testing.T) {
 
 	attrs := scopeRefusalAttrs(entry, "first.dadl", scopeErr)
 	fix := strings.Join(refusalAttr(t, attrs, logKeyFixLines), "\n")
-	for _, want := range []string{
-		"env: {CREDENTIAL_FIRST_API_KEY: CREDENTIAL_SECOND_FIRST_API_KEY}",
-		"allowed_hosts: ['api.second.example:8443']",
-	} {
-		if !strings.Contains(fix, want) {
-			t.Errorf("%s = %q, lacks %q", logKeyFixLines, fix, want)
-		}
-	}
-	for _, not := range []string{"credentials:", "uploads.elsewhere.example"} {
-		if strings.Contains(fix, not) {
-			t.Errorf("%s = %q offers %q for copying", logKeyFixLines, fix, not)
-		}
+	if fix != "env: {CREDENTIAL_FIRST_API_KEY: CREDENTIAL_SECOND_FIRST_API_KEY}" {
+		t.Errorf("%s = %q, want the line that gives the backend a credential of its own, alone", logKeyFixLines, fix)
 	}
 
 	caution := strings.Join(refusalAttr(t, attrs, logKeyCautionLines), "\n")
 	for _, want := range []string{
 		"credentials: [first_api_key]", `entry "first"`,
-		"allowed_hosts: [uploads.elsewhere.example]", "outside the domain of base_url",
+		"allowed_hosts: ['api.second.example:8443', uploads.elsewhere.example]", "further destinations",
 	} {
 		if !strings.Contains(caution, want) {
 			t.Errorf("%s = %q, lacks %q", logKeyCautionLines, caution, want)
@@ -102,15 +92,15 @@ func TestScopeRefusalAttrs(t *testing.T) {
 		t.Errorf("%s = %q, want the warning", logKeyCaution, warning)
 	}
 
-	// A violation the binding can absorb gets no warning.
-	portOnly := &dadl.ScopeError{Backend: entry, Violations: []dadl.ScopeViolation{
-		{Rule: dadl.RuleHostBinding, Host: "api.second.example:8443"},
+	// A violation only the own credential resolves gets no warning
+	// attribute for lines it does not have.
+	credOnly := &dadl.ScopeError{Backend: entry, Violations: []dadl.ScopeViolation{
+		{Rule: dadl.RuleHostBinding, What: "base_url: it uses http while base_url uses https"},
 	}}
-	attrs = scopeRefusalAttrs(entry, "first.dadl", portOnly)
-	if refusalAttr(t, attrs, logKeyCaution) != nil || refusalAttr(t, attrs, logKeyCautionLines) != nil {
-		t.Errorf("a port of the backend's own host got a warning: %v", attrs)
-	}
-	if got := refusalAttr(t, attrs, logKeyFixLines); len(got) != 1 {
-		t.Errorf("%s = %q, want the port entry", logKeyFixLines, got)
+	attrs = scopeRefusalAttrs(entry, "first.dadl", credOnly)
+	for _, key := range []string{logKeyFixLines, logKeyCaution, logKeyCautionLines} {
+		if got := refusalAttr(t, attrs, key); got != nil {
+			t.Errorf("a violation without any line has %s = %q", key, got)
+		}
 	}
 }

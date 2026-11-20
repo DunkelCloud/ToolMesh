@@ -30,16 +30,16 @@ for the full narrative and details.
   else may know. See [Tokens](docs/configuration.md#tokens).
 - The `backend refused` log line no longer offers every line that would
   load the backend as a line to add. Under `add_to_backends_yaml_entry` it
-  keeps the lines that leave the binding as it is: another port of the
-  backend's own host or domain, a credential no entry owns, and for a
-  credential that another entry owns an `env:` line that gives the backend
-  a credential of its own. The lines that widen the binding come apart
-  under `check_before_adding`, with a `warning`: `allowed_hosts:` for a
-  host outside the registrable domain of `base_url`, and `credentials:` for
-  another entry's credential. Until now a second backend on the DADL of
-  another service was told to add `credentials: [<that service's key>]`,
-  which sent that key to the second backend's host. If you added such a
-  line, give the backend a key of its own. See
+  keeps what leaves the binding as it is: for a credential name outside
+  the entry's namespace, an `env:` line that gives the backend a credential
+  of its own. The lines that give the DADL what it names come apart under
+  `check_before_adding`, with a `warning`: `credentials:` for such a name,
+  and `allowed_hosts:` for every host and port the DADL names beyond the
+  binding. A host an entry could not name exactly, such as one with a `*`,
+  gets no line. Until now a second backend on the DADL of another service
+  was told to add `credentials: [<that service's key>]`, which sent that
+  key to the second backend's host. If you added such a line, give the
+  backend a key of its own. See
   [Lines the refusal names](docs/configuration.md#lines-the-refusal-names).
 - A REST backend whose DADL sends credentials to other hosts of its
   `base_url`'s registrable domain says so when it is loaded: an `INFO` line

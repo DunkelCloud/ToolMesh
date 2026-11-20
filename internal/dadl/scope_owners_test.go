@@ -175,4 +175,19 @@ func TestCredentialScope_OwnEnvKey(t *testing.T) {
 	if got := none.ownEnvKey("x"); got != "" {
 		t.Errorf("nil scope: ownEnvKey = %q, want none", got)
 	}
+
+	// An env: line reads its variable whatever namespace it is in. A
+	// variable that belongs to another entry is no credential of the
+	// entry's own, so none is offered.
+	owners := NewCredentialOwners(ghEntry, gheEntry, "enterprise")
+	gh, err := NewCredentialScope(ghEntry, nil, nil, owners)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := gh.ownEnvKey("enterprise_token"); got != "" {
+		t.Errorf("ownEnvKey = %q, a variable of entry %q", got, gheEntry)
+	}
+	if got := gh.ownEnvKey("other_token"); got != "CREDENTIAL_GITHUB_OTHER_TOKEN" {
+		t.Errorf("ownEnvKey = %q, want the variable of the entry's own", got)
+	}
 }

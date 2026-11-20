@@ -86,8 +86,8 @@ backends:
   #   # owns part of it. A DADL that reads others, or sends them to a host
   #   # outside base_url's registrable domain, is refused at load until the
   #   # entry allows it explicitly. The refusal log names the lines, and
-  #   # sets apart, with a warning, the ones that would send credentials to
-  #   # a host outside the domain or share another entry's credential:
+  #   # sets apart, with a warning, the ones that let the backend read a
+  #   # variable other entries own or list, or send credentials further:
   #   # credentials: [vikunja_legacy_token]       # names outside the namespace
   #   # allowed_hosts: [files.vikunja-cdn.example, "*.cdn.example", media.example:8443]
   #   # A second entry on this DADL, named vikunja-staging, would read this

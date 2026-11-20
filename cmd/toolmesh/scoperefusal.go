@@ -22,26 +22,28 @@ import (
 // lines.
 const (
 	// logKeyFixLines holds the lines an operator can add to the entry as
-	// they are.
+	// they are: they give the backend a credential of its own.
 	logKeyFixLines = "add_to_backends_yaml_entry"
-	// logKeyCautionLines holds the lines that hand a credential or a host
-	// to another party.
+	// logKeyCautionLines holds the lines that give the DADL what it names:
+	// a variable outside the entry's namespace, or a further destination
+	// for the backend's credentials.
 	logKeyCautionLines = "check_before_adding"
 	// logKeyCaution says what the lines of logKeyCautionLines do.
 	logKeyCaution = "warning"
 )
 
 // scopeCaution accompanies the lines of logKeyCautionLines.
-const scopeCaution = "the DADL names hosts outside the domain of its base_url, or credentials of other entries. " +
-	"The lines under check_before_adding would send this backend's credentials to those hosts, or another entry's credential to this backend's hosts. " +
-	"Add one only after checking that the host or the credential belongs to this API"
+const scopeCaution = "the DADL names credentials outside this entry's namespace, or destinations beyond its base_url. " +
+	"The lines under check_before_adding give it what it names: a variable that other entries may own or list, " +
+	"or a further host or port that receives this backend's credentials. " +
+	"Add one only after checking that the credential or the destination belongs to this API"
 
 // scopeRefusalAttrs returns the attributes of the "backend refused" log
 // line for a backend whose DADL breaks its credential or host binding: the
 // lines that resolve it within the binding (logKeyFixLines) and, apart from
-// them and under a warning, the lines that widen it to another party
-// (logKeyCautionLines). The DADL chose the hosts and names in those lines,
-// so they must not read like the fix to copy.
+// them and under a warning, the lines that widen it (logKeyCautionLines).
+// The DADL chose the hosts and names in those lines, so they must not read
+// like the fix to copy.
 func scopeRefusalAttrs(name, dadlFile string, scopeErr *dadl.ScopeError) []any {
 	attrs := []any{"name", name, "dadl", dadlFile, "error", scopeErr}
 	if lines := scopeErr.FixLines(); len(lines) > 0 {

@@ -133,9 +133,14 @@ func TestCheckScope_SchemeDowngrade(t *testing.T) {
 	if !strings.Contains(err.Error(), "uses http while base_url uses https") {
 		t.Errorf("the downgrade is not named: %v", err)
 	}
-	lines := strings.Join(se.FixLines(), "\n")
-	if lines != "allowed_hosts: ['api.example.com:8443']" && lines != "allowed_hosts: [api.example.com:8443]" {
-		t.Errorf("fix lines = %q, want only the port entry", lines)
+	// Another port of the backend's own host can be another service. Its
+	// line is none to copy either: it comes with the cautioned lines.
+	if lines := se.FixLines(); len(lines) != 0 {
+		t.Errorf("fix lines = %q, want none", lines)
+	}
+	lines := strings.Join(se.CautionLines(), "\n")
+	if !strings.HasPrefix(lines, "allowed_hosts: ['api.example.com:8443']  # ") || strings.Contains(lines, "\n") {
+		t.Errorf("caution lines = %q, want only the port entry with its comment", lines)
 	}
 }
 

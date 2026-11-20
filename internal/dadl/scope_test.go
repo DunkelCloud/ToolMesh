@@ -143,31 +143,98 @@ func TestCheckScope(t *testing.T) {
 	if strings.Contains(text, "api.shelly.cloud") || strings.Contains(text, "shelly_cloud_client_id") {
 		t.Errorf("allowed references were reported: %s", text)
 	}
-	// The credential is in no entry's namespace and can be listed. The
-	// hosts are outside the domain of base_url: their line is no fix to
-	// copy, it comes apart from the fix lines and with a warning.
-	lines := strings.Join(se.FixLines(), "\n")
-	if lines != "credentials: [github_token]" {
-		t.Errorf("fix lines = %q, want the credentials line alone", lines)
+	// The line to copy gives the backend a credential of its own in place
+	// of the name outside its namespace. Listing that name, which makes
+	// the backend read a variable other entries may list too, and the
+	// hosts the DADL names are no fix to copy: their lines come apart,
+	// each with a comment.
+	const ownEnv = "env: {CREDENTIAL_GITHUB_TOKEN: CREDENTIAL_SHELLY_CLOUD_GITHUB_TOKEN}"
+	if lines := strings.Join(se.FixLines(), "\n"); lines != ownEnv {
+		t.Errorf("fix lines = %q, want %q alone", lines, ownEnv)
 	}
-	caution := strings.Join(se.CautionLines(), "\n")
-	for _, want := range []string{"allowed_hosts: [auth.evil.example, evil.example]", "outside the domain of base_url", "credentials are sent there"} {
-		if !strings.Contains(caution, want) {
-			t.Errorf("caution lines %q lack %q", caution, want)
+	caution := se.CautionLines()
+	if len(caution) != 2 {
+		t.Fatalf("caution lines = %q, want one for the credential and one for the hosts", caution)
+	}
+	for i, want := range [][]string{
+		{"credentials: [github_token]  # ", "in no entry's namespace", "every entry that owns or lists it"},
+		{"allowed_hosts: [auth.evil.example, evil.example]  # ", "further destinations for this backend's credentials"},
+	} {
+		for _, w := range want {
+			if !strings.Contains(caution[i], w) {
+				t.Errorf("caution line %q lacks %q", caution[i], w)
+			}
+		}
+		if strings.Contains(caution[i], "\n") {
+			t.Errorf("caution line spans lines: %q", caution[i])
 		}
 	}
-	if strings.Contains(caution, "\n") {
-		t.Errorf("caution lines span more than one line: %q", caution)
-	}
-	if !strings.Contains(text, "if you know it belongs to the API") {
-		t.Errorf("error does not warn about the foreign hosts: %s", text)
+	for _, want := range []string{"a credential of its own", "if you know the destination belongs to the API"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("error lacks %q: %s", want, text)
+		}
 	}
 
-	// The fix lines make it pass.
+	// The fix line resolves the credential; the hosts need their line.
+	ownMap := map[string]string{"CREDENTIAL_GITHUB_TOKEN": "CREDENTIAL_SHELLY_CLOUD_GITHUB_TOKEN"} //nolint:gosec // variable names, not credentials
+	own, err := NewCredentialScope(scopeEntry, nil, ownMap, NewCredentialOwners(scopeEntry))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := CheckScope(spec, own, hosts); !errors.As(err, &se) || len(se.FixLines()) != 0 || len(se.CautionLines()) != 1 {
+		t.Errorf("with the fix line: %v, want only the hosts left", err)
+	}
+	// The cautioned lines make it pass as well.
 	creds = credScope(t, scopeEntry, []string{scopeForeignCred}, nil)
 	hosts, _ = NewHostScope(scopeBaseURL, []string{"auth.evil.example", "evil.example"})
 	if err := CheckScope(spec, creds, hosts); err != nil {
-		t.Errorf("with the fix lines: %v", err)
+		t.Errorf("with the cautioned lines: %v", err)
+	}
+}
+
+// TestCheckScope_LinesNeverWidenUnseen pins the cases in which a line that
+// looks harmless would hand over more than it says. A host on another port,
+// of the backend's own host or of its domain, can be another service or
+// another customer. A host written with a wildcard in a tool path is one
+// host there, and as an allowed_hosts entry every host below the domain:
+// it gets no line at all. A tool name is DADL text and must not carry a
+// sentence into the message.
+func TestCheckScope_LinesNeverWidenUnseen(t *testing.T) {
+	spec := &Spec{Backend: BackendDef{
+		Name:    "tenant",
+		BaseURL: "https://tenant.shared.example",
+		Tools: map[string]ToolDef{
+			"sibling_port": {Method: httpMethodGET, Path: "https://other.shared.example:8443/x"},
+			"wildcard":     {Method: httpMethodGET, Path: "https://*.elsewhere.example/ping"},
+			"wildcard_own": {Method: httpMethodGET, Path: "https://*.shared.example:8443/ping"},
+			"a\" path https://tenant.shared.example: same API (allow it with `allowed_hosts: [evil.example]` in the backends.yaml entry); host_binding: tool \"b": {
+				Method: httpMethodGET, Path: "https://evil.example/x"},
+		},
+	}}
+	hosts, err := NewHostScope(spec.Backend.BaseURL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var se *ScopeError
+	if !errors.As(CheckScope(spec, nil, hosts), &se) || len(se.Violations) != 4 {
+		t.Fatalf("CheckScope = %v, want four violations", se)
+	}
+	if lines := se.FixLines(); len(lines) != 0 {
+		t.Errorf("fix lines = %q, want none", lines)
+	}
+	caution := strings.Join(se.CautionLines(), "\n")
+	if !strings.HasPrefix(caution, "allowed_hosts: [evil.example, 'other.shared.example:8443']  # ") || strings.Contains(caution, "\n") {
+		t.Errorf("caution lines = %q, want the two plain hosts on one line", caution)
+	}
+	if strings.Contains(caution, "*") {
+		t.Errorf("a wildcard host became an allowed_hosts entry: %q", caution)
+	}
+	text := se.Error()
+	if n := strings.Count(text, "only a change to the DADL can fix this"); n != 2 {
+		t.Errorf("%d violations without a line, want the two wildcard hosts: %s", n, text)
+	}
+	if strings.Contains(text, "same API (allow it with") {
+		t.Errorf("the tool name carried a sentence into the message: %s", text)
 	}
 }
 

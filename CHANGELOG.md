@@ -81,6 +81,15 @@ for the full narrative and details.
   takes no credential and was not limited. Without Redis, a revocation with
   an unknown token walked every stored refresh token while it held the
   token store's lock; the pair is now looked up by key.
+- A revocation holds through an outage of Redis. When a token was revoked
+  while Redis could not be reached, Redis kept its copy, and the token
+  worked again once Redis answered; a refresh token or authorization code
+  used during the outage could be used a second time afterwards. ToolMesh
+  now notes such a removal in `oauth-state.json` until the token expires,
+  refuses the copy Redis kept and removes it, also after a restart. The
+  Redis store reported an unreachable Redis as "not found" when a refresh
+  token or code was consumed, which hid the outage from this logic; it now
+  reports the error.
 
 ### Added
 

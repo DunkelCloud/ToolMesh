@@ -156,6 +156,26 @@ type RedisTokenStore struct {
 	rdb *redis.Client
 }
 
+// consume reads and deletes key in one step and returns its value. A key
+// that does not exist is ErrNotFound; a Redis that cannot be asked is an
+// error of its own. The two must stay apart: after "not found" the entry
+// is gone, after an error Redis may still hold it, and a caller that
+// consumes it elsewhere has to remember that (see HybridTokenStore).
+func (s *RedisTokenStore) consume(ctx context.Context, key string) (string, error) {
+	val, err := consumeScript.Run(ctx, s.rdb, []string{key}).Result()
+	if errors.Is(err, redis.Nil) {
+		return "", ErrNotFound
+	}
+	if err != nil {
+		return "", err
+	}
+	raw, ok := val.(string)
+	if !ok {
+		return "", ErrNotFound
+	}
+	return raw, nil
+}
+
 // NewRedisTokenStore creates a new Redis-backed token store.
 func NewRedisTokenStore(rdb *redis.Client) *RedisTokenStore {
 	return &RedisTokenStore{rdb: rdb}
@@ -206,15 +226,15 @@ func (s *RedisTokenStore) SaveAuthCode(ctx context.Context, ac *AuthCode) error 
 
 // ConsumeAuthCode atomically retrieves and deletes an authorization code.
 func (s *RedisTokenStore) ConsumeAuthCode(ctx context.Context, code string) (*AuthCode, error) {
-	val, err := consumeScript.Run(ctx, s.rdb, []string{prefixCode + code}).Result()
-	if errors.Is(err, redis.Nil) || val == nil {
-		return nil, ErrNotFound
-	}
+	raw, err := s.consume(ctx, prefixCode+code)
 	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return nil, err
+		}
 		return nil, fmt.Errorf("consume auth code: %w", err)
 	}
 	var ac AuthCode
-	if err := json.Unmarshal([]byte(val.(string)), &ac); err != nil {
+	if err := json.Unmarshal([]byte(raw), &ac); err != nil {
 		return nil, fmt.Errorf("unmarshal auth code: %w", err)
 	}
 	return &ac, nil
@@ -272,15 +292,15 @@ func (s *RedisTokenStore) SaveRefreshToken(ctx context.Context, ti *TokenInfo) e
 
 // ConsumeRefreshToken atomically retrieves and deletes a refresh token.
 func (s *RedisTokenStore) ConsumeRefreshToken(ctx context.Context, refreshToken string) (*TokenInfo, error) {
-	val, err := consumeScript.Run(ctx, s.rdb, []string{prefixRefresh + refreshToken}).Result()
-	if errors.Is(err, redis.Nil) || val == nil {
-		return nil, ErrNotFound
-	}
+	raw, err := s.consume(ctx, prefixRefresh+refreshToken)
 	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return nil, err
+		}
 		return nil, fmt.Errorf("consume refresh token: %w", err)
 	}
 	var ti TokenInfo
-	if err := json.Unmarshal([]byte(val.(string)), &ti); err != nil {
+	if err := json.Unmarshal([]byte(raw), &ti); err != nil {
 		return nil, fmt.Errorf("unmarshal refresh token: %w", err)
 	}
 	return &ti, nil

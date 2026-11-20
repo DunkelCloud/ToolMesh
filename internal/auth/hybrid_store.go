@@ -25,6 +25,18 @@ import (
 // store is preferred; the file store serves as fallback when the primary
 // returns an error. This ensures OAuth state survives restarts even when
 // the primary store loses its data.
+//
+// A removal holds against an outage of the primary store. When an access
+// token is deleted, or a refresh token or authorization code is consumed,
+// while the primary store cannot be told, the primary store keeps its copy,
+// and that copy would count again once the store answers: a revoked token
+// would work again, a spent refresh token or code could be used a second
+// time. The file store therefore remembers such a removal until the entry
+// expires. A copy the primary store hands out for a remembered removal is
+// treated as gone and removed there, and FileTokenStore.WarmUp removes the
+// copies after a restart. This covers the entries the file store held
+// itself, which is every entry this process wrote. A process cannot vouch
+// for a token only another process wrote.
 type HybridTokenStore struct {
 	primary TokenStore
 	file    *FileTokenStore
@@ -65,17 +77,27 @@ func (h *HybridTokenStore) SaveAuthCode(ctx context.Context, ac *AuthCode) error
 }
 
 // ConsumeAuthCode consumes from the primary store, falls back to file store.
+// A code consumed while the primary store was unreachable stays consumed.
 func (h *HybridTokenStore) ConsumeAuthCode(ctx context.Context, code string) (*AuthCode, error) {
 	ac, err := h.primary.ConsumeAuthCode(ctx, code)
-	if err == nil {
+	switch {
+	case err == nil:
 		// Also consume from file store to keep them in sync.
 		_, _ = h.file.ConsumeAuthCode(ctx, code)
+		if h.file.clearRemoved(removedCode, code) {
+			return nil, ErrNotFound
+		}
 		return ac, nil
+	case errors.Is(err, ErrNotFound):
+		h.file.clearRemoved(removedCode, code)
+		return h.file.ConsumeAuthCode(ctx, code)
 	}
-	if !errors.Is(err, ErrNotFound) {
-		slog.Warn("primary store: ConsumeAuthCode failed, trying file store", "error", err)
+	slog.Warn("primary store: ConsumeAuthCode failed, trying file store", "error", err)
+	held, ferr := h.file.ConsumeAuthCode(ctx, code)
+	if ferr == nil {
+		h.file.markRemoved(removedCode, code, held.ExpiresAt)
 	}
-	return h.file.ConsumeAuthCode(ctx, code)
+	return held, ferr
 }
 
 // SaveToken stores an access token in both stores.
@@ -86,10 +108,18 @@ func (h *HybridTokenStore) SaveToken(ctx context.Context, ti *TokenInfo) error {
 	return h.primary.SaveToken(ctx, ti)
 }
 
-// GetToken reads from the primary store, falls back to file store.
+// GetToken reads from the primary store, falls back to file store. A token
+// deleted while the primary store was unreachable is not found, whatever the
+// primary store still holds; the deletion is then completed there.
 func (h *HybridTokenStore) GetToken(ctx context.Context, accessToken string) (*TokenInfo, error) {
 	ti, err := h.primary.GetToken(ctx, accessToken)
 	if err == nil {
+		if h.file.isRemoved(removedAccess, accessToken) {
+			if derr := h.primary.DeleteToken(ctx, accessToken); derr == nil {
+				h.file.clearRemoved(removedAccess, accessToken)
+			}
+			return nil, ErrNotFound
+		}
 		return ti, nil
 	}
 	if !errors.Is(err, ErrNotFound) {
@@ -104,12 +134,15 @@ func (h *HybridTokenStore) RefreshTokenOf(ctx context.Context, accessToken strin
 	return h.file.RefreshTokenOf(ctx, accessToken)
 }
 
-// DeleteToken removes a token from both stores.
+// DeleteToken removes a token from both stores. When the primary store
+// cannot be told, the file store remembers the deletion.
 func (h *HybridTokenStore) DeleteToken(ctx context.Context, accessToken string) error {
-	if err := h.file.DeleteToken(ctx, accessToken); err != nil {
-		slog.Warn("file store: DeleteToken failed", "error", err)
+	held := h.file.deleteToken(accessToken)
+	err := h.primary.DeleteToken(ctx, accessToken)
+	if err != nil && held != nil {
+		h.file.markRemoved(removedAccess, accessToken, held.ExpiresAt)
 	}
-	return h.primary.DeleteToken(ctx, accessToken)
+	return err
 }
 
 // SaveRefreshToken stores a refresh token in both stores.
@@ -120,16 +153,27 @@ func (h *HybridTokenStore) SaveRefreshToken(ctx context.Context, ti *TokenInfo) 
 	return h.primary.SaveRefreshToken(ctx, ti)
 }
 
-// ConsumeRefreshToken consumes from the primary store, falls back to file store.
+// ConsumeRefreshToken consumes from the primary store, falls back to file
+// store. A refresh token consumed while the primary store was unreachable
+// stays consumed: the copy the primary store kept is dropped, not honored.
 func (h *HybridTokenStore) ConsumeRefreshToken(ctx context.Context, refreshToken string) (*TokenInfo, error) {
 	ti, err := h.primary.ConsumeRefreshToken(ctx, refreshToken)
-	if err == nil {
+	switch {
+	case err == nil:
 		// Also consume from file store to keep them in sync.
 		_, _ = h.file.ConsumeRefreshToken(ctx, refreshToken)
+		if h.file.clearRemoved(removedRefresh, refreshToken) {
+			return nil, ErrNotFound
+		}
 		return ti, nil
+	case errors.Is(err, ErrNotFound):
+		h.file.clearRemoved(removedRefresh, refreshToken)
+		return h.file.ConsumeRefreshToken(ctx, refreshToken)
 	}
-	if !errors.Is(err, ErrNotFound) {
-		slog.Warn("primary store: ConsumeRefreshToken failed, trying file store", "error", err)
+	slog.Warn("primary store: ConsumeRefreshToken failed, trying file store", "error", err)
+	held, ferr := h.file.ConsumeRefreshToken(ctx, refreshToken)
+	if ferr == nil {
+		h.file.markRemoved(removedRefresh, refreshToken, held.RefreshExpiry())
 	}
-	return h.file.ConsumeRefreshToken(ctx, refreshToken)
+	return held, ferr
 }

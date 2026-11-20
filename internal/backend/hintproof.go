@@ -36,23 +36,59 @@ const MetadataKeyHintRequired = "hint_required"
 // enough to copy without error.
 const hintProofDigestLen = 16
 
-// HintRequired reports whether a call to a tool with the given access
-// classification runs only for a caller that shows it has received the
-// backend's hint (backends.yaml hint_required_for). A backend without a hint
-// never requires one: there would be nothing to deliver.
-func (i BackendInfo) HintRequired(access string) bool {
+// HintRequired reports whether a call to the tool runs only for a caller
+// that shows it has received the backend's hint (backends.yaml
+// hint_required_for). tool is the name the gateway routes, with the backend
+// prefix; access is the tool's access classification. A backend without a
+// hint never requires one: there would be nothing to deliver.
+func (i BackendInfo) HintRequired(tool, access string) bool {
 	if strings.TrimSpace(i.Hint) == "" {
 		return false
 	}
-	for _, class := range i.HintRequiredFor {
-		if class == HintAccessAll {
-			return true
-		}
-		if access != "" && strings.EqualFold(class, access) {
+	for _, entry := range i.HintRequiredFor {
+		if hintEntryMatches(entry, i.Name, tool, access) {
 			return true
 		}
 	}
 	return false
+}
+
+// hintEntryMatches reports whether one hint_required_for entry covers a
+// tool. An entry names an access class, compared without regard to case, or
+// a tool of the backend, with or without the backend prefix; "all" covers
+// every tool. A word that is both a class and a tool name covers both.
+func hintEntryMatches(entry, backendName, tool, access string) bool {
+	if entry == HintAccessAll {
+		return true
+	}
+	if access != "" && strings.EqualFold(entry, access) {
+		return true
+	}
+	return tool != "" && (entry == tool || entry == strings.TrimPrefix(tool, backendName+"_"))
+}
+
+// UnmatchedHintEntries returns the hint_required_for entries of a backend
+// that cover none of its tools: a misspelled tool name, or an access class
+// no tool carries. Such an entry looks like protection and refuses nothing.
+// tools are the backend's tools under the names the gateway routes.
+func (i BackendInfo) UnmatchedHintEntries(tools []ToolDescriptor) []string {
+	var unmatched []string
+	for _, entry := range i.HintRequiredFor {
+		if entry == HintAccessAll {
+			continue
+		}
+		covers := false
+		for _, t := range tools {
+			if hintEntryMatches(entry, i.Name, t.Name, t.Access) {
+				covers = true
+				break
+			}
+		}
+		if !covers {
+			unmatched = append(unmatched, entry)
+		}
+	}
+	return unmatched
 }
 
 // HintProof returns the proof that a caller has received a backend's hint on
@@ -99,8 +135,8 @@ func validateHintRequiredFor(entry BackendEntry) error {
 	if strings.TrimSpace(entry.Hint) == "" {
 		return fmt.Errorf("backend %q: hint_required_for is set but hint is empty", entry.Name)
 	}
-	for _, class := range entry.HintRequiredFor {
-		if strings.TrimSpace(class) == "" {
+	for _, item := range entry.HintRequiredFor {
+		if strings.TrimSpace(item) == "" {
 			return fmt.Errorf("backend %q: hint_required_for has an empty entry", entry.Name)
 		}
 	}

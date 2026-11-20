@@ -80,16 +80,17 @@ func UnmarshalBackendConfig(data []byte, cfg *BackendConfig) error {
 // BackendEntry represents a single backend server configuration.
 type BackendEntry struct {
 	Name      string   `yaml:"name"`
-	Transport string   `yaml:"transport"` // "http", "stdio", or "rest"
+	Transport string   `yaml:"transport"` // "http", "stdio", "rest" or "ssh"
 	URL       string   `yaml:"url"`       // for HTTP transport
 	APIKeyEnv string   `yaml:"api_key_env"`
 	Command   string   `yaml:"command"` // for STDIO transport
 	Args      []string `yaml:"args"`
 	Hint      string   `yaml:"hint"` // optional domain-specific hint for LLM tool descriptions
-	// HintRequiredFor lists the access classes of this backend's tools that
-	// run only for a caller that shows it has received the hint ("write",
-	// "dangerous", ...; "all" for every tool). Such a call is refused with
-	// the hint and a proof that is valid for the day; see HintProof.
+	// HintRequiredFor lists the tools of this backend that run only for a
+	// caller that shows it has received the hint: access classes ("write",
+	// "dangerous", ...), single tools by name, or "all" for every tool. Such
+	// a call is refused with the hint and a proof that is valid for the day;
+	// see HintProof.
 	HintRequiredFor []string          `yaml:"hint_required_for"`
 	DADL            string            `yaml:"dadl"`              // path to .dadl file (for transport: rest)
 	AllowPrivateURL *bool             `yaml:"allow_private_url"` // allow private/loopback base_url (default: true)
@@ -135,6 +136,13 @@ type BackendEntry struct {
 	// TOOLMESH_USER_CREDENTIALS_KEY. Honored for transport: rest; an entry
 	// of another transport that sets it is refused.
 	UserCredentials []UserCredential `yaml:"user_credentials"`
+	// Commands is the path of the command file of a transport: ssh backend:
+	// the commands it may run on its hosts, as templates with typed
+	// parameters. A relative path starts at the directory of backends.yaml.
+	Commands string `yaml:"commands"`
+	// SSH holds the hosts, the account and the key of a transport: ssh
+	// backend.
+	SSH *SSHConfig `yaml:"ssh"`
 }
 
 // HealthCheckConfig is the backends.yaml health_check block: deployment
@@ -184,8 +192,8 @@ type BackendInfo struct {
 	// deployment-specific, which is why it drives the first-use notice while
 	// Description drives the catalog blurb. Empty when no hint is configured.
 	Hint string
-	// HintRequiredFor lists the access classes whose tools run only for a
-	// caller that shows it has received Hint (backends.yaml
+	// HintRequiredFor lists the access classes and tools whose calls run
+	// only for a caller that shows it has received Hint (backends.yaml
 	// hint_required_for). Empty means the hint is advice only.
 	HintRequiredFor []string
 	SpecID          string
@@ -307,7 +315,7 @@ func NewMCPAdapter(configPath string, creds credentials.CredentialStore, logger 
 // declare their private MCP dependencies inside unit.yaml and never want
 // those dependencies to appear in the global tool surface.
 //
-// REST entries are skipped because the MCPAdapter handles only MCP
+// REST and SSH entries are skipped because the MCPAdapter handles only MCP
 // transports; non-MCP transports are wired separately by the caller.
 func NewMCPAdapterFromEntries(entries []BackendEntry, creds credentials.CredentialStore, logger *slog.Logger) *MCPAdapter {
 	adapter := newEmptyMCPAdapter(creds, logger)
@@ -315,7 +323,7 @@ func NewMCPAdapterFromEntries(entries []BackendEntry, creds credentials.Credenti
 		if entry.Name == "" {
 			continue
 		}
-		if entry.Transport == transportTypeREST {
+		if entry.Transport == transportTypeREST || entry.Transport == transportTypeSSH {
 			continue
 		}
 		// Refused, not ignored: the backend would otherwise run with one
@@ -371,7 +379,7 @@ func (a *MCPAdapter) connectBackend(ctx context.Context, name string, conn *back
 	a.logger.Debug("connecting to backend",
 		"name", name,
 		"transport", conn.entry.Transport,
-		"url", conn.entry.URL,
+		"url", loggableEndpoint(conn.entry.URL),
 		"command", conn.entry.Command,
 	)
 

@@ -31,6 +31,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+	"unicode"
 
 	"github.com/DunkelCloud/ToolMesh/internal/blob"
 	"github.com/DunkelCloud/ToolMesh/internal/composite"
@@ -196,10 +197,15 @@ func NewRESTAdapter(spec *dadl.Spec, creds credentials.CredentialStore, logger *
 	}
 
 	// A placeholder in the host of an absolute tool path would let the caller
-	// pick where the request, with its credentials, goes. dadl.Validate
-	// refuses such paths; specs built in code are checked here as well.
+	// pick where the request, with its credentials, goes, and one in the
+	// query part of a path would let a value add query parameters of its
+	// own. dadl.Validate refuses such paths; specs built in code are checked
+	// here as well.
 	for name, tool := range spec.Backend.Tools {
 		if err := dadl.CheckToolPathAuthority(tool.Path); err != nil {
+			return nil, fmt.Errorf("REST backend %q: tool %q: %w", spec.Backend.Name, name, err)
+		}
+		if err := dadl.CheckToolPathQuery(tool.Path); err != nil {
 			return nil, fmt.Errorf("REST backend %q: tool %q: %w", spec.Backend.Name, name, err)
 		}
 	}
@@ -235,6 +241,7 @@ func NewRESTAdapter(spec *dadl.Spec, creds credentials.CredentialStore, logger *
 		if err := dadl.CheckScopeOf(spec, credScope, hostScope, reachable); err != nil {
 			return nil, err
 		}
+		logSiblingHosts(logger, spec, hostScope, reachable)
 	}
 
 	// Credentials the operator declared per user are read from the calling
@@ -455,6 +462,21 @@ func WarnPlainHTTPBase(logger *slog.Logger, entry BackendEntry, spec *dadl.Spec)
 	}
 	logger.Warn("credentials go out over plain http: the DADL's base_url is http and the backends.yaml entry sets no url; set url: to an https address if the API offers one",
 		"name", entry.Name, "host", u.Host)
+}
+
+// logSiblingHosts says, when a backend is loaded, which hosts other than
+// its own receive its credentials only because they share the registrable
+// domain of its base_url. The binding allows them on purpose; on a domain
+// whose customers each have a subdomain they can be other customers'
+// hosts, so the operator gets to see them. A host listed in allowed_hosts:
+// is confirmed and no longer reported.
+func logSiblingHosts(logger *slog.Logger, spec *dadl.Spec, hosts *dadl.HostScope, reachable func(tool string) bool) {
+	siblings := dadl.SiblingHosts(spec, hosts, reachable)
+	if len(siblings) == 0 {
+		return
+	}
+	logger.Info("backend sends its credentials to other hosts of its base_url's domain as well; they are allowed because they share that domain. Check that they belong to the API, in particular on a domain shared with other customers; a host listed in allowed_hosts: is no longer reported",
+		"name", spec.Backend.Name, "domain", hosts.Domain(), "hosts", siblings)
 }
 
 // reachableTools reports which tools of spec a backend can send requests
@@ -1061,15 +1083,14 @@ func (a *RESTAdapter) doRequest(ctx context.Context, tool *dadl.ToolDef, params 
 		req.Header.Set(tool.Idempotency.Header, idemKey)
 	}
 
-	// Debug-level request trace. Header-based auth is not in the URL, but a
-	// query-injected API key (auth.inject_into: query) is — so this line can
-	// contain a credential at debug level. That is intentional for diagnosing
-	// auth problems; the default LOG_LEVEL is "info" so it is not emitted unless
-	// an operator explicitly opts into debug logging.
+	// Debug-level request trace. Header-based auth is not in the URL; a
+	// query-injected API key (auth.inject_into: query) is, and loggableURL
+	// takes its value out. A debug log is read, kept and passed around like
+	// any other log.
 	a.logger.DebugContext(ctx, "REST request",
 		"backend", a.spec.Backend.Name,
 		"method", req.Method,
-		"url", req.URL.String(),
+		"url", a.loggableURL(req.URL),
 	)
 
 	resp, err := a.httpClient.Do(req)
@@ -1101,6 +1122,25 @@ func (a *RESTAdapter) doRequest(ctx context.Context, tool *dadl.ToolDef, params 
 	return resp, body, nil
 }
 
+// loggableURL returns the URL of a backend request as the debug log shows
+// it: complete, except that the value of the query parameter that carries
+// the backend's API key (auth.inject_into: query) is replaced by
+// dadl.RedactedPlaceholder, and a password in the URL by "xxxxx". That the
+// key was sent, and under which name, stays visible, which is what
+// diagnosing an auth problem needs. The parameter name may be empty: a
+// DADL without query_param sends the key as "=key", and that is the DADL
+// an operator turns the trace on for.
+func (a *RESTAdapter) loggableURL(u *url.URL) string {
+	shown := *u
+	if auth := a.spec.Backend.Auth; auth.InjectInto == authInjectQuery {
+		if q := u.Query(); q.Has(auth.QueryParam) {
+			q.Set(auth.QueryParam, dadl.RedactedPlaceholder)
+			shown.RawQuery = q.Encode()
+		}
+	}
+	return shown.Redacted()
+}
+
 // buildHTTPRequest assembles the full HTTP request for a tool invocation:
 // URL, query string, body (JSON, form-encoded, multipart, or a fetched
 // file_url stream), headers, content type, and auth. On any error a streaming
@@ -1111,14 +1151,23 @@ func (a *RESTAdapter) buildHTTPRequest(ctx context.Context, tool *dadl.ToolDef, 
 	if err != nil {
 		return nil, err
 	}
+	if err := checkPathStaysRelative(tool.Path, toolPath); err != nil {
+		return nil, err
+	}
 	urlStr, err := joinURL(a.spec.Backend.BaseURL, toolPath)
 	if err != nil {
 		return nil, err
 	}
 
+	// A tool path may carry a query of its own ("/search?kind=issue"); the
+	// query parameters then continue it.
 	query := a.buildQuery(tool, params)
 	if query != "" {
-		urlStr += "?" + query
+		sep := "?"
+		if strings.Contains(urlStr, "?") {
+			sep = "&"
+		}
+		urlStr += sep + query
 	}
 
 	bodyReader, contentTypeOverride, contentLen, err := a.buildRequestBody(ctx, tool, params)
@@ -1294,6 +1343,28 @@ func joinURL(baseURL, toolPath string) (string, error) {
 	return resolved.String(), nil
 }
 
+// checkPathStaysRelative refuses a tool path that is an absolute URL only
+// after its parameters were filled in. joinURL sends an absolute path to
+// the host it names, which is meant for a DADL that writes that host
+// itself. url.PathEscape leaves ":" as it is, so a template such as
+// "{a}//{b}/x" turns into "https://other.example/x" with the values
+// "https:" and "other.example": a URL on a host of the caller's choosing.
+// The credential binding would keep the backend's credentials from going
+// there, but a backend without credentials would send the request.
+func checkPathStaysRelative(template, path string) error {
+	if isAbsoluteHTTPPath(template) || !isAbsoluteHTTPPath(path) {
+		return nil
+	}
+	return fmt.Errorf("path parameter values turn the tool path %q into an absolute URL; only a path the DADL writes as one may name another host", template)
+}
+
+// isAbsoluteHTTPPath reports whether the tool path p is an absolute http or
+// https URL with a host.
+func isAbsoluteHTTPPath(p string) bool {
+	u, err := url.Parse(p)
+	return err == nil && isAbsoluteHTTPURL(u)
+}
+
 // isAbsoluteHTTPURL reports whether u is an absolute http or https URL with a
 // host. Only such a tool path bypasses the base URL; any other scheme-like
 // prefix is treated as part of a relative path.
@@ -1344,8 +1415,27 @@ func (a *RESTAdapter) buildPath(tool *dadl.ToolDef, params map[string]any) (stri
 		// segment of its own ({id}.json); such values are not legitimate
 		// IDs. An encoded slash in a value (a%2F..%2Fb) stays one segment
 		// here; see the DADL docs on proxies that decode %2F.
-		if str == "." || str == ".." {
+		// The same holds for a dot segment with white space around it,
+		// which a server or proxy may trim.
+		if trimmed := strings.TrimSpace(str); trimmed == "." || trimmed == ".." {
 			return "", fmt.Errorf("path parameter %q cannot be %q", name, str)
+		}
+		// No ID holds a control character, and a layer that cuts a value at
+		// a NUL or drops such characters would see another value, ".."
+		// among them.
+		if strings.IndexFunc(str, unicode.IsControl) >= 0 {
+			return "", fmt.Errorf("path parameter %q cannot contain control characters", name)
+		}
+		// A server can read more into a segment than the URL says. Many
+		// (Tomcat, Jetty and what is built on them) cut a ";..." suffix off
+		// every segment before they route, and some read "\" as "/".
+		// url.PathEscape sends the two as %3B and %5C; a server, or a proxy
+		// in front of it, that decodes them first would read "..;" and
+		// "..\" as the dot segments refused above, and "42;x" as another ID
+		// than the one a policy has seen. Both characters are refused
+		// wherever they stand in the value.
+		if i := strings.IndexAny(str, `;\`); i >= 0 {
+			return "", fmt.Errorf("path parameter %q cannot contain %q", name, str[i:i+1])
 		}
 		path = strings.ReplaceAll(path, "{"+name+"}", url.PathEscape(str))
 	}
@@ -2029,7 +2119,7 @@ func (a *RESTAdapter) doRequestRaw(ctx context.Context, tool *dadl.ToolDef, para
 	a.logger.DebugContext(ctx, "REST streaming request",
 		"backend", a.spec.Backend.Name,
 		"method", req.Method,
-		"url", req.URL.String(),
+		"url", a.loggableURL(req.URL),
 	)
 
 	resp, err := a.streamingHTTPClient.Do(req)

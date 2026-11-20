@@ -32,6 +32,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/crypto/scrypt"
@@ -49,13 +50,15 @@ import (
 // Server is the ToolMesh MCP server that handles Streamable HTTP transport,
 // OAuth 2.1 authentication, and tool call routing.
 type Server struct {
-	handler       *Handler
-	cfg           *config.Config
-	logger        *slog.Logger
-	tokenStore    auth.TokenStore
-	userStore     *auth.UserStore
-	apiKeys       *auth.APIKeyStore
-	rateLimiter   *auth.DCRRateLimiter
+	handler     *Handler
+	cfg         *config.Config
+	logger      *slog.Logger
+	tokenStore  auth.TokenStore
+	userStore   *auth.UserStore
+	apiKeys     *auth.APIKeyStore
+	rateLimiter *auth.DCRRateLimiter
+	// revokeLimiter limits revocation requests per client address.
+	revokeLimiter *auth.AddressRateLimiter
 	loginThrottle *auth.LoginThrottle
 	// bearerThrottle limits failed bearer credentials per client address.
 	bearerThrottle *auth.LoginThrottle
@@ -64,6 +67,10 @@ type Server struct {
 	blobStore      *blob.Store
 	uploadLimits   blob.UploadLimits
 	health         HealthReporter
+
+	// unlistedProxyWarned is when warnLimitBehindUnlistedProxy last logged,
+	// in Unix nanoseconds; 0 means never.
+	unlistedProxyWarned atomic.Int64
 
 	// ownerFP caches the credential fingerprint of the single-password
 	// owner for the password it was derived from (ownerFPFor).
@@ -105,6 +112,7 @@ func NewServer(handler *Handler, cfg *config.Config, logger *slog.Logger, tokenS
 		userStore:      userStore,
 		apiKeys:        apiKeys,
 		rateLimiter:    rateLimiter,
+		revokeLimiter:  auth.NewRevokeRateLimiter(nil),
 		loginThrottle:  auth.NewLoginThrottle(loginThrottleConfig(cfg), nil, logger),
 		bearerThrottle: auth.NewLoginThrottle(bearerThrottleConfig(cfg), nil, logger),
 		callerClasses:  callerClasses,
@@ -112,12 +120,14 @@ func NewServer(handler *Handler, cfg *config.Config, logger *slog.Logger, tokenS
 	}
 }
 
-// UseRedisLoginThrottle moves the failed-login counters from process memory,
-// where NewServer keeps them, to Redis, so the limits hold across replicas and
-// restarts. Call it before the server starts handling requests.
+// UseRedisLoginThrottle moves the failed-login counters and the count of
+// revocation requests from process memory, where NewServer keeps them, to
+// Redis, so the limits hold across replicas and restarts. Call it before the
+// server starts handling requests.
 func (s *Server) UseRedisLoginThrottle(rdb *redis.Client) {
 	s.loginThrottle = auth.NewLoginThrottle(loginThrottleConfig(s.cfg), rdb, s.logger)
 	s.bearerThrottle = auth.NewLoginThrottle(bearerThrottleConfig(s.cfg), rdb, s.logger)
+	s.revokeLimiter = auth.NewRevokeRateLimiter(rdb)
 }
 
 // bearerThrottleConfig limits failed bearer credentials per client address
@@ -760,10 +770,43 @@ func (s *Server) reserveBearerSlot(r *http.Request, slot *bearerSlot) error {
 	if !a.Allowed {
 		s.logger.InfoContext(r.Context(), "bearer authentication throttled",
 			logKeyRemote, ip, "retry_after", retryAfterSeconds(a.RetryAfter))
+		s.warnLimitBehindUnlistedProxy(r, ip, "failed API keys")
 		return &errBearerThrottled{retryAfter: a.RetryAfter}
 	}
 	slot.attempt, slot.reserved = a, true
 	return nil
+}
+
+// unlistedProxyWarnInterval spaces out the warning of
+// warnLimitBehindUnlistedProxy.
+const unlistedProxyWarnInterval = time.Minute
+
+// msgLimitBehindUnlistedProxy is the warning of warnLimitBehindUnlistedProxy.
+const msgLimitBehindUnlistedProxy = "a per-address limit is refusing requests from an address that sends X-Forwarded-For but is not a trusted proxy; " +
+	"if this address is your reverse proxy, all clients behind it are counted as one and are locked out together: " +
+	"add the proxy's address to TOOLMESH_TRUSTED_PROXIES"
+
+// warnLimitBehindUnlistedProxy logs, at most once a minute, that a
+// per-address limit has just refused a request that carries an
+// X-Forwarded-For header ToolMesh does not honor. That is the picture of a
+// reverse proxy missing from TOOLMESH_TRUSTED_PROXIES: all clients behind
+// it are counted under its address, so the failures of one of them, or of
+// anyone who reaches the proxy, lock every one of them out. The hourly note
+// about an ignored header says that this can happen; this line says that it
+// is happening, when it does, and names the limit.
+func (s *Server) warnLimitBehindUnlistedProxy(r *http.Request, ip, limit string) {
+	if !auth.ForwardedForIgnored(r) {
+		return
+	}
+	now := time.Now().UnixNano()
+	last := s.unlistedProxyWarned.Load()
+	if last != 0 && now-last < int64(unlistedProxyWarnInterval) {
+		return
+	}
+	if !s.unlistedProxyWarned.CompareAndSwap(last, now) {
+		return
+	}
+	s.logger.WarnContext(r.Context(), msgLimitBehindUnlistedProxy, logKeyRemote, ip, "limit", limit)
 }
 
 // settleBearerSlot settles a reservation once the bearer was checked: an
@@ -1115,6 +1158,20 @@ func (s *Server) issuerBase() string {
 	return strings.TrimRight(s.cfg.Issuer, "/")
 }
 
+// Bounds on a client registration. Real clients send a short name and a
+// handful of redirect URIs; the limits are generous for them and keep a
+// stored registration small.
+const (
+	// maxRegisterBodyBytes bounds the request body.
+	maxRegisterBodyBytes = 64 << 10
+	// maxClientNameBytes bounds client_name. The login page shows less.
+	maxClientNameBytes = 256
+	// maxRedirectURIs bounds the number of redirect_uris.
+	maxRedirectURIs = 16
+	// maxRedirectURIBytes bounds one redirect_uri.
+	maxRedirectURIBytes = 2048
+)
+
 func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
@@ -1123,16 +1180,19 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// DCR Rate Limiting. Fails open: an outage of Redis must not take
-	// registration, and with it every new connection, down with it.
+	// DCR rate limit. When Redis cannot be asked, the limiter's count in
+	// process memory decides: an outage of Redis neither lifts the limit
+	// nor takes registration, and with it every new connection, down.
 	if s.rateLimiter != nil {
 		ip := auth.ClientIP(r)
 		allowed, err := s.rateLimiter.Allow(ctx, ip)
 		if err != nil {
-			s.logger.WarnContext(ctx, "dcr rate limit unavailable, registration allowed without limit (fail-open)",
-				outcomeError, err, "remote", ip)
-		} else if !allowed {
-			writeJSON(w, http.StatusTooManyRequests, map[string]string{outcomeError: "too_many_requests"})
+			s.logger.WarnContext(ctx, "dcr rate limit: redis unavailable, registrations counted in process memory",
+				outcomeError, err, logKeyRemote, ip)
+		}
+		if !allowed {
+			s.warnLimitBehindUnlistedProxy(r, ip, "client registrations")
+			writeJSON(w, http.StatusTooManyRequests, map[string]string{outcomeError: oauthErrTooManyRequests})
 			return
 		}
 	}
@@ -1144,7 +1204,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// M-3: Limit request body size
-	r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1 MB
+	r.Body = http.MaxBytesReader(w, r.Body, maxRegisterBodyBytes)
 
 	var req struct {
 		RedirectURIs []string `json:"redirect_uris"`
@@ -1155,8 +1215,23 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// What is stored for a client is bounded: every registration is kept
+	// until the client expires, and anyone may register.
+	if len(req.ClientName) > maxClientNameBytes {
+		writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: oauthErrInvalidClientMetadata, oauthErrorDescription: fmt.Sprintf("client_name is longer than %d bytes", maxClientNameBytes)})
+		return
+	}
+	if len(req.RedirectURIs) > maxRedirectURIs {
+		writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: oauthErrInvalidRedURI, oauthErrorDescription: fmt.Sprintf("more than %d redirect_uris", maxRedirectURIs)})
+		return
+	}
+
 	// Validate redirect_uri schemes — only HTTPS (or http://localhost for dev)
 	for _, uri := range req.RedirectURIs {
+		if len(uri) > maxRedirectURIBytes {
+			writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: oauthErrInvalidRedURI, oauthErrorDescription: fmt.Sprintf("a redirect_uri is longer than %d bytes", maxRedirectURIBytes)})
+			return
+		}
 		parsed, err := url.Parse(uri)
 		if err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: oauthErrInvalidRedURI, oauthErrorDescription: fmt.Sprintf("malformed URI: %s", uri)})
@@ -1854,13 +1929,18 @@ func (s *Server) currentIdentity(userID string) (id tokenIdentity, ok bool) {
 // it: the clients are public (token_endpoint_auth_method none), and revoking
 // only takes access away. Revoking either token of a pair revokes both. The
 // answer is 200 whether or not the token was known (RFC 7009 section 2.2).
+//
+// The endpoint takes no credential and every request makes the token store
+// look a token up, so the requests of one client address are limited (see
+// revocationAllowed). A client revokes when a user signs out; the limit is
+// far above that.
 func (s *Server) handleRevoke(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	w.Header().Set("Cache-Control", "no-store")
-	r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1 MB limit
+	r.Body = http.MaxBytesReader(w, r.Body, maxRevokeBodyBytes)
 	if err := r.ParseForm(); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: oauthErrInvalidReq})
 		return
@@ -1870,10 +1950,49 @@ func (s *Server) handleRevoke(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: oauthErrInvalidReq, oauthErrorDescription: "token is required"})
 		return
 	}
+	if !s.revocationAllowed(w, r, token) {
+		return
+	}
 	if s.tokenStore != nil {
 		s.revokeToken(r, token)
 	}
 	w.WriteHeader(http.StatusOK)
+}
+
+// maxRevokeBodyBytes bounds the body of a revocation request, which holds
+// one token and at most a hint about its type.
+const maxRevokeBodyBytes = 16 << 10
+
+// revocationAllowed counts a revocation request against the limit of its
+// client address and reports whether it may go on. When it may not, the
+// answer has been written.
+//
+// A request over the limit is still served when the token is one this
+// process holds. A sign-out must not fail because others at the same
+// address, behind a shared proxy or a hosted client's egress, have used
+// the limit up: the token would stay valid. Telling such a token from a
+// made-up one is a lookup in memory, so the limit keeps what it is for:
+// requests with tokens nobody holds stop reaching the token store.
+func (s *Server) revocationAllowed(w http.ResponseWriter, r *http.Request, token string) bool {
+	if s.revokeLimiter == nil {
+		return true
+	}
+	ip := auth.ClientIP(r)
+	allowed, err := s.revokeLimiter.Allow(r.Context(), ip)
+	if err != nil {
+		s.logger.WarnContext(r.Context(), "revocation rate limit: redis unavailable, requests counted in process memory",
+			outcomeError, err, logKeyRemote, ip)
+	}
+	if allowed {
+		return true
+	}
+	if holder, ok := s.tokenStore.(auth.TokenHolder); ok && holder.Holds(token) {
+		return true
+	}
+	s.warnLimitBehindUnlistedProxy(r, ip, "token revocations")
+	w.Header().Set("Retry-After", strconv.Itoa(retryAfterSeconds(s.revokeLimiter.Window())))
+	writeJSON(w, http.StatusTooManyRequests, map[string]string{outcomeError: oauthErrTooManyRequests})
+	return false
 }
 
 // revokeToken removes token, as access or refresh token, together with the
@@ -1921,7 +2040,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 
 var loginTmpl = template.Must(template.New("login").Parse(`<!DOCTYPE html>
 <html>
-<head><title>ToolMesh Login</title>
+<head><meta charset="utf-8"><title>ToolMesh Login</title>
 <style>body{font-family:system-ui;max-width:400px;margin:80px auto;padding:20px}
 input{width:100%;padding:8px;margin:8px 0;box-sizing:border-box}
 button{width:100%;padding:10px;background:#2563eb;color:white;border:none;border-radius:4px;cursor:pointer}
@@ -1929,7 +2048,10 @@ button:hover{background:#1d4ed8}
 .error{color:#b91c1c}
 .consent{border:1px solid #d1d5db;border-radius:6px;padding:12px;margin:12px 0}
 .host{font-size:1.4em;font-weight:bold;word-break:break-all;margin:4px 0}
-.note{color:#6b7280;font-size:.9em}
+.note{color:#6b7280;font-size:.9em;margin:4px 0 0}
+.name{margin:12px 0 4px}
+.clientname{margin:0;padding:6px 8px;border:1px dashed #9ca3af;border-radius:4px;background:#f9fafb;font-family:ui-monospace,monospace;line-height:2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.clientname.none{color:#6b7280;font-family:inherit}
 .confirm{display:block;margin:12px 0}
 .confirm input{width:auto;margin-right:6px}</style></head>
 <body>
@@ -1938,8 +2060,10 @@ button:hover{background:#1d4ed8}
 <p>An application asks for access to your ToolMesh tools.</p>
 <p>After you sign in, access is handed to:</p>
 <p class="host">{{.RedirectHost}}</p>
-<p class="name">Name given by the application: &ldquo;{{if .ClientName}}{{.ClientName}}{{else}}none{{end}}&rdquo;<br>
-<span class="note">The application chose this name itself; ToolMesh has not verified it.</span></p>
+<p class="name">Name given by the application:</p>
+{{if .ClientName}}<p class="clientname"><bdi>{{.ClientName}}</bdi></p>
+{{else}}<p class="clientname none">no name given</p>
+{{end}}<p class="note">The application chose this name itself; ToolMesh has not verified it.</p>
 </div>
 <p>Continue only if you started this connection yourself and trust <strong>{{.RedirectHost}}</strong>.</p>
 {{if .Error}}<p class="error" role="alert">{{.Error}}</p>
@@ -1975,25 +2099,13 @@ type loginForm struct {
 	RedirectHost string
 }
 
-// clientDisplayName returns the self-declared client_name of client, cut to
-// a length that fits the login page, or "" when there is none.
-func clientDisplayName(client *auth.OAuthClient) string {
-	if client == nil {
-		return ""
-	}
-	name := strings.TrimSpace(client.ClientName)
-	if r := []rune(name); len(r) > 80 {
-		name = string(r[:80]) + "…"
-	}
-	return name
-}
-
 // renderLoginForm writes the login page with the given status. A 401 goes out
 // without a WWW-Authenticate challenge on purpose: there is no scheme that
 // describes an HTML form, and "Basic" would make the browser put its own
-// password dialog in front of the page.
+// password dialog in front of the page. The charset is stated, so a browser
+// never guesses an encoding from the text the client supplied.
 func (s *Server) renderLoginForm(w http.ResponseWriter, status int, form loginForm) {
-	w.Header().Set("Content-Type", "text/html")
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(status)
 	if err := loginTmpl.Execute(w, form); err != nil {
 		s.logger.Error("failed to render login form", outcomeError, err)

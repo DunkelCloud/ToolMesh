@@ -388,6 +388,10 @@ func main() {
 
 			if err := rdb.Ping(ctx).Err(); err != nil {
 				logger.Warn("Redis not reachable, using file-only token store", "error", err)
+				// Redis may hold a copy of the tokens issued before this
+				// start. The file store keeps a record of the ones revoked
+				// or spent from now on, for the start that reaches Redis.
+				fileStore.RememberRemovals()
 			} else {
 				logger.Info("Redis connected, using hybrid token store")
 				redisStore := auth.NewRedisTokenStore(rdb)
@@ -734,8 +738,8 @@ type backendsResult struct {
 	refused []string
 }
 
-// buildBackends creates all MCP and REST backends from backends.yaml and DADL
-// files. This function is called at startup and on hot-reload. It returns the
+// buildBackends creates all MCP, REST and SSH backends from backends.yaml,
+// DADL files and command files. This function is called at startup and on hot-reload. It returns the
 // named map and passthroughs ready for CompositeBackend.Swap().
 func buildBackends(ctx context.Context, bc *buildBackendsConfig) (*backendsResult, error) {
 	// Initialize MCPAdapter (external MCP backends)
@@ -769,6 +773,9 @@ func buildBackends(ctx context.Context, bc *buildBackendsConfig) (*backendsResul
 	// Build named REST backends from DADL files
 	named := make(map[string]backend.ToolBackend)
 	healthTargets, refused := loadRESTBackendsInto(named, bc.cfg.BackendsConfigPath, bc.cfg.DADLDir, bc.blobStore, bc.credStore, bc.owners, bc.tc, bc.logger, bc.baseHandler, bc.debugFile, bc.debugSet, bc.users)
+
+	// Build named SSH backends from command files
+	healthTargets = append(healthTargets, loadSSHBackendsInto(named, bc.cfg.BackendsConfigPath, bc.credStore, bc.logger, bc.baseHandler, bc.debugFile, bc.debugSet)...)
 
 	return &backendsResult{
 		named:         named,
@@ -872,11 +879,12 @@ func loadRESTBackendsInto(named map[string]backend.ToolBackend, backendsConfigPa
 	}
 
 	for _, entry := range cfg.Backends {
-		// Non-REST entries are wired by the MCPAdapter, which applies
-		// include_tools/expose_tools itself after upstream tool discovery.
+		// MCP entries are wired by the MCPAdapter, which applies
+		// include_tools/expose_tools itself after upstream tool discovery,
+		// SSH entries by loadSSHBackendsInto.
 		if entry.Transport != "rest" {
-			if entry.HealthCheck != nil {
-				logger.Warn("health_check applies to transport: rest backends only, ignoring", "name", entry.Name, "transport", entry.Transport)
+			if entry.HealthCheck != nil && entry.Transport != backend.TransportSSH {
+				logger.Warn("health_check applies to transport: rest and ssh backends only, ignoring", "name", entry.Name, "transport", entry.Transport)
 			}
 			continue
 		}
@@ -997,10 +1005,7 @@ func loadRESTBackendsInto(named map[string]backend.ToolBackend, backendsConfigPa
 		var scopeErr *dadl.ScopeError
 		if errors.As(err, &scopeErr) {
 			logger.Error("backend refused: its DADL reaches outside the credentials or hosts allowed for it; the other backends keep running",
-				"name", entry.Name,
-				"dadl", entry.DADL,
-				"error", err,
-				"add_to_backends_yaml_entry", scopeErr.FixLines(),
+				scopeRefusalAttrs(entry.Name, entry.DADL, scopeErr)...,
 			)
 			refused = append(refused, entry.Name)
 			continue

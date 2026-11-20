@@ -42,6 +42,9 @@ config/users.yaml
 config/apikeys.yaml
 config/authz.yaml
 config/caller-classes.yaml
+# Command files, known_hosts and key files of SSH backends
+config/ssh/*
+!config/ssh/*.example
 
 # Persistent state (OAuth tokens, session data)
 data/

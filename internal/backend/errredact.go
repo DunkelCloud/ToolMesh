@@ -14,12 +14,35 @@
 
 package backend
 
-import "github.com/DunkelCloud/ToolMesh/internal/urlredact"
+import (
+	"net/url"
+
+	"github.com/DunkelCloud/ToolMesh/internal/urlredact"
+)
 
 // redactTransportError converts a *url.Error returned by an HTTP client into
 // an error that names only scheme and host (see urlredact.TransportError).
 func redactTransportError(err error) error {
 	return urlredact.TransportError(err)
+}
+
+// loggableEndpoint returns the configured URL of a backend for a log line:
+// without its query string and fragment and without a password, each of
+// which can hold a credential ("https://mcp.example.com/sse?api_key=...").
+// A URL that does not parse is reduced to scheme and host.
+func loggableEndpoint(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return urlredact.Origin(raw)
+	}
+	u.RawQuery, u.ForceQuery, u.Fragment = "", false, ""
+	if u.User != nil {
+		u.User = url.User(u.User.Username())
+	}
+	return u.String()
 }
 
 // RedactURLErrors returns an error equivalent to err whose message shows the

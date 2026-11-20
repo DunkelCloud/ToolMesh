@@ -11,8 +11,153 @@ for the full narrative and details.
 
 ## [Unreleased]
 
+### Security
+
+- The example for `TOOLMESH_TRUSTED_PROXIES` in `.env.example`,
+  `docs/configuration.md` and `docker-compose.yml` no longer lists the
+  Compose network (`172.18.0.0/16`). The network contains its gateway, and
+  with Docker Desktop, rootless Docker or a userland proxy, direct
+  connections to ToolMesh's published port come from that gateway; with the
+  network listed, such a connection could choose its client address through
+  `X-Forwarded-For`. List the proxy container's own fixed address and
+  publish ToolMesh's port on `127.0.0.1` only, or not at all. If your
+  setting follows the old example, change it. See
+  [Proxy in a container](docs/configuration.md#proxy-in-a-container).
+- The documentation says plainly that a password change ends sessions only
+  after a restart: `users.yaml` and `TOOLMESH_AUTH_PASSWORD` are read at
+  startup, and until then the old password signs in and its sessions keep
+  working. Restart ToolMesh right after changing a password that someone
+  else may know. See [Tokens](docs/configuration.md#tokens).
+- The `backend refused` log line no longer offers every line that would
+  load the backend as a line to add. Under `add_to_backends_yaml_entry` it
+  keeps what leaves the binding as it is: for a credential name outside
+  the entry's namespace, an `env:` line that gives the backend a credential
+  of its own. The lines that give the DADL what it names come apart under
+  `check_before_adding`, with a `warning`: `credentials:` for such a name,
+  and `allowed_hosts:` for every host and port the DADL names beyond the
+  binding. A host an entry could not name exactly, such as one with a `*`,
+  gets no line. Until now a second backend on the DADL of another service
+  was told to add `credentials: [<that service's key>]`, which sent that
+  key to the second backend's host. If you added such a line, give the
+  backend a key of its own. See
+  [Lines the refusal names](docs/configuration.md#lines-the-refusal-names).
+- A REST backend whose DADL sends credentials to other hosts of its
+  `base_url`'s registrable domain says so when it is loaded: an `INFO` line
+  lists the hosts. The binding allows them as before. On a domain whose
+  customers each have a subdomain, such a host can be another customer's,
+  and until now nothing showed that a DADL used one. A host listed in
+  `allowed_hosts:` is confirmed and no longer reported.
+- A path parameter value that contains `;`, a backslash or a control
+  character is refused before a request is sent, like the values `.` and
+  `..`, which are now refused with white space around them as well.
+  Such a value went out percent-encoded (`%3B`, `%5C`). A server, or a
+  proxy in front of it, that decodes these before it routes can cut a `;`
+  suffix off a path segment or read a backslash as `/`: `..;` would then
+  walk up the path, and `42;x` name another object than the one a gate
+  policy saw.
+- A DADL tool path with a `{placeholder}` after `?` or `#`, such as
+  `/search?q={q}`, is refused when the DADL is parsed and when the backend
+  is loaded; `lint-dadl` reports it. A path parameter is escaped as a path
+  segment, which leaves `&` and `=` as they are, so a value there could add
+  query parameters that no declaration names and no gate policy sees.
+  Declare the parameter with `in: query` instead. No DADL in the registry
+  uses such a path. A tool path with a query of its own (`/search?kind=a`)
+  is now continued with `&` when the tool also has `in: query` parameters;
+  until now a second `?` was sent.
+- Client registration (`/register`) keeps its limit of 5 per hour and
+  address when Redis cannot be reached: the count in process memory decides
+  then, and what it counted still counts when Redis answers again. Until
+  now such a registration was allowed without a limit. A
+  registration is refused with `400` when its `client_name` is longer than
+  256 bytes, when it lists more than 16 `redirect_uris` or one longer than
+  2048 bytes, or when its body is larger than 64 KiB (until now 1 MiB,
+  stored as sent).
+- The login page shows a client's self-declared name on a line of its
+  own, set apart in a box, and reduced to what a name is made of: letters
+  and digits of any script, single spaces and a little punctuation.
+  Quotation marks and what is drawn like one, other symbols, control
+  characters, direction overrides and zero-width characters are dropped.
+  The page used to set the name in quotation marks within its own
+  sentence; a name could close that quotation and continue as if ToolMesh
+  said it, or reverse the direction of the line. The page also states its
+  charset (`text/html; charset=utf-8`), so a browser does not guess an
+  encoding from text a client supplied.
+- Token revocation (`/revoke`) answers one client address at most 60 times
+  a minute and further requests with `429` and `Retry-After`, unless the
+  token is one the instance holds: a real token is always revoked. The
+  endpoint takes no credential and was not limited. Without Redis, a revocation with
+  an unknown token walked every stored refresh token while it held the
+  token store's lock; the pair is now looked up by key.
+- A revocation holds through an outage of Redis. When a token was revoked
+  while Redis could not be reached, Redis kept its copy, and the token
+  worked again once Redis answered; a refresh token or authorization code
+  used during the outage could be used a second time afterwards. ToolMesh
+  now notes such a removal in `oauth-state.json` until the token expires,
+  refuses the copy Redis kept and removes it within half a minute of Redis
+  answering again, also after a restart and when it was started while
+  Redis did not answer. The Redis store reported an unreachable Redis as
+  "not found" when a refresh token or code was consumed, which hid the
+  outage from this logic; it now reports the error.
+- Logins, token refreshes and client registrations work while Redis cannot
+  be reached: what they write is kept in the file store, where reads
+  already fall back to. Until now they failed with `500`, and a refresh
+  spent its refresh token without returning a new pair. A Redis that
+  hangs is left alone for five seconds after a call to it timed out, so a
+  request waits for it once and not for each of its calls.
+- Behind a reverse proxy that `TOOLMESH_TRUSTED_PROXIES` does not list, all
+  clients are counted under the proxy's address, and a few wrong API keys
+  from anyone lock out every client behind it. Only an hourly `WARN` about
+  the ignored `X-Forwarded-For` header pointed to this. Now, when a
+  per-address limit (failed API keys, failed logins, registrations,
+  revocations) refuses a request that carries such a header, a `WARN` names
+  the address, the limit and the setting, at most once a minute.
+- A DADL is refused when it is parsed if a parameter of a tool or composite
+  has no `type`, a type other than those of the DADL schema (`string`,
+  `integer`, `number`, `boolean`, `array`, `object`, `file_url`), or a
+  `default` that does not fit its type, an infinite or NaN number
+  included. Such a parameter took any value unchecked, so a gate policy
+  saw whatever the caller sent. A default that
+  is filled in now takes the same form before the gate as a value the
+  caller sends: the default `"5"` of an `integer` parameter becomes `5`,
+  the default `42` of a `string` parameter `"42"`. No DADL in the registry
+  is affected.
+- A call whose path parameter values turn a relative tool path into an
+  absolute URL is refused before a request is sent. A path parameter keeps
+  its `:`, so a tool path of the form `{a}//{b}/x` became a URL on a host
+  the caller chose. The credential binding kept the backend's credentials
+  from going there; a backend without credentials sent the request. Only a
+  path the DADL writes as an absolute URL names another host.
+- An entry of `TOOLMESH_TRUSTED_PROXIES` in IPv4-mapped IPv6 form, such as
+  `::ffff:172.18.0.10`, now counts as the IPv4 address or network it stands
+  for. Such an entry matched no connection, so the proxy stayed untrusted
+  and every client behind it was counted under its address, without a
+  message. A mapped prefix shorter than `/96` fails startup.
+- The debug trace of a backend request (`LOG_LEVEL=debug`, or the
+  per-backend debug file) no longer carries an API key that the backend
+  sends in its query string (`auth.inject_into: query`): the value is
+  logged as `[REDACTED]`, the parameter name stays. A password in a
+  backend URL is logged as `xxxxx`, and the debug line about connecting to
+  an MCP server backend shows its URL without the query string.
+
 ### Added
 
+- Commands on hosts over SSH. A backend with `transport: ssh` reads a command
+  file: named commands with a fixed argument vector and typed parameters. Each
+  command is a tool; a call fills in the parameters and ToolMesh builds the
+  command line, with every argument in quotes for the shell of the host, so a
+  value stays one argument whatever it contains. A string parameter needs a
+  pattern or a list of values, and a value that starts with `-` is refused.
+  ToolMesh connects per call, logs in with a key from the credential store or
+  a file (the passphrase of the key from the credential store), runs the
+  command without a terminal and returns exit code, stdout and stderr. A host
+  is connected to only when its key is in the entry's `known_hosts` file;
+  there is no setting that turns the check off. One backend serves one host or
+  several, which a call selects with the parameter `host`. Authorization,
+  kits, hints, policies and the audit log apply as to any tool. The health
+  check of such a backend connects to every host and logs in. See
+  [SSH backends](docs/configuration.md#ssh-backends),
+  [config/ssh/linux-host.yaml.example](config/ssh/linux-host.yaml.example) and
+  [ADR-0007](docs/adr/0007-commands-over-ssh-as-templates.md).
 - MCP revision 2026-07-28. The MCP endpoint serves the revision without
   sessions and without the `initialize` handshake next to the older ones,
   and tells them apart per request: clients of both kinds use the same URL,
@@ -57,12 +202,13 @@ for the full narrative and details.
   `GET` and `HEAD` tools. The key is a ToolMesh extension that DADL spec
   v0.2 does not define. See `docs/configuration.md`.
 - `hint_required_for` in `backends.yaml` makes a backend's `hint` a
-  precondition for tools of the listed access classes. A call without proof
-  is refused with the hint and a line for the top of an `execute_code`
-  script (`toolmesh.assert_proofs`); the line is valid for the day. Every
-  conversation gets the hint before its first such call, where the notice
-  on a user's first call reached only the first conversation. See
-  [Backend hints](docs/configuration.md#backend-hints).
+  precondition for the tools it lists, by access class or by name. A script
+  that calls such a tool without proof is refused before it runs, with the
+  hint and a `proofs` argument for `execute_code`; the proof is valid for the
+  day. Every conversation gets the hint before its first such call, where
+  the notice on a user's first call reached only the first conversation. The
+  proof is no part of the script, so a script whose text is fixed needs no
+  change. See [Backend hints](docs/configuration.md#backend-hints).
 - Credentials of users. A REST backend can list credential names of its DADL
   under `user_credentials` in `backends.yaml`; every user then stores the
   credentials of their own accounts on the new page `/credentials`, signed in

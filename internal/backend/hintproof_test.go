@@ -24,30 +24,71 @@ const (
 	hintTestBackend = "wiki"
 	hintTestText    = "Page names follow the naming rules; read them before creating a page."
 	hintTestWrite   = "write"
+	// hintTestTool is a tool of the backend as the backend calls it.
+	hintTestTool = "create_page"
 )
 
 func TestBackendInfo_HintRequired(t *testing.T) {
+	const (
+		create = hintTestBackend + "_" + hintTestTool
+		edit   = hintTestBackend + "_edit_page"
+		danger = "dangerous"
+	)
+	withHint := func(entries ...string) BackendInfo {
+		return BackendInfo{Name: hintTestBackend, Hint: hintTestText, HintRequiredFor: entries}
+	}
 	cases := []struct {
 		name   string
 		info   BackendInfo
+		tool   string
 		access string
 		want   bool
 	}{
-		{"listed class", BackendInfo{Hint: hintTestText, HintRequiredFor: []string{hintTestWrite}}, hintTestWrite, true},
-		{"class not listed", BackendInfo{Hint: hintTestText, HintRequiredFor: []string{hintTestWrite}}, accessStubClassR, false},
-		{"class matches without regard to case", BackendInfo{Hint: hintTestText, HintRequiredFor: []string{"Write"}}, hintTestWrite, true},
-		{"all matches a classified tool", BackendInfo{Hint: hintTestText, HintRequiredFor: []string{HintAccessAll}}, accessStubClassR, true},
-		{"all matches an unclassified tool", BackendInfo{Hint: hintTestText, HintRequiredFor: []string{HintAccessAll}}, "", true},
-		{"a class does not match an unclassified tool", BackendInfo{Hint: hintTestText, HintRequiredFor: []string{hintTestWrite}}, "", false},
-		{"no hint, nothing to require", BackendInfo{HintRequiredFor: []string{hintTestWrite}}, hintTestWrite, false},
-		{"hint as advice only", BackendInfo{Hint: hintTestText}, hintTestWrite, false},
+		{"listed class", withHint(hintTestWrite), create, hintTestWrite, true},
+		{"class not listed", withHint(hintTestWrite), create, accessStubClassR, false},
+		{"class matches without regard to case", withHint("Write"), create, hintTestWrite, true},
+		{"all matches a classified tool", withHint(HintAccessAll), create, accessStubClassR, true},
+		{"all matches an unclassified tool", withHint(HintAccessAll), create, "", true},
+		{"a class does not match an unclassified tool", withHint(hintTestWrite), create, "", false},
+		{"listed tool, without the backend prefix", withHint(hintTestTool), create, hintTestWrite, true},
+		{"listed tool, with the backend prefix", withHint(create), create, hintTestWrite, true},
+		{"listed tool without a class", withHint(hintTestTool), create, "", true},
+		{"another tool of the same class is not listed", withHint(hintTestTool), edit, hintTestWrite, false},
+		{"a tool name matches as written", withHint("Create_Page"), create, hintTestWrite, false},
+		{"a tool and a class side by side", withHint(hintTestTool, danger), edit, danger, true},
+		{"no hint, nothing to require", BackendInfo{Name: hintTestBackend, HintRequiredFor: []string{hintTestWrite}}, create, hintTestWrite, false},
+		{"hint as advice only", withHint(), create, hintTestWrite, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := tc.info.HintRequired(tc.access); got != tc.want {
-				t.Errorf("HintRequired(%q) = %v, want %v", tc.access, got, tc.want)
+			if got := tc.info.HintRequired(tc.tool, tc.access); got != tc.want {
+				t.Errorf("HintRequired(%q, %q) = %v, want %v", tc.tool, tc.access, got, tc.want)
 			}
 		})
+	}
+}
+
+// An entry that covers no tool refuses nothing; the operator is told which.
+func TestBackendInfo_UnmatchedHintEntries(t *testing.T) {
+	tools := []ToolDescriptor{
+		{Name: hintTestBackend + "_" + hintTestTool, Access: hintTestWrite},
+		{Name: hintTestBackend + "_read_page", Access: accessStubClassR},
+		{Name: hintTestBackend + "_ping"},
+	}
+	info := BackendInfo{
+		Name: hintTestBackend,
+		Hint: hintTestText,
+		HintRequiredFor: []string{
+			hintTestWrite, hintTestTool, hintTestBackend + "_ping", HintAccessAll,
+			"creat_page", accessStubClassA,
+		},
+	}
+	got := info.UnmatchedHintEntries(tools)
+	if len(got) != 2 || got[0] != "creat_page" || got[1] != accessStubClassA {
+		t.Errorf("UnmatchedHintEntries = %v, want the misspelled tool and the unused class", got)
+	}
+	if got := (BackendInfo{Name: hintTestBackend, Hint: hintTestText, HintRequiredFor: []string{HintAccessAll}}).UnmatchedHintEntries(nil); len(got) != 0 {
+		t.Errorf("UnmatchedHintEntries = %v, want none for \"all\"", got)
 	}
 }
 

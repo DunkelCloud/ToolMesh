@@ -147,7 +147,7 @@ Set a limit to `0` to switch it off; the startup security-posture summary report
 - **Where the counters live.** In Redis when it is connected, so the limits hold across replicas and survive a restart. Otherwise in process memory: per process, and reset by a restart. The startup log line `login throttling configured` shows which applies. If Redis fails while ToolMesh is running, a login that cannot reach it logs the warning `login throttle: Redis unavailable, falling back to process-local counters` and is counted in process memory rather than let through unlimited. A counter that was charged there stays there until its window ends, also after Redis is back, so what was counted during the outage keeps counting. The process-local table holds at most 50,000 counters. When it is full it drops expired counters first, then counters that have not reached their limit, and only if that is not enough, others; it logs `login throttle: process-local counter table is full, dropped live counters` at most once a minute.
 - **Lifting a lockout early.** Delete the counters, e.g. `redis-cli --scan --pattern 'auth:{login}:failures:*' | xargs redis-cli del` (with the shipped Compose file, run `keydb-cli` inside the `keydb` service). Restart ToolMesh instead if it counts in process memory, or if the failures were counted there during a Redis outage.
 - **Client address.** The per-address limits depend on the client address ToolMesh sees; see [Client address](#client-address). IPv6 addresses are counted per `/64`. Where the client address is not available — every request appears to come from the same address — all clients share the per-address counters. Raise or switch off the two per-address limits there and rely on the per-account ceiling. This does not combine with a shared password (above), which needs the per-address limits instead.
-- **Confirmation of the destination.** The login page names the host of the client's `redirect_uri`, the party that receives the authorization, and the client's self-declared name, marked as not verified. The user has to tick a confirmation for that host. A login without it is refused before the password is looked at and does not count.
+- **Confirmation of the destination.** The login page names the host of the client's `redirect_uri`, the party that receives the authorization, and the client's self-declared name, marked as not verified. The name is shown on a line of its own, set apart in a box, so that nothing in it reads as a statement of the page. It is reduced to what a name is made of: letters and digits of any script with up to three combining marks each, single spaces and the punctuation `-_.,()+&/:@#!`. Quotation marks and what is drawn like one, other symbols, control characters, direction overrides and zero-width characters are dropped, and it is cut to 80 characters. The user has to tick a confirmation for that host. A login without it is refused before the password is looked at and does not count.
 
 ### Client address
 
@@ -156,12 +156,49 @@ The client address is used for the login and API key limits, the registration li
 `TOOLMESH_TRUSTED_PROXIES` lists the addresses your reverse proxies connect from, not the networks your clients are in: a client whose own address is listed can choose the address it is counted under.
 
 - **Reverse proxy on the same host** (Caddy, nginx, Traefik as a host service): nothing to set.
-- **Reverse proxy in a container** in the same Compose network: list the proxy container's address, or the Compose network if the address changes, for example `TOOLMESH_TRUSTED_PROXIES=172.18.0.0/16`. Only the proxy may share that network with ToolMesh then.
+- **Reverse proxy in a container** in the same Compose network: list the proxy container's own address, fixed in the Compose file, for example `TOOLMESH_TRUSTED_PROXIES=172.18.0.10`. Do not list the Compose network; see [Proxy in a container](#proxy-in-a-container).
 - **Proxy or CDN on other machines** (a load balancer, Cloudflare): list its addresses or published ranges.
 - **No proxy, ports published directly** with rootful Docker on Linux: nothing to set; Docker keeps the client's source address. With Docker Desktop, rootless Docker or a userland proxy every connection comes from a gateway address instead, so all clients share one address's limits. That fails safe, but a lockout then hits everyone; put a reverse proxy in front, or raise the per-address limits.
-- **Not configured but behind a proxy:** every client is counted under the proxy's address. ToolMesh logs `X-Forwarded-For from an address that is not a trusted proxy is ignored` at `WARN` (at most once an hour, with `remote`) when such a header arrives from an address that is not listed. The `remote` field of the request log shows which address ToolMesh uses.
+- **Not configured but behind a proxy:** every client is counted under the proxy's address. ToolMesh logs `X-Forwarded-For from an address that is not a trusted proxy is ignored` at `WARN` (at most once an hour, with `remote`) when such a header arrives from an address that is not listed. All clients then share one address's limits, so a few wrong API keys or passwords from anyone lock out every client behind the proxy. When a per-address limit refuses a request that carries such a header, a second `WARN` line says so (`a per-address limit is refusing requests from an address that sends X-Forwarded-For but is not a trusted proxy`, at most once a minute, with `remote` and `limit`). The `remote` field of the request log shows which address ToolMesh uses.
 - The proxy closest to ToolMesh must append the real client address to `X-Forwarded-For`, which common reverse proxies do. `none` honors no `X-Forwarded-For` at all.
-- The startup log names the trusted addresses: `X-Forwarded-For honored from ...`.
+- The startup log names the trusted addresses: `X-Forwarded-For honored from ...`. An entry in IPv4-mapped IPv6 form (`::ffff:172.18.0.10`) counts as the IPv4 address it stands for and is shown that way.
+
+#### Proxy in a container
+
+A reverse proxy that runs as a container next to ToolMesh is listed with its own address, not with the Compose network. The network contains its gateway (for example `172.18.0.1`), and with Docker Desktop, rootless Docker or a userland proxy, direct connections to ToolMesh's published port arrive from that gateway. With the network listed, such a connection counts as coming from a trusted proxy, and whoever opens it chooses the address the limits count it under.
+
+Give the proxy a fixed address and list that address alone. The proxy reaches ToolMesh over the Compose network, so ToolMesh's port is published on `127.0.0.1` only, or not at all:
+
+```yaml
+# docker-compose.yml, the parts that change
+services:
+  proxy:
+    image: caddy:2-alpine
+    ports:
+      - "443:443"
+    networks:
+      default:
+        ipv4_address: 172.18.0.10
+  toolmesh:
+    ports:
+      - "127.0.0.1:${TOOLMESH_PORT:-8123}:8080"
+
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 172.18.0.0/24       # a subnet no other Docker network uses
+          ip_range: 172.18.0.128/25   # automatic addresses for the other containers
+```
+
+```bash
+# .env
+TOOLMESH_TRUSTED_PROXIES=172.18.0.10
+```
+
+The `ip_range` keeps Docker from giving the proxy's address to another container. The proxy forwards to `http://toolmesh:8080`.
+
+On an existing installation, changing the network's `ipam` makes `docker compose up -d` create the network anew, but it re-creates only the services whose configuration changed. The others are attached to the new network without their service name: ToolMesh then no longer finds Redis as `keydb`, logs `Redis not reachable` and runs with its file token store only. After such a change, run `docker compose up -d --force-recreate` and check that the start log shows `Redis connected`.
 
 ### Failed API keys
 
@@ -291,13 +328,15 @@ Both must be plain integers; anything else stops the server at startup.
 An access token lives one hour, a refresh token seven days; every refresh issues a new pair.
 
 - **Current identity.** Tokens are resolved against the configuration in force on every request and every refresh: `users.yaml` when it is loaded, the single-password owner otherwise. `users.yaml` and the `TOOLMESH_AUTH_*` variables are read at startup, so a change takes effect when ToolMesh restarts: from then on, a user that was removed from `users.yaml`, or whose `password_hash` is no longer usable (for example `"!"`), loses access with the next request, and no refresh succeeds for it; changed roles, plan and company apply to existing tokens. In single-password mode the same holds when `TOOLMESH_AUTH_USER` changes.
-- **Changed passwords.** Tokens are bound to a fingerprint of the credential the user logged in with: a short hash of the `password_hash` for `users.yaml`, a value derived with scrypt from `TOOLMESH_AUTH_PASSWORD` in single-password mode, so the token store never holds a fast hash of a plain password. After a password change (and the restart that loads it), the sessions issued for the old password end with their next request or refresh. To end one user's sessions without a restart, revoke their tokens (below).
+- **Changed passwords.** Tokens are bound to a fingerprint of the credential the user logged in with: a short hash of the `password_hash` for `users.yaml`, a value derived with scrypt from `TOOLMESH_AUTH_PASSWORD` in single-password mode, so the token store never holds a fast hash of a plain password. **A password change ends sessions only after a restart.** `users.yaml` and `TOOLMESH_AUTH_PASSWORD` are read at startup: until ToolMesh restarts, the old password still signs in, the new one does not, and the sessions issued for the old password keep working and keep being refreshed. After the restart they end with their next request or refresh. When you change a password because someone else may know it, restart ToolMesh right after the change. To end one user's sessions without a restart, revoke their tokens (below).
 - **Tokens from before the upgrade.** Tokens issued by a version without this binding carry no fingerprint. They are accepted and get the fingerprint of the credential in force at their next refresh, so such a token survives a password change made after the upgrade: it is renewed and bound to the new password. A later release will close this. Until then, if you suspect misuse of a session that predates the upgrade, revoke its tokens with `POST /revoke` (this needs the token value), or end every session by clearing the stored tokens while ToolMesh is stopped:
   - **Without Redis:** delete `oauth-state.json` in the data directory (`TOOLMESH_DATA_DIR`). It also holds the registered OAuth clients, so clients register again and every user signs in again.
   - **With Redis:** delete both the Redis keys `oauth:token:*` and `oauth:refresh:*` (for example `redis-cli --scan --pattern 'oauth:token:*' | xargs -r redis-cli del`, and the same for `oauth:refresh:*`; with the shipped Compose file, run `keydb-cli` inside the `keydb` service) and `oauth-state.json` in the data directory. Clearing only one of them is not enough: at startup ToolMesh copies the tokens from `oauth-state.json` back into Redis, and while running it reads Redis first. The registered clients stay in Redis and are written back to the file.
-- **Revocation.** `POST /revoke` ([RFC 7009](https://www.rfc-editor.org/rfc/rfc7009)) takes `token=<access or refresh token>` and revokes both tokens of the pair. It answers `200` also for an unknown token. Holding a token is enough to revoke it; the metadata advertises the endpoint as `revocation_endpoint`.
+- **Revocation.** `POST /revoke` ([RFC 7009](https://www.rfc-editor.org/rfc/rfc7009)) takes `token=<access or refresh token>` and revokes both tokens of the pair. It answers `200` also for an unknown token. Holding a token is enough to revoke it; the metadata advertises the endpoint as `revocation_endpoint`. Because the endpoint takes no credential, it answers one client address (an IPv6 address counts as its /64) at most 60 times a minute; further requests get `429` with `Retry-After`, unless the token is one the instance holds, which is revoked whatever the count. The count lives in Redis when it is connected, and in process memory otherwise and while Redis cannot be reached. A revocation holds through an outage of Redis: when a token is revoked, or a refresh token or authorization code is used, while Redis cannot be reached, ToolMesh notes it in `oauth-state.json`, does not honor the copy Redis kept once Redis answers again, and removes that copy within half a minute, or at the next start. The same holds when ToolMesh was started while Redis did not answer and runs on its file store alone until the next start. Logins, token refreshes and client registrations keep working during the outage: what is written then is kept in `oauth-state.json` and found there afterwards. A Redis that accepts connections but does not answer is left alone for five seconds after a call to it timed out, so a request waits for it once and not for every call it makes. All this covers the tokens an instance holds in its own `oauth-state.json`.
 
-Registrations are limited to 5 per hour from one client address (an IPv6 address counts as its /64). The counters live in Redis, so the limit holds across replicas. Without Redis they live in process memory and the limit applies per process, which the startup log reports as `dynamic client registration (/register) is rate-limited per process`. When Redis cannot be reached for a check, the registration is allowed rather than refused (fail-open, so that an outage of Redis does not stop new connections) and logged at `WARN` as `dcr rate limit unavailable, registration allowed without limit (fail-open)` with `error` and `remote`.
+Registrations are limited to 5 per hour from one client address (an IPv6 address counts as its /64). The counters live in Redis, so the limit holds across replicas. Without Redis they live in process memory and the limit applies per process, which the startup log reports as `dynamic client registration (/register) is rate-limited per process`. When Redis cannot be reached for a check, the count in process memory decides, which includes the registrations this process has seen in the current hour: an outage of Redis neither stops new connections nor lifts the limit. Each such registration is logged at `WARN` as `dcr rate limit: redis unavailable, registrations counted in process memory` with `error` and `remote`.
+
+A registration is refused with `400` when its `client_name` is longer than 256 bytes (`invalid_client_metadata`), when it lists more than 16 `redirect_uris` or one longer than 2048 bytes (`invalid_redirect_uri`), or when its body is larger than 64 KiB.
 
 ## Audit
 
@@ -1624,8 +1663,8 @@ Every REST backend is bound to its `backends.yaml` entry. The binding comes from
 A DADL is code you install. It decides which requests its backend sends with that backend's credentials, so load DADLs only from sources you trust, as you would a program. ToolMesh keeps the credentials of different backends apart. The host binding narrows where a backend's own credentials can go, as a second line of defense; it cannot make a malicious DADL safe, any more than a configuration can make a malicious ToolMesh build safe.
 
 - **Credentials.** Each configured entry has a namespace: its `name` upper-cased with `-` as `_`, followed by `_` (entry `shelly-cloud`: `CREDENTIAL_SHELLY_CLOUD_*`). A credential belongs to the entry whose namespace is the **longest** that starts its name, so `CREDENTIAL_GITHUB_ENTERPRISE_TOKEN` belongs to an entry `github-enterprise`, not to an entry `github`. Every named entry counts, whatever its transport: REST and MCP entries in `backends.yaml`, units and the sub-backends in `unit.yaml`. A backend reads a credential only if its entry owns it, or if the entry lists it in `credentials:` or maps it with `env:`. A credential in no namespace, or in one that two spellings of an entry name share (`my-api`, `my_api`), belongs to no entry and must be listed. The division follows the configuration on every reload: adding an entry `github-enterprise` takes its credentials away from `github` at once. REST entries need a `name`; an entry without one is refused.
-- **Hosts.** Credentials, session cookies, OAuth2 token requests and session logins go only to the host of the effective `base_url` (the entry's `url`, or the DADL's `base_url`) on its port (for an `http` `base_url` on port 80 also its `https` form on 443), to the other hosts of its registrable domain by the public suffix list on the default port, and to the entries of the entry's `allowed_hosts:` list. An entry is a host (`api.example.com`), a wildcard for any depth below a domain (`"*.example.com"`, quoted in YAML) or an IP address (`10.0.0.5`, `"[2001:db8::1]"`), each on the default port, or with `:port` (`files.example.com:8443`) on that port only. An entry with a scheme, a path or other text is a configuration error and the backend is not loaded. With an `https` `base_url`, credentials go out over https only. The public suffix list includes shared hosting domains: `googleapis.com`, for example, is such a suffix, so each Google API host is a domain of its own and needs `allowed_hosts`. Many shared SaaS domains whose customers each get a subdomain, such as `atlassian.net`, `zendesk.com` or `service-now.com`, are not on that list: there, the tenants of other customers count as the same registrable domain, and only the DADL keeps the credentials on your tenant. Use a DADL you have checked for such a service, or one whose tools all stay on the `base_url` host.
-- **Checked at load.** The credentials the DADL's auth type reads (including `credential:<name>` in a session login body) and the scheme, host and port of `token_url`, absolute tool paths, an absolute health check path and the session login URL are checked when the backend is loaded, at startup and on every reload of `backends.yaml`. With `include_tools`, tools outside it are not checked: no request for them can be sent, and with `allow_private_url` their hosts do not count as destinations the configuration names. The health check tool is checked in any case. A backend that breaks the binding is not loaded: an `ERROR` line `backend refused` names it, each violation (with the entry that owns a refused credential), and the exact lines to add to its entry (`add_to_backends_yaml_entry`). The other backends keep running and ToolMesh starts; the startup security-posture summary lists the refused backends at `ERROR`. There is no global switch, only these per-entry lines.
+- **Hosts.** Credentials, session cookies, OAuth2 token requests and session logins go only to the host of the effective `base_url` (the entry's `url`, or the DADL's `base_url`) on its port (for an `http` `base_url` on port 80 also its `https` form on 443), to the other hosts of its registrable domain by the public suffix list on the default port, and to the entries of the entry's `allowed_hosts:` list. An entry is a host (`api.example.com`), a wildcard for any depth below a domain (`"*.example.com"`, quoted in YAML) or an IP address (`10.0.0.5`, `"[2001:db8::1]"`), each on the default port, or with `:port` (`files.example.com:8443`) on that port only. An entry with a scheme, a path or other text is a configuration error and the backend is not loaded. With an `https` `base_url`, credentials go out over https only. The public suffix list includes shared hosting domains: `googleapis.com`, for example, is such a suffix, so each Google API host is a domain of its own and needs `allowed_hosts`. Many shared SaaS domains whose customers each get a subdomain, such as `atlassian.net`, `zendesk.com` or `service-now.com`, are not on that list: there, the tenants of other customers count as the same registrable domain, and only the DADL keeps the credentials on your tenant. Use a DADL you have checked for such a service, or one whose tools all stay on the `base_url` host. To make this visible, a backend whose DADL names other hosts of its domain says so when it is loaded: the `INFO` line `backend sends its credentials to other hosts of its base_url's domain as well` lists them under `hosts`. A host you list in `allowed_hosts:` is confirmed and no longer reported.
+- **Checked at load.** The credentials the DADL's auth type reads (including `credential:<name>` in a session login body) and the scheme, host and port of `token_url`, absolute tool paths, an absolute health check path and the session login URL are checked when the backend is loaded, at startup and on every reload of `backends.yaml`. With `include_tools`, tools outside it are not checked: no request for them can be sent, and with `allow_private_url` their hosts do not count as destinations the configuration names. The health check tool is checked in any case. A backend that breaks the binding is not loaded: an `ERROR` line `backend refused` names it, each violation (with the entry that owns a refused credential), and the lines for its entry, in two groups (see [Lines the refusal names](#lines-the-refusal-names)). The other backends keep running and ToolMesh starts; the startup security-posture summary lists the refused backends at `ERROR`. There is no global switch, only these per-entry lines.
 - **Checked again at run time.** The same binding is enforced where credentials are injected, where token and login requests go out, and where the cookie jar of a session backend adds cookies, for every request and every redirect hop. When an entry sets no `url` and the DADL's own `base_url` is `http`, ToolMesh warns at load that credentials go out unencrypted. A `token_uri` that a `jwt_bearer` service-account credential supplies itself is operator data and is not checked.
 - **Names.** A DADL names credentials with letters, digits and `_` only; other names, and parameter defaults of the form `credential:<name>`, are refused when the DADL is parsed. In `credentials:` and `env:` the same applies; `env:` keys are read in upper case, so `credential_foo` and `CREDENTIAL_FOO` are the same key, and an entry with both is refused.
 - **No secret.** `credential: none` in an auth block is the placeholder of DADLs for APIs without authentication. It is never looked up and needs no binding.
@@ -1645,7 +1684,25 @@ Examples of entries that need a line, with the entry named like the DADL:
     allowed_hosts: [oauth2.googleapis.com]
 ```
 
-**Upgrading.** After an upgrade, backends whose DADLs read credentials outside their entry's namespace, or use hosts outside the registrable domain of their `base_url`, are refused until these lines are added. Check the log for `backend refused` after the first start, add the lines it names, and the next reload of `backends.yaml` loads them. A DADL with a credential name other than letters, digits and `_`, or with a parameter default `credential:<name>`, is refused when it is parsed and needs a change to the DADL itself.
+#### Lines the refusal names
+
+The `backend refused` line sorts the lines for the entry by what they do:
+
+- **`add_to_backends_yaml_entry`** holds the lines that keep the binding as it is. There is one kind: for a credential name outside the entry's namespace, an `env:` line that gives this backend a credential of its own (`CREDENTIAL_<ENTRY>_<NAME>`, which you then set).
+- **`check_before_adding`**, with a `warning`, holds the lines that give the DADL what it names: `credentials:` for a name outside the entry's namespace, which makes the backend read that variable itself, the one every entry reads that owns or lists the name, and `allowed_hosts:` for every host and port the DADL names beyond the binding, which sends this backend's credentials there. That includes another port of the backend's own host, where another service may listen, and another host of its domain on a port of its own. The DADL chose these names and destinations. Add such a line only when you know the destination belongs to the API, or that the backends are meant to share the credential. A host that an entry could not name exactly, such as one written with a `*` in a tool path, gets no line; it needs a change to the DADL.
+
+The second case is common when one DADL serves two backends. An entry that points `openai.dadl` at a server of your own reads `openai_api_key`, which belongs to the entry `openai` when that is configured too. `credentials: [openai_api_key]` would send the OpenAI key to your own server; the `env:` line gives the backend a key of its own:
+
+```yaml
+  - name: my-llm                  # openai.dadl against an OpenAI-compatible server
+    transport: rest
+    dadl: openai.dadl
+    url: "https://llm.example.com/v1"
+    env:
+      CREDENTIAL_OPENAI_API_KEY: CREDENTIAL_MY_LLM_OPENAI_API_KEY
+```
+
+**Upgrading.** After an upgrade, backends whose DADLs read credentials outside their entry's namespace, or use hosts outside the registrable domain of their `base_url`, are refused until these lines are added. Check the log for `backend refused` after the first start, add the lines it names under `add_to_backends_yaml_entry`, check the ones under `check_before_adding` before you add them, and the next reload of `backends.yaml` loads the backends. A DADL with a credential name other than letters, digits and `_`, or with a parameter default `credential:<name>`, is refused when it is parsed and needs a change to the DADL itself.
 
 ### Backend hints
 
@@ -1666,18 +1723,20 @@ Without `hint_required_for` the hint is advice. ToolMesh attaches it to the firs
 
 With `hint_required_for` the hint is a precondition and reaches every conversation:
 
-- **Which tools.** The list names the access classes whose tools need the hint: `read`, `write`, `admin`, `dangerous` or a class a DADL defines. `all` covers every tool of the backend, including tools without a class.
-- **Refusal.** A call to such a tool without proof is refused before it reaches the backend. The refusal carries the hint and one line of JavaScript: `toolmesh.assert_proofs(["<backend>:<digest>"]);`.
-- **Proof.** An `execute_code` script that starts with that line may call the tools. The line holds for that one script; the agent keeps it in its conversation and puts it at the top of each script that needs it. A new conversation does not have the line, is refused once, and has the hint before its first such call.
-- **Stopped script.** A script that meets the refusal stops at that call. The error says how many calls ran before it, so that the next run does not repeat them. The result lists those calls: read calls by the size of their result only, since the script reads again anyway, and all others in full. A script that asserts a proof that is no longer valid stops at that line, before any call.
-- **Expiry.** The proof is a digest of the backend name, the hint text and the date (UTC). It expires at the end of the day and when you change the hint; the caller is then refused once more and gets the hint again. It holds across restarts, and across instances with the same configuration.
-- **Audit.** The refusal is an audit entry with status `denied` and `hint_required` in its metadata. It comes after authorization: a caller that may not call the tool gets the authorization denial and not the hint.
+- **Which tools.** The list names access classes, single tools, or both. A class (`read`, `write`, `admin`, `dangerous` or one a DADL defines) covers every tool of that class. A tool name covers that tool, written as the backend calls it (`create_page`) or with the backend prefix (`wiki_create_page`). `all` covers every tool of the backend, including tools without a class. An entry that covers no tool, such as a misspelled name, is reported in the log with a warning at startup.
+- **Refusal.** A script that calls such a tool without proof is refused before it runs. None of its calls is executed, so nothing is read twice and no write is left half done. The refusal carries the hint and an argument for `execute_code`: `"proofs": ["<backend>:<digest>"]`.
+- **Proof.** The agent runs the same code again and passes that argument next to `code`. The proof holds for that one run; the agent keeps it in its conversation and passes it with each script that needs it. A new conversation does not have it, is refused once, and has the hint before its first such call.
+- **Fixed scripts.** The proof is an argument of the run and not part of the script. A script cannot present a proof on its own, so a turn of the agent lies between the refusal and the next run. A script whose text must stay as it is, such as one a scheduled agent runs unchanged, needs no change: the agent that starts it passes the proof.
+- **How a script is checked.** ToolMesh looks in the text of the script for the tools it names, as `toolmesh.<tool>` or `toolmesh["<tool>"]`. A name in a comment counts as well. A tool the script reaches under a name it computes is refused at the call instead, and the script stops there, also when it catches errors. The error says how many calls ran before it, so that the next run does not repeat them. The result lists those calls: read calls by the size of their result only, since the script reads again anyway, and all others in full.
+- **Expiry.** The proof is a digest of the backend name, the hint text and the date (UTC). It expires at the end of the day and when you change the hint. A script that passes an expired proof is refused before it runs and gets the hint in force with the new proof. A proof holds across restarts, and across instances with the same configuration.
+- **Audit.** Each tool a refusal names is an audit entry with status `denied` and `hint_required` in its metadata. The log has a line for every refusal, also for one that only an expired proof caused. The refusal comes after authorization: a caller that may not call the tool gets the authorization denial and not the hint.
 
 Limits:
 
 - The proof shows that the hint was delivered to the conversation. It does not show that the agent followed it, and it is no access control: who may call a tool is decided by [authorization](#authorization).
+- A script can read a page the hint points to and write in the same run. The agent then sees the page only after the write. A hint that asks for reading something first should ask for it in a run of its own.
 - A direct MCP call to such a tool (a tool listed under `expose_tools`) cannot carry a proof and is refused with the same text. Agents reach these tools through `execute_code`.
-- A fixed script without a model behind it cannot react to the refusal. Do not list access classes that such callers use.
+- A caller without a model behind it cannot react to the refusal: nothing reads the hint and passes the proof. Do not list tools that such callers use.
 - Calls a composite tool makes on its own are not checked; the access class of the composite decides.
 - `hint_required_for` without a `hint` is a configuration error: ToolMesh does not start with such a `backends.yaml`, and a reload keeps the previous backends.
 
@@ -1700,6 +1759,142 @@ Where the name of one MCP backend starts the name of another, as `git` and `git_
 
 A backend that returns its tool list in pages is read to the end of the list, for at most 100 pages. A backend that returns a cursor even then is cut off there, with the warning `tool list cut off`.
 
+### SSH backends
+
+A backend with `transport: ssh` runs commands on hosts over SSH. It gives an agent no shell. A command file lists the commands as templates: a fixed argument vector with placeholders for typed parameters. Each command is a tool; a call picks one and fills in its parameters, and ToolMesh builds the command line. For every call ToolMesh connects, logs in with the backend's key, runs the one command without a terminal and disconnects. Nothing is kept between calls.
+
+```yaml
+backends:
+  - name: web
+    transport: ssh
+    commands: ssh/linux-host.yaml          # the command file, relative to this file's directory
+    ssh:
+      user: toolmesh                       # the account on the hosts
+      hosts: [web1.example.com]            # host or host:port
+      known_hosts: ssh/known_hosts         # the keys of the hosts, OpenSSH format
+      key_credential: web_ssh_key          # CREDENTIAL_WEB_SSH_KEY holds the private key
+      passphrase_credential: web_ssh_key_passphrase   # only for a key under a passphrase
+```
+
+| Key | Description |
+|-----|-------------|
+| `commands` | Path of the command file. Required |
+| `ssh.user` | Account on the hosts. Required |
+| `ssh.hosts` | One or more hosts, each `host` or `host:port` (`"[2001:db8::1]:2222"` for IPv6 with a port). Required |
+| `ssh.known_hosts` | Path of a file in OpenSSH `known_hosts` format with the key of every host. Required |
+| `ssh.key_credential` | Name of the credential that holds the private key |
+| `ssh.key_file` | Path of a private key file, instead of `key_credential`. Exactly one of the two is required |
+| `ssh.passphrase_credential` | Name of the credential that holds the passphrase of the key |
+
+Relative paths start at the directory of `backends.yaml`. `hint`, `hint_required_for`, `include_tools`, `env` and `health_check` work as for other backends. `expose_tools` is ignored with a warning. An entry with `dadl`, `url`, `command` or `user_credentials` is refused, as is one whose command file does not pass the checks below; the log names the reason in a line `SSH backend refused`, and the other backends keep running.
+
+#### The command file
+
+```yaml
+backend:
+  type: ssh
+  description: Status, logs and restarts of services on a Linux host
+  defaults:
+    timeout: 30s
+  tools:
+    journal_tail:
+      description: Last lines of a unit's journal
+      access: read
+      argv: [journalctl, -u, "{unit}", -n, "{lines}", --no-pager]
+      params:
+        unit:  { pattern: "[a-z0-9@_.-]+\\.service" }
+        lines: { type: integer, default: 100, min: 1, max: 500 }
+    service_active:
+      description: Whether a service runs
+      access: read
+      argv: [systemctl, is-active, "{unit}"]
+      success_exit_codes: [0, 3]
+      params:
+        unit: { enum: [caddy, toolmesh] }
+    service_restart:
+      description: Restart a service
+      access: write
+      argv: [sudo, -n, systemctl, restart, "{unit}"]
+      params:
+        unit: { enum: [caddy, toolmesh] }
+```
+
+A command takes these keys:
+
+| Key | Description |
+|-----|-------------|
+| `description` | What the command does. Required; it is what a caller chooses the command by |
+| `access` | Access class: `read`, `write`, `admin`, `dangerous` or a name of your own. Required |
+| `argv` | The program and its arguments, one list item per argument. Required |
+| `params` | The parameters the placeholders in `argv` stand for |
+| `timeout` | Longest run, connect included. Default `30s`, at most `10m` |
+| `max_output` | How much of stdout and of stderr the result carries, each. Default `128KB`, at most `4MB` |
+| `success_exit_codes` | Exit codes that are a result and no failure. Default `[0]` |
+
+`backend.defaults` sets `timeout` and `max_output` for all commands. A parameter takes `type` (`string`, the default, `integer`, `number` or `boolean`), `default`, `description` and its limits: `pattern` or `enum` for a string, `min` and `max` for a number, `enum` for either, `max_length` for a string (default 1024 bytes).
+
+A placeholder is `{name}`; an item may hold several, next to literal text (`"--since={since}"`). Write `{{` and `}}` for literal braces, and put items with a placeholder in quotes, since YAML reads a bare `{unit}` as a mapping.
+
+The file is read strictly, and a file that leaves a command wider than its author may have meant is refused:
+
+- A key the file format does not know.
+- A command without `description` or `access`.
+- A string parameter with neither `pattern` nor `enum`. A pattern must match the whole value, anchors or not. To take any text, say so: `pattern: ".*"`.
+- A parameter without `default` that is marked `required: false`: every placeholder needs a value. A parameter without a default is required.
+- A placeholder in `argv[0]`, a placeholder without a parameter, a parameter no placeholder uses, a parameter named `host`.
+- A `default` outside the parameter's own limits.
+
+#### How a call becomes a command line
+
+- **Checked first.** Arguments are checked against types and limits before the [pre-execution gate](#gate-policies) runs, with defaults filled in, so a policy sees the values the command line is built from. A refused argument is an `invalid_input` error and reaches no host.
+- **One argument per item.** Every `argv` item becomes one argument in single quotes. Whatever a value contains (`;`, `$(...)`, quotes, spaces, line breaks), the program receives it as that one argument; it cannot add an argument or start a second command. sshd hands the command line to the login shell of the account, so that shell has to read single quotes the way a POSIX shell does. bash, dash, zsh and fish do, and are tested; csh, PowerShell and `cmd.exe` do not.
+- **No options from values.** A string value that starts with `-` is refused, since the program would read it as an option. Values of an `enum` and the `default` are the author's and are exempt. An integer or number is at least `0` unless the parameter declares a lower `min`.
+- **The result** is a JSON object: `host`, `command` (the line as it was sent), `exit_code`, `stdout`, `stderr`, `duration_ms`, and `stdout_truncated` or `stderr_truncated` when output was cut at `max_output`. Bytes that are no UTF-8 arrive as the replacement character. A command that ends with an exit code outside `success_exit_codes`, or by a signal (`signal`), is an error result with the same content.
+- **Timeout.** When the time is up, ToolMesh asks the host to end the command (`SIGTERM`) and closes the connection. The result is an error with `timed_out: true` and the output so far. Without a terminal, a program that ignores the signal and writes nothing keeps running on the host; where that matters, bound it there (`timeout 60 ...` in `argv`).
+- **Failures before the command.** A host that is down, a refused login and a host key that is not the known one fail the call; nothing was run. The caller reads which host and what went wrong. File paths, credential names and what to do about it are in the log, in a line `SSH backend cannot connect`.
+
+A template is as wide as its program. `[sh, -c, "{script}"]` is a shell again, and programs such as `find` (`-exec`), `tar`, `awk`, `git`, `docker` or an editor run other programs on request. Prefer exact programs with constrained values, and limit the account at the host as well: an account of its own, `restrict` and `from=` in `authorized_keys`, and `sudoers` entries with exact commands for the privileged templates. Use `sudo -n`: there is no terminal for a password prompt.
+
+#### Key and passphrase
+
+The private key comes from the [credential store](#credential-store): `key_credential: web_ssh_key` reads `CREDENTIAL_WEB_SSH_KEY`. With the command store the key and its passphrase live in Vault, OpenBao, a sops file or a file sealed with ergosum, and never in ToolMesh's environment. The value is the key in OpenSSH or PEM form. A source that holds one line per value can carry it with `\n` written for every line break, or as the whole key in base64 (`base64 -w0 id_ed25519`).
+
+A key under a passphrase needs `passphrase_credential`, the name of the credential with the passphrase. With `key_file` the encrypted key stays in a file on the ToolMesh host while its passphrase comes from the credential store, so neither place alone holds a usable key.
+
+```bash
+# .env, or the output of the command store
+CREDENTIAL_WEB_SSH_KEY="-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEA...\n-----END OPENSSH PRIVATE KEY-----"
+CREDENTIAL_WEB_SSH_KEY_PASSPHRASE=the passphrase
+```
+
+Key, passphrase and `known_hosts` are read for every connection: a rotated key or an added host key takes effect with the next call, without a restart. One key serves all callers of the backend; who may call which command is decided by [authorization](#authorization). An entry named `web` owns `CREDENTIAL_WEB_*` ([credential and host binding](#credential-and-host-binding)), so the DADL of another backend cannot read the key.
+
+#### Host keys
+
+ToolMesh connects only to a host whose key `known_hosts` lists. There is no setting that turns the check off and no trust on first use. Collect the keys once and compare their fingerprints with the hosts' own before you rely on the file:
+
+```bash
+ssh-keyscan web1.example.com >> config/ssh/known_hosts
+ssh-keygen -lf config/ssh/known_hosts     # compare with: ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub on the host
+```
+
+Use `ssh-keyscan -p <port>` for a port other than 22. A host with several keys is asked for one of the types the file lists for it.
+
+#### Several hosts
+
+With more than one entry in `ssh.hosts`, every tool takes the required parameter `host`, whose value is one of the entries as written. Rights stay per backend and tool: a caller that may call `web_service_restart` may call it on every host of `web`. Hosts that need different rights get entries of their own, which can share a command file.
+
+#### Health
+
+The health check of an SSH backend connects to every host and logs in, without running a command. It runs at startup, after a reload and every 15 minutes, and the `health_check` block tunes it as for [REST backends](#backend-health-checks). `/health` reports a failing backend with one of these reasons: `ssh_key_unavailable` (the key or its passphrase cannot be loaded), `ssh_known_hosts_unreadable`, `ssh_host_key_unknown`, `ssh_host_key_rejected` (the host presents another key), `ssh_login_refused`, or a transport error such as `connection_refused` or `timeout`. With several hosts the reason says how many failed; the log line `SSH health check failed` names the host. There is no `<backend>_health` tool.
+
+#### What it does not do
+
+- No shell and no session. Each call is one command; a `cd` or a variable does not last to the next call.
+- No terminal and no input: programs that prompt or draw a screen do not work, and a command gets nothing on stdin.
+- No file transfer, no port forwarding, no agent forwarding, no jump host.
+- Login with a key only, and with one key per backend. There are no credentials of users for this transport.
+
 ### Requests to REST backends
 
 These rules apply to every REST backend, whatever its `backends.yaml` options:
@@ -1707,8 +1902,8 @@ These rules apply to every REST backend, whatever its `backends.yaml` options:
 - **Redirects.** A redirect to the origin of the request (same scheme, host and port), or from `http` to `https` on the same host, is followed unchanged. A redirect from `https` to `http` is refused. A redirect to any other origin is refused when it would send the request body again (`307`, `308`) and otherwise followed with only content negotiation headers (`Accept*`, `User-Agent`, `Range`, conditional headers): injected credentials, other custom headers and the `Referer` are dropped. Once a hop has left the origin, the rest of the chain is treated as foreign, also a hop back to the original host. An API that needs credentials on another host has to name that host in its DADL.
 - **Token and login requests** (`auth.type: oauth2` and `session`) never follow redirects. They use the same connection rules as tool calls: `allow_private_url` and `tls_skip_verify` apply to them too.
 - **Session login URL.** `login.path` is appended to `base_url` and must stay on the host of `base_url` (with the same userinfo, if `base_url` has any); it has to start with `/`.
-- **Path parameters.** The values `.` and `..` are refused, and a joined URL that leaves the scheme, host or path prefix of `base_url` is refused before any request is sent, as is a tool path that does not parse. Only a DADL tool path that is itself an absolute `http(s)` URL with a host addresses another host; its scheme, host and port must not contain a `{placeholder}`, which `lint-dadl` and the loader refuse. A `/` in a value is sent encoded (`%2F`) and stays one path segment, as `group%2Fproject` needs. A proxy in front of the API that decodes `%2F` before it normalizes the path could still turn `a%2F..%2Fb` into a traversal; such a proxy should not decode it.
-- **Parameter types.** Arguments are checked against the declared DADL types before the [pre-execution gate](#gate-policies) runs: `boolean` takes only `true` or `false`, `integer` a whole number or a string of decimal digits with an optional sign, `number` a number or a plain decimal string, `array` and `object` their JSON forms, `string` a string, number or boolean but no array or object. The file types are passed as given. A mismatch is answered with an `invalid_input` error and never reaches the gate or the API. Accepted numeric strings become numbers (an integer beyond 2^53 stays a string), a number or boolean for a `string` parameter becomes the text the request carries (`42` becomes `"42"`, also in a JSON body), and declared defaults are filled in before the gate, so the gate and the API see the same values.
+- **Path parameters.** The values `.` and `..` are refused, also with white space around them, and so is a value that contains a control character, `;` or a backslash: they are sent encoded (`%3B`, `%5C`), but a server or proxy that decodes them before it routes can cut a `;` suffix off a path segment or read a backslash as `/`, and would then see `..;` or a `..` followed by a backslash as a dot segment. A joined URL that leaves the scheme, host or path prefix of `base_url` is refused before any request is sent, as is a tool path that does not parse. Only a DADL tool path that is itself an absolute `http(s)` URL with a host addresses another host, and parameter values cannot make a relative path into one: a call whose values would turn a path such as `{a}//{b}/x` into a URL is refused. The scheme, host and port of an absolute tool path must not contain a `{placeholder}`, which `lint-dadl` and the loader refuse. They also refuse a `{placeholder}` after a `?` or `#` in a tool path (`/search?q={q}`): a path parameter is escaped as a path segment, which leaves `&` and `=` as they are, so its value could add query parameters. Declare such a parameter with `in: query`. A `/` in a value is sent encoded (`%2F`) and stays one path segment, as `group%2Fproject` needs. A proxy in front of the API that decodes `%2F` before it normalizes the path could still turn `a%2F..%2Fb` into a traversal; such a proxy should not decode it.
+- **Parameter types.** Arguments are checked against the declared DADL types before the [pre-execution gate](#gate-policies) runs: `boolean` takes only `true` or `false`, `integer` a whole number or a string of decimal digits with an optional sign, `number` a number or a plain decimal string, `array` and `object` their JSON forms, `string` a string, number or boolean but no array or object. The file types are passed as given. A mismatch is answered with an `invalid_input` error and never reaches the gate or the API. Accepted numeric strings become numbers (an integer beyond 2^53 stays a string), a number or boolean for a `string` parameter becomes the text the request carries (`42` becomes `"42"`, also in a JSON body), and declared defaults are filled in before the gate, in the same form as a value the caller sends (the default `"5"` of an `integer` parameter becomes `5`), so the gate and the API see the same values. For this to hold for every parameter, a DADL is refused when it is parsed if a parameter of a tool or composite has no `type` or one other than `string`, `integer`, `number`, `boolean`, `array`, `object` and `file_url` (the types of the DADL schema), or a `default` that does not fit its type, such as `"false"` for a `boolean`.
 - **Error texts.** A transport error names only scheme and host of the request URL, never its path or query, which can hold a query-injected credential; this includes OAuth2 token and session login requests. The text of an error result has userinfo, query and fragment removed from every URL in it. The audit log and the tool result see the same reduced form.
 - **Private addresses.** With `allow_private_url: false` a backend may not resolve to loopback, private, link-local, carrier-grade NAT (`100.64.0.0/10`), documentation, benchmarking (`198.18.0.0/15`), multicast or reserved addresses, nor to a NAT64 (`64:ff9b::/96`), 6to4 or IPv4-compatible (`::/96`) address embedding one of them, nor to site-local `fec0::/10`. `allow_private_url` defaults to `true` for backends in `backends.yaml`, since the operator configures their URLs. It covers only the destinations the configuration names: the host and port of `base_url` (or the `backends.yaml` `url`), of `token_url` and of absolute tool paths. Any other destination, such as the target of a redirect, must resolve to a public address, checked when the connection is made. The redirect and credential rules above hold either way.
 
@@ -1754,6 +1949,10 @@ such a backend ToolMesh
 
 The check never runs as part of a regular tool call. Backends without a
 declared check are not affected.
+
+An [SSH backend](#ssh-backends) needs no declaration: its check is to connect
+to every host and log in, and it is monitored like a declared one. It has no
+`<backend>_health` tool.
 
 A backend with [credentials of users](#credentials-of-users) is the exception:
 it is not checked in the background and does not appear on `/health` or in the
@@ -1830,7 +2029,7 @@ HTTP status or the transport error, never response content.
 | `DEBUG_BACKENDS` | *(empty)* | Comma-separated backend names for per-backend debug file logging |
 | `DEBUG_FILE` | *(empty)* | Path to the debug log file (e.g. `debug.log`). Both `DEBUG_BACKENDS` and `DEBUG_FILE` must be set to activate. |
 
-**Secure default.** The default level is `info`, which does not log request payloads. Raise it to `debug` only while diagnosing an MCP communication issue: at `debug` level ToolMesh logs complete request URLs and request/response payloads, which for query-string API keys means the credential is written to the log. **Do not run `debug` in production.** Prefer the per-backend debug file (below) to scope tracing to a single backend without turning on global debug.
+**Secure default.** The default level is `info`, which does not log request payloads. Raise it to `debug` only while diagnosing an MCP communication issue: at `debug` level ToolMesh logs request URLs and request/response payloads. In the URL of a backend request, the value of a query-string API key (`auth.inject_into: query`) is replaced by `[REDACTED]` and a password in the URL by `xxxxx`, and the URL of an MCP server backend is logged without its query string; payloads and other parameters are logged as they are and can hold what callers and APIs send. **Do not run `debug` in production.** Prefer the per-backend debug file (below) to scope tracing to a single backend without turning on global debug.
 
 At `debug` level, ToolMesh logs the complete request/response flow between clients and backends:
 - Incoming JSON-RPC method, params, and request ID

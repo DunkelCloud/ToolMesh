@@ -38,10 +38,13 @@ const (
 	contentTypeText = "text"
 
 	// DADL ParamDef "in:" values.
-	paramInPath   = "path"
-	paramInQuery  = "query"
-	paramInBody   = "body"
-	paramInHeader = "header"
+	paramInPath  = "path"
+	paramInQuery = "query"
+	// authInjectQuery is the auth.inject_into value that puts an API key
+	// into the query string.
+	authInjectQuery = paramInQuery
+	paramInBody     = "body"
+	paramInHeader   = "header"
 
 	// DADL ParamDef "type:" value for file uploads.
 	paramTypeFile = "file"
@@ -57,6 +60,8 @@ const (
 	metadataKeyBackend    = "backend"
 	metadataKeyTransport  = "transport"
 	metadataKeyStatusCode = "statusCode"
+	// metadataKeyExitCode carries the exit code of a command run over SSH.
+	metadataKeyExitCode = "exitCode"
 
 	// Structured error metadata (DADL spec §8.2) set on IsError results so
 	// downstream consumers (composite sandbox, Code Mode wire format) can
@@ -74,6 +79,7 @@ const (
 	transportTypeREST  = "rest"
 	transportTypeHTTP  = "http"
 	transportTypeSTDIO = "stdio"
+	transportTypeSSH   = "ssh"
 
 	// File-broker response keys.
 	fileKeyID          = "file_id"

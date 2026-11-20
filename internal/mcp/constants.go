@@ -46,6 +46,7 @@ const (
 	argNameLimit          = "limit"
 	argNameCode           = "code"
 	argNameIncludeResults = "include_results"
+	argNameProofs         = "proofs"
 	argNamePayload        = "payload"
 	argNameTools          = "tools"
 	argNameBackend        = "backend"
@@ -123,6 +124,12 @@ const (
 	oauthErrAccessDenied  = "access_denied"
 	invalidGrantError     = "invalid_grant"
 	oauthErrInvalidReq    = "invalid_request"
+	// oauthErrInvalidClientMetadata refuses a registration over one of its
+	// metadata fields (RFC 7591 section 3.2.2).
+	oauthErrInvalidClientMetadata = "invalid_client_metadata"
+	// oauthErrTooManyRequests is the body of a 429 from the registration
+	// and revocation endpoints.
+	oauthErrTooManyRequests = "too_many_requests"
 
 	// DADL ParamDef "in:" value reused in built-in tool fixtures.
 	paramInQuery = "query"

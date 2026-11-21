@@ -4,7 +4,7 @@
 
 ToolMesh is a self-hosted MCP gateway. Claude, ChatGPT and other MCP clients connect to one endpoint and call tools from GitHub, NetBox, Stripe, Zammad or your own REST API. ToolMesh holds the API keys, checks for every call whether the caller may make it, and writes each call to an audit log.
 
-REST APIs come in through DADL files, a few lines of YAML per endpoint that an LLM can write for you. Existing MCP servers, over HTTP or stdio, sit behind the same endpoint. Use it when agents need your internal systems and you want to decide who may call what without handing out API keys.
+REST APIs come in through DADL files, a few lines of YAML per endpoint that an LLM can write for you. Existing MCP servers, over HTTP or stdio, sit behind the same endpoint, and so do commands on your own hosts, run over SSH from templates you write. Use it when agents need your internal systems and you want to decide who may call what without handing out API keys.
 
 [![CI](https://github.com/DunkelCloud/ToolMesh/actions/workflows/ci.yml/badge.svg)](https://github.com/DunkelCloud/ToolMesh/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
@@ -18,6 +18,7 @@ ToolMesh moves the keys, the permissions and the record of calls into one servic
 ## What you get
 
 - One MCP endpoint for many backends: REST APIs through DADL files and existing MCP servers over HTTP or stdio. Tools are named `<backend>_<tool>`, for example `github_list_issues`.
+- Commands on your hosts over SSH, without a shell for the agent. A command file lists them as templates with typed parameters (`journalctl -u {unit} -n {lines}`); the agent picks one and fills in values. ToolMesh checks the values, quotes every argument, logs in with a key it keeps and connects only to a host whose key it knows. Each command is a tool like any other, with an access class and an audit entry; see [SSH backends](docs/configuration.md#ssh-backends).
 - API keys stay on the server. ToolMesh reads them from its environment (`CREDENTIAL_<NAME>`) and adds them to the request at call time, so they appear neither in prompts nor in the client configuration.
 - Credentials of users where an API has an account per person, such as a mailbox. Each user stores their own on a page of ToolMesh, several accounts if they have them, and a call is made with the calling user's. Off until you set a key; see [Credentials of Users](docs/configuration.md#credentials-of-users).
 - Authorization from the first start. OpenFGA runs inside ToolMesh; grants name users, roles, plans or companies and allow all tools, a backend, single tools or an access class such as `read`. Tool listings show each caller only what it may call. Rights that are needed only now and then can be bundled as kits: the agent asks for one, a person approves it, and the grant ends after its time.
@@ -40,12 +41,12 @@ ToolMesh
    2. authorize        OpenFGA: may this caller call this tool?
    3. add credential   the backend's API key, from the server's environment
    4. policy, before   optional JavaScript check of the parameters
-   5. call             REST API via DADL, or an MCP server
+   5. call             REST API via DADL, an MCP server, or a command over SSH
    6. policy, after    optional JavaScript filter of the result
    7. audit            one entry per call, also for denied and failed calls
    |
    v
-GitHub API, NetBox API, your own REST API, existing MCP servers
+GitHub API, NetBox API, your own REST API, existing MCP servers, your hosts
 ```
 
 A DADL file describes a REST API as MCP tools. This is all it takes for a tool that lists the issues of a GitHub repository:
@@ -81,7 +82,7 @@ The script runs in a sandbox (goja) inside ToolMesh, and each `toolmesh.*` call 
 
 ToolMesh is at version 0.x. A minor release can still change the configuration; the [changelog](CHANGELOG.md) lists under *Changed* and *Deprecated* what an operator has to adjust.
 
-`docker compose up` pulls the latest release (`ghcr.io/dunkelcloud/toolmesh:latest`, at present v0.6.0). This README describes `main`; when `main` is ahead of the latest release, this section names what the release does not have yet. At present that is the credentials of users (`user_credentials` in `backends.yaml` and the page `/credentials`), built-in TLS (`TOOLMESH_TLS_ACME`, `TOOLMESH_TLS_CERT`) and MCP revision 2026-07-28; the release speaks the revisions up to 2025-11-25.
+`docker compose up` pulls the latest release (`ghcr.io/dunkelcloud/toolmesh:latest`, at present v0.6.0). This README describes `main`; when `main` is ahead of the latest release, this section names what the release does not have yet. At present that is the credentials of users (`user_credentials` in `backends.yaml` and the page `/credentials`), built-in TLS (`TOOLMESH_TLS_ACME`, `TOOLMESH_TLS_CERT`), MCP revision 2026-07-28 (the release speaks the revisions up to 2025-11-25) and commands over SSH (`transport: ssh`).
 
 ## Getting started
 
@@ -173,13 +174,53 @@ backends:
 
 with `CREDENTIAL_NOTES_API_KEY=...` in `.env`. A local MCP server runs with `transport: stdio`, `command` and `args`; [config/backends.yaml.example](config/backends.yaml.example) shows all fields. The server may speak MCP revision 2026-07-28 or an older one with the `initialize` handshake; ToolMesh finds out when it connects ([MCP server backends](docs/configuration.md#mcp-server-backends)).
 
+### Commands on a host
+
+1. Copy [config/ssh/linux-host.yaml.example](config/ssh/linux-host.yaml.example) to `config/ssh/linux-host.yaml` and keep the commands you want. A command is a template:
+
+   ```yaml
+   service_restart:
+     description: Restart a service
+     access: write
+     argv: [sudo, -n, systemctl, restart, "{unit}"]
+     params:
+       unit: { enum: [caddy, toolmesh] }
+   ```
+
+2. Put the key of the host into `config/ssh/known_hosts` and compare its fingerprint with the host's own.
+
+   ```bash
+   ssh-keyscan web1.example.com >> config/ssh/known_hosts
+   ```
+
+3. Add the backend to `config/backends.yaml`:
+
+   ```yaml
+   backends:
+     - name: web
+       transport: ssh
+       commands: ssh/linux-host.yaml
+       ssh:
+         user: toolmesh
+         hosts: [web1.example.com]
+         known_hosts: ssh/known_hosts
+         key_credential: web_ssh_key
+   ```
+
+4. Put the private key of the account into `.env` as `CREDENTIAL_WEB_SSH_KEY`, as one line of base64 (`base64 -w0 id_ed25519`). A key under a passphrase takes `passphrase_credential` as well, and both can come from the [command store](docs/configuration.md#command-store) instead of `.env`.
+
+5. Apply the change with `docker compose up -d`.
+
+The agent now has one tool per command. `web_service_restart` restarts `caddy` or `toolmesh` and nothing else. On the host, give the account only what the templates need: `restrict` in `authorized_keys`, and `sudoers` entries with the exact commands. All settings are in [SSH backends](docs/configuration.md#ssh-backends).
+
 ## What it does not do
 
 - It serves plain HTTP until you turn TLS on. For anything beyond localhost, give it a certificate ([TLS](docs/configuration.md#tls)) or put a reverse proxy in front.
 - It holds the backends' keys. Each client still signs in to ToolMesh, with OAuth or with an API key that sits in its configuration.
 - It enforces no policy until you add one. The policy engine runs every `.js` file directly in `config/policies/`; the shipped examples lie one level deeper and stay inactive.
 - Its default audit log is write-only. Searching past calls with SQL needs `AUDIT_STORE=sqlite`.
-- It speaks REST through DADL and MCP. Other protocols, such as gRPC, SOAP or direct database access, need an MCP server in front.
+- It speaks REST through DADL, MCP, and SSH for the commands of a command file. Other protocols, such as gRPC, SOAP or direct database access, need an MCP server in front.
+- It gives an agent no shell. Over SSH it runs one listed command per call, without a terminal, a session or file transfer. A template is as wide as its program: one that runs `sh -c` with a parameter is a shell again.
 - It does not check a DADL an LLM wrote. Test new tools against the real API, best with a throwaway account or test data.
 - An `execute_code` script makes at most 50 tool calls and runs at most 120 seconds (`TOOLMESH_CODE_TIMEOUT`).
 

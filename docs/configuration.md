@@ -1702,6 +1702,142 @@ Where the name of one MCP backend starts the name of another, as `git` and `git_
 
 A backend that returns its tool list in pages is read to the end of the list, for at most 100 pages. A backend that returns a cursor even then is cut off there, with the warning `tool list cut off`.
 
+### SSH backends
+
+A backend with `transport: ssh` runs commands on hosts over SSH. It gives an agent no shell. A command file lists the commands as templates: a fixed argument vector with placeholders for typed parameters. Each command is a tool; a call picks one and fills in its parameters, and ToolMesh builds the command line. For every call ToolMesh connects, logs in with the backend's key, runs the one command without a terminal and disconnects. Nothing is kept between calls.
+
+```yaml
+backends:
+  - name: web
+    transport: ssh
+    commands: ssh/linux-host.yaml          # the command file, relative to this file's directory
+    ssh:
+      user: toolmesh                       # the account on the hosts
+      hosts: [web1.example.com]            # host or host:port
+      known_hosts: ssh/known_hosts         # the keys of the hosts, OpenSSH format
+      key_credential: web_ssh_key          # CREDENTIAL_WEB_SSH_KEY holds the private key
+      passphrase_credential: web_ssh_key_passphrase   # only for a key under a passphrase
+```
+
+| Key | Description |
+|-----|-------------|
+| `commands` | Path of the command file. Required |
+| `ssh.user` | Account on the hosts. Required |
+| `ssh.hosts` | One or more hosts, each `host` or `host:port` (`"[2001:db8::1]:2222"` for IPv6 with a port). Required |
+| `ssh.known_hosts` | Path of a file in OpenSSH `known_hosts` format with the key of every host. Required |
+| `ssh.key_credential` | Name of the credential that holds the private key |
+| `ssh.key_file` | Path of a private key file, instead of `key_credential`. Exactly one of the two is required |
+| `ssh.passphrase_credential` | Name of the credential that holds the passphrase of the key |
+
+Relative paths start at the directory of `backends.yaml`. `hint`, `hint_required_for`, `include_tools`, `env` and `health_check` work as for other backends. `expose_tools` is ignored with a warning. An entry with `dadl`, `url`, `command` or `user_credentials` is refused, as is one whose command file does not pass the checks below; the log names the reason in a line `SSH backend refused`, and the other backends keep running.
+
+#### The command file
+
+```yaml
+backend:
+  type: ssh
+  description: Status, logs and restarts of services on a Linux host
+  defaults:
+    timeout: 30s
+  tools:
+    journal_tail:
+      description: Last lines of a unit's journal
+      access: read
+      argv: [journalctl, -u, "{unit}", -n, "{lines}", --no-pager]
+      params:
+        unit:  { pattern: "[a-z0-9@_.-]+\\.service" }
+        lines: { type: integer, default: 100, min: 1, max: 500 }
+    service_active:
+      description: Whether a service runs
+      access: read
+      argv: [systemctl, is-active, "{unit}"]
+      success_exit_codes: [0, 3]
+      params:
+        unit: { enum: [caddy, toolmesh] }
+    service_restart:
+      description: Restart a service
+      access: write
+      argv: [sudo, -n, systemctl, restart, "{unit}"]
+      params:
+        unit: { enum: [caddy, toolmesh] }
+```
+
+A command takes these keys:
+
+| Key | Description |
+|-----|-------------|
+| `description` | What the command does. Required; it is what a caller chooses the command by |
+| `access` | Access class: `read`, `write`, `admin`, `dangerous` or a name of your own. Required |
+| `argv` | The program and its arguments, one list item per argument. Required |
+| `params` | The parameters the placeholders in `argv` stand for |
+| `timeout` | Longest run, connect included. Default `30s`, at most `10m` |
+| `max_output` | How much of stdout and of stderr the result carries, each. Default `128KB`, at most `4MB` |
+| `success_exit_codes` | Exit codes that are a result and no failure. Default `[0]` |
+
+`backend.defaults` sets `timeout` and `max_output` for all commands. A parameter takes `type` (`string`, the default, `integer`, `number` or `boolean`), `default`, `description` and its limits: `pattern` or `enum` for a string, `min` and `max` for a number, `enum` for either, `max_length` for a string (default 1024 bytes).
+
+A placeholder is `{name}`; an item may hold several, next to literal text (`"--since={since}"`). Write `{{` and `}}` for literal braces, and put items with a placeholder in quotes, since YAML reads a bare `{unit}` as a mapping.
+
+The file is read strictly, and a file that leaves a command wider than its author may have meant is refused:
+
+- A key the file format does not know.
+- A command without `description` or `access`.
+- A string parameter with neither `pattern` nor `enum`. A pattern must match the whole value, anchors or not. To take any text, say so: `pattern: ".*"`.
+- A parameter without `default` that is marked `required: false`: every placeholder needs a value. A parameter without a default is required.
+- A placeholder in `argv[0]`, a placeholder without a parameter, a parameter no placeholder uses, a parameter named `host`.
+- A `default` outside the parameter's own limits.
+
+#### How a call becomes a command line
+
+- **Checked first.** Arguments are checked against types and limits before the [pre-execution gate](#gate-policies) runs, with defaults filled in, so a policy sees the values the command line is built from. A refused argument is an `invalid_input` error and reaches no host.
+- **One argument per item.** Every `argv` item becomes one argument in single quotes. Whatever a value contains (`;`, `$(...)`, quotes, spaces, line breaks), the program receives it as that one argument; it cannot add an argument or start a second command. sshd hands the command line to the login shell of the account, so that shell has to read single quotes the way a POSIX shell does. bash, dash, zsh and fish do, and are tested; csh, PowerShell and `cmd.exe` do not.
+- **No options from values.** A string value that starts with `-` is refused, since the program would read it as an option. Values of an `enum` and the `default` are the author's and are exempt. An integer or number is at least `0` unless the parameter declares a lower `min`.
+- **The result** is a JSON object: `host`, `command` (the line as it was sent), `exit_code`, `stdout`, `stderr`, `duration_ms`, and `stdout_truncated` or `stderr_truncated` when output was cut at `max_output`. Bytes that are no UTF-8 arrive as the replacement character. A command that ends with an exit code outside `success_exit_codes`, or by a signal (`signal`), is an error result with the same content.
+- **Timeout.** When the time is up, ToolMesh asks the host to end the command (`SIGTERM`) and closes the connection. The result is an error with `timed_out: true` and the output so far. Without a terminal, a program that ignores the signal and writes nothing keeps running on the host; where that matters, bound it there (`timeout 60 ...` in `argv`).
+- **Failures before the command.** A host that is down, a refused login and a host key that is not the known one fail the call; nothing was run. The caller reads which host and what went wrong. File paths, credential names and what to do about it are in the log, in a line `SSH backend cannot connect`.
+
+A template is as wide as its program. `[sh, -c, "{script}"]` is a shell again, and programs such as `find` (`-exec`), `tar`, `awk`, `git`, `docker` or an editor run other programs on request. Prefer exact programs with constrained values, and limit the account at the host as well: an account of its own, `restrict` and `from=` in `authorized_keys`, and `sudoers` entries with exact commands for the privileged templates. Use `sudo -n`: there is no terminal for a password prompt.
+
+#### Key and passphrase
+
+The private key comes from the [credential store](#credential-store): `key_credential: web_ssh_key` reads `CREDENTIAL_WEB_SSH_KEY`. With the command store the key and its passphrase live in Vault, OpenBao, a sops file or a file sealed with ergosum, and never in ToolMesh's environment. The value is the key in OpenSSH or PEM form. A source that holds one line per value can carry it with `\n` written for every line break, or as the whole key in base64 (`base64 -w0 id_ed25519`).
+
+A key under a passphrase needs `passphrase_credential`, the name of the credential with the passphrase. With `key_file` the encrypted key stays in a file on the ToolMesh host while its passphrase comes from the credential store, so neither place alone holds a usable key.
+
+```bash
+# .env, or the output of the command store
+CREDENTIAL_WEB_SSH_KEY="-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEA...\n-----END OPENSSH PRIVATE KEY-----"
+CREDENTIAL_WEB_SSH_KEY_PASSPHRASE=the passphrase
+```
+
+Key, passphrase and `known_hosts` are read for every connection: a rotated key or an added host key takes effect with the next call, without a restart. One key serves all callers of the backend; who may call which command is decided by [authorization](#authorization). An entry named `web` owns `CREDENTIAL_WEB_*` ([credential and host binding](#credential-and-host-binding)), so the DADL of another backend cannot read the key.
+
+#### Host keys
+
+ToolMesh connects only to a host whose key `known_hosts` lists. There is no setting that turns the check off and no trust on first use. Collect the keys once and compare their fingerprints with the hosts' own before you rely on the file:
+
+```bash
+ssh-keyscan web1.example.com >> config/ssh/known_hosts
+ssh-keygen -lf config/ssh/known_hosts     # compare with: ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub on the host
+```
+
+Use `ssh-keyscan -p <port>` for a port other than 22. A host with several keys is asked for one of the types the file lists for it.
+
+#### Several hosts
+
+With more than one entry in `ssh.hosts`, every tool takes the required parameter `host`, whose value is one of the entries as written. Rights stay per backend and tool: a caller that may call `web_service_restart` may call it on every host of `web`. Hosts that need different rights get entries of their own, which can share a command file.
+
+#### Health
+
+The health check of an SSH backend connects to every host and logs in, without running a command. It runs at startup, after a reload and every 15 minutes, and the `health_check` block tunes it as for [REST backends](#backend-health-checks). `/health` reports a failing backend with one of these reasons: `ssh_key_unavailable` (the key or its passphrase cannot be loaded), `ssh_known_hosts_unreadable`, `ssh_host_key_unknown`, `ssh_host_key_rejected` (the host presents another key), `ssh_login_refused`, or a transport error such as `connection_refused` or `timeout`. With several hosts the reason says how many failed; the log line `SSH health check failed` names the host. There is no `<backend>_health` tool.
+
+#### What it does not do
+
+- No shell and no session. Each call is one command; a `cd` or a variable does not last to the next call.
+- No terminal and no input: programs that prompt or draw a screen do not work, and a command gets nothing on stdin.
+- No file transfer, no port forwarding, no agent forwarding, no jump host.
+- Login with a key only, and with one key per backend. There are no credentials of users for this transport.
+
 ### Requests to REST backends
 
 These rules apply to every REST backend, whatever its `backends.yaml` options:
@@ -1756,6 +1892,10 @@ such a backend ToolMesh
 
 The check never runs as part of a regular tool call. Backends without a
 declared check are not affected.
+
+An [SSH backend](#ssh-backends) needs no declaration: its check is to connect
+to every host and log in, and it is monitored like a declared one. It has no
+`<backend>_health` tool.
 
 A backend with [credentials of users](#credentials-of-users) is the exception:
 it is not checked in the background and does not appear on `/health` or in the

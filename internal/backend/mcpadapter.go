@@ -80,7 +80,7 @@ func UnmarshalBackendConfig(data []byte, cfg *BackendConfig) error {
 // BackendEntry represents a single backend server configuration.
 type BackendEntry struct {
 	Name      string   `yaml:"name"`
-	Transport string   `yaml:"transport"` // "http", "stdio", or "rest"
+	Transport string   `yaml:"transport"` // "http", "stdio", "rest" or "ssh"
 	URL       string   `yaml:"url"`       // for HTTP transport
 	APIKeyEnv string   `yaml:"api_key_env"`
 	Command   string   `yaml:"command"` // for STDIO transport
@@ -136,6 +136,13 @@ type BackendEntry struct {
 	// TOOLMESH_USER_CREDENTIALS_KEY. Honored for transport: rest; an entry
 	// of another transport that sets it is refused.
 	UserCredentials []UserCredential `yaml:"user_credentials"`
+	// Commands is the path of the command file of a transport: ssh backend:
+	// the commands it may run on its hosts, as templates with typed
+	// parameters. A relative path starts at the directory of backends.yaml.
+	Commands string `yaml:"commands"`
+	// SSH holds the hosts, the account and the key of a transport: ssh
+	// backend.
+	SSH *SSHConfig `yaml:"ssh"`
 }
 
 // HealthCheckConfig is the backends.yaml health_check block: deployment
@@ -308,7 +315,7 @@ func NewMCPAdapter(configPath string, creds credentials.CredentialStore, logger 
 // declare their private MCP dependencies inside unit.yaml and never want
 // those dependencies to appear in the global tool surface.
 //
-// REST entries are skipped because the MCPAdapter handles only MCP
+// REST and SSH entries are skipped because the MCPAdapter handles only MCP
 // transports; non-MCP transports are wired separately by the caller.
 func NewMCPAdapterFromEntries(entries []BackendEntry, creds credentials.CredentialStore, logger *slog.Logger) *MCPAdapter {
 	adapter := newEmptyMCPAdapter(creds, logger)
@@ -316,7 +323,7 @@ func NewMCPAdapterFromEntries(entries []BackendEntry, creds credentials.Credenti
 		if entry.Name == "" {
 			continue
 		}
-		if entry.Transport == transportTypeREST {
+		if entry.Transport == transportTypeREST || entry.Transport == transportTypeSSH {
 			continue
 		}
 		// Refused, not ignored: the backend would otherwise run with one

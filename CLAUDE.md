@@ -69,7 +69,7 @@ applies changes to it within seconds. See
 
 ## Add a Backend
 
-ToolMesh supports three backend types: REST via DADL, MCP over HTTP, and MCP over STDIO.
+ToolMesh supports four backend types: REST via DADL, MCP over HTTP, MCP over STDIO, and commands on hosts over SSH (`transport: ssh`, see [docs/configuration.md](docs/configuration.md#ssh-backends)). The steps below add a REST backend.
 
 ### 1. Get a DADL file
 

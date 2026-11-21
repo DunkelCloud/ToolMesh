@@ -57,6 +57,8 @@ const (
 	metadataKeyBackend    = "backend"
 	metadataKeyTransport  = "transport"
 	metadataKeyStatusCode = "statusCode"
+	// metadataKeyExitCode carries the exit code of a command run over SSH.
+	metadataKeyExitCode = "exitCode"
 
 	// Structured error metadata (DADL spec §8.2) set on IsError results so
 	// downstream consumers (composite sandbox, Code Mode wire format) can
@@ -74,6 +76,7 @@ const (
 	transportTypeREST  = "rest"
 	transportTypeHTTP  = "http"
 	transportTypeSTDIO = "stdio"
+	transportTypeSSH   = "ssh"
 
 	// File-broker response keys.
 	fileKeyID          = "file_id"

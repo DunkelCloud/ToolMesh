@@ -67,6 +67,34 @@ backends:
   #   credential_env:
   #     MY_SERVER_TOKEN: CREDENTIAL_MY_SERVER_TOKEN
 
+  # Commands on hosts over SSH. The agent gets no shell: the command file
+  # lists the commands as templates with typed parameters, and every call
+  # runs one of them (see config/ssh/linux-host.yaml.example and
+  # docs/configuration.md, "SSH backends").
+  # - name: web
+  #   transport: ssh
+  #   commands: ssh/linux-host.yaml    # relative to this file's directory, absolute paths also work
+  #   ssh:
+  #     user: toolmesh                 # the account on the hosts
+  #     # One host, or several: with several, every tool takes the parameter
+  #     # "host". Write host or host:port.
+  #     hosts: [web1.example.com]
+  #     # The keys of the hosts, in OpenSSH known_hosts format. Required; a
+  #     # host whose key is not in the file is not connected to.
+  #     #   ssh-keyscan web1.example.com >> config/ssh/known_hosts
+  #     # and compare the fingerprints with the host's own.
+  #     known_hosts: ssh/known_hosts
+  #     # The private key, from the credential store: CREDENTIAL_WEB_SSH_KEY.
+  #     # In a .env line write \n for every line break, or the key in base64.
+  #     key_credential: web_ssh_key
+  #     # Or a key file instead:
+  #     # key_file: ssh/id_ed25519
+  #     # For a key under a passphrase: CREDENTIAL_WEB_SSH_KEY_PASSPHRASE.
+  #     passphrase_credential: web_ssh_key_passphrase
+  #   # hint, hint_required_for, include_tools and health_check work as for
+  #   # the other transports. The health check connects to every host and
+  #   # logs in, at startup, after a reload and every 15 minutes.
+
   # REST Proxy via DADL (no MCP server needed)
   # The hackernews DADL ships with ToolMesh and needs no credentials —
   # uncomment this block to try it out without any setup.

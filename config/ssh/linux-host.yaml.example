@@ -1,0 +1,82 @@
+# Command file for a backend of transport ssh: the commands ToolMesh may run
+# on the hosts of that backend. Copy it, keep the commands you want and name
+# the copy in the backend's entry in backends.yaml:
+#
+#   - name: web
+#     transport: ssh
+#     commands: ssh/linux-host.yaml
+#     ssh: { ... }
+#
+# A command is a template, not a command line. argv is the program and its
+# arguments, one list item per argument; {name} stands for a parameter. A
+# caller picks a command and fills in parameters. ToolMesh checks every
+# value against the parameter's limits and puts every argument in quotes
+# for the shell of the host, so a value stays one argument whatever it
+# contains.
+#
+# The file is read strictly. Refused are, among others: an unknown key, a
+# command without description or access, a string parameter with neither
+# pattern nor enum, a placeholder without a parameter. See
+# docs/configuration.md, "SSH backends".
+
+backend:
+  type: ssh
+  description: Status, logs and restarts of services on a Linux host
+
+  # Inherited by every command that sets none of its own.
+  defaults:
+    timeout: 30s        # longest run, connect included (at most 10m)
+    max_output: 128KB   # of stdout and of stderr, each (at most 4MB)
+
+  tools:
+    uptime:
+      description: How long the host has been up, and its load
+      access: read
+      argv: [uptime]
+
+    disk_free:
+      description: Free space of the file system that holds a directory
+      access: read
+      # "--" ends the options, so the value can only be a path.
+      argv: [df, -h, --, "{path}"]
+      params:
+        path:
+          # A pattern must match the whole value.
+          pattern: "/[A-Za-z0-9_./-]*"
+          default: /
+          description: a directory on the file system
+
+    journal_tail:
+      description: Last lines of a unit's journal
+      access: read
+      argv: [journalctl, -u, "{unit}", -n, "{lines}", --no-pager]
+      params:
+        unit:
+          pattern: "[a-z0-9@_.-]+\\.service"
+        lines:
+          type: integer
+          default: 100
+          min: 1
+          max: 500
+
+    service_active:
+      description: Whether a service runs
+      access: read
+      argv: [systemctl, is-active, "{unit}"]
+      # is-active answers with its exit code: 3 says "not active" and is a
+      # result, not a failure.
+      success_exit_codes: [0, 3]
+      params:
+        unit:
+          enum: [caddy, toolmesh]
+
+    service_restart:
+      description: Restart a service
+      access: write
+      # sudo -n fails instead of asking for a password: there is no terminal.
+      # Allow exactly these commands for the account in sudoers on the host.
+      argv: [sudo, -n, systemctl, restart, "{unit}"]
+      timeout: 2m
+      params:
+        unit:
+          enum: [caddy, toolmesh]

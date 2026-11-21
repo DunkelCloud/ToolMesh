@@ -46,6 +46,7 @@ const (
 	argNameLimit          = "limit"
 	argNameCode           = "code"
 	argNameIncludeResults = "include_results"
+	argNameProofs         = "proofs"
 	argNamePayload        = "payload"
 	argNameTools          = "tools"
 	argNameBackend        = "backend"

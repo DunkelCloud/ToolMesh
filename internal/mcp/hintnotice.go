@@ -56,7 +56,7 @@ const hintNoticePrefix = "[ToolMesh note: "
 // same user gets no notice. A backend whose hint must reach every
 // conversation sets hint_required_for instead: its calls are refused until
 // the caller presents the proof the refusal hands out (see
-// executor.CheckHintProofs), and this notifier stays silent for it.
+// executor.HintPreflight), and this notifier stays silent for it.
 type hintNotifier struct {
 	resolver   backend.BackendNameResolver
 	summarizer backend.BackendSummarizer

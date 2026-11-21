@@ -202,8 +202,8 @@ type ExecuteToolRequest struct {
 	CallerName  string `json:"callerName,omitempty"`
 	CallerClass string `json:"callerClass,omitempty"`
 	// HintProofs are the proofs the caller presents that it has received a
-	// backend's hint (backend.HintProof). A script passes the proofs it
-	// asserted; a direct tool call has none.
+	// backend's hint (backend.HintProof). A script's calls carry the proofs
+	// the run was started with; a direct tool call has none.
 	HintProofs []string `json:"-"`
 }
 
@@ -315,11 +315,11 @@ func (e *Executor) ExecuteTool(ctx context.Context, req ExecuteToolRequest) (*ba
 		}
 	}
 
-	// Step 1b: Hint precondition. A tool of an access class the operator
-	// listed under hint_required_for runs only with the day's proof that
-	// the backend's hint was received; without it the refusal delivers
-	// the hint. After authorization, so that a caller without the right
-	// to call the tool learns nothing from it.
+	// Step 1b: Hint precondition. A tool the operator listed under
+	// hint_required_for, by name or by access class, runs only with the
+	// day's proof that the backend's hint was received; without it the
+	// refusal delivers the hint. After authorization, so that a caller
+	// without the right to call the tool learns nothing from it.
 	if hintBackend, refusal := e.hintRefusal(req.ToolName, toolAccess, req.HintProofs); refusal != "" {
 		e.logger.InfoContext(ctx, "call refused without hint proof, hint delivered",
 			"tool", req.ToolName,

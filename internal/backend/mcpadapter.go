@@ -86,10 +86,11 @@ type BackendEntry struct {
 	Command   string   `yaml:"command"` // for STDIO transport
 	Args      []string `yaml:"args"`
 	Hint      string   `yaml:"hint"` // optional domain-specific hint for LLM tool descriptions
-	// HintRequiredFor lists the access classes of this backend's tools that
-	// run only for a caller that shows it has received the hint ("write",
-	// "dangerous", ...; "all" for every tool). Such a call is refused with
-	// the hint and a proof that is valid for the day; see HintProof.
+	// HintRequiredFor lists the tools of this backend that run only for a
+	// caller that shows it has received the hint: access classes ("write",
+	// "dangerous", ...), single tools by name, or "all" for every tool. Such
+	// a call is refused with the hint and a proof that is valid for the day;
+	// see HintProof.
 	HintRequiredFor []string          `yaml:"hint_required_for"`
 	DADL            string            `yaml:"dadl"`              // path to .dadl file (for transport: rest)
 	AllowPrivateURL *bool             `yaml:"allow_private_url"` // allow private/loopback base_url (default: true)
@@ -191,8 +192,8 @@ type BackendInfo struct {
 	// deployment-specific, which is why it drives the first-use notice while
 	// Description drives the catalog blurb. Empty when no hint is configured.
 	Hint string
-	// HintRequiredFor lists the access classes whose tools run only for a
-	// caller that shows it has received Hint (backends.yaml
+	// HintRequiredFor lists the access classes and tools whose calls run
+	// only for a caller that shows it has received Hint (backends.yaml
 	// hint_required_for). Empty means the hint is advice only.
 	HintRequiredFor []string
 	SpecID          string

@@ -573,9 +573,25 @@ func (c *Config) loadFileBroker() error {
 	return nil
 }
 
+// unmapProxyPrefix returns an IPv4-mapped IPv6 prefix ("::ffff:10.0.0.0/104")
+// as the IPv4 prefix it stands for ("10.0.0.0/8"). Client addresses are
+// compared in their IPv4 form, which matches no IPv6 prefix: a mapped entry
+// would never apply, and the proxy it names would stay untrusted without a
+// word. A mapped prefix shorter than /96 names no IPv4 network.
+func unmapProxyPrefix(p netip.Prefix) (netip.Prefix, error) {
+	if !p.Addr().Is4In6() {
+		return p, nil
+	}
+	if p.Bits() < 96 {
+		return p, fmt.Errorf("an IPv4-mapped prefix must be /96 or longer; write the IPv4 network instead")
+	}
+	return netip.PrefixFrom(p.Addr().Unmap(), p.Bits()-96), nil
+}
+
 // loadTrustedProxies reads TOOLMESH_TRUSTED_PROXIES: comma-separated CIDRs
 // or single addresses, or "none". Unset leaves TrustedProxies nil, which
-// selects the default networks.
+// selects the default networks. IPv4-mapped IPv6 entries are kept as the
+// IPv4 addresses and networks they stand for.
 func (c *Config) loadTrustedProxies() error {
 	raw := strings.TrimSpace(envStr("TOOLMESH_TRUSTED_PROXIES", ""))
 	switch strings.ToLower(raw) {
@@ -597,6 +613,9 @@ func (c *Config) loadTrustedProxies() error {
 			if err != nil {
 				return fmt.Errorf("invalid TOOLMESH_TRUSTED_PROXIES entry %q: %w", item, err)
 			}
+			if p, err = unmapProxyPrefix(p); err != nil {
+				return fmt.Errorf("invalid TOOLMESH_TRUSTED_PROXIES entry %q: %w", item, err)
+			}
 			out = append(out, p.Masked())
 			continue
 		}
@@ -604,6 +623,9 @@ func (c *Config) loadTrustedProxies() error {
 		if err != nil {
 			return fmt.Errorf("invalid TOOLMESH_TRUSTED_PROXIES entry %q: %w", item, err)
 		}
+		// Client addresses are compared in their IPv4 form and without a
+		// zone, so the entry is kept in that form.
+		a = a.Unmap().WithZone("")
 		out = append(out, netip.PrefixFrom(a, a.BitLen()))
 	}
 	if out == nil {

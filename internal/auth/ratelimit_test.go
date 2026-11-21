@@ -99,11 +99,11 @@ func TestLocalDCRRateLimiter_TableIsBounded(t *testing.T) {
 	rl := NewLocalDCRRateLimiter()
 	now := time.Unix(1_700_000_000, 0)
 	rl.now = func() time.Time { return now }
-	for i := 0; i < maxLocalDCRWindows+10; i++ {
+	for i := 0; i < maxLocalRateWindows+10; i++ {
 		_, _ = rl.Allow(context.Background(), fmt.Sprintf("10.%d.%d.%d", i>>16&0xff, i>>8&0xff, i&0xff))
 	}
-	if n := len(rl.local); n > maxLocalDCRWindows {
-		t.Errorf("table holds %d windows, cap is %d", n, maxLocalDCRWindows)
+	if n := len(rl.local); n > maxLocalRateWindows {
+		t.Errorf("table holds %d windows, cap is %d", n, maxLocalRateWindows)
 	}
 }
 

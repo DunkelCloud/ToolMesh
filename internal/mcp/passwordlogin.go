@@ -37,9 +37,13 @@ func (s *Server) checkPassword(r *http.Request, username, password string) auth.
 	if s.userStore == nil {
 		account = s.cfg.AuthUser
 	}
-	attempt := s.loginThrottle.Acquire(r.Context(), account, auth.ClientIP(r))
+	ip := auth.ClientIP(r)
+	attempt := s.loginThrottle.Acquire(r.Context(), account, ip)
 	if !attempt.Allowed {
 		s.loginFailed(r, username, loginReasonThrottledPrefix+attempt.Scope)
+		if attempt.Scope != auth.LoginScopeUser {
+			s.warnLimitBehindUnlistedProxy(r, ip, "failed logins")
+		}
 		return auth.PasswordCheck{Outcome: auth.PasswordThrottled, RetryAfter: attempt.RetryAfter}
 	}
 

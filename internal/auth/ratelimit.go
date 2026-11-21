@@ -28,74 +28,131 @@ const (
 	dcrRateLimit  = 5
 	dcrRateWindow = time.Hour
 
-	// maxLocalDCRWindows caps the process-local table. Source addresses are
-	// attacker-chosen, so the table must not grow without bound.
-	maxLocalDCRWindows = 50_000
+	// A client revokes its tokens when a user signs out: a few requests per
+	// session, also from the shared addresses of hosted clients. The limit
+	// is far above that and still keeps one address from occupying the
+	// token store with revocation requests.
+	prefixRevokeRate = "oauth:revoke:ratelimit:"
+	revokeRateLimit  = 60
+	revokeRateWindow = time.Minute
+
+	// maxLocalRateWindows caps the process-local table of one limiter.
+	// Source addresses are attacker-chosen, so the table must not grow
+	// without bound.
+	maxLocalRateWindows = 50_000
+
+	// localEvictionBatch is how many windows a full table gives up at once.
+	localEvictionBatch = maxLocalRateWindows / 16
+
+	// rateLimitRedisTimeout bounds the counter operation in Redis, so a
+	// Redis that does not answer delays a request by at most this much
+	// before the process-local count decides.
+	rateLimitRedisTimeout = time.Second
 )
 
-// DCRRateLimiter enforces per-IP rate limits on Dynamic Client Registration.
-// It counts in Redis when created with a client, so the limit holds across
-// replicas, and in process memory otherwise (NewLocalDCRRateLimiter).
-type DCRRateLimiter struct {
-	rdb *redis.Client
+// AddressRateLimiter allows each client address a fixed number of requests
+// per window. It counts in process memory in every case, and in Redis as
+// well when created with a client: Redis decides while it answers, so the
+// limit holds across replicas, and the process-local count decides when it
+// does not, so an outage of Redis neither lifts the limit nor turns every
+// client away.
+type AddressRateLimiter struct {
+	rdb    *redis.Client
+	prefix string
+	limit  int
+	window time.Duration
 
 	mu    sync.Mutex
-	local map[string]dcrWindow
+	local map[string]rateWindow
 	now   func() time.Time
 }
 
-// dcrWindow is one source address's registrations in the current window.
-type dcrWindow struct {
+// DCRRateLimiter is the AddressRateLimiter of Dynamic Client Registration.
+type DCRRateLimiter = AddressRateLimiter
+
+// rateWindow is one source address's requests in the current window.
+type rateWindow struct {
 	count   int
 	resetAt time.Time
 }
 
-// NewDCRRateLimiter creates a new DCR rate limiter backed by Redis.
+func newAddressRateLimiter(rdb *redis.Client, prefix string, limit int, window time.Duration) *AddressRateLimiter {
+	return &AddressRateLimiter{
+		rdb:    rdb,
+		prefix: prefix,
+		limit:  limit,
+		window: window,
+		local:  make(map[string]rateWindow),
+		now:    time.Now,
+	}
+}
+
+// NewDCRRateLimiter creates the rate limiter of Dynamic Client Registration
+// backed by Redis.
 func NewDCRRateLimiter(rdb *redis.Client) *DCRRateLimiter {
-	return &DCRRateLimiter{rdb: rdb}
+	return newAddressRateLimiter(rdb, prefixDCRRate, dcrRateLimit, dcrRateWindow)
 }
 
 // NewLocalDCRRateLimiter creates a DCR rate limiter that counts in process
-// memory, for deployments without Redis. The limit then applies per process.
+// memory only, for deployments without Redis. The limit then applies per
+// process.
 func NewLocalDCRRateLimiter() *DCRRateLimiter {
-	return &DCRRateLimiter{local: make(map[string]dcrWindow), now: time.Now}
+	return NewDCRRateLimiter(nil)
 }
 
-// allowLocal counts one registration from ip in process memory. An IPv6
-// address counts as its /64, like the login throttle's per-address limit.
-func (rl *DCRRateLimiter) allowLocal(ip string) bool {
+// NewRevokeRateLimiter creates the rate limiter of token revocation. rdb may
+// be nil, which keeps the count in process memory only.
+func NewRevokeRateLimiter(rdb *redis.Client) *AddressRateLimiter {
+	return newAddressRateLimiter(rdb, prefixRevokeRate, revokeRateLimit, revokeRateWindow)
+}
+
+// Window returns the length of the window the limit counts in, which is
+// also the longest a refused client has to wait.
+func (rl *AddressRateLimiter) Window() time.Duration {
+	return rl.window
+}
+
+// allowLocal counts one request from ip in process memory. An IPv6 address
+// counts as its /64, like the login throttle's per-address limit.
+func (rl *AddressRateLimiter) allowLocal(ip string) bool {
 	key := normalizeLoginIP(ip)
 	now := rl.now()
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
 	w, ok := rl.local[key]
 	if !ok || !now.Before(w.resetAt) {
-		if !ok && len(rl.local) >= maxLocalDCRWindows {
+		if !ok && len(rl.local) >= maxLocalRateWindows {
 			rl.evictLocked(now)
 		}
-		w = dcrWindow{resetAt: now.Add(dcrRateWindow)}
+		w = rateWindow{resetAt: now.Add(rl.window)}
 	}
 	w.count++
 	rl.local[key] = w
-	return w.count <= dcrRateLimit
+	return w.count <= rl.limit
 }
 
-// evictLocked makes room in a full table: expired windows go first, then the
-// one that ends soonest. Callers must hold rl.mu.
-func (rl *DCRRateLimiter) evictLocked(now time.Time) {
-	var oldestKey string
-	var oldest time.Time
+// evictLocked makes room in a full table: expired windows go first, and
+// when none has expired, a batch of windows goes, so that the next
+// addresses do not each pay for a walk through the whole table. Which
+// windows go is left to the order of the map. A table this full is a flood
+// from tens of thousands of addresses, and an address that loses its window
+// gets a fresh one. Callers must hold rl.mu.
+func (rl *AddressRateLimiter) evictLocked(now time.Time) {
 	for k, w := range rl.local {
 		if !now.Before(w.resetAt) {
 			delete(rl.local, k)
-			continue
-		}
-		if oldestKey == "" || w.resetAt.Before(oldest) {
-			oldestKey, oldest = k, w.resetAt
 		}
 	}
-	if len(rl.local) >= maxLocalDCRWindows && oldestKey != "" {
-		delete(rl.local, oldestKey)
+	if len(rl.local) < maxLocalRateWindows {
+		return
+	}
+	batch := localEvictionBatch
+	for k := range rl.local {
+		if batch == 0 {
+			break
+		}
+		delete(rl.local, k)
+		batch--
 	}
 }
 
@@ -109,21 +166,30 @@ var rateLimitScript = redis.NewScript(`
 	return count
 `)
 
-// Allow checks if the given IP is allowed to perform another DCR registration.
-// Returns true if allowed, false if the rate limit is exceeded.
-func (rl *DCRRateLimiter) Allow(ctx context.Context, ip string) (bool, error) {
+// Allow counts one request from ip and reports whether it is within the
+// limit.
+//
+// A request is allowed when neither count is over the limit. Redis counts
+// the requests of all replicas; the process-local count sees every request
+// of this process, also the ones Redis missed while it could not be asked.
+// So an outage does not reset the count in either direction: it does not
+// start from zero when Redis fails, and what was counted during the outage
+// still counts when Redis answers again. When Redis cannot be asked, the
+// local count alone decides, and the error is returned with the verdict
+// for the caller to log.
+func (rl *AddressRateLimiter) Allow(ctx context.Context, ip string) (bool, error) {
+	local := rl.allowLocal(ip)
 	if rl.rdb == nil {
-		return rl.allowLocal(ip), nil
+		return local, nil
 	}
 	// Same unit as the process-local counters: an IPv6 address counts as
 	// its /64.
-	key := prefixDCRRate + normalizeLoginIP(ip)
-	windowSecs := int(dcrRateWindow.Seconds())
-
-	count, err := rateLimitScript.Run(ctx, rl.rdb, []string{key}, windowSecs).Int64()
+	key := rl.prefix + normalizeLoginIP(ip)
+	rctx, cancel := context.WithTimeout(ctx, rateLimitRedisTimeout)
+	defer cancel()
+	count, err := rateLimitScript.Run(rctx, rl.rdb, []string{key}, int(rl.window.Seconds())).Int64()
 	if err != nil {
-		return false, fmt.Errorf("dcr rate limit check: %w", err)
+		return local, fmt.Errorf("rate limit check in redis: %w", err)
 	}
-
-	return count <= int64(dcrRateLimit), nil
+	return local && count <= int64(rl.limit), nil
 }

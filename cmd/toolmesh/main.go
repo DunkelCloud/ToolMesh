@@ -388,6 +388,10 @@ func main() {
 
 			if err := rdb.Ping(ctx).Err(); err != nil {
 				logger.Warn("Redis not reachable, using file-only token store", "error", err)
+				// Redis may hold a copy of the tokens issued before this
+				// start. The file store keeps a record of the ones revoked
+				// or spent from now on, for the start that reaches Redis.
+				fileStore.RememberRemovals()
 			} else {
 				logger.Info("Redis connected, using hybrid token store")
 				redisStore := auth.NewRedisTokenStore(rdb)
@@ -1001,10 +1005,7 @@ func loadRESTBackendsInto(named map[string]backend.ToolBackend, backendsConfigPa
 		var scopeErr *dadl.ScopeError
 		if errors.As(err, &scopeErr) {
 			logger.Error("backend refused: its DADL reaches outside the credentials or hosts allowed for it; the other backends keep running",
-				"name", entry.Name,
-				"dadl", entry.DADL,
-				"error", err,
-				"add_to_backends_yaml_entry", scopeErr.FixLines(),
+				scopeRefusalAttrs(entry.Name, entry.DADL, scopeErr)...,
 			)
 			refused = append(refused, entry.Name)
 			continue

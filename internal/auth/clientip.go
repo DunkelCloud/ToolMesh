@@ -19,7 +19,6 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
-	"slices"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -47,8 +46,8 @@ var lastUntrustedForwardedWarn atomic.Int64
 
 // warnUntrustedForwarded logs, at most once per interval, that a request
 // from remote carried X-Forwarded-For which was ignored. Behind a reverse
-// proxy that is not listed every client shares the proxy's address, and this
-// line is what tells the operator.
+// proxy that is not listed every client shares the proxy's address, and
+// this line is what tells the operator.
 func warnUntrustedForwarded(remote string) {
 	now := time.Now().UnixNano()
 	last := lastUntrustedForwardedWarn.Load()
@@ -62,20 +61,72 @@ func warnUntrustedForwarded(remote string) {
 		"remote", remote)
 }
 
+// peerAddr returns the address a request's connection comes from, as text
+// and parsed; ok is false when it is no IP address.
+func peerAddr(r *http.Request) (host string, addr netip.Addr, ok bool) {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	addr, err = netip.ParseAddr(host)
+	return host, addr, err == nil
+}
+
+// ForwardedForIgnored reports whether r carries an X-Forwarded-For header
+// that ClientIP does not honor because the connection comes from no trusted
+// proxy. Such a request is counted under the address of its connection. If
+// that address is a reverse proxy nobody listed, all clients behind it are
+// counted as one, and the failures of one of them use up the limit of all.
+func ForwardedForIgnored(r *http.Request) bool {
+	if len(r.Header.Values("X-Forwarded-For")) == 0 {
+		return false
+	}
+	_, addr, ok := peerAddr(r)
+	return !ok || !isTrustedProxy(addr)
+}
+
 // trustedProxies holds the list installed by SetTrustedProxies; nil means
 // DefaultTrustedProxies.
 var trustedProxies atomic.Pointer[[]netip.Prefix]
 
 // SetTrustedProxies sets the proxy addresses whose X-Forwarded-For header
 // ClientIP honors (TOOLMESH_TRUSTED_PROXIES). An empty, non-nil list trusts no proxy;
-// nil restores DefaultTrustedProxies.
+// nil restores DefaultTrustedProxies. An IPv4-mapped IPv6 entry counts as the
+// IPv4 network it stands for (see UnmapProxyPrefix).
 func SetTrustedProxies(prefixes []netip.Prefix) {
 	if prefixes == nil {
 		trustedProxies.Store(nil)
 		return
 	}
-	cp := slices.Clone(prefixes)
+	cp := make([]netip.Prefix, 0, len(prefixes))
+	for _, p := range prefixes {
+		// A mapped prefix shorter than /96 names no IPv4 network, and as
+		// an IPv6 prefix it would cover addresses nobody meant. It is
+		// left out; the configuration refuses it at startup.
+		if unmapped, ok := UnmapProxyPrefix(p); ok {
+			cp = append(cp, unmapped)
+		}
+	}
 	trustedProxies.Store(&cp)
+}
+
+// UnmapProxyPrefix returns an IPv4-mapped IPv6 prefix such as
+// "::ffff:172.18.0.10/128" as the IPv4 prefix it stands for,
+// "172.18.0.10/32"; ok is false for a mapped prefix shorter than /96,
+// which names no IPv4 network. Any other prefix is returned as it is.
+//
+// Addresses are compared in their IPv4 form, and an IPv4 address matches no
+// IPv6 prefix. A proxy listed the way a dual-stack listener reports it,
+// "::ffff:172.18.0.10", would therefore never be trusted, and nothing would
+// say so: every client behind it would be counted under its address.
+func UnmapProxyPrefix(p netip.Prefix) (unmapped netip.Prefix, ok bool) {
+	if !p.Addr().Is4In6() {
+		return p, true
+	}
+	if p.Bits() < 96 {
+		return p, false
+	}
+	return netip.PrefixFrom(p.Addr().Unmap(), p.Bits()-96), true
 }
 
 // isTrustedProxy reports whether addr belongs to a trusted proxy network.
@@ -124,13 +175,9 @@ func parseForwardedAddr(entry string) (netip.Addr, bool) {
 // walk at the last trusted hop read so far, the peer at first: everything
 // to its left may have been written by the client.
 func ClientIP(r *http.Request) string {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		host = r.RemoteAddr
-	}
+	host, remote, ok := peerAddr(r)
 	values := r.Header.Values("X-Forwarded-For")
-	remote, err := netip.ParseAddr(host)
-	if err != nil || !isTrustedProxy(remote) {
+	if !ok || !isTrustedProxy(remote) {
 		if len(values) > 0 {
 			warnUntrustedForwarded(host)
 		}

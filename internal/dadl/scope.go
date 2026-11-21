@@ -425,8 +425,13 @@ type hostDecision struct {
 	// reason says why credentials may not go there.
 	reason string
 	// allow is the allowed_hosts: entry that would allow it, or "" when
-	// none can (a downgrade to http, a scheme other than http(s)).
+	// none can (a downgrade to http, a scheme other than http(s), a host
+	// an entry cannot name exactly).
 	allow string
+	// sibling reports a host that is allowed only because it shares the
+	// registrable domain of the backend's host: it is not that host, and
+	// no allowed_hosts: entry names it.
+	sibling bool
 }
 
 // check decides whether credentials may be sent to scheme://host:port; port
@@ -464,7 +469,7 @@ func (s *HostScope) check(scheme, host, port string) hostDecision {
 	}
 	sameDomain := s.domain != "" && registrableDomain(h) == s.domain
 	if h != s.baseHost && sameDomain && p == dp {
-		return hostDecision{ok: true}
+		return hostDecision{ok: true, sibling: true}
 	}
 	allow := hostEntry(h, p, dp)
 	if h == s.baseHost || sameDomain {
@@ -473,15 +478,24 @@ func (s *HostScope) check(scheme, host, port string) hostDecision {
 	return hostDecision{reason: fmt.Sprintf("host %q is outside the backend's hosts", h), allow: allow}
 }
 
-// hostEntry is the allowed_hosts: entry for host h on port p.
+// hostEntry is the allowed_hosts: entry for host h on port p, or "" when no
+// entry names exactly that destination. A URL can carry a host an entry
+// would read as something wider: "*.example.com" in a tool path is one
+// (unusable) host, while the entry "*.example.com" allows every host below
+// the domain. Such a host gets no line; only a change to the DADL fixes it.
 func hostEntry(h, p, defaultP string) string {
+	entry := h
 	if strings.Contains(h, ":") {
-		h = "[" + h + "]"
+		entry = "[" + h + "]"
 	}
 	if p != defaultP {
-		return h + ":" + p
+		entry += ":" + p
 	}
-	return h
+	r, err := parseAllowedHost(entry)
+	if err != nil || r.wildcard || r.host != h {
+		return ""
+	}
+	return entry
 }
 
 // Allows reports whether credentials may be sent to the URL raw. A nil
@@ -542,33 +556,93 @@ type ScopeViolation struct {
 	// Owners are the entries whose namespace holds Credential; allowing it
 	// lets this backend read a credential of theirs.
 	Owners []string
+	// OwnEnv is the environment variable of a credential of the entry's
+	// own that an env: line can map Credential to, or "" when no variable
+	// of the entry's own stands for it. The backend then gets a credential
+	// of its own instead of reading one outside its namespace.
+	OwnEnv string
 }
 
-// fixLine returns the backends.yaml line that allows v, or "".
+// fixLine returns the backends.yaml line that resolves v and leaves the
+// binding as it is, or "". There is one such line: env:, which gives the
+// backend a credential of its own in place of a name outside its namespace.
+//
+// Every other line lets the DADL have what it asked for: a variable that
+// other entries own or list, or a further destination for the backend's
+// credentials, be it a host elsewhere, another host of the domain or
+// another port of the backend's own host, where another service may
+// listen. The DADL chose those names and hosts. Whether they belong to the
+// API is for the operator to check, so such a line is a wideningLine and
+// never reads like the fix.
 func (v ScopeViolation) fixLine() string {
+	if v.Credential == "" || v.OwnEnv == "" {
+		return ""
+	}
+	return yamlFlowMapLine("env", [][2]string{{credentialEnvKey(v.Credential), v.OwnEnv}})
+}
+
+// wideningLine returns the backends.yaml line that allows v by widening the
+// binding (see fixLine), without a comment, or "" when no line allows it.
+func (v ScopeViolation) wideningLine() string {
 	switch {
 	case v.Credential != "":
-		return yamlFlowLine("credentials", []string{v.Credential}) + ownerComment([]ScopeViolation{v})
+		return yamlFlowLine("credentials", []string{v.Credential})
 	case v.Host != "":
 		return yamlFlowLine("allowed_hosts", []string{v.Host})
 	}
 	return ""
 }
 
-// ownerComment returns a YAML comment naming the entries that own the
-// credentials of vs, or "" when no other entry owns one. Entry names are
+// Comments that mark a widening line where it is printed for copying.
+const (
+	furtherHostComment = "  # the DADL names these as further destinations for this backend's credentials; add only what you know belongs to the API"
+	sharedCredComment  = ": the backend then reads that variable itself, which every entry that owns or lists it reads too, and sends it to its own hosts" //nolint:gosec // comment text, not a credential
+)
+
+// ownerComment returns a YAML comment that says for the credentials of vs
+// whose namespace each is in and what listing it means. Entry names are
 // quoted, so the comment stays on its line.
 func ownerComment(vs []ScopeViolation) string {
 	var parts []string
 	for _, v := range vs {
-		if v.Credential != "" && len(v.Owners) > 0 {
+		if v.Credential != "" {
 			parts = append(parts, v.Credential+" is "+ownerNote(v.Owners))
 		}
 	}
 	if len(parts) == 0 {
 		return ""
 	}
-	return "  # " + strings.Join(parts, "; ")
+	return "  # " + strings.Join(parts, "; ") + sharedCredComment
+}
+
+// credentialEnvKey is the env: key that remaps the credential name:
+// CREDENTIAL_<NAME>.
+func credentialEnvKey(name string) string {
+	return credentials.EnvKeyPrefix + credentialKey(name)
+}
+
+// envNameRe matches the characters an environment variable name does not
+// take.
+var envNameRe = regexp.MustCompile(`[^A-Z0-9_]`)
+
+// ownEnvKey returns the environment variable of a credential of the
+// entry's own that stands in for the credential name:
+// CREDENTIAL_<ENTRY>_<NAME>, with every character of the entry name that a
+// variable name does not take as "_". It returns "" when there is none: for
+// a nil scope or one without an entry name, and when that variable belongs
+// to another entry. An env: line reads its variable whatever namespace it
+// is in, so with entries "github", "github-enterprise" and "enterprise" the
+// variable for the name "enterprise_token" of "github" would be
+// CREDENTIAL_GITHUB_ENTERPRISE_TOKEN, a credential of "github-enterprise".
+func (s *CredentialScope) ownEnvKey(name string) string {
+	if s == nil || s.entry == "" {
+		return ""
+	}
+	key := envNameRe.ReplaceAllString(namespacePrefix(s.entry), "_") + credentialKey(name)
+	if owners := s.owners.owners(key); len(owners) > 1 || (len(owners) == 1 && owners[0] != s.entry) {
+		return ""
+	}
+	return credentials.EnvKeyPrefix + key
 }
 
 // yamlFlowLine renders "key: [item, ...]" with the YAML encoder, so every
@@ -577,9 +651,29 @@ func ownerComment(vs []ScopeViolation) string {
 func yamlFlowLine(key string, items []string) string {
 	seq := &yaml.Node{Kind: yaml.SequenceNode, Style: yaml.FlowStyle}
 	for _, it := range items {
-		seq.Content = append(seq.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: it})
+		seq.Content = append(seq.Content, yamlStr(it))
 	}
-	doc := &yaml.Node{Kind: yaml.MappingNode, Content: []*yaml.Node{{Kind: yaml.ScalarNode, Tag: "!!str", Value: key}, seq}}
+	return yamlLine(key, seq)
+}
+
+// yamlFlowMapLine renders "key: {name: value, ...}" with the YAML encoder,
+// like yamlFlowLine.
+func yamlFlowMapLine(key string, pairs [][2]string) string {
+	m := &yaml.Node{Kind: yaml.MappingNode, Style: yaml.FlowStyle}
+	for _, p := range pairs {
+		m.Content = append(m.Content, yamlStr(p[0]), yamlStr(p[1]))
+	}
+	return yamlLine(key, m)
+}
+
+// yamlStr is the YAML string node of s.
+func yamlStr(s string) *yaml.Node {
+	return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: s}
+}
+
+// yamlLine renders the one-line mapping "key: value".
+func yamlLine(key string, value *yaml.Node) string {
+	doc := &yaml.Node{Kind: yaml.MappingNode, Content: []*yaml.Node{yamlStr(key), value}}
 	out, err := yaml.Marshal(doc)
 	if err != nil {
 		return ""
@@ -598,19 +692,53 @@ type ScopeError struct {
 func (e *ScopeError) Error() string {
 	parts := make([]string, 0, len(e.Violations))
 	for _, v := range e.Violations {
-		if fix := v.fixLine(); fix != "" {
-			parts = append(parts, fmt.Sprintf("%s: %s (allow it with `%s` in the backends.yaml entry)", v.Rule, v.What, fix))
-		} else {
-			parts = append(parts, fmt.Sprintf("%s: %s (only a change to the DADL can fix this)", v.Rule, v.What))
+		fix, wide := v.fixLine(), v.wideningLine()
+		var how string
+		switch {
+		case v.Credential != "" && fix != "":
+			how = fmt.Sprintf("give this backend a credential of its own with `%s` in the backends.yaml entry; `%s` instead makes it read that variable itself, which every entry that owns or lists it reads too", fix, wide)
+		case v.Credential != "":
+			how = fmt.Sprintf("`%s` in the backends.yaml entry makes it read that variable itself, which every entry that owns or lists it reads too", wide)
+		case wide != "":
+			how = fmt.Sprintf("this backend's credentials would be sent there; if you know the destination belongs to the API, allow it with `%s` in the backends.yaml entry", wide)
+		default:
+			how = "only a change to the DADL can fix this"
 		}
+		parts = append(parts, fmt.Sprintf("%s: %s (%s)", v.Rule, v.What, how))
 	}
 	return fmt.Sprintf("backend %q reaches outside the credentials or hosts allowed for it: %s", e.Backend, strings.Join(parts, "; "))
 }
 
-// FixLines returns the backends.yaml lines that would allow every violation
-// a line can allow, merged per key. They are built from the structured
-// Credential and Host fields, never from DADL text.
+// FixLines returns the backends.yaml lines that resolve violations and
+// leave the binding as it is (see ScopeViolation.fixLine): one env: line
+// that gives the backend a credential of its own for every name outside its
+// namespace. The lines that let the DADL have what it asked for are
+// CautionLines. All lines are built from the structured fields, never from
+// DADL text.
 func (e *ScopeError) FixLines() []string {
+	var env [][2]string
+	seen := map[string]bool{}
+	for _, v := range e.Violations {
+		if v.fixLine() == "" || seen[v.Credential] {
+			continue
+		}
+		seen[v.Credential] = true
+		env = append(env, [2]string{credentialEnvKey(v.Credential), v.OwnEnv})
+	}
+	if len(env) == 0 {
+		return nil
+	}
+	return []string{yamlFlowMapLine("env", env)}
+}
+
+// CautionLines returns the backends.yaml lines that allow the violations
+// by widening the binding, merged per key, each with a comment that says
+// what the line hands over: credentials: for names outside the entry's
+// namespace (the backend then reads a variable that other entries own or
+// list), allowed_hosts: for every host and port the DADL names beyond the
+// binding (the backend's credentials are sent there). They are for an
+// operator who has checked the DADL, not for copying.
+func (e *ScopeError) CautionLines() []string {
 	var creds, hosts []string
 	var credViolations []ScopeViolation
 	seen := map[string]bool{}
@@ -620,7 +748,7 @@ func (e *ScopeError) FixLines() []string {
 			seen["c:"+v.Credential] = true
 			creds = append(creds, v.Credential)
 			credViolations = append(credViolations, v)
-		case v.Host != "" && !seen["h:"+v.Host]:
+		case v.Credential == "" && v.Host != "" && !seen["h:"+v.Host]:
 			seen["h:"+v.Host] = true
 			hosts = append(hosts, v.Host)
 		}
@@ -630,7 +758,7 @@ func (e *ScopeError) FixLines() []string {
 		out = append(out, yamlFlowLine("credentials", creds)+ownerComment(credViolations))
 	}
 	if len(hosts) > 0 {
-		out = append(out, yamlFlowLine("allowed_hosts", hosts))
+		out = append(out, yamlFlowLine("allowed_hosts", hosts)+furtherHostComment)
 	}
 	return out
 }
@@ -819,40 +947,27 @@ func CheckScopeOf(spec *Spec, creds *CredentialScope, hosts *HostScope, reachabl
 		}
 		if !creds.Allows(ref.name) {
 			owners := creds.ownersOf(ref.name)
-			violations = append(violations, ScopeViolation{
+			v := ScopeViolation{
 				Rule:       RuleCredentialNamespace,
 				What:       fmt.Sprintf("%s %q (%s)", ref.where, ref.name, ownerNote(owners)),
 				Credential: strings.ToLower(ref.name),
 				Owners:     owners,
-			})
+				OwnEnv:     creds.ownEnvKey(ref.name),
+			}
+			violations = append(violations, v)
 		}
 	}
-	checkURL := func(where, raw string) {
-		u, ok := absoluteURLOrigin(raw)
-		if !ok {
-			return
-		}
+	walkStaticOrigins(spec, reachable, func(where string, u *url.URL) {
 		d := hosts.check(u.Scheme, u.Hostname(), u.Port())
 		if d.ok {
 			return
 		}
 		violations = append(violations, ScopeViolation{
 			Rule: RuleHostBinding,
-			What: fmt.Sprintf("%s %s://%s: %s", where, u.Scheme, u.Host, d.reason),
+			What: fmt.Sprintf("%s %q: %s", where, u.Scheme+"://"+u.Host, d.reason),
 			Host: d.allow,
 		})
-	}
-	checkURL("base_url", spec.Backend.BaseURL)
-	checkURL("auth.token_url", spec.Backend.Auth.TokenURL)
-	for name, tool := range spec.Backend.Tools {
-		if reachable != nil && !reachable(name) {
-			continue
-		}
-		checkURL(fmt.Sprintf("tool %q path", name), tool.Path)
-	}
-	if spec.Backend.Health != nil {
-		checkURL("health.path", spec.Backend.Health.Path)
-	}
+	})
 	if strings.EqualFold(spec.Backend.Auth.Type, authTypeSession) && spec.Backend.Auth.Login != nil {
 		if _, err := sessionLoginURL(spec.Backend.BaseURL, spec.Backend.Auth.Login.Path); err != nil {
 			violations = append(violations, ScopeViolation{Rule: RuleHostBinding, What: "auth.login.path: " + err.Error()})
@@ -863,4 +978,79 @@ func CheckScopeOf(spec *Spec, creds *CredentialScope, hosts *HostScope, reachabl
 	}
 	sort.Slice(violations, func(i, j int) bool { return violations[i].What < violations[j].What })
 	return &ScopeError{Backend: spec.Backend.Name, Violations: violations}
+}
+
+// walkStaticOrigins calls fn with the origin of every absolute URL the
+// DADL names statically: base_url, token_url, the absolute paths of the
+// tools for which reachable reports true (nil: of every tool) and an
+// absolute health check path. where names the DADL field.
+func walkStaticOrigins(spec *Spec, reachable func(tool string) bool, fn func(where string, u *url.URL)) {
+	visit := func(where, raw string) {
+		if u, ok := absoluteURLOrigin(raw); ok {
+			fn(where, u)
+		}
+	}
+	visit("base_url", spec.Backend.BaseURL)
+	visit("auth.token_url", spec.Backend.Auth.TokenURL)
+	for name, tool := range spec.Backend.Tools {
+		if reachable != nil && !reachable(name) {
+			continue
+		}
+		visit(fmt.Sprintf("tool %q path", plainName(name)), tool.Path)
+	}
+	if spec.Backend.Health != nil {
+		visit("health.path", spec.Backend.Health.Path)
+	}
+}
+
+// nameCharRe matches the characters a tool name does not need.
+var nameCharRe = regexp.MustCompile(`[^A-Za-z0-9_.-]`)
+
+// plainName returns a tool name for a message about the DADL it comes
+// from, with every character outside letters, digits, "_", "." and "-" as
+// "?". A DADL may give a tool any name, and a message that an operator
+// acts on must not carry a sentence the DADL wrote: a name with spaces,
+// quotes and parentheses could read like advice of the message itself.
+func plainName(name string) string {
+	return nameCharRe.ReplaceAllString(name, "?")
+}
+
+// SiblingHosts returns the hosts the DADL sends the backend's credentials
+// to only because they share the registrable domain of the base_url: the
+// hosts of token_url, absolute tool paths and an absolute health check
+// path that are neither the backend's own host nor named by an
+// allowed_hosts: entry. Each host is listed once, sorted. reachable is as
+// in CheckScopeOf.
+//
+// The rule that allows them is deliberate: an API often spreads over a few
+// hosts of one domain. On a domain whose customers each get a subdomain and
+// that the public suffix list does not know as such, the same rule reaches
+// the hosts of other customers, so a backend that uses it says so when it
+// is loaded.
+func SiblingHosts(spec *Spec, hosts *HostScope, reachable func(tool string) bool) []string {
+	if hosts == nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	var out []string
+	walkStaticOrigins(spec, reachable, func(_ string, u *url.URL) {
+		if d := hosts.check(u.Scheme, u.Hostname(), u.Port()); !d.sibling {
+			return
+		}
+		if h := canonicalHost(u.Hostname()); !seen[h] {
+			seen[h] = true
+			out = append(out, h)
+		}
+	})
+	sort.Strings(out)
+	return out
+}
+
+// Domain returns the registrable domain of the backend's base_url host, or
+// "" when it has none (an IP address, a name such as "localhost").
+func (s *HostScope) Domain() string {
+	if s == nil {
+		return ""
+	}
+	return s.domain
 }

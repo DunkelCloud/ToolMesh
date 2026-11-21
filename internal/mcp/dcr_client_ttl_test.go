@@ -15,10 +15,13 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -38,6 +41,9 @@ const (
 	dcrTestPassword = "dcr-test-password" //nolint:gosec // test fixture
 	dcrTestRedirect = "https://example.com/callback"
 	dcrTestVerifier = "dcr-test-verifier-with-enough-entropy-0123456789"
+
+	// dcrTestRegisterBody is the registration the tests send.
+	dcrTestRegisterBody = `{"redirect_uris": ["` + dcrTestRedirect + `"], "client_name": "dcr-test"}`
 
 	// dcrTestClientTTL and dcrTestIdleTTL are the lifetimes the tests
 	// configure, in seconds: an hour for a client without a token, 90 days
@@ -65,8 +71,7 @@ type dcrFlow struct {
 
 func (f dcrFlow) register() string {
 	f.t.Helper()
-	body := `{"redirect_uris": ["` + dcrTestRedirect + `"], "client_name": "dcr-test"}`
-	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/register", strings.NewReader(body))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/register", strings.NewReader(dcrTestRegisterBody))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	f.mux.ServeHTTP(w, req)
@@ -245,9 +250,11 @@ func mustGet(t *testing.T, mr *miniredis.Miniredis, key string) string {
 	return v
 }
 
-// TestDCRRegister_FailOpenIsLogged checks that registration goes ahead when
-// the rate limit cannot be checked, and that this is logged as a fail-open.
-func TestDCRRegister_FailOpenIsLogged(t *testing.T) {
+// TestDCRRegister_LimitedWhileRedisIsDown checks that an outage of the
+// limiter's Redis neither stops registration nor lifts its limit: the
+// registrations are counted in process memory, which is logged, and the
+// one over the limit is refused.
+func TestDCRRegister_LimitedWhileRedisIsDown(t *testing.T) {
 	logs := &loginLogBuffer{}
 	logger := slog.New(slog.NewJSONHandler(logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
@@ -268,13 +275,96 @@ func TestDCRRegister_FailOpenIsLogged(t *testing.T) {
 	mux := http.NewServeMux()
 	srv.SetupRoutes(mux)
 
-	dcrFlow{t, mux}.register()
+	const limit = 5 // registrations per address and hour
+	for range limit {
+		dcrFlow{t, mux}.register()
+	}
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/register", strings.NewReader(dcrTestRegisterBody))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusTooManyRequests {
+		t.Errorf("registration %d with Redis down: status %d, want 429", limit+1, w.Code)
+	}
 
-	lines := logs.lines(t, "dcr rate limit unavailable, registration allowed without limit (fail-open)")
-	if len(lines) != 1 {
-		t.Fatalf("got %d fail-open log lines, want 1; log:\n%s", len(lines), logs.String())
+	lines := logs.lines(t, "dcr rate limit: redis unavailable, registrations counted in process memory")
+	if len(lines) != limit+1 {
+		t.Fatalf("got %d log lines about the fallback, want %d; log:\n%s", len(lines), limit+1, logs.String())
 	}
 	if lines[0]["level"] != testLogLevelWarn || lines[0][outcomeError] == nil || lines[0]["remote"] == nil {
-		t.Errorf("fail-open log line = %v, want WARN with error and remote", lines[0])
+		t.Errorf("fallback log line = %v, want WARN with error and remote", lines[0])
+	}
+}
+
+// TestDCRRegister_BoundsClientMetadata checks that a registration with an
+// overlong client_name, too many redirect_uris or an overlong redirect_uri
+// is refused and nothing is stored, and that one at the limits is accepted.
+func TestDCRRegister_BoundsClientMetadata(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	tokenStore, err := auth.NewFileTokenStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	mb := &mockTestBackend{}
+	exec := executor.New(nil, nil, mb, nil, nil, 120*time.Second, logger, nil, nil)
+	handler := NewHandler(exec, mb, nil, "", nil, logger, false)
+	type registration struct {
+		ClientName   string   `json:"client_name"`
+		RedirectURIs []string `json:"redirect_uris"`
+		Padding      string   `json:"padding,omitempty"`
+	}
+	post := func(t *testing.T, body registration) (int, map[string]any) {
+		t.Helper()
+		// A server of its own per request, so the rate limit stays out of it.
+		srv := NewServer(handler, dcrTestConfig(dcrTestClientTTL, dcrTestIdleTTL), logger, tokenStore, nil, nil, auth.NewLocalDCRRateLimiter(), nil, nil)
+		mux := http.NewServeMux()
+		srv.SetupRoutes(mux)
+		raw, err := json.Marshal(body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/register", bytes.NewReader(raw))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		var resp map[string]any
+		_ = json.NewDecoder(w.Body).Decode(&resp)
+		return w.Code, resp
+	}
+	uris := func(n int) []string {
+		out := make([]string, n)
+		for i := range out {
+			out[i] = fmt.Sprintf("https://client.example.com/cb/%d", i)
+		}
+		return out
+	}
+	longURI := "https://client.example.com/" + strings.Repeat("a", maxRedirectURIBytes)
+
+	cases := []struct {
+		name      string
+		body      registration
+		wantCode  int
+		wantError string
+	}{
+		{"name at the limit", registration{ClientName: strings.Repeat("n", maxClientNameBytes), RedirectURIs: uris(1)}, http.StatusCreated, ""},
+		{"name over the limit", registration{ClientName: strings.Repeat("n", maxClientNameBytes+1), RedirectURIs: uris(1)}, http.StatusBadRequest, oauthErrInvalidClientMetadata},
+		{"redirect_uris at the limit", registration{ClientName: "c", RedirectURIs: uris(maxRedirectURIs)}, http.StatusCreated, ""},
+		{"too many redirect_uris", registration{ClientName: "c", RedirectURIs: uris(maxRedirectURIs + 1)}, http.StatusBadRequest, oauthErrInvalidRedURI},
+		{"overlong redirect_uri", registration{ClientName: "c", RedirectURIs: []string{longURI}}, http.StatusBadRequest, oauthErrInvalidRedURI},
+		{"body over the limit", registration{ClientName: "c", RedirectURIs: uris(1), Padding: strings.Repeat("p", maxRegisterBodyBytes)}, http.StatusBadRequest, oauthErrInvalidReq},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			code, resp := post(t, c.body)
+			if code != c.wantCode {
+				t.Fatalf("status %d, want %d (%v)", code, c.wantCode, resp)
+			}
+			if c.wantError != "" && resp[outcomeError] != c.wantError {
+				t.Errorf("error = %v, want %q", resp[outcomeError], c.wantError)
+			}
+			if c.wantError != "" && resp[oauthClientID] != nil {
+				t.Errorf("a refused registration returned a client: %v", resp)
+			}
+		})
 	}
 }

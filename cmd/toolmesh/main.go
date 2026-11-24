@@ -1048,6 +1048,13 @@ func loadRESTBackendsInto(named map[string]backend.ToolBackend, backendsConfigPa
 				logger.Warn("invalid streaming_timeout option, using default", "name", entry.Name, "value", timeoutStr)
 			}
 		}
+		if sizeStr, ok := entry.Options[backend.OptionMaxResponseSize]; ok {
+			if limit, sizeErr := adapter.SetMaxResponseSize(sizeStr); sizeErr == nil {
+				logger.Info("REST backend response size limit override", "name", entry.Name, "max_response_size", dadl.FormatByteSize(limit))
+			} else {
+				logger.Warn("invalid max_response_size option, using default", "name", entry.Name, "value", sizeStr, "default", dadl.FormatByteSize(limit), "error", sizeErr)
+			}
+		}
 
 		named[spec.Backend.Name] = adapter
 		if tc != nil {

@@ -73,6 +73,20 @@ const (
 // mapping, which covers non-2xx statuses only.
 const ErrCodeNotReady = "not_ready"
 
+// ErrCodeResponseTooLarge is the semantic code of a call whose response body
+// is larger than the size limit of its backend. The body is not passed on: a
+// body cut off at the limit is not the API's answer, and parsed as JSON it
+// is not even valid. Like ErrCodeNotReady it stands outside the spec §8.2
+// default mapping; the HTTP status is the one the API answered with.
+const ErrCodeResponseTooLarge = "response_too_large"
+
+// ErrCodeInvalidTransform is the semantic code of a call whose tool declares
+// a response.result_path or response.transform that cannot be parsed or
+// compiled. That is a defect of the DADL, not of the response: the tool can
+// never produce the result it declares. The request itself was carried out,
+// and the HTTP status is the one the API answered with.
+const ErrCodeInvalidTransform = "invalid_transform"
+
 // NotReadyError returns the error a response with the given status stands
 // for when the tool lists that status in not_ready_on, and nil for every
 // other status. Such a response says the API has not finished preparing the

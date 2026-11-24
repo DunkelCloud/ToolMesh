@@ -217,7 +217,9 @@ func sortedKeys(m map[string]any) []string {
 	return keys
 }
 
-// ExtractResult applies a JSONPath expression string to JSON data bytes.
+// ExtractResult applies a JSONPath expression string to JSON data bytes. A
+// path that cannot be parsed is an *ExpressionError; every other error
+// depends on the data.
 func ExtractResult(body []byte, resultPath string) ([]byte, error) {
 	if resultPath == "" {
 		return body, nil
@@ -225,7 +227,7 @@ func ExtractResult(body []byte, resultPath string) ([]byte, error) {
 
 	jp, err := NewJSONPath(resultPath)
 	if err != nil {
-		return nil, fmt.Errorf("parse result_path: %w", err)
+		return nil, &ExpressionError{Field: FieldResultPath, Err: fmt.Errorf("parse %q: %w", resultPath, err)}
 	}
 
 	var data any

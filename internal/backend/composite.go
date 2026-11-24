@@ -49,6 +49,10 @@ type CompositeBackend struct {
 	// before it becomes reachable. Guarded by mu.
 	guard ChildGuard
 
+	// version counts the changes of the children, bumped after each new
+	// state is published. See ToolSetVersion.
+	version atomic.Uint64
+
 	// logger receives WARN events when bare expose_tools aliases collide
 	// with names reserved by upstream LLM clients (see reserved.go). nil
 	// disables logging entirely. Set via SetLogger after construction.
@@ -142,6 +146,7 @@ func (c *CompositeBackend) AddPassthrough(b ToolBackend) {
 		backends:     old.backends,
 		passthroughs: append(append([]ToolBackend(nil), old.passthroughs...), b),
 	})
+	c.version.Add(1)
 }
 
 // Execute routes the tool call to the correct backend based on the name prefix.
@@ -302,6 +307,7 @@ func (c *CompositeBackend) AddNamed(name string, b ToolBackend) {
 		backends:     newMap,
 		passthroughs: old.passthroughs,
 	})
+	c.version.Add(1)
 }
 
 // Swap atomically replaces the entire composite state (named backends and
@@ -322,6 +328,15 @@ func (c *CompositeBackend) Swap(backends map[string]ToolBackend, passthroughs []
 		backends:     backends,
 		passthroughs: passthroughs,
 	})
+	c.version.Add(1)
+}
+
+// ToolSetVersion implements [ToolSetVersioner]: Swap, AddNamed and
+// AddPassthrough each bump it once the new state is published. It does not
+// see a child whose own tool list changes, such as an MCP server whose tools
+// are discovered again on reconnect.
+func (c *CompositeBackend) ToolSetVersion() uint64 {
+	return c.version.Load()
 }
 
 // LookupTool routes the lookup to the matching named backend (by tool name

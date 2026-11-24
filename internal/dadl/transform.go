@@ -26,15 +26,76 @@ const maxJQOutputBytes = 10 * 1024 * 1024 // 10 MB
 // maxJQResults is the maximum number of result items from a jq expression.
 const maxJQResults = 100_000
 
+// Response fields whose expressions an ExpressionError names.
+const (
+	FieldResultPath = "result_path"
+	FieldTransform  = "transform"
+)
+
+// ExpressionError reports a response.result_path or response.transform that
+// cannot be parsed or compiled. Unlike every other failure of the response
+// pipeline it does not depend on the response: the expression fails on every
+// input, so the tool can never produce the result its DADL declares.
+type ExpressionError struct {
+	Field string // FieldResultPath or FieldTransform
+	Err   error
+}
+
+// Error names the field and why its expression is invalid.
+func (e *ExpressionError) Error() string {
+	return fmt.Sprintf("response.%s is invalid: %v", e.Field, e.Err)
+}
+
+// Unwrap returns the parser's or compiler's error.
+func (e *ExpressionError) Unwrap() error { return e.Err }
+
+// CompileTransform parses and compiles a jq expression. A failure is an
+// *ExpressionError. Compiling resolves function names and arities, so a call
+// of an undefined function fails here rather than on the first response.
+func CompileTransform(jqExpr string) (*gojq.Code, error) {
+	query, err := gojq.Parse(jqExpr)
+	if err != nil {
+		return nil, &ExpressionError{Field: FieldTransform, Err: fmt.Errorf("parse jq expression: %w", err)}
+	}
+	code, err := gojq.Compile(query)
+	if err != nil {
+		return nil, &ExpressionError{Field: FieldTransform, Err: fmt.Errorf("compile jq expression: %w", err)}
+	}
+	return code, nil
+}
+
+// CheckResponseExpressions reports the first expression of rc that cannot be
+// parsed or compiled, as an *ExpressionError, or nil when rc is nil or both
+// its result_path and transform are valid. It looks at the expressions only,
+// so it can run when a DADL is loaded, before any response exists.
+func CheckResponseExpressions(rc *ResponseConfig) error {
+	if rc == nil {
+		return nil
+	}
+	if rc.ResultPath != "" {
+		if _, err := NewJSONPath(rc.ResultPath); err != nil {
+			return &ExpressionError{Field: FieldResultPath, Err: fmt.Errorf("parse %q: %w", rc.ResultPath, err)}
+		}
+	}
+	if rc.Transform != "" {
+		if _, err := CompileTransform(rc.Transform); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // ApplyTransform runs a jq expression on JSON data and returns the result.
+// An expression that cannot be parsed or compiled is an *ExpressionError;
+// every other error depends on the data.
 func ApplyTransform(data []byte, jqExpr string) ([]byte, error) {
 	if jqExpr == "" {
 		return data, nil
 	}
 
-	query, err := gojq.Parse(jqExpr)
+	code, err := CompileTransform(jqExpr)
 	if err != nil {
-		return nil, fmt.Errorf("parse jq expression %q: %w", jqExpr, err)
+		return nil, err
 	}
 
 	var input any
@@ -42,7 +103,7 @@ func ApplyTransform(data []byte, jqExpr string) ([]byte, error) {
 		return nil, fmt.Errorf("parse json input for jq: %w", err)
 	}
 
-	iter := query.Run(input)
+	iter := code.Run(input)
 	var results []any
 	for {
 		v, ok := iter.Next()

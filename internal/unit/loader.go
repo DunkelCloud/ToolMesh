@@ -304,6 +304,11 @@ func loadRESTSubBackend(
 			logger.Warn("unit REST sub-backend: invalid streaming_timeout, using default", "backend", entry.Name, "value", timeoutStr)
 		}
 	}
+	if sizeStr, ok := entry.Options[backend.OptionMaxResponseSize]; ok {
+		if limit, perr := rest.SetMaxResponseSize(sizeStr); perr != nil {
+			logger.Warn("unit REST sub-backend: invalid max_response_size, using default", "backend", entry.Name, "value", sizeStr, "default", dadl.FormatByteSize(limit), "error", perr)
+		}
+	}
 	return rest, nil
 }
 

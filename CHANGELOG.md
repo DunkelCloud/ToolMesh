@@ -293,6 +293,14 @@ for the full narrative and details.
   running on the other one. A tool of the shorter backend whose name falls
   under the longer one (`hub_search` of `git`) cannot be called; it is no
   longer listed or promoted, and a warning in the log names it.
+- A backend that a hot reload of `config/backends.yaml` adds, and a tool a
+  reload newly exposes, can be called from `execute_code` right away. Until
+  now `discover_tools` listed them, but a script calling them failed with
+  `TypeError: Object has no member '<tool>'` until ToolMesh was restarted.
+  Tools a reload removes are gone from the sandbox as well, and
+  `toolmesh.discover()` and `toolmesh.describe()` show what the reload
+  brought. A script that is running while a reload lands keeps the tools it
+  started with.
 - An MCP backend that returns its tool list in pages lost every tool after
   the first page, without a line in the log. ToolMesh now follows the cursor
   to the end of the list, for at most 100 pages; a backend that returns a

@@ -26,14 +26,21 @@ type UserContext struct {
 	Roles         []string `json:"roles"`
 	Plan          string   `json:"plan"` // "free" | "pro"
 	Authenticated bool     `json:"authenticated"`
-	CallerID      string   `json:"callerId"`    // verified identifier (API key: admin-set, OAuth: client_id UUID)
+	CallerID      string   `json:"callerId"`    // verified identifier (API key: admin-set, OAuth: client_id, from registration or the URL of the client's metadata document)
 	CallerName    string   `json:"callerName"`  // self-reported display name (informational, not for policy decisions)
 	CallerClass   string   `json:"callerClass"` // "trusted" | "standard" | "untrusted"
 	// GrantKey identifies the credential the caller connected with where
 	// CallerID does not: an API key without caller_id, whose CallerID is the
-	// user's id. Grants of kits are bound to it instead of to CallerID.
+	// user's id, and an OAuth client that names itself by the URL of its
+	// metadata document, whose CallerID is that URL for every installation
+	// of the client (GrantKeyLoginPrefix). Grants of kits are bound to it
+	// instead of to CallerID.
 	GrantKey string `json:"-"`
 }
+
+// GrantKeyLoginPrefix starts the GrantKey that stands for one sign-in of an
+// OAuth client, as opposed to the key of an API key entry.
+const GrantKeyLoginPrefix = "login-"
 
 // GrantBinding returns what grants of kits are bound to besides the user:
 // GrantKey when set, CallerID otherwise.

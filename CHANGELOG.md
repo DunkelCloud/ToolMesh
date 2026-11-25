@@ -141,6 +141,33 @@ for the full narrative and details.
 
 ### Added
 
+- OAuth clients with a client ID metadata document. A client that has not
+  registered uses the https URL of a JSON document with its metadata as its
+  `client_id`, the way MCP revision 2026-07-28 expects of clients, and
+  ToolMesh fetches the document when the client asks for authorization.
+  Nothing is stored for such a client. The metadata of the authorization
+  server announces it as `client_id_metadata_document_supported`.
+  Registration at `/register` works as before and is the fallback for
+  clients without a document. The fetch is one any visitor can cause, so it
+  is bounded: https only, public addresses only (checked at the connection,
+  so a name cannot resolve to a private one), no redirects, 5 seconds,
+  16 KiB, 10 fetches a minute per client address and 16 at once. A document
+  is used for the time its `Cache-Control` names, between 5 minutes and
+  24 hours. The login page names the host a document was read from and
+  warns when the redirect goes to a loopback address. A loopback redirect
+  URI of such a client matches with any port (RFC 8252). Grants of kits are
+  bound to the sign-in of such a client, since every installation of it has
+  the same `client_id`. `TOOLMESH_CIMD_HOSTS` restricts the hosts documents
+  are fetched from; `TOOLMESH_CIMD_ENABLED=false` switches them off.
+  **After an upgrade ToolMesh makes these outbound requests by default.** An
+  instance that cannot open https connections to the hosts of its clients'
+  documents sets `TOOLMESH_CIMD_ENABLED=false`, so that clients keep
+  registering. See
+  [Client ID metadata documents](docs/configuration.md#client-id-metadata-documents).
+- The authorization response carries `iss` (RFC 9207), and the metadata
+  announces it as `authorization_response_iss_parameter_supported`. A client
+  that talks to several authorization servers can tell which one answered.
+  The value is the `issuer` of the metadata.
 - REST backends take `options.max_response_size` in `backends.yaml`: the
   largest non-binary response body, `10MB` unless set, at most `100MB`. See
   [REST backend options](docs/configuration.md#rest-backend-options).

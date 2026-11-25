@@ -29,6 +29,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -59,6 +60,10 @@ type Server struct {
 	rateLimiter *auth.DCRRateLimiter
 	// revokeLimiter limits revocation requests per client address.
 	revokeLimiter *auth.AddressRateLimiter
+	// cimd fetches and caches client ID metadata documents; cimdLimiter
+	// limits the fetches one client address can cause.
+	cimd          *cimdFetcher
+	cimdLimiter   *auth.AddressRateLimiter
 	loginThrottle *auth.LoginThrottle
 	// bearerThrottle limits failed bearer credentials per client address.
 	bearerThrottle *auth.LoginThrottle
@@ -113,6 +118,8 @@ func NewServer(handler *Handler, cfg *config.Config, logger *slog.Logger, tokenS
 		apiKeys:        apiKeys,
 		rateLimiter:    rateLimiter,
 		revokeLimiter:  auth.NewRevokeRateLimiter(nil),
+		cimd:           newCIMDFetcher(cimdHTTPClient(cimdTransport())),
+		cimdLimiter:    auth.NewClientMetadataRateLimiter(nil),
 		loginThrottle:  auth.NewLoginThrottle(loginThrottleConfig(cfg), nil, logger),
 		bearerThrottle: auth.NewLoginThrottle(bearerThrottleConfig(cfg), nil, logger),
 		callerClasses:  callerClasses,
@@ -120,14 +127,15 @@ func NewServer(handler *Handler, cfg *config.Config, logger *slog.Logger, tokenS
 	}
 }
 
-// UseRedisLoginThrottle moves the failed-login counters and the count of
-// revocation requests from process memory, where NewServer keeps them, to
-// Redis, so the limits hold across replicas and restarts. Call it before the
-// server starts handling requests.
+// UseRedisLoginThrottle moves the failed-login counters and the counts of
+// revocation requests and of metadata document fetches from process memory,
+// where NewServer keeps them, to Redis, so the limits hold across replicas
+// and restarts. Call it before the server starts handling requests.
 func (s *Server) UseRedisLoginThrottle(rdb *redis.Client) {
 	s.loginThrottle = auth.NewLoginThrottle(loginThrottleConfig(s.cfg), rdb, s.logger)
 	s.bearerThrottle = auth.NewLoginThrottle(bearerThrottleConfig(s.cfg), rdb, s.logger)
 	s.revokeLimiter = auth.NewRevokeRateLimiter(rdb)
+	s.cimdLimiter = auth.NewClientMetadataRateLimiter(rdb)
 }
 
 // bearerThrottleConfig limits failed bearer credentials per client address
@@ -877,7 +885,7 @@ func (s *Server) checkBearer(r *http.Request, bearer string, slot *bearerSlot) (
 			valid := err == nil && time.Now().Before(ti.ExpiresAt)
 			if valid {
 				id, current = s.currentIdentity(ti.UserID)
-				current = current && id.matches(ti.CredentialFP)
+				current = current && id.matches(ti.CredentialFP) && s.clientAccepted(ti.ClientID)
 				if !current {
 					// The pair ends as a whole: a user who is added again
 					// must log in, not resume the old refresh chain.
@@ -885,8 +893,8 @@ func (s *Server) checkBearer(r *http.Request, bearer string, slot *bearerSlot) (
 					if ti.RefreshToken != "" {
 						_, _ = s.tokenStore.ConsumeRefreshToken(r.Context(), ti.RefreshToken)
 					}
-					s.logger.InfoContext(r.Context(), "access token refused: its user is no longer configured or the credential changed",
-						"user", truncateForLog(ti.UserID), logKeyRemote, auth.ClientIP(r))
+					s.logger.InfoContext(r.Context(), "access token refused: its user is no longer configured, the credential changed, or its client is no longer accepted",
+						"user", truncateForLog(ti.UserID), logKeyClientID, truncateForLog(ti.ClientID), logKeyRemote, auth.ClientIP(r))
 				}
 			}
 			switch {
@@ -905,6 +913,7 @@ func (s *Server) checkBearer(r *http.Request, bearer string, slot *bearerSlot) (
 					CallerID:      callerID,
 					CallerName:    ti.CallerName,
 					CallerClass:   s.callerClasses.Resolve(callerID),
+					GrantKey:      ti.GrantKey,
 				}, nil
 			case valid:
 				// A valid token of a user who is gone: not accepted.
@@ -1116,9 +1125,9 @@ func extractBearer(r *http.Request) string {
 // OAuth 2.1 Endpoints
 
 func (s *Server) handleOAuthMetadata(w http.ResponseWriter, _ *http.Request) {
-	iss := strings.TrimRight(s.cfg.Issuer, "/")
+	iss := s.issuerBase()
 	writeJSON(w, http.StatusOK, map[string]any{
-		"issuer":                 iss + "/",
+		"issuer":                 s.issuerID(),
 		"authorization_endpoint": iss + "/authorize",
 		"token_endpoint":         iss + "/token",
 		"registration_endpoint":  iss + "/register",
@@ -1129,11 +1138,16 @@ func (s *Server) handleOAuthMetadata(w http.ResponseWriter, _ *http.Request) {
 		"code_challenge_methods_supported":           []string{"S256"},
 		"token_endpoint_auth_methods_supported":      []string{"none"},
 		"scopes_supported":                           []string{clientClaudeAI},
+		// A client may name itself by the URL of its metadata document
+		// instead of registering at registration_endpoint first.
+		"client_id_metadata_document_supported": s.cfg.CIMDEnabled,
+		// Every redirect back to the client carries iss (RFC 9207).
+		"authorization_response_iss_parameter_supported": true,
 	})
 }
 
 func (s *Server) handleProtectedResource(w http.ResponseWriter, _ *http.Request) {
-	s.writeProtectedResource(w, s.issuerBase()+"/")
+	s.writeProtectedResource(w, s.issuerID())
 }
 
 // handleProtectedResourceMCP serves the protected resource metadata of the
@@ -1148,7 +1162,7 @@ func (s *Server) handleProtectedResourceMCP(w http.ResponseWriter, _ *http.Reque
 func (s *Server) writeProtectedResource(w http.ResponseWriter, resource string) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"resource":                 resource,
-		"authorization_servers":    []string{s.issuerBase() + "/"},
+		"authorization_servers":    []string{s.issuerID()},
 		"bearer_methods_supported": []string{"header"},
 	})
 }
@@ -1156,6 +1170,14 @@ func (s *Server) writeProtectedResource(w http.ResponseWriter, resource string) 
 // issuerBase returns the public URL of this server without a trailing slash.
 func (s *Server) issuerBase() string {
 	return strings.TrimRight(s.cfg.Issuer, "/")
+}
+
+// issuerID returns the issuer identifier of this authorization server
+// (RFC 8414). The metadata, the protected resource metadata and the iss
+// parameter of the authorization response all take it from here: a client
+// compares these as strings, so they must not differ by as much as a slash.
+func (s *Server) issuerID() string {
+	return s.issuerBase() + "/"
 }
 
 // Bounds on a client registration. Real clients send a short name and a
@@ -1294,6 +1316,9 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 // either way: a client that cannot be extended only has to register again
 // once it expires.
 func (s *Server) extendClient(ctx context.Context, clientID string) {
+	if isClientIDURL(clientID) {
+		return // identified by its metadata document: nothing is stored that could expire
+	}
 	var until time.Time
 	if s.cfg.DCRClientIdleTTL > 0 {
 		// Never shorter than a refresh token lives, whatever the config.
@@ -1319,32 +1344,154 @@ func (s *Server) passwordLoginConfigured() bool {
 	return s.userStore != nil || s.cfg.AuthPassword != ""
 }
 
-// clientForRedirect checks that clientID is a registered client, that
-// redirectURI is one of its redirect URIs, and that the redirect host passes
-// the TOOLMESH_OAUTH_REDIRECT_HOSTS allowlist (which also covers clients
+// clientRejection says why the client or the redirect_uri of an authorization
+// request was turned away.
+type clientRejection struct {
+	// reason is one of the loginReason constants, for the log.
+	reason string
+	// status, code and description are the answer to the request. A zero
+	// status leaves the answer to the reason (see rejectClientRedirect).
+	status      int
+	code        string
+	description string
+	// retryAfter is the Retry-After header in seconds; 0 sends none.
+	retryAfter int
+}
+
+// clientForRedirect checks the client of an authorization request and its
+// redirect_uri. The client is either registered (/register) or names itself
+// by the URL of its client ID metadata document. redirectURI must be one of
+// the client's redirect URIs and its host must pass the
+// TOOLMESH_OAUTH_REDIRECT_HOSTS allowlist (which also covers clients
 // registered before the allowlist was set). It returns the client (nil
-// without a token store) and the reason for a rejection, or "" when the pair
-// is valid.
-func (s *Server) clientForRedirect(ctx context.Context, clientID, redirectURI string) (client *auth.OAuthClient, reason string) {
+// without a token store) or why the request is turned away.
+func (s *Server) clientForRedirect(r *http.Request, clientID, redirectURI string) (*auth.OAuthClient, *clientRejection) {
 	if u, err := url.Parse(redirectURI); err != nil || redirectURIShapeError(redirectURI, u) != "" {
-		return nil, loginReasonInvalidRedirectURI
+		return nil, &clientRejection{reason: loginReasonInvalidRedirectURI}
 	}
 	if !redirectHostAllowed(redirectURI, s.cfg.OAuthRedirectHosts) {
-		return nil, loginReasonRedirectHostDenied
+		return nil, &clientRejection{reason: loginReasonRedirectHostDenied}
+	}
+	// With metadata documents switched off, a URL is a client_id nobody
+	// registered, and nothing is fetched.
+	if s.cfg.CIMDEnabled && isClientIDURL(clientID) {
+		return s.metadataClient(r, clientID, redirectURI)
 	}
 	if s.tokenStore == nil {
-		return nil, ""
+		return nil, nil
 	}
-	registered, err := s.tokenStore.GetClient(ctx, clientID)
+	registered, err := s.tokenStore.GetClient(r.Context(), clientID)
 	if err != nil {
-		return nil, loginReasonUnknownClient
+		return nil, &clientRejection{reason: loginReasonUnknownClient}
 	}
-	for _, uri := range registered.RedirectURIs {
-		if uri == redirectURI {
-			return registered, ""
+	if slices.Contains(registered.RedirectURIs, redirectURI) {
+		return registered, nil
+	}
+	return nil, &clientRejection{reason: loginReasonInvalidRedirectURI}
+}
+
+// metadataClient resolves a client that names itself by the URL of its
+// client ID metadata document: it obtains the document and checks that
+// redirectURI is listed in it. The caller has checked the shape of
+// redirectURI and its host against the redirect host allowlist.
+//
+// Everything that can turn the request away without a fetch comes first, so
+// that a request causes a fetch only when a login could follow from it. A
+// fetch counts against the limit of the client address; a document that is
+// still cached costs nothing.
+func (s *Server) metadataClient(r *http.Request, clientID, redirectURI string) (*auth.OAuthClient, *clientRejection) {
+	ctx := r.Context()
+	refuse := func(reason, description string) (*auth.OAuthClient, *clientRejection) {
+		return nil, &clientRejection{reason: reason, status: http.StatusBadRequest, code: oauthErrInvalidClient, description: description}
+	}
+
+	// A registration checks the scheme of its redirect URIs when it is
+	// made. Here nothing has: only https and the loopback http of native
+	// clients are redirected to, whatever a document lists.
+	if u, err := url.Parse(redirectURI); err != nil || (u.Scheme != schemeHTTPS && !isLoopbackRedirect(u)) {
+		return nil, &clientRejection{reason: loginReasonInvalidRedirectURI}
+	}
+	if why := clientIDURLError(clientID, s.cfg.Issuer); why != "" {
+		return refuse(loginReasonInvalidClientID, "client_id cannot be used as the URL of a client metadata document: "+why)
+	}
+	if !clientIDHostAllowed(clientID, s.cfg.CIMDHosts) {
+		return refuse(loginReasonClientHostDenied, "client_id host is not allowed on this server")
+	}
+	if !s.passwordLoginConfigured() {
+		return nil, &clientRejection{reason: loginReasonPasswordLoginDisabled, status: http.StatusForbidden, code: oauthErrAccessDenied, description: descPasswordLoginDisabled}
+	}
+
+	metadata, ok := s.cimd.cached(clientID)
+	if !ok {
+		ip := auth.ClientIP(r)
+		allowed, err := s.cimdLimiter.Allow(ctx, ip)
+		if err != nil {
+			s.logger.WarnContext(ctx, "client metadata rate limit: redis unavailable, fetches counted in process memory",
+				outcomeError, err, logKeyRemote, ip)
+		}
+		if !allowed {
+			s.warnLimitBehindUnlistedProxy(r, ip, "client metadata fetches")
+			return nil, &clientRejection{
+				reason: loginReasonClientMetadataLimit, status: http.StatusTooManyRequests, code: oauthErrTooManyRequests,
+				description: "too many client metadata documents were requested from this address",
+				retryAfter:  retryAfterSeconds(s.cimdLimiter.Window()),
+			}
+		}
+		metadata, err = s.cimd.fetch(ctx, clientID)
+		if err != nil {
+			return nil, s.metadataRejection(r, clientID, err)
+		}
+		s.logger.InfoContext(ctx, "client metadata document fetched",
+			logKeyClientID, truncateForLog(clientID), logKeyRemote, ip)
+	}
+	if !redirectListed(metadata.redirectURIs, redirectURI) {
+		return nil, &clientRejection{reason: loginReasonInvalidRedirectURI}
+	}
+	return &auth.OAuthClient{ClientID: clientID, ClientName: metadata.clientName, RedirectURIs: metadata.redirectURIs}, nil
+}
+
+// metadataRejection logs why the metadata document of clientID could not be
+// obtained and returns the answer to the request. The log line has the
+// reason in full. The requester gets it only for a document that is this
+// client's own (see cimdErrorKind), and never anything read from a response.
+func (s *Server) metadataRejection(r *http.Request, clientID string, err error) *clientRejection {
+	var ce *cimdError
+	if !errors.As(err, &ce) {
+		ce = &cimdError{kind: cimdUnavailable, reason: "the fetch failed", cause: err}
+	}
+	s.logger.WarnContext(r.Context(), "client metadata document not usable",
+		logKeyClientID, truncateForLog(clientID), logKeyReason, truncateForLog(ce.Error()), logKeyRemote, auth.ClientIP(r))
+	switch ce.kind {
+	case cimdBusy:
+		return &clientRejection{
+			reason: loginReasonClientMetadataBusy, status: http.StatusServiceUnavailable, code: oauthErrTemporarilyUnavailable,
+			description: "client metadata documents cannot be fetched right now; try again in a moment",
+			retryAfter:  1,
+		}
+	case cimdInvalid:
+		return &clientRejection{
+			reason: loginReasonClientMetadataInvalid, status: http.StatusBadRequest, code: oauthErrInvalidClient,
+			description: "the client metadata document cannot be used: " + ce.reason,
+		}
+	default:
+		return &clientRejection{
+			reason: loginReasonClientMetadataUnavailable, status: http.StatusBadRequest, code: oauthErrInvalidClient,
+			description: descClientMetadataUnavailable,
 		}
 	}
-	return nil, loginReasonInvalidRedirectURI
+}
+
+// clientAccepted reports whether clientID is a client this server issues and
+// honors tokens for under the configuration in force now. A registered
+// client always is. A client that names itself by the URL of its metadata
+// document is while such clients are accepted and its host is allowed, so
+// that switching them off, or narrowing the hosts, also ends the sessions
+// that began before.
+func (s *Server) clientAccepted(clientID string) bool {
+	if !isClientIDURL(clientID) {
+		return true
+	}
+	return s.cfg.CIMDEnabled && clientIDURLError(clientID, s.cfg.Issuer) == "" && clientIDHostAllowed(clientID, s.cfg.CIMDHosts)
 }
 
 // redirectURIShapeError returns why a redirect URI cannot be used, or "".
@@ -1398,22 +1545,7 @@ func redirectHostAllowed(redirectURI string, allowed []string) bool {
 	if isLoopbackRedirect(u) {
 		return true
 	}
-	host := strings.ToLower(u.Hostname())
-	if host == "" {
-		return false
-	}
-	for _, entry := range allowed {
-		if suffix, ok := strings.CutPrefix(entry, "*."); ok {
-			if strings.HasSuffix(host, "."+suffix) {
-				return true
-			}
-			continue
-		}
-		if host == entry {
-			return true
-		}
-	}
-	return false
+	return hostListed(u.Hostname(), allowed)
 }
 
 // redirectDisplayHost returns the host (with a non-default port) the login
@@ -1429,10 +1561,18 @@ func redirectDisplayHost(redirectURI string) string {
 
 // rejectClientRedirect answers a /authorize request whose client or
 // redirect_uri check failed and reports whether it did.
-func rejectClientRedirect(w http.ResponseWriter, reason string) bool {
-	switch reason {
-	case "":
+func rejectClientRedirect(w http.ResponseWriter, rej *clientRejection) bool {
+	if rej == nil {
 		return false
+	}
+	if rej.status != 0 {
+		if rej.retryAfter > 0 {
+			w.Header().Set("Retry-After", strconv.Itoa(rej.retryAfter))
+		}
+		writeJSON(w, rej.status, map[string]string{outcomeError: rej.code, oauthErrorDescription: rej.description})
+		return true
+	}
+	switch rej.reason {
 	case loginReasonUnknownClient:
 		writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: oauthErrInvalidReq, oauthErrorDescription: descUnknownClient})
 	case loginReasonRedirectHostDenied:
@@ -1468,8 +1608,8 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Validate redirect_uri against registered client before rendering login form
-		client, reason := s.clientForRedirect(r.Context(), clientID, redirectURI)
-		if rejectClientRedirect(w, reason) {
+		client, rejection := s.clientForRedirect(r, clientID, redirectURI)
+		if rejectClientRedirect(w, rejection) {
 			return
 		}
 		if !s.passwordLoginConfigured() {
@@ -1477,10 +1617,9 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		s.renderLoginForm(w, http.StatusOK, loginForm{
-			ClientID: clientID, RedirectURI: redirectURI, State: state, CodeChallenge: codeChallenge, Scope: scope,
-			ClientName: clientDisplayName(client), RedirectHost: redirectDisplayHost(redirectURI),
-		})
+		form := loginForm{ClientID: clientID, RedirectURI: redirectURI, State: state, CodeChallenge: codeChallenge, Scope: scope}
+		form.describeClient(client)
+		s.renderLoginForm(w, http.StatusOK, form)
 		return
 	}
 
@@ -1514,14 +1653,14 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	// at, so they are logged but are not login failures. The client and its
 	// redirect_uri come first: the password check is not reachable without a
 	// registered client.
-	client, reason := s.clientForRedirect(r.Context(), form.ClientID, form.RedirectURI)
-	if reason != "" {
-		s.loginRejected(r, username, reason)
-		if reason == loginReasonUnknownClient {
+	client, rejection := s.clientForRedirect(r, form.ClientID, form.RedirectURI)
+	if rejection != nil {
+		s.loginRejected(r, username, rejection.reason)
+		if rejection.reason == loginReasonUnknownClient {
 			writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: oauthErrInvalidRedURI, oauthErrorDescription: descUnknownClient})
 			return
 		}
-		rejectClientRedirect(w, reason)
+		rejectClientRedirect(w, rejection)
 		return
 	}
 	if !s.passwordLoginConfigured() {
@@ -1534,8 +1673,7 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	// names the redirect host, and the confirmation carries it back, so a
 	// login started from a link the user did not expect is not completed by
 	// typing the password alone.
-	form.ClientName = clientDisplayName(client)
-	form.RedirectHost = redirectDisplayHost(form.RedirectURI)
+	form.describeClient(client)
 	if !strings.EqualFold(r.FormValue(oauthConfirmHost), form.RedirectHost) {
 		s.loginRejected(r, username, loginReasonConsentMissing)
 		form.Error = "Confirm that you trust " + form.RedirectHost + " before you sign in."
@@ -1578,6 +1716,11 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		ExpiresAt:     time.Now().Add(5 * time.Minute),
 		CredentialFP:  check.Fingerprint,
 	}
+	if client != nil && isClientIDURL(form.ClientID) {
+		// No registration holds the name of this client; the code takes it
+		// to the token endpoint, which then needs no document.
+		ac.ClientName = client.ClientName
+	}
 
 	if s.tokenStore != nil {
 		if err := s.tokenStore.SaveAuthCode(r.Context(), ac); err != nil {
@@ -1588,11 +1731,16 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	}
 	s.metrics.RecordLogin(loginMethodPassword, "success")
 
+	// iss tells the client which authorization server answered (RFC 9207).
+	// A client that talks to several servers compares it with the issuer it
+	// sent the user to, and so cannot be made to take the code of one
+	// server to the token endpoint of another.
 	sep := "?"
 	if strings.Contains(form.RedirectURI, "?") {
 		sep = "&"
 	}
-	http.Redirect(w, r, fmt.Sprintf("%s%scode=%s&state=%s", form.RedirectURI, sep, url.QueryEscape(code), url.QueryEscape(form.State)), http.StatusFound)
+	http.Redirect(w, r, fmt.Sprintf("%s%scode=%s&state=%s&iss=%s", form.RedirectURI, sep,
+		url.QueryEscape(code), url.QueryEscape(form.State), url.QueryEscape(s.issuerID())), http.StatusFound)
 }
 
 // secretsEqual compares a submitted secret with the configured one in constant
@@ -1703,12 +1851,26 @@ func (s *Server) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Req
 		}
 	}
 
-	// CallerID is always the opaque client_id (UUID) — never the self-reported
-	// client_name, which is untrusted (like a browser User-Agent). The client_name
-	// is stored separately as CallerName for audit/display purposes only.
+	// A client that names itself by a metadata URL gets tokens only while
+	// such clients, and its host, are accepted (see clientAccepted).
+	if !s.clientAccepted(ac.ClientID) {
+		s.logger.WarnContext(ctx, "auth code grant refused: the client is no longer accepted",
+			logKeyClientID, truncateForLog(ac.ClientID), logKeyRemote, auth.ClientIP(r))
+		s.metrics.RecordLogin(loginMethodOAuthCode, "failure")
+		writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: invalidGrantError})
+		return
+	}
+
+	// CallerID is always the client_id: the identifier from registration, or
+	// the URL of the client's metadata document. It is never the
+	// self-reported client_name, which is untrusted (like a browser
+	// User-Agent). The client_name is stored separately as CallerName for
+	// audit/display purposes only.
 	callerID := ac.ClientID
 	var callerName string
-	if client, err := s.tokenStore.GetClient(ctx, ac.ClientID); err == nil && client.ClientName != "" {
+	if isClientIDURL(ac.ClientID) {
+		callerName = ac.ClientName
+	} else if client, err := s.tokenStore.GetClient(ctx, ac.ClientID); err == nil && client.ClientName != "" {
 		callerName = client.ClientName
 	}
 
@@ -1730,6 +1892,13 @@ func (s *Server) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Req
 		Scope:            ac.Scope,
 		ExpiresAt:        now.Add(time.Hour),
 		RefreshExpiresAt: now.Add(7 * 24 * time.Hour),
+	}
+	if isClientIDURL(ac.ClientID) {
+		// Every installation of this client, and every program that
+		// presents its document, has this client_id. A grant of a kit must
+		// not pass from one of them to the next, so it is bound to this
+		// sign-in instead of to the caller id.
+		ti.GrantKey = userctx.GrantKeyLoginPrefix + generateID()[:loginGrantKeyLen]
 	}
 
 	if err := s.tokenStore.SaveToken(ctx, ti); err != nil {
@@ -1804,6 +1973,17 @@ func (s *Server) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request)
 	// Delete old access token
 	_ = s.tokenStore.DeleteToken(ctx, oldTI.AccessToken)
 
+	// Renewal re-checks the client as well: one that names itself by a
+	// metadata URL is renewed only while such clients, and its host, are
+	// accepted.
+	if !s.clientAccepted(oldTI.ClientID) {
+		s.metrics.RecordLogin(loginMethodOAuthRefresh, "failure")
+		s.logger.WarnContext(ctx, "refresh refused: the client is no longer accepted",
+			logKeyClientID, truncateForLog(oldTI.ClientID), logKeyRemote, auth.ClientIP(r))
+		writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: invalidGrantError})
+		return
+	}
+
 	// Renewal re-checks the user against the configuration in force now and
 	// takes the current company, plan and roles; a user removed or disabled
 	// since the login gets no new token.
@@ -1831,6 +2011,7 @@ func (s *Server) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request)
 		CredentialFP:     id.fp,
 		CallerID:         oldTI.CallerID,
 		CallerName:       oldTI.CallerName,
+		GrantKey:         oldTI.GrantKey,
 		Scope:            oldTI.Scope,
 		ExpiresAt:        now.Add(time.Hour),
 		RefreshExpiresAt: now.Add(7 * 24 * time.Hour),
@@ -2058,9 +2239,13 @@ button:hover{background:#1d4ed8}
 <h2>ToolMesh</h2>
 <div class="consent">
 <p>An application asks for access to your ToolMesh tools.</p>
-<p>After you sign in, access is handed to:</p>
+{{if .ClientIDHost}}<p>It describes itself in a document that ToolMesh read from:</p>
+<p class="host">{{.ClientIDHost}}</p>
+<p class="note">Whoever can publish a document on that host can describe an application this way.</p>
+{{end}}<p>After you sign in, access is handed to:</p>
 <p class="host">{{.RedirectHost}}</p>
-<p class="name">Name given by the application:</p>
+{{if .LoopbackRedirect}}<p class="note">That is a program on the device you are using. ToolMesh cannot tell which one: any program on the device can present the document above as its own.</p>
+{{end}}<p class="name">Name given by the application:</p>
 {{if .ClientName}}<p class="clientname"><bdi>{{.ClientName}}</bdi></p>
 {{else}}<p class="clientname none">no name given</p>
 {{end}}<p class="note">The application chose this name itself; ToolMesh has not verified it.</p>
@@ -2097,6 +2282,29 @@ type loginForm struct {
 	// RedirectHost is the host of the redirect_uri, the party that receives
 	// the authorization; the user confirms it explicitly.
 	RedirectHost string
+	// ClientIDHost is the host the metadata document of the client was
+	// fetched from; "" for a registered client, which has no document.
+	ClientIDHost string
+	// LoopbackRedirect marks a client with a metadata document whose
+	// redirect_uri is on the loopback interface. The document then proves
+	// nothing about who receives the authorization: every program on the
+	// device can name the same document and listen on a local port.
+	LoopbackRedirect bool
+}
+
+// describeClient fills in what the page says about the client and about
+// where the authorization goes. The form carries the client_id and the
+// redirect_uri already.
+func (f *loginForm) describeClient(client *auth.OAuthClient) {
+	f.ClientName = clientDisplayName(client)
+	f.RedirectHost = redirectDisplayHost(f.RedirectURI)
+	if client == nil || !isClientIDURL(client.ClientID) {
+		return
+	}
+	f.ClientIDHost = clientIDDisplayHost(client.ClientID)
+	if u, err := url.Parse(f.RedirectURI); err == nil {
+		f.LoopbackRedirect = isLoopbackRedirect(u)
+	}
 }
 
 // renderLoginForm writes the login page with the given status. A 401 goes out

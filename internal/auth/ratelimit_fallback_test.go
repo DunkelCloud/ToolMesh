@@ -107,3 +107,26 @@ func TestRevokeRateLimiter(t *testing.T) {
 		t.Error("another address must have its own limit")
 	}
 }
+
+// TestClientMetadataRateLimiter pins the limit of the fetches of client ID
+// metadata documents: counted per address, in process memory without Redis,
+// and with a window short enough that a person who ran into it can go on
+// soon.
+func TestClientMetadataRateLimiter(t *testing.T) {
+	rl := NewClientMetadataRateLimiter(nil)
+	ctx := context.Background()
+	for i := range clientMetadataRateLimit {
+		if ok, err := rl.Allow(ctx, "203.0.113.40"); err != nil || !ok {
+			t.Fatalf("fetch %d refused (%v)", i+1, err)
+		}
+	}
+	if ok, _ := rl.Allow(ctx, "203.0.113.40"); ok {
+		t.Error("fetch over the limit allowed")
+	}
+	if ok, _ := rl.Allow(ctx, "203.0.113.41"); !ok {
+		t.Error("another address must have its own limit")
+	}
+	if rl.Window() > time.Minute {
+		t.Errorf("window = %s, want a minute at most", rl.Window())
+	}
+}

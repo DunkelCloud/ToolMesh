@@ -155,6 +155,46 @@ func TestGrantKey_BindsToTheKey(t *testing.T) {
 	}
 }
 
+// Two sign-ins of one user through an OAuth client that names itself by the
+// URL of its metadata document share the caller id, that URL, but not their
+// grants. What an approver reads and signs names the sign-in.
+func TestGrantKey_BindsToTheSignIn(t *testing.T) {
+	env := newTestEnv(t)
+	ctx := context.Background()
+	const client = "https://client.example/oauth/client.json"
+	loginA := &userctx.UserContext{UserID: testUser, CallerID: client, Authenticated: true, GrantKey: userctx.GrantKeyLoginPrefix + "a"}
+	loginB := &userctx.UserContext{UserID: testUser, CallerID: client, Authenticated: true, GrantKey: userctx.GrantKeyLoginPrefix + "b"}
+
+	res, err := env.svc.Request(ctx, loginA, RequestInput{Kit: testKitNetDiag, Reason: testReason})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.svc.Approve(ctx, testApprover, res.Grant.ID, 0); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		binding string
+		want    int
+	}{{loginA.GrantBinding(), 1}, {loginB.GrantBinding(), 0}, {client, 0}} {
+		if got := heldWhole(ctx, env.svc, tc.binding); len(got) != tc.want {
+			t.Errorf("HeldKits(%s) = %v, want %d kits", tc.binding, got, tc.want)
+		}
+	}
+
+	for _, tc := range []struct {
+		grant Grant
+		want  string
+	}{
+		{res.Grant, client + ", sign-in login-a"},
+		{Grant{CallerID: testUser, GrantKey: "key-b"}, "API key key-b"},
+		{Grant{CallerID: testCaller}, testCaller},
+	} {
+		if got := connection(tc.grant); got != tc.want {
+			t.Errorf("connection = %q, want %q", got, tc.want)
+		}
+	}
+}
+
 // countingStore counts the reads of each state.
 type countingStore struct {
 	Store

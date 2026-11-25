@@ -36,6 +36,16 @@ const (
 	revokeRateLimit  = 60
 	revokeRateWindow = time.Minute
 
+	// A request to the authorization endpoint that names a client by the
+	// URL of its metadata document makes the server fetch that document,
+	// before anyone has logged in. A person connecting a client causes one
+	// or two fetches, and none while the document is cached. The limit
+	// keeps one address from using the server to send requests to hosts of
+	// its choice.
+	prefixClientMetadataRate = "oauth:cimd:ratelimit:"
+	clientMetadataRateLimit  = 10
+	clientMetadataRateWindow = time.Minute
+
 	// maxLocalRateWindows caps the process-local table of one limiter.
 	// Source addresses are attacker-chosen, so the table must not grow
 	// without bound.
@@ -104,6 +114,13 @@ func NewLocalDCRRateLimiter() *DCRRateLimiter {
 // be nil, which keeps the count in process memory only.
 func NewRevokeRateLimiter(rdb *redis.Client) *AddressRateLimiter {
 	return newAddressRateLimiter(rdb, prefixRevokeRate, revokeRateLimit, revokeRateWindow)
+}
+
+// NewClientMetadataRateLimiter creates the rate limiter of the fetches of
+// client ID metadata documents. rdb may be nil, which keeps the count in
+// process memory only.
+func NewClientMetadataRateLimiter(rdb *redis.Client) *AddressRateLimiter {
+	return newAddressRateLimiter(rdb, prefixClientMetadataRate, clientMetadataRateLimit, clientMetadataRateWindow)
 }
 
 // Window returns the length of the window the limit counts in, which is

@@ -316,6 +316,12 @@ for the full narrative and details.
   `toolmesh.discover()` and `toolmesh.describe()` show what the reload
   brought. A script that is running while a reload lands keeps the tools it
   started with.
+- A hot reload of `config/backends.yaml` removed every unit until ToolMesh
+  was restarted: `tools/list`, `discover_tools` and `execute_code` no longer
+  knew their tools. Units now stay through every reload. A reload that
+  would load a backend under the name of a running unit is refused and
+  keeps the previous backends; the log line names the unit. See
+  [Backend Configuration](docs/configuration.md#backend-configuration).
 - An MCP backend that returns its tool list in pages lost every tool after
   the first page, without a line in the log. ToolMesh now follows the cursor
   to the end of the list, for at most 100 pages; a backend that returns a

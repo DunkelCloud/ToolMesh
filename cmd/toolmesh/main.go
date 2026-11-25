@@ -276,29 +276,34 @@ func main() {
 	// Load unit-backends. Each unit appears in the composite under its own
 	// name and is indistinguishable from any other backend for authz,
 	// audit and gate purposes. Failed units are logged and skipped.
-	unitAdapters := loadUnits(ctx, cfg.UnitsDir, cfg.DADLDir, credStore, bldCfg.owners, blobStore, compositeBackend, logger)
+	units, unitAdapters := loadUnits(ctx, cfg.UnitsDir, cfg.DADLDir, credStore, bldCfg.owners, blobStore, compositeBackend, logger)
 	defer func() {
 		for _, a := range unitAdapters {
 			a.Close()
 		}
 	}()
 
-	// Watch backends.yaml for changes and hot-reload
+	// Watch backends.yaml for changes and hot-reload. The reloader keeps
+	// the echo backend and the units, which backends.yaml does not describe.
+	reloader := &backendsReloader{
+		build:        func(ctx context.Context) (*backendsResult, error) { return buildBackends(ctx, bldCfg) },
+		composite:    compositeBackend,
+		echo:         echoBackend,
+		units:        units,
+		userBackends: userBackends,
+		health:       healthMonitor,
+		applied: func(ctx context.Context, res *backendsResult) {
+			warnUnusedUserValues(ctx, users, userBackends, logger)
+			tc.SetMCPServerCount(res.mcpAdapter.BackendCount())
+		},
+	}
 	go watchBackendsConfig(ctx, cfg.BackendsConfigPath, 5*time.Second, func() {
 		logger.Info("backends.yaml changed, reloading backends")
-		newRes, reloadErr := buildBackends(ctx, bldCfg)
-		if reloadErr != nil {
+		if reloadErr := reloader.reload(ctx); reloadErr != nil {
 			logger.Error("hot-reload failed, keeping current backends", "error", reloadErr)
 			return
 		}
-		// Merge echo backend (static) with reloaded backends
-		newRes.named["echo"] = echoBackend
-		compositeBackend.Swap(newRes.named, newRes.passthroughs)
-		userBackends.set(newRes.named)
-		warnUnusedUserValues(ctx, users, userBackends, logger)
-		healthMonitor.Replace(ctx, newRes.healthTargets)
-		tc.SetMCPServerCount(newRes.mcpAdapter.BackendCount())
-		logger.Info("backends hot-reloaded successfully")
+		logger.Info("backends hot-reloaded successfully", "units", len(units))
 	})
 
 	// Initialize authorization (TOOLMESH_AUTHZ_MODE). The disabled case
@@ -1135,16 +1140,17 @@ func backendsYAMLUnmarshal(data []byte, cfg *backend.BackendConfig) error {
 
 // loadUnits scans the units directory, loads every unit it finds, and adds
 // each one to the composite backend under its declared name. Returns the
-// list of MCPAdapter instances owning the per-unit sub-backend sessions so
-// the caller can close them on shutdown.
-func loadUnits(ctx context.Context, unitsDir, dadlDir string, creds credentials.CredentialStore, owners *dadl.CredentialOwners, blobStore *blob.Store, comp *backend.CompositeBackend, logger *slog.Logger) []*backend.MCPAdapter {
+// loaded units by name, which every reload of backends.yaml puts back into
+// the composite, and the MCPAdapter instances owning the per-unit
+// sub-backend sessions so the caller can close them on shutdown.
+func loadUnits(ctx context.Context, unitsDir, dadlDir string, creds credentials.CredentialStore, owners *dadl.CredentialOwners, blobStore *blob.Store, comp *backend.CompositeBackend, logger *slog.Logger) (map[string]backend.ToolBackend, []*backend.MCPAdapter) {
 	dirs, err := unit.ScanDir(unitsDir)
 	if err != nil {
 		logger.Error("failed to scan units dir", "dir", unitsDir, "error", err)
-		return nil
+		return nil, nil
 	}
 	if len(dirs) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	// Snapshot the names already taken by REST, echo and MCP-passthrough
@@ -1158,6 +1164,7 @@ func loadUnits(ctx context.Context, unitsDir, dadlDir string, creds credentials.
 	}
 	loaded := make(map[string]string, len(dirs)) // unit name -> dir of first acceptance
 
+	units := make(map[string]backend.ToolBackend, len(dirs))
 	adapters := make([]*backend.MCPAdapter, 0, len(dirs))
 	for _, d := range dirs {
 		res, loadErr := unit.LoadUnit(ctx, d, dadlDir, creds, owners, blobStore, logger)
@@ -1184,9 +1191,10 @@ func loadUnits(ctx context.Context, unitsDir, dadlDir string, creds credentials.
 			continue
 		}
 		comp.AddNamed(name, res.Backend)
+		units[name] = res.Backend
 		adapters = append(adapters, res.Adapter)
 		loaded[name] = d
 		logger.Info("unit loaded", "name", name, "dir", d)
 	}
-	return adapters
+	return units, adapters
 }

@@ -77,7 +77,7 @@ func TestLoadUnits_DuplicateNameSkipped(t *testing.T) {
 	comp := backend.NewCompositeBackend(nil)
 	creds := credentials.NewEmbeddedStore()
 
-	adapters := loadUnits(context.Background(), root, "", creds, nil, nil, comp, logger)
+	units, adapters := loadUnits(context.Background(), root, "", creds, nil, nil, comp, logger)
 	t.Cleanup(func() {
 		for _, a := range adapters {
 			a.Close()
@@ -86,6 +86,9 @@ func TestLoadUnits_DuplicateNameSkipped(t *testing.T) {
 
 	if len(adapters) != 1 {
 		t.Fatalf("expected exactly one adapter retained, got %d", len(adapters))
+	}
+	if len(units) != 1 || units["twin"] == nil {
+		t.Fatalf("expected the first 'twin' among the returned units, got %v", units)
 	}
 	if !strings.Contains(buf.String(), "duplicate unit name") {
 		t.Fatalf("expected duplicate-name error in log, got:\n%s", buf.String())
@@ -121,7 +124,7 @@ func TestLoadUnits_NameCollidesWithExistingBackend(t *testing.T) {
 	comp := backend.NewCompositeBackend(map[string]backend.ToolBackend{"ghost": pre})
 	creds := credentials.NewEmbeddedStore()
 
-	adapters := loadUnits(context.Background(), root, "", creds, nil, nil, comp, logger)
+	units, adapters := loadUnits(context.Background(), root, "", creds, nil, nil, comp, logger)
 	t.Cleanup(func() {
 		for _, a := range adapters {
 			a.Close()
@@ -130,6 +133,9 @@ func TestLoadUnits_NameCollidesWithExistingBackend(t *testing.T) {
 
 	if len(adapters) != 0 {
 		t.Fatalf("expected no unit adapters retained, got %d", len(adapters))
+	}
+	if len(units) != 0 {
+		t.Fatalf("a refused unit must not be returned for reloads, got %v", units)
 	}
 	if !strings.Contains(buf.String(), "collides with existing backend") {
 		t.Fatalf("expected collision error in log, got:\n%s", buf.String())
@@ -147,7 +153,7 @@ func TestLoadUnits_HappyPath(t *testing.T) {
 	comp := backend.NewCompositeBackend(nil)
 	creds := credentials.NewEmbeddedStore()
 
-	adapters := loadUnits(context.Background(), root, "", creds, nil, nil, comp, logger)
+	units, adapters := loadUnits(context.Background(), root, "", creds, nil, nil, comp, logger)
 	t.Cleanup(func() {
 		for _, a := range adapters {
 			a.Close()
@@ -156,6 +162,9 @@ func TestLoadUnits_HappyPath(t *testing.T) {
 
 	if len(adapters) != 1 {
 		t.Fatalf("expected one adapter, got %d", len(adapters))
+	}
+	if units["lone"] == nil {
+		t.Fatalf("unit 'lone' not among the returned units %v", units)
 	}
 	names := comp.BackendNames()
 	found := false

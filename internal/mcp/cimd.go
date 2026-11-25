@@ -213,16 +213,21 @@ func clientIDHostAllowed(clientID string, allowed []string) bool {
 	return hostListed(u.Hostname(), allowed)
 }
 
-// normalizeHost returns host in the form allowlists compare: lower case,
-// without the trailing dot of a fully qualified name.
+// normalizeHost returns host in lower case and without the trailing dot of
+// a fully qualified name: the form in which two spellings of one DNS name
+// are equal. It is for telling whether a URL names this server. Allowlists
+// do not use it, see hostListed.
 func normalizeHost(host string) string {
 	return strings.TrimSuffix(strings.ToLower(host), ".")
 }
 
 // hostListed reports whether host matches an entry of allowed. Entries match
 // the host name exactly, or any subdomain when written as "*.example.com".
+// Case aside, the host has to be written as the entry is: "claude.ai." with
+// a trailing dot is the same DNS name as "claude.ai" and still not listed,
+// because to a browser it is another origin.
 func hostListed(host string, allowed []string) bool {
-	host = normalizeHost(host)
+	host = strings.ToLower(host)
 	if host == "" {
 		return false
 	}

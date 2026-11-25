@@ -541,7 +541,7 @@ func TestCIMD_NothingIsFetchedThatCannotLeadToALogin(t *testing.T) {
 		{name: "client_id without a path", clientID: "https://example.com/", status: http.StatusBadRequest, code: oauthErrInvalidClient},
 		{name: "client_id with user information", clientID: "https://claude.ai@example.com/client.json", status: http.StatusBadRequest, code: oauthErrInvalidClient},
 		{name: "client_id on this server", clientID: "https://toolmesh.io/blobs/abc", status: http.StatusBadRequest, code: oauthErrInvalidClient},
-		{name: "client_id host not allowed", prepare: func(cfg *config.Config) { cfg.CIMDHosts = []string{cimdTestOtherHost, "*.example.org"} },
+		{name: "client_id host not allowed", prepare: func(cfg *config.Config) { cfg.CIMDHosts = []string{cimdTestOtherHost, "*.example.net"} },
 			clientID: cimdTestClientID, status: http.StatusBadRequest, code: oauthErrInvalidClient},
 		{name: "subdomain where only the domain is allowed", prepare: func(cfg *config.Config) { cfg.CIMDHosts = []string{cimdTestHostName} },
 			clientID: "https://sub.example.com/client.json", status: http.StatusBadRequest, code: oauthErrInvalidClient},
@@ -737,6 +737,9 @@ func TestCIMD_SessionsEndWhenTheClientIsNoLongerAccepted(t *testing.T) {
 					AccessToken: access, RefreshToken: refresh, ClientID: clientID, CallerID: clientID,
 					UserID: testLoginOwner, ExpiresAt: time.Now().Add(time.Hour), RefreshExpiresAt: time.Now().Add(time.Hour),
 				}
+				if isClientIDURL(clientID) {
+					ti.GrantKey = userctx.GrantKeyLoginPrefix + generateID()[:loginGrantKeyLen]
+				}
 				if err := ts.srv.tokenStore.SaveToken(ctx, ti); err != nil {
 					t.Fatal(err)
 				}
@@ -786,6 +789,61 @@ func TestCIMD_SessionsEndWhenTheClientIsNoLongerAccepted(t *testing.T) {
 				t.Errorf("refresh of a registered client: status %d, body %s", w.Code, w.Body.String())
 			}
 		})
+	}
+}
+
+// TestCIMD_TokenWithoutSignInIsNotHonored pins that the token of a client
+// with a metadata URL is worth nothing without the key of its sign-in. No
+// code exchange of this version issues such a token. One of the version
+// before can, when it shares the token store during an upgrade, and grants
+// of kits requested with it would be bound to the URL that every
+// installation of the client shares.
+func TestCIMD_TokenWithoutSignInIsNotHonored(t *testing.T) {
+	ts, _ := newCIMDTestServer(t, nil, serveDocument(cimdTestDocument(cimdTestClientID, nil)))
+	ctx := context.Background()
+
+	pair := func(clientID, grantKey string) (access, refresh string) {
+		access, refresh = generateID(), generateID()
+		ti := &auth.TokenInfo{
+			AccessToken: access, RefreshToken: refresh, ClientID: clientID, CallerID: clientID, GrantKey: grantKey,
+			UserID: testLoginOwner, ExpiresAt: time.Now().Add(time.Hour), RefreshExpiresAt: time.Now().Add(time.Hour),
+		}
+		if err := ts.srv.tokenStore.SaveToken(ctx, ti); err != nil {
+			t.Fatal(err)
+		}
+		if err := ts.srv.tokenStore.SaveRefreshToken(ctx, ti); err != nil {
+			t.Fatal(err)
+		}
+		return access, refresh
+	}
+	refreshForm := func(refresh, clientID string) url.Values {
+		return url.Values{oauthGrantType: {oauthRefreshToken}, oauthRefreshToken: {refresh}, oauthClientID: {clientID}}
+	}
+
+	for _, grantKey := range []string{"", "key-0123456789abcdef"} {
+		access, _ := pair(cimdTestClientID, grantKey)
+		if w := ts.mcpCall("Bearer " + access); !strings.Contains(w.Body.String(), "Unauthorized") {
+			t.Errorf("grant key %q: the access token was accepted", grantKey)
+		}
+		_, refresh := pair(cimdTestClientID, grantKey)
+		if w := ts.token(refreshForm(refresh, cimdTestClientID)); w.Code != http.StatusBadRequest || strings.Contains(w.Body.String(), "access_token") {
+			t.Errorf("grant key %q: refresh status %d, body %s; want 400 without a token", grantKey, w.Code, w.Body.String())
+		}
+	}
+
+	// With the key of a sign-in the same tokens are good, and a registered
+	// client needs none.
+	for _, tc := range []struct{ clientID, grantKey string }{
+		{cimdTestClientID, userctx.GrantKeyLoginPrefix + "0123456789abcdef"},
+		{ts.clientID, ""},
+	} {
+		access, refresh := pair(tc.clientID, tc.grantKey)
+		if w := ts.mcpCall("Bearer " + access); strings.Contains(w.Body.String(), "Unauthorized") {
+			t.Errorf("client %q: the access token was refused", tc.clientID)
+		}
+		if w := ts.token(refreshForm(refresh, tc.clientID)); w.Code != http.StatusOK {
+			t.Errorf("client %q: refresh status %d, body %s", tc.clientID, w.Code, w.Body.String())
+		}
 	}
 }
 

@@ -209,6 +209,41 @@ func TestIsClientIDURL(t *testing.T) {
 	}
 }
 
+// TestHostListed pins how the host allowlists match, the one of redirect
+// URIs and the one of metadata documents alike: by the name as it is
+// written, case aside.
+func TestHostListed(t *testing.T) {
+	allowed := []string{cimdTestHostName, "*.example.org"}
+	for host, want := range map[string]bool{
+		cimdTestHostName:           true,
+		"EXAMPLE.com":              true,
+		"sub.example.com":          false, // the entry names the host, not its subdomains
+		"example.com.":             false, // another origin to a browser
+		"notexample.com":           false,
+		"example.com.evil.example": false,
+		"a.example.org":            true,
+		"a.b.example.org":          true,
+		"example.org":              false, // the wildcard covers subdomains only
+		"badexample.org":           false,
+		"a.example.org.":           false,
+		"":                         false,
+	} {
+		if got := hostListed(host, allowed); got != want {
+			t.Errorf("hostListed(%q) = %v, want %v", host, got, want)
+		}
+	}
+	// Through the two callers, with whole URLs.
+	if redirectHostAllowed("https://example.com./cb", allowed) || !redirectHostAllowed("https://example.com:8443/cb", allowed) {
+		t.Error("redirectHostAllowed: a trailing dot must not pass, a port must not matter")
+	}
+	if clientIDHostAllowed("https://example.com./client.json", allowed) || !clientIDHostAllowed("https://example.com:8443/client.json", allowed) {
+		t.Error("clientIDHostAllowed: a trailing dot must not pass, a port must not matter")
+	}
+	if !clientIDHostAllowed(cimdTestClientID, nil) {
+		t.Error("clientIDHostAllowed: without a list every host is allowed")
+	}
+}
+
 func TestRedirectListed(t *testing.T) {
 	listed := []string{
 		"https://client.example/cb",

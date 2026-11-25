@@ -885,7 +885,7 @@ func (s *Server) checkBearer(r *http.Request, bearer string, slot *bearerSlot) (
 			valid := err == nil && time.Now().Before(ti.ExpiresAt)
 			if valid {
 				id, current = s.currentIdentity(ti.UserID)
-				current = current && id.matches(ti.CredentialFP) && s.clientAccepted(ti.ClientID)
+				current = current && id.matches(ti.CredentialFP) && s.clientAccepted(ti.ClientID) && signInBound(ti)
 				if !current {
 					// The pair ends as a whole: a user who is added again
 					// must log in, not resume the old refresh chain.
@@ -893,7 +893,7 @@ func (s *Server) checkBearer(r *http.Request, bearer string, slot *bearerSlot) (
 					if ti.RefreshToken != "" {
 						_, _ = s.tokenStore.ConsumeRefreshToken(r.Context(), ti.RefreshToken)
 					}
-					s.logger.InfoContext(r.Context(), "access token refused: its user is no longer configured, the credential changed, or its client is no longer accepted",
+					s.logger.InfoContext(r.Context(), "access token refused: its user is no longer configured, the credential changed, or its client is not accepted",
 						"user", truncateForLog(ti.UserID), logKeyClientID, truncateForLog(ti.ClientID), logKeyRemote, auth.ClientIP(r))
 				}
 			}
@@ -1494,6 +1494,17 @@ func (s *Server) clientAccepted(clientID string) bool {
 	return s.cfg.CIMDEnabled && clientIDURLError(clientID, s.cfg.Issuer) == "" && clientIDHostAllowed(clientID, s.cfg.CIMDHosts)
 }
 
+// signInBound reports whether a token names the sign-in it comes from where
+// it has to. The token of a client with a metadata URL always does: the code
+// exchange gives it a grant key. One without was issued by a version that
+// does not know such clients, as a replica of the version before can during
+// an upgrade when it gets to exchange a code. Grants of kits requested with
+// such a token would be bound to the URL that every installation of the
+// client shares, so the token is not honored and not renewed.
+func signInBound(ti *auth.TokenInfo) bool {
+	return !isClientIDURL(ti.ClientID) || strings.HasPrefix(ti.GrantKey, userctx.GrantKeyLoginPrefix)
+}
+
 // redirectURIShapeError returns why a redirect URI cannot be used, or "".
 // RFC 6749 section 3.1.2 forbids a fragment. An opaque URI such as
 // "https:evil.example/cb" has no host in Go's reading, while a browser
@@ -1975,8 +1986,8 @@ func (s *Server) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request)
 
 	// Renewal re-checks the client as well: one that names itself by a
 	// metadata URL is renewed only while such clients, and its host, are
-	// accepted.
-	if !s.clientAccepted(oldTI.ClientID) {
+	// accepted, and only when the token names its sign-in.
+	if !s.clientAccepted(oldTI.ClientID) || !signInBound(oldTI) {
 		s.metrics.RecordLogin(loginMethodOAuthRefresh, "failure")
 		s.logger.WarnContext(ctx, "refresh refused: the client is no longer accepted",
 			logKeyClientID, truncateForLog(oldTI.ClientID), logKeyRemote, auth.ClientIP(r))

@@ -1656,6 +1656,8 @@ The two limits must be plain integers of bytes, `0` or more; anything else stops
 | `TOOLMESH_BACKENDS_CONFIG` | `/app/config/backends.yaml` | Path to backend configuration YAML |
 | `TOOLMESH_POLICIES_DIR` | `/app/policies` | Path to output gate policy directory |
 
+**Changes without a restart.** ToolMesh checks the modification time of `backends.yaml` every 5 seconds and loads the backends again after a change. A backend the change adds can be called right away, through `tools/list`, `discover_tools` and `execute_code` alike, and a backend it removes is gone from all three. A script that is running in `execute_code` while the reload lands keeps the tools it started with; the next script gets the new ones. A file that does not load keeps the previous backends. A DADL file is read when its backend is loaded, so after changing only a DADL, touch `backends.yaml` to load it.
+
 ### Credential and host binding
 
 Every REST backend is bound to its `backends.yaml` entry. The binding comes from the operator's configuration, never from the DADL: a DADL cannot read the credentials of another backend, and the hosts its own credentials go to are limited as described below.

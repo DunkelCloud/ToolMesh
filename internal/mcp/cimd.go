@@ -200,12 +200,10 @@ func clientIDDisplayHost(clientID string) string {
 }
 
 // clientIDHostAllowed reports whether the metadata document of clientID may
-// be fetched under the configured host allowlist. An empty allowlist allows
-// every host.
+// be fetched: only from a host the operator listed. An empty list allows
+// none, unlike the allowlist of redirect hosts, because a document is
+// something the server goes and gets.
 func clientIDHostAllowed(clientID string, allowed []string) bool {
-	if len(allowed) == 0 {
-		return true
-	}
 	u, err := url.Parse(clientID)
 	if err != nil {
 		return false

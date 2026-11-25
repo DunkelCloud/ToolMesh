@@ -269,7 +269,7 @@ The endpoint speaks MCP revision 2026-07-28, which has no sessions and no handsh
 
 Clients sign in with OAuth 2.1, which suits clients with a login dialog, or send an API key as bearer token, which suits Claude Code and scripts. Both work side by side. OAuth state (tokens, codes, registered clients) is kept in Redis and survives restarts.
 
-An OAuth client needs no setup on the ToolMesh side. It names itself by the URL of its client ID metadata document, the way of MCP revision 2026-07-28, or registers at `/register`, which remains as the fallback for older clients. For a document, ToolMesh fetches a URL the client chose: only from public addresses, without following redirects, limited in time, size and number, and from the hosts in `TOOLMESH_CIMD_HOSTS` alone once that is set. The redirect back to the client carries the issuer as `iss` (RFC 9207). See [client registration](docs/configuration.md#client-registration).
+An OAuth client needs no setup on the ToolMesh side: it registers at `/register`. A client can also name itself by the URL of its client ID metadata document, the way of MCP revision 2026-07-28, once `TOOLMESH_CIMD_HOSTS` lists the host of that document. ToolMesh then fetches the document from that host: only from public addresses, without following redirects, limited in time, size and number. Either way, being known gives a client no access: a user has to log in. The redirect back to the client carries the issuer as `iss` (RFC 9207). See [client registration](docs/configuration.md#client-registration).
 
 For one person, `TOOLMESH_AUTH_PASSWORD` (OAuth login) or `TOOLMESH_API_KEY` in `.env` is enough. `TOOLMESH_AUTH_USER`, `TOOLMESH_AUTH_PLAN` and `TOOLMESH_AUTH_ROLES` set the identity (defaults: `owner`, `pro`, `admin`).
 

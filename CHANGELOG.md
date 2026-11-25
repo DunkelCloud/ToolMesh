@@ -157,12 +157,11 @@ for the full narrative and details.
   warns when the redirect goes to a loopback address. A loopback redirect
   URI of such a client matches with any port (RFC 8252). Grants of kits are
   bound to the sign-in of such a client, since every installation of it has
-  the same `client_id`. `TOOLMESH_CIMD_HOSTS` restricts the hosts documents
-  are fetched from; `TOOLMESH_CIMD_ENABLED=false` switches them off.
-  **After an upgrade ToolMesh makes these outbound requests by default.** An
-  instance that cannot open https connections to the hosts of its clients'
-  documents sets `TOOLMESH_CIMD_ENABLED=false`, so that clients keep
-  registering. See
+  the same `client_id`. **Off by default:** documents are
+  accepted only from the hosts `TOOLMESH_CIMD_HOSTS` names; without the
+  variable nothing is fetched and clients register as before. A client
+  known by its document gets the login page, as a registered client does,
+  and access still takes a user's login. See
   [Client ID metadata documents](docs/configuration.md#client-id-metadata-documents).
 - The authorization response carries `iss` (RFC 9207), and the metadata
   announces it as `authorization_response_iss_parameter_supported`. A client

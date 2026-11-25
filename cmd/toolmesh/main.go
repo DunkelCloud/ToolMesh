@@ -540,13 +540,10 @@ func main() {
 	// which the authorization endpoint then fetches. The log says once what
 	// this instance fetches, because the fetch is something a visitor
 	// causes, not the operator.
-	switch {
-	case !cfg.CIMDEnabled:
-		logger.Info("client ID metadata documents are switched off: OAuth clients register at /register")
-	case len(cfg.CIMDHosts) == 0:
-		logger.Info("client ID metadata documents are fetched from any public https host; TOOLMESH_CIMD_HOSTS names the hosts, TOOLMESH_CIMD_ENABLED=false switches them off")
-	default:
-		logger.Info("client ID metadata documents are fetched from the listed hosts only", "hosts", cfg.CIMDHosts)
+	if cfg.CIMDEnabled() {
+		logger.Info("client ID metadata documents are accepted from the listed hosts", "hosts", cfg.CIMDHosts)
+	} else {
+		logger.Info("client ID metadata documents are off, OAuth clients register at /register; TOOLMESH_CIMD_HOSTS names the hosts they are accepted from")
 	}
 
 	httpMux := http.NewServeMux()

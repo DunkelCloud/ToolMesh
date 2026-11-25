@@ -239,8 +239,10 @@ func TestHostListed(t *testing.T) {
 	if clientIDHostAllowed("https://example.com./client.json", allowed) || !clientIDHostAllowed("https://example.com:8443/client.json", allowed) {
 		t.Error("clientIDHostAllowed: a trailing dot must not pass, a port must not matter")
 	}
-	if !clientIDHostAllowed(cimdTestClientID, nil) {
-		t.Error("clientIDHostAllowed: without a list every host is allowed")
+	// Without a list a redirect may go to any host, and no document is
+	// fetched from any.
+	if clientIDHostAllowed(cimdTestClientID, nil) || !redirectHostAllowed(cimdTestClientID, nil) {
+		t.Error("without a list: clientIDHostAllowed must allow no host, redirectHostAllowed every host")
 	}
 }
 

@@ -42,12 +42,13 @@ const (
 )
 
 // newCIMDTestServer returns a server that accepts clients with a metadata
-// document, and the host its fetches go to. cfg may be nil.
+// document on cimdTestHostName, and the host its fetches go to. A cfg that
+// is given is used as it is.
 func newCIMDTestServer(t *testing.T, cfg *config.Config, handler http.HandlerFunc) (*loginTestServer, *cimdTestHost) {
 	t.Helper()
 	if cfg == nil {
 		cfg = loginTestConfig()
-		cfg.CIMDEnabled = true
+		cfg.CIMDHosts = []string{cimdTestHostName}
 	}
 	ts := newLoginTestServer(t, cfg, loginTestOptions{})
 	host := newCIMDTestHost(t, handler)
@@ -485,7 +486,11 @@ func TestAuthorize_IssWithQueryInRedirectURI(t *testing.T) {
 // offered either way.
 func TestOAuthMetadata_AnnouncesClientMetadataDocuments(t *testing.T) {
 	for _, enabled := range []bool{true, false} {
-		_, mux := newTestServer(t, &config.Config{Issuer: testIssuerToolmesh, CIMDEnabled: enabled})
+		cfg := &config.Config{Issuer: testIssuerToolmesh}
+		if enabled {
+			cfg.CIMDHosts = []string{cimdTestHostName}
+		}
+		_, mux := newTestServer(t, cfg)
 		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, testMetadataPath, nil)
 		w := httptest.NewRecorder()
 		mux.ServeHTTP(w, req)
@@ -506,7 +511,7 @@ func TestOAuthMetadata_AnnouncesClientMetadataDocuments(t *testing.T) {
 // client_id nobody registered: the answer is that of an unknown client and
 // nothing is fetched.
 func TestCIMD_SwitchedOff(t *testing.T) {
-	cfg := loginTestConfig() // CIMDEnabled is false
+	cfg := loginTestConfig() // lists no host for metadata documents
 	ts, host := newCIMDTestServer(t, cfg, serveDocument(cimdTestDocument(cimdTestClientID, nil)))
 
 	page := ts.authorizePage(cimdTestClientID, testLoginRedirect, testLoginAddr)
@@ -557,7 +562,7 @@ func TestCIMD_NothingIsFetchedThatCannotLeadToALogin(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := loginTestConfig()
-			cfg.CIMDEnabled = true
+			cfg.CIMDHosts = []string{cimdTestHostName}
 			ts, host := newCIMDTestServer(t, cfg, func(w http.ResponseWriter, r *http.Request) {
 				serveDocument(cimdTestDocument("https://"+r.Host+r.URL.Path, nil))(w, r)
 			})
@@ -590,7 +595,6 @@ func TestCIMD_NothingIsFetchedThatCannotLeadToALogin(t *testing.T) {
 func TestCIMD_HostAllowlist(t *testing.T) {
 	for _, hosts := range [][]string{{cimdTestHostName}, {cimdTestOtherHost, cimdTestHostName}} {
 		cfg := loginTestConfig()
-		cfg.CIMDEnabled = true
 		cfg.CIMDHosts = hosts
 		ts, _ := newCIMDTestServer(t, cfg, serveDocument(cimdTestDocument(cimdTestClientID, nil)))
 		if w := ts.authorizePage(cimdTestClientID, testLoginRedirect, testLoginAddr); w.Code != http.StatusOK {
@@ -598,7 +602,6 @@ func TestCIMD_HostAllowlist(t *testing.T) {
 		}
 	}
 	cfg := loginTestConfig()
-	cfg.CIMDEnabled = true
 	cfg.CIMDHosts = []string{"*." + cimdTestHostName}
 	const clientID = "https://clients.example.com/app.json"
 	ts, _ := newCIMDTestServer(t, cfg, serveDocument(cimdTestDocument(clientID, nil)))
@@ -652,7 +655,7 @@ func TestCIMD_FetchesAreLimitedPerAddress(t *testing.T) {
 // TestCIMD_BusyAnswer pins the answer while every fetch slot is taken.
 func TestCIMD_BusyAnswer(t *testing.T) {
 	ts := newLoginTestServer(t, loginTestConfig(), loginTestOptions{})
-	ts.srv.cfg.CIMDEnabled = true
+	ts.srv.cfg.CIMDHosts = []string{cimdTestHostName}
 	tr := &blockingTransport{release: make(chan struct{}), body: func(r *http.Request) []byte {
 		return cimdTestDocument(r.URL.String(), nil)
 	}}
@@ -688,17 +691,25 @@ func TestCIMD_PrivateAddressIsNotReached(t *testing.T) {
 	host := newCIMDTestHost(t, func(w http.ResponseWriter, r *http.Request) {
 		serveDocument(cimdTestDocument("https://"+r.Host+r.URL.Path, nil))(w, r)
 	})
-	cfg := loginTestConfig()
-	cfg.CIMDEnabled = true
-	ts := newLoginTestServer(t, cfg, loginTestOptions{})
-
 	authority := host.srv.Listener.Addr().String() // 127.0.0.1:port
 	_, port, _ := strings.Cut(authority, ":")
-	for i, clientID := range []string{
+	clientIDs := []string{
 		"https://" + authority + "/oauth/client.json",
 		"https://localhost:" + port + "/oauth/client.json",
 		"https://[::1]:" + port + "/oauth/client.json",
-	} {
+	}
+	cfg := loginTestConfig()
+	// The hosts are listed: what keeps the fetch away is where they resolve.
+	for _, clientID := range clientIDs {
+		u, err := url.Parse(clientID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cfg.CIMDHosts = append(cfg.CIMDHosts, u.Hostname())
+	}
+	ts := newLoginTestServer(t, cfg, loginTestOptions{})
+
+	for i, clientID := range clientIDs {
 		w := ts.authorizePage(clientID, testLoginRedirect, fmt.Sprintf("203.0.113.%d:40000", 50+i))
 		code, description := oauthError(t, w)
 		if w.Code != http.StatusBadRequest || code != oauthErrInvalidClient || description != descClientMetadataUnavailable {
@@ -723,7 +734,7 @@ func TestCIMD_PrivateAddressIsNotReached(t *testing.T) {
 // token. Tokens of registered clients are not touched.
 func TestCIMD_SessionsEndWhenTheClientIsNoLongerAccepted(t *testing.T) {
 	for name, revoke := range map[string]func(cfg *config.Config){
-		"switched off":      func(cfg *config.Config) { cfg.CIMDEnabled = false },
+		"switched off":      func(cfg *config.Config) { cfg.CIMDHosts = nil },
 		"host not listed":   func(cfg *config.Config) { cfg.CIMDHosts = []string{cimdTestOtherHost} },
 		"issuer is the url": func(cfg *config.Config) { cfg.Issuer = "https://example.com/" },
 	} {

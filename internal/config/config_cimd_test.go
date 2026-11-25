@@ -20,42 +20,35 @@ import (
 	"testing"
 )
 
-const (
-	envCIMDEnabled = "TOOLMESH_CIMD_ENABLED"
-	envCIMDHosts   = "TOOLMESH_CIMD_HOSTS"
-)
+const envCIMDHosts = "TOOLMESH_CIMD_HOSTS"
 
-func clearCIMDEnv(t *testing.T) {
-	t.Helper()
-	for _, key := range []string{envCIMDEnabled, envCIMDHosts} {
-		t.Setenv(key, "")
-	}
-}
-
-// Without the variables, clients may name themselves by a metadata URL and
-// no host is excluded.
-func TestLoad_CIMDDefaults(t *testing.T) {
-	clearCIMDEnv(t)
+// Without the variable, client ID metadata documents are off: an
+// installation that sets nothing fetches nothing.
+func TestLoad_CIMDIsOffByDefault(t *testing.T) {
+	t.Setenv(envCIMDHosts, "")
 	cfg, err := Load()
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if !cfg.CIMDEnabled || len(cfg.CIMDHosts) != 0 {
-		t.Errorf("defaults = enabled %v, hosts %v; want on without a host list", cfg.CIMDEnabled, cfg.CIMDHosts)
+	if cfg.CIMDEnabled() || len(cfg.CIMDHosts) != 0 {
+		t.Errorf("defaults = enabled %v, hosts %v; want off without a host", cfg.CIMDEnabled(), cfg.CIMDHosts)
+	}
+	// A list of nothing but separators names no host either.
+	t.Setenv(envCIMDHosts, " , ,")
+	if cfg, err = Load(); err != nil || cfg.CIMDEnabled() {
+		t.Errorf("a list without an entry: enabled %v, err %v; want off", cfg != nil && cfg.CIMDEnabled(), err)
 	}
 }
 
-func TestLoad_CIMDCustom(t *testing.T) {
-	clearCIMDEnv(t)
-	t.Setenv(envCIMDEnabled, "false")
+// Naming hosts is what switches the documents on, for those hosts.
+func TestLoad_CIMDHosts(t *testing.T) {
 	t.Setenv(envCIMDHosts, " Claude.AI , *.Example.com,, vscode.dev ,xn--bcher-kva.example")
-
 	cfg, err := Load()
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if cfg.CIMDEnabled {
-		t.Error("CIMDEnabled = true, want false")
+	if !cfg.CIMDEnabled() {
+		t.Error("CIMDEnabled() = false with hosts listed")
 	}
 	want := []string{"claude.ai", "*.example.com", "vscode.dev", "xn--bcher-kva.example"}
 	if !slices.Equal(cfg.CIMDHosts, want) {
@@ -63,38 +56,45 @@ func TestLoad_CIMDCustom(t *testing.T) {
 	}
 }
 
-// A typo must stop the server. A switch that is not a bool would leave the
-// fetch on; an entry that can never match a host would look like a
-// restriction and allow nothing, or be meant as one and not be in force.
-func TestLoad_CIMDRejectsInvalidValues(t *testing.T) {
+// A typo must stop the server: an entry that can never match a host would
+// switch the documents on, and announce them to clients, without letting any
+// client in. There is no entry that allows every host.
+func TestLoad_CIMDRejectsInvalidHosts(t *testing.T) {
 	tests := []struct {
-		name, key, value string
+		name, value string
 	}{
-		{"switch is not a bool", envCIMDEnabled, "disabled"},
-		{"entry with a scheme", envCIMDHosts, "https://claude.ai"},
-		{"entry with a path", envCIMDHosts, "claude.ai/oauth"},
-		{"entry with a port", envCIMDHosts, "claude.ai:443"},
-		{"wildcard in the middle", envCIMDHosts, "clients.*.example.com"},
-		{"wildcard without a dot", envCIMDHosts, "*example.com"},
-		{"wildcard alone", envCIMDHosts, "*"},
-		{"wildcard for everything", envCIMDHosts, "*."},
-		{"empty label", envCIMDHosts, "claude..ai"},
-		{"trailing dot", envCIMDHosts, "claude.ai."},
-		{"label starts with a hyphen", envCIMDHosts, "-claude.ai"},
-		{"space inside", envCIMDHosts, "claude .ai"},
-		{"not ascii", envCIMDHosts, "b\xc3\xbccher.example"},
-		{"one bad entry among good ones", envCIMDHosts, "claude.ai,vscode.dev/x"},
+		{"entry with a scheme", "https://claude.ai"},
+		{"entry with a path", "claude.ai/oauth"},
+		{"entry with a port", "claude.ai:443"},
+		{"wildcard in the middle", "clients.*.example.com"},
+		{"wildcard without a dot", "*example.com"},
+		{"every host", "*"},
+		{"every host, with a dot", "*."},
+		{"empty label", "claude..ai"},
+		{"trailing dot", "claude.ai."},
+		{"label starts with a hyphen", "-claude.ai"},
+		{"space inside", "claude .ai"},
+		{"not ascii", "b\xc3\xbccher.example"},
+		{"a boolean instead of hosts", "true,"},
+		{"one bad entry among good ones", "claude.ai,vscode.dev/x"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			clearCIMDEnv(t)
-			t.Setenv(tt.key, tt.value)
+			t.Setenv(envCIMDHosts, tt.value)
 			_, err := Load()
-			if err == nil {
-				t.Fatalf("Load accepted %s=%q", tt.key, tt.value)
+			if tt.name == "a boolean instead of hosts" {
+				// "true" has the shape of a host name; nothing tells it from
+				// one. It lists a host that serves no document.
+				if err != nil {
+					t.Fatalf("Load refused %q: %v", tt.value, err)
+				}
+				return
 			}
-			if !strings.Contains(err.Error(), tt.key) {
-				t.Errorf("error %q does not name %s", err, tt.key)
+			if err == nil {
+				t.Fatalf("Load accepted %s=%q", envCIMDHosts, tt.value)
+			}
+			if !strings.Contains(err.Error(), envCIMDHosts) {
+				t.Errorf("error %q does not name %s", err, envCIMDHosts)
 			}
 		})
 	}

@@ -308,16 +308,13 @@ type Config struct {
 	DCRClientTTL     int // TOOLMESH_DCR_CLIENT_TTL, default 86400
 	DCRClientIdleTTL int // TOOLMESH_DCR_CLIENT_IDLE_TTL, default 7776000
 
-	// CIMDEnabled lets an OAuth client name itself by the https URL of a
-	// client ID metadata document instead of registering first. The
-	// authorization endpoint then fetches that document, before anyone has
-	// logged in. Off, such a client_id is an unknown client and nothing is
-	// fetched.
-	CIMDEnabled bool // TOOLMESH_CIMD_ENABLED, default true
-	// CIMDHosts, when non-empty, restricts the hosts a metadata document
-	// is fetched from. Entries are host names ("claude.ai") or
-	// "*.example.com" for any subdomain. Empty fetches from any public
-	// https host.
+	// CIMDHosts lists the hosts whose client ID metadata documents are
+	// accepted. An OAuth client may then name itself by the https URL of
+	// such a document instead of registering first, and the authorization
+	// endpoint fetches the document from that host before anyone has
+	// logged in. Entries are host names ("claude.ai") or "*.example.com"
+	// for any subdomain. Empty, the default, switches metadata documents
+	// off: such a client_id is an unknown client and nothing is fetched.
 	CIMDHosts []string // TOOLMESH_CIMD_HOSTS, comma-separated
 
 	// DevMode selects the local-development security posture. It deliberately
@@ -673,17 +670,17 @@ func (c *Config) loadDCRClientTTL() error {
 	return nil
 }
 
-// loadCIMD reads the switch and the host allowlist of client ID metadata
-// documents. Both are parsed strictly: a typo must not leave the fetch on,
-// and an entry that can never match a host must not look like a restriction
-// that is in force.
-func (c *Config) loadCIMD() error {
-	enabled, err := envBoolStrict("TOOLMESH_CIMD_ENABLED", true)
-	if err != nil {
-		return err
-	}
-	c.CIMDEnabled = enabled
+// CIMDEnabled reports whether client ID metadata documents are accepted at
+// all: they are once TOOLMESH_CIMD_HOSTS names a host.
+func (c *Config) CIMDEnabled() bool {
+	return len(c.CIMDHosts) > 0
+}
 
+// loadCIMD reads the hosts client ID metadata documents are accepted from.
+// The list is parsed strictly: an entry that can never match a host would
+// switch the documents on, and announce them to clients, without letting
+// any client in.
+func (c *Config) loadCIMD() error {
 	for _, h := range strings.Split(envStr("TOOLMESH_CIMD_HOSTS", ""), ",") {
 		entry := strings.ToLower(strings.TrimSpace(h))
 		if entry == "" {

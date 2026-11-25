@@ -43,11 +43,24 @@ import (
 // defaultAllowedUploadDir is the directory under which file uploads must reside.
 const defaultAllowedUploadDir = "/tmp/toolmesh-uploads"
 
-// maxResponseBytes is the maximum number of bytes to read from a backend response.
+// maxResponseBytes is the default limit on a non-binary response body. A
+// backend sets its own with backends.yaml options.max_response_size, up to
+// maxResponseBytesCeiling. A body over the limit fails the call with
+// dadl.ErrCodeResponseTooLarge.
 const maxResponseBytes = 10 * 1024 * 1024 // 10 MB
 
 // maxStreamingBytes is the maximum number of bytes for streaming binary responses.
 const maxStreamingBytes = 100 * 1024 * 1024 // 100 MB
+
+// maxResponseBytesCeiling bounds options.max_response_size. A non-binary
+// body is held in memory whole, and parsed again for result_path and
+// transform, so the ceiling is that of a binary response, which is buffered
+// the same way.
+const maxResponseBytesCeiling = maxStreamingBytes
+
+// OptionMaxResponseSize is the backends.yaml options key that sets the limit
+// on a non-binary response body of a REST backend.
+const OptionMaxResponseSize = "max_response_size"
 
 // defaultHTTPTimeout is the default timeout for non-streaming REST API requests.
 const defaultHTTPTimeout = 30 * time.Second
@@ -71,6 +84,7 @@ type RESTAdapter struct {
 	fileBroker          *FileBrokerClient             // nil = use blob store or error
 	blobStore           *blob.Store                   // embedded blob store for binary responses
 	blobTTL             time.Duration                 // TTL for blob URLs (from backends.yaml options.blob_ttl)
+	maxResponseSize     int64                         // limit on a non-binary response body (backends.yaml options.max_response_size); 0 = maxResponseBytes
 	exposeTools         []string                      // bare tool names to promote as direct MCP tools (from backends.yaml expose_tools)
 	includeTools        map[string]bool               // when non-nil, the only tools/composites this backend exposes (from backends.yaml include_tools)
 	fileURLAllowedHosts map[string]bool               // optional allowlist of lowercase hostnames for caller file_url fetches; nil/empty = no restriction
@@ -358,6 +372,7 @@ func NewRESTAdapter(spec *dadl.Spec, creds credentials.CredentialStore, logger *
 	if err != nil {
 		return nil, err
 	}
+	logInvalidResponseExpressions(spec, logger)
 
 	return &RESTAdapter{
 		spec:                spec,
@@ -573,6 +588,37 @@ func (a *RESTAdapter) SetHTTPTimeout(d time.Duration) {
 // SetStreamingHTTPTimeout overrides the default HTTP client timeout for streaming requests.
 func (a *RESTAdapter) SetStreamingHTTPTimeout(d time.Duration) {
 	a.streamingHTTPClient.Timeout = d
+}
+
+// SetMaxResponseSize sets the limit on a non-binary response body from the
+// value of backends.yaml options.max_response_size, a size such as "50MB"
+// (dadl.ParseByteSize), and returns the limit now in force. A value above
+// maxResponseBytesCeiling is clamped to it, with a warning. A value that does
+// not parse is an error and leaves the limit as it was. Binary responses keep
+// their own limit.
+func (a *RESTAdapter) SetMaxResponseSize(value string) (int64, error) {
+	limit, err := dadl.ParseByteSize(value)
+	if err != nil {
+		return a.responseLimit(), fmt.Errorf("%s: %w", OptionMaxResponseSize, err)
+	}
+	if limit > maxResponseBytesCeiling {
+		a.logger.Warn("max_response_size exceeds the runtime ceiling, clamping",
+			"backend", a.spec.Backend.Name,
+			"declared", value,
+			"effective", dadl.FormatByteSize(maxResponseBytesCeiling),
+		)
+		limit = maxResponseBytesCeiling
+	}
+	a.maxResponseSize = limit
+	return limit, nil
+}
+
+// responseLimit returns the limit on a non-binary response body.
+func (a *RESTAdapter) responseLimit() int64 {
+	if a.maxResponseSize > 0 {
+		return a.maxResponseSize
+	}
+	return maxResponseBytes
 }
 
 // ListTools returns all tools available from this REST backend,
@@ -811,6 +857,9 @@ func (a *RESTAdapter) execute(ctx context.Context, toolName string, params map[s
 	// Build and execute request (doRequest reads and closes the response body)
 	resp, body, err := a.doRequest(ctx, &tool, params, idemKey) //nolint:bodyclose // closed inside doRequest
 	if err != nil {
+		if isResponseTooLarge(err) {
+			return a.apiErrorResult(err), nil
+		}
 		return nil, fmt.Errorf("execute REST tool %q: %w", toolName, err)
 	}
 
@@ -846,8 +895,15 @@ func (a *RESTAdapter) execute(ctx context.Context, toolName string, params map[s
 			// Send the request again with backoff. A not-ready status and
 			// a status in retry_on draw on the same max_retries.
 			retryer := dadl.NewRetryer(strategy, a.logger)
+			var tooLarge error
 			_, retryErr := retryer.Retry(ctx, apiErr, func() (*http.Response, error) { //nolint:bodyclose // closed inside doRequest
 				r, b, e := a.doRequest(ctx, &tool, params, idemKey) //nolint:bodyclose // closed inside doRequest
+				if isResponseTooLarge(e) {
+					// The same request brings the same body again: stop
+					// retrying and fail with the size error.
+					tooLarge = e
+					return nil, nil
+				}
 				if e != nil {
 					return nil, e
 				}
@@ -859,6 +915,9 @@ func (a *RESTAdapter) execute(ctx context.Context, toolName string, params map[s
 				resp, body = r, b
 				return r, nil
 			})
+			if tooLarge != nil {
+				return a.apiErrorResult(tooLarge), nil
+			}
 			if retryErr != nil {
 				return a.apiErrorResult(retryErr), nil
 			}
@@ -871,6 +930,9 @@ func (a *RESTAdapter) execute(ctx context.Context, toolName string, params map[s
 			if err := a.auth.HandleUnauthorizedFor(ctx, sentRequest(resp)); err == nil {
 				// Retry once after re-auth
 				resp, body, err = a.doRequest(ctx, &tool, params, idemKey) //nolint:bodyclose // closed inside doRequest
+				if isResponseTooLarge(err) {
+					return a.apiErrorResult(err), nil
+				}
 				if err != nil {
 					return &ToolResult{
 						Content: []any{textContent(fmt.Sprintf("Error after re-auth: %s", err))},
@@ -909,6 +971,12 @@ func (a *RESTAdapter) execute(ctx context.Context, toolName string, params map[s
 	pagConfig := a.effectivePaginationConfig(&tool)
 	if pagConfig != nil && pagConfig.Behavior == "auto" {
 		body, err = a.paginateResults(ctx, &tool, params, resp, body, pagConfig)
+		if isResponseTooLarge(err) {
+			// A page over the limit is not a partial result to return
+			// quietly: the caller would take the pages before it for the
+			// whole result.
+			return a.apiErrorResult(err), nil
+		}
 		if err != nil {
 			a.logger.WarnContext(ctx, "pagination error, returning partial results",
 				"backend", a.spec.Backend.Name,
@@ -922,8 +990,13 @@ func (a *RESTAdapter) execute(ctx context.Context, toolName string, params map[s
 	// result_path → transform → redact). Redaction is fail-closed: with a
 	// redact list declared, neither a transform error (paths are relative
 	// to the transformed result — positions would be unverifiable) nor a
-	// redact error may leak the unredacted body.
+	// redact error may leak the unredacted body. An expression that cannot
+	// be parsed fails the call in any case (see transformResponse).
 	body, err = a.transformResponse(&tool, body)
+	var exprErr *dadl.ExpressionError
+	if errors.As(err, &exprErr) {
+		return a.invalidTransformResult(ctx, toolName, resp.StatusCode, exprErr), nil
+	}
 	redactPaths := a.effectiveRedactPaths(&tool)
 	if len(redactPaths) > 0 {
 		if err != nil {
@@ -1099,10 +1172,11 @@ func (a *RESTAdapter) doRequest(ctx context.Context, tool *dadl.ToolDef, params 
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	// Binary/file_url responses get the streaming ceiling, and exceeding it is
-	// an error rather than silent truncation — a truncated archive stored in
-	// the blob store would be served as a corrupt download.
-	limit := int64(maxResponseBytes)
+	// A body over the limit is an error, never cut off: a truncated archive
+	// stored in the blob store would be served as a corrupt download, and a
+	// truncated JSON body would reach the caller as a result that is neither
+	// complete nor valid. Binary/file_url responses get the streaming ceiling.
+	limit := a.responseLimit()
 	binaryResp := isBinaryResponse(a.effectiveResponseConfig(tool))
 	if binaryResp {
 		limit = maxStreamingBytes
@@ -1112,14 +1186,71 @@ func (a *RESTAdapter) doRequest(ctx context.Context, tool *dadl.ToolDef, params 
 		return nil, nil, fmt.Errorf("read response: %w", err)
 	}
 	if int64(len(body)) > limit {
-		if binaryResp {
-			return nil, nil, fmt.Errorf("binary response exceeds the %d byte limit — enable response.streaming to pipe it to the file broker", limit)
-		}
-		body = body[:limit]
-		a.logger.Warn("response body truncated at max size", "backend", a.spec.Backend.Name, "maxBytes", limit)
+		return nil, nil, a.responseTooLarge(ctx, tool, resp, int64(len(body)), limit, binaryResp)
 	}
 
 	return resp, body, nil
+}
+
+// responseTooLarge builds the error for a response whose body is larger than
+// limit, of which read bytes have been read. For a non-binary body it reads
+// the rest, up to maxResponseBytesCeiling, so that the message says how large
+// the response is and whether options.max_response_size can make room for it.
+func (a *RESTAdapter) responseTooLarge(ctx context.Context, tool *dadl.ToolDef, resp *http.Response, read, limit int64, binary bool) error {
+	var msg string
+	if binary {
+		msg = fmt.Sprintf("the binary response is larger than the %s limit; enable response.streaming in the DADL to pipe it to the file broker",
+			dadl.FormatByteSize(limit))
+	} else {
+		size, exact := bodySize(resp, read, maxResponseBytesCeiling)
+		sizeText := fmt.Sprintf("more than %s", dadl.FormatByteSize(maxResponseBytesCeiling))
+		remedy := fmt.Sprintf("narrow the request (filters, a smaller page, a more specific query); options.max_response_size cannot go beyond %s",
+			dadl.FormatByteSize(maxResponseBytesCeiling))
+		if exact {
+			sizeText = fmt.Sprintf("%d bytes (%.1f MB)", size, float64(size)/(1<<20))
+			remedy = fmt.Sprintf("narrow the request (filters, a smaller page, a more specific query), or raise options.max_response_size of backend %q in backends.yaml (at most %s)",
+				a.spec.Backend.Name, dadl.FormatByteSize(maxResponseBytesCeiling))
+		}
+		msg = fmt.Sprintf("the response body has %s, over the %s limit of backend %q; it is not passed on, because a cut-off body is not the API's answer. To get a result, %s",
+			sizeText, dadl.FormatByteSize(limit), a.spec.Backend.Name, remedy)
+		a.logger.WarnContext(ctx, "response body exceeds the size limit, failing the call",
+			"backend", a.spec.Backend.Name,
+			"method", tool.Method,
+			"path", tool.Path,
+			"limit", limit,
+			"size", size,
+			"sizeExact", exact,
+		)
+	}
+	return &dadl.APIError{
+		Code:       dadl.ErrCodeResponseTooLarge,
+		HTTPStatus: resp.StatusCode,
+		Message:    msg,
+	}
+}
+
+// bodySize returns the size of a response body of which read bytes have
+// been read, and whether that size is exact. A Content-Length beyond what
+// was read is taken as it is; otherwise the rest of the body is read and
+// discarded, up to ceiling bytes in all. exact is false when the body goes
+// beyond ceiling or the rest could not be read; size is then what arrived.
+func bodySize(resp *http.Response, read, ceiling int64) (size int64, exact bool) {
+	if resp.ContentLength > read {
+		return resp.ContentLength, true
+	}
+	if read > ceiling {
+		return read, false
+	}
+	rest, err := io.Copy(io.Discard, io.LimitReader(resp.Body, ceiling-read+1))
+	size = read + rest
+	return size, err == nil && size <= ceiling
+}
+
+// isResponseTooLarge reports whether err is the error of a response body
+// over its limit (see responseTooLarge).
+func isResponseTooLarge(err error) bool {
+	var apiErr *dadl.APIError
+	return errors.As(err, &apiErr) && apiErr.Code == dadl.ErrCodeResponseTooLarge
 }
 
 // loggableURL returns the URL of a backend request as the debug log shows
@@ -2237,12 +2368,30 @@ func marshallResults(results []json.RawMessage) []byte {
 	return data
 }
 
+// transformResponse runs the tool's response pipeline over body: result_path,
+// then transform. It returns the shaped body, or the body as far as the
+// pipeline got together with the error that stopped it.
+//
+// Two kinds of failure are told apart. An expression that cannot be parsed
+// or compiled is a *dadl.ExpressionError: a defect of the DADL that fails on
+// every response, which the caller turns into an error result. Every other
+// failure depends on the response, and the caller passes the body on as it
+// is: DADLs rely on that. A backend-wide result_path such as "$.results"
+// unwraps the lists of an API and leaves its single objects, which have no
+// such field, as they are; a backend-wide transform meets the plain text of
+// an endpoint that does not answer in JSON. Neither response is damaged,
+// only shaped differently from what the pipeline expected; an API that
+// answers an empty list with null is another such case.
+//
+// An empty body passes through without the pipeline and without an error:
+// there is nothing to shape, and a write answered without content is not a
+// failure.
 func (a *RESTAdapter) transformResponse(tool *dadl.ToolDef, body []byte) ([]byte, error) {
 	respConfig := tool.Response
 	if respConfig == nil {
 		respConfig = a.spec.Backend.Defaults.Response
 	}
-	if respConfig == nil {
+	if respConfig == nil || len(bytes.TrimSpace(body)) == 0 {
 		return body, nil
 	}
 
@@ -2265,6 +2414,50 @@ func (a *RESTAdapter) transformResponse(tool *dadl.ToolDef, body []byte) ([]byte
 	}
 
 	return body, nil
+}
+
+// invalidTransformResult builds the error result of a call whose tool has a
+// result_path or transform that cannot be parsed or compiled. The request
+// was carried out, so the message says so: a caller must not repeat a write
+// because its result could not be shaped.
+func (a *RESTAdapter) invalidTransformResult(ctx context.Context, toolName string, status int, exprErr *dadl.ExpressionError) *ToolResult {
+	a.logger.ErrorContext(ctx, "response pipeline of the tool is invalid, failing the call",
+		"backend", a.spec.Backend.Name,
+		"tool", toolName,
+		"field", exprErr.Field,
+		"error", exprErr.Err,
+	)
+	return a.apiErrorResult(&dadl.APIError{
+		Code:       dadl.ErrCodeInvalidTransform,
+		HTTPStatus: status,
+		Message: fmt.Sprintf("the API answered, but in the DADL of backend %q the response.%s of tool %q cannot run, so the result the tool declares cannot be produced (%v). The request itself was carried out; do not repeat a write because of this error. The DADL needs fixing.",
+			a.spec.Backend.Name, exprErr.Field, toolName, exprErr.Err),
+	})
+}
+
+// logInvalidResponseExpressions reports, when a DADL is loaded, every
+// response.result_path and response.transform that cannot be parsed or
+// compiled. The backend still loads; calls of the tools concerned fail with
+// dadl.ErrCodeInvalidTransform until the DADL is fixed.
+func logInvalidResponseExpressions(spec *dadl.Spec, logger *slog.Logger) {
+	report := func(scope string, rc *dadl.ResponseConfig) {
+		if err := dadl.CheckResponseExpressions(rc); err != nil {
+			logger.Error("invalid response expression in DADL; calls of the tools it applies to will fail until it is fixed",
+				"backend", spec.Backend.Name,
+				"scope", scope,
+				"error", err,
+			)
+		}
+	}
+	report("defaults", spec.Backend.Defaults.Response)
+	names := make([]string, 0, len(spec.Backend.Tools))
+	for name := range spec.Backend.Tools {
+		names = append(names, name)
+	}
+	sort.Strings(names) // deterministic log order
+	for _, name := range names {
+		report("tool "+name, spec.Backend.Tools[name].Response)
+	}
 }
 
 // buildInputSchema generates a JSON Schema from the tool's ParamDef map.

@@ -141,6 +141,9 @@ for the full narrative and details.
 
 ### Added
 
+- REST backends take `options.max_response_size` in `backends.yaml`: the
+  largest non-binary response body, `10MB` unless set, at most `100MB`. See
+  [REST backend options](docs/configuration.md#rest-backend-options).
 - Commands on hosts over SSH. A backend with `transport: ssh` reads a command
   file: named commands with a fixed argument vector and typed parameters. Each
   command is a tool; a call fills in the parameters and ToolMesh builds the
@@ -263,6 +266,18 @@ for the full narrative and details.
 
 ### Fixed
 
+- A REST response body over 10 MB was cut off at 10 MB and returned as a
+  successful result; a JSON body was then neither complete nor valid, and the
+  DADL's `result_path` and `transform` were skipped without a sign. Such a
+  call now fails with the error code `response_too_large`, which names the
+  limit and the size of the body, also for a page of an `auto` pagination.
+  See [Response size](docs/configuration.md#response-size).
+- A DADL `response.transform` or `response.result_path` that cannot be parsed
+  or compiled, such as a jq helper function named `label`, passed the raw
+  response on as the result. It is now reported when the DADL is loaded, and
+  a call of the tool fails with the error code `invalid_transform`. A
+  response that a valid pipeline does not fit is still passed on as it is.
+  See [Response pipeline errors](docs/configuration.md#response-pipeline-errors).
 - The answer to `tools/list` named backends and their exposed tools in an
   order that changed from request to request. A client could not keep the
   list, and a model that read it lost its prompt cache. The list is now the

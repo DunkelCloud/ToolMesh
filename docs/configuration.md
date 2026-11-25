@@ -1909,6 +1909,43 @@ These rules apply to every REST backend, whatever its `backends.yaml` options:
 - **Error texts.** A transport error names only scheme and host of the request URL, never its path or query, which can hold a query-injected credential; this includes OAuth2 token and session login requests. The text of an error result has userinfo, query and fragment removed from every URL in it. The audit log and the tool result see the same reduced form.
 - **Private addresses.** With `allow_private_url: false` a backend may not resolve to loopback, private, link-local, carrier-grade NAT (`100.64.0.0/10`), documentation, benchmarking (`198.18.0.0/15`), multicast or reserved addresses, nor to a NAT64 (`64:ff9b::/96`), 6to4 or IPv4-compatible (`::/96`) address embedding one of them, nor to site-local `fec0::/10`. `allow_private_url` defaults to `true` for backends in `backends.yaml`, since the operator configures their URLs. It covers only the destinations the configuration names: the host and port of `base_url` (or the `backends.yaml` `url`), of `token_url` and of absolute tool paths. Any other destination, such as the target of a redirect, must resolve to a public address, checked when the connection is made. The redirect and credential rules above hold either way.
 
+### REST backend options
+
+A REST backend in `backends.yaml` takes these keys under `options`:
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `timeout` | `30s` | HTTP timeout of a non-streaming call, a Go duration. |
+| `streaming_timeout` | `10m` | HTTP timeout of a streaming call (SSE), a Go duration. |
+| `blob_ttl` | `1h` | How long the download URL of a binary response stays valid. |
+| `max_response_size` | `10MB` | Largest non-binary response body the backend may return, a size such as `25MB` or `512KiB` (KB, MB and GB count in 1024). At most `100MB`; a larger value is clamped, with a warning. |
+
+```yaml
+- name: osv
+  transport: rest
+  dadl: osv.dadl
+  options:
+    max_response_size: "50MB"
+```
+
+A value that does not parse is reported at startup with a warning, and the default applies. A ToolMesh version that does not know an option ignores it.
+
+### Response size
+
+A response body larger than the backend's `max_response_size` is not passed on. The call fails with the error code `response_too_large` and the status the API answered with; the message names the limit and the size of the body, and the log has a warning `response body exceeds the size limit`. A body cut off at the limit would not be the API's answer: a cut-off JSON document is not valid, and a caller could take a part of the result for all of it. A response the API sends in pages with `pagination.behavior: auto` fails the same way when one of its pages is too large. A retry does not follow a response that is too large, since the same request brings the same body again.
+
+To get a result, narrow the request (filters, a smaller page, a more specific query), or raise `max_response_size` for the backend. A body is held in memory whole and parsed again for `result_path` and `transform`, so a high limit costs memory with every large call. The output of a `transform` is capped at 10 MB on its own.
+
+Binary responses (`response.type: file_url` or a binary content type) have a limit of 100 MB, which `max_response_size` does not change. Above it they fail with the same error code; `response.streaming` sends them to the file broker without holding them in memory.
+
+### Response pipeline errors
+
+A DADL shapes a response with `response.result_path` and `response.transform` before it is returned (DADL spec §9). How a failure there ends depends on its kind:
+
+- **The expression is invalid.** A `result_path` or a jq `transform` that cannot be parsed or compiled — a syntax error, a jq keyword such as `label` as a function name, a function jq does not have — fails on every response. ToolMesh reports it when the DADL is loaded, with an `ERROR` line `invalid response expression in DADL` that names the backend and the tool (or `defaults`); the backend still loads. A call of such a tool fails with the error code `invalid_transform` and the status the API answered with. The request has been carried out by then; the message says so, so that a write is not repeated because of the error. The DADL needs fixing.
+- **The response does not fit the pipeline.** A `result_path` that the response does not contain, a body that is not JSON, or a jq error on the data passes the body on as the API sent it, with a `WARN` line `response transformation error` naming backend and tool. DADLs rely on this: a backend-wide `result_path: "$.results"` unwraps the lists of an API and leaves its single objects, which have no such field, as they are, and a backend-wide pipeline meets the plain text of an endpoint that does not answer in JSON. On a tool with `response.redact` the body is never passed on unshaped; the call fails instead.
+- **The body is empty.** A write answered without content passes through; there is nothing to shape, and nothing is logged.
+
 ### Results that are not ready yet
 
 Some APIs answer a read with a 2xx status other than `200` while they are still preparing the result, and expect the same request again a little later. GitHub's repository statistics, for example, send `202` with an empty body until their cache is filled. Left alone, such a response is a success, and the caller gets the empty body as the result.

@@ -105,6 +105,10 @@ backends:
   #   dadl: hackernews.dadl  # relative to TOOLMESH_DADL_DIR (default: /app/dadl), absolute paths also work
   #   options:
   #     blob_ttl: "1h"  # how long binary response URLs stay valid (default: 1h)
+  #     # Largest non-binary response body (default: 10MB, at most 100MB).
+  #     # A larger body fails the call with response_too_large instead of
+  #     # being cut off.
+  #     max_response_size: "10MB"
   #
   # For DADLs requiring credentials (download from https://dadl.ai/browse):
   # - name: vikunja

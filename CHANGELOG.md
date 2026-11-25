@@ -322,6 +322,15 @@ for the full narrative and details.
   would load a backend under the name of a running unit is refused and
   keeps the previous backends; the log line names the unit. See
   [Backend Configuration](docs/configuration.md#backend-configuration).
+- Every hot reload of `config/backends.yaml` left the previous sessions to
+  all MCP backends open, and the child process of every `transport: stdio`
+  backend running, until ToolMesh was restarted: a reload connects the MCP
+  backends anew but never closed what it replaced, and a shutdown closed
+  only the sessions opened at startup. A reload now ends the replaced
+  sessions and child processes once the calls running on them have
+  returned, so no call is cut off, and a shutdown ends the sessions in use.
+  A reload that fails keeps the running sessions. See
+  [Backend Configuration](docs/configuration.md#backend-configuration).
 - An MCP backend that returns its tool list in pages lost every tool after
   the first page, without a line in the log. ToolMesh now follows the cursor
   to the end of the list, for at most 100 pages; a backend that returns a

@@ -16,9 +16,11 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/DunkelCloud/ToolMesh/internal/backend"
 	"github.com/DunkelCloud/ToolMesh/internal/health"
@@ -37,6 +39,11 @@ type healthTargetReplacer interface {
 // kept, not loaded again: the watcher follows backends.yaml only, and a
 // unit's sub-backend sessions should not restart because an unrelated entry
 // changed. Changes to the units themselves take a restart.
+//
+// Every rebuild opens new sessions to all MCP backends, in an MCPAdapter of
+// its own. The reloader closes the adapter a reload replaces, once the
+// calls already running on it have returned (see retireLocked), and close ends
+// the adapter in use at shutdown.
 type backendsReloader struct {
 	// build rebuilds the backends from backends.yaml (buildBackends).
 	build     func(ctx context.Context) (*backendsResult, error)
@@ -48,6 +55,20 @@ type backendsReloader struct {
 	health       healthTargetReplacer
 	// applied, when set, runs after a new state has been published.
 	applied func(ctx context.Context, res *backendsResult)
+
+	// mu guards the fields below.
+	mu sync.Mutex
+	// adapter is the MCPAdapter of the backends the composite routes to
+	// now: set at startup, replaced by every successful reload.
+	adapter *backend.MCPAdapter
+	// retiring holds the adapters of replaced backends that still run calls.
+	retiring map[*backend.MCPAdapter]struct{}
+	// stop is closed by close, which ends the waits for retiring adapters.
+	stop chan struct{}
+	// closed is set by close; a reload after it publishes nothing.
+	closed bool
+	// closing counts the waits for retiring adapters, for the tests.
+	closing sync.WaitGroup
 }
 
 // reload rebuilds the backends from backends.yaml and swaps them in, together
@@ -62,15 +83,17 @@ type backendsReloader struct {
 // would either take the name away from the unit or leave the backend
 // shadowed by it. On a restart the backend wins and the unit is skipped, as
 // loadUnits does at startup.
+//
+// After a successful reload the MCPAdapter of the previous backends is
+// closed once the calls running on it have returned; a failed reload leaves
+// it running.
 func (r *backendsReloader) reload(ctx context.Context) error {
 	res, err := r.build(ctx)
 	if err != nil {
 		return err
 	}
 	if clashes := unitNameClashes(res, r.units); len(clashes) > 0 {
-		if res.mcpAdapter != nil {
-			res.mcpAdapter.Close()
-		}
+		closeAdapter(res.mcpAdapter)
 		return fmt.Errorf("backends.yaml loads a backend under the name of a running unit (%s): rename the entry, or restart ToolMesh to let the entry replace the unit", strings.Join(clashes, ", "))
 	}
 
@@ -79,13 +102,110 @@ func (r *backendsReloader) reload(ctx context.Context) error {
 	for name, u := range r.units {
 		res.named[name] = u
 	}
-	r.composite.Swap(res.named, res.passthroughs)
+
+	r.mu.Lock()
+	if r.closed {
+		r.mu.Unlock()
+		closeAdapter(res.mcpAdapter)
+		return errors.New("ToolMesh is shutting down")
+	}
+	drained := r.composite.Swap(res.named, res.passthroughs)
+	previous := r.adapter
+	r.adapter = res.mcpAdapter
+	r.retireLocked(previous, drained)
+	r.mu.Unlock()
+
 	r.userBackends.set(res.named)
 	r.health.Replace(ctx, res.healthTargets)
 	if r.applied != nil {
 		r.applied(ctx, res)
 	}
 	return nil
+}
+
+// retireLocked closes a, the MCPAdapter of backends a reload has replaced,
+// once drained is closed: when every call the composite routed to a before
+// the swap has returned. Calls that start after the swap reach the new
+// adapter, a script in execute_code included, so the wait ends with the
+// slowest call that was running, at the latest after the call timeout
+// (TOOLMESH_EXEC_TIMEOUT) the executor sets for each backend call. Closing
+// earlier, after a fixed grace period, would cut off a longer call, and the
+// adapter's reconnect on a closed session would open a new one that nobody
+// closes. The caller holds r.mu.
+func (r *backendsReloader) retireLocked(a *backend.MCPAdapter, drained <-chan struct{}) {
+	if a == nil {
+		return
+	}
+	if r.retiring == nil {
+		r.retiring = make(map[*backend.MCPAdapter]struct{})
+	}
+	r.retiring[a] = struct{}{}
+	stop := r.stopLocked()
+	r.closing.Add(1)
+	go func() {
+		defer r.closing.Done()
+		select {
+		case <-drained:
+		case <-stop:
+			return // close has taken the adapter over
+		}
+		r.mu.Lock()
+		_, ok := r.retiring[a]
+		delete(r.retiring, a)
+		r.mu.Unlock()
+		if ok {
+			a.Close()
+		}
+	}()
+}
+
+// stopLocked returns r.stop, made on first use. The caller holds r.mu.
+func (r *backendsReloader) stopLocked() chan struct{} {
+	if r.stop == nil {
+		r.stop = make(chan struct{})
+	}
+	return r.stop
+}
+
+// close closes the MCPAdapter of the current backends and those of replaced
+// backends whose calls have not all returned yet. A reload that finishes
+// afterwards closes the adapter it built and publishes nothing. main runs
+// close at shutdown.
+func (r *backendsReloader) close() {
+	r.mu.Lock()
+	if r.closed {
+		r.mu.Unlock()
+		return
+	}
+	r.closed = true
+	adapters := make([]*backend.MCPAdapter, 0, len(r.retiring)+1)
+	if r.adapter != nil {
+		adapters = append(adapters, r.adapter)
+	}
+	for a := range r.retiring {
+		adapters = append(adapters, a)
+	}
+	r.adapter, r.retiring = nil, nil
+	close(r.stopLocked())
+	r.mu.Unlock()
+	for _, a := range adapters {
+		a.Close()
+	}
+}
+
+// currentAdapter returns the MCPAdapter of the backends the composite
+// routes to now.
+func (r *backendsReloader) currentAdapter() *backend.MCPAdapter {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.adapter
+}
+
+// closeAdapter closes a, when there is one.
+func closeAdapter(a *backend.MCPAdapter) {
+	if a != nil {
+		a.Close()
+	}
 }
 
 // unitNameClashes returns, sorted, the names of units that a rebuilt

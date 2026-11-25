@@ -1140,7 +1140,7 @@ func (s *Server) handleOAuthMetadata(w http.ResponseWriter, _ *http.Request) {
 		"scopes_supported":                           []string{clientClaudeAI},
 		// A client may name itself by the URL of its metadata document
 		// instead of registering at registration_endpoint first.
-		"client_id_metadata_document_supported": s.cfg.CIMDEnabled(),
+		"client_id_metadata_document_supported": s.cfg.CIMDEnabled,
 		// Every redirect back to the client carries iss (RFC 9207).
 		"authorization_response_iss_parameter_supported": true,
 	})
@@ -1372,9 +1372,9 @@ func (s *Server) clientForRedirect(r *http.Request, clientID, redirectURI string
 	if !redirectHostAllowed(redirectURI, s.cfg.OAuthRedirectHosts) {
 		return nil, &clientRejection{reason: loginReasonRedirectHostDenied}
 	}
-	// Without a host listed for metadata documents they are off: a URL is
-	// then a client_id nobody registered, and nothing is fetched.
-	if s.cfg.CIMDEnabled() && isClientIDURL(clientID) {
+	// With metadata documents switched off, a URL is a client_id nobody
+	// registered, and nothing is fetched.
+	if s.cfg.CIMDEnabled && isClientIDURL(clientID) {
 		return s.metadataClient(r, clientID, redirectURI)
 	}
 	if s.tokenStore == nil {
@@ -1491,7 +1491,7 @@ func (s *Server) clientAccepted(clientID string) bool {
 	if !isClientIDURL(clientID) {
 		return true
 	}
-	return s.cfg.CIMDEnabled() && clientIDURLError(clientID, s.cfg.Issuer) == "" && clientIDHostAllowed(clientID, s.cfg.CIMDHosts)
+	return s.cfg.CIMDEnabled && clientIDURLError(clientID, s.cfg.Issuer) == "" && clientIDHostAllowed(clientID, s.cfg.CIMDHosts)
 }
 
 // signInBound reports whether a token names the sign-in it comes from where

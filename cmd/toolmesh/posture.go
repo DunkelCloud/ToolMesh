@@ -85,6 +85,12 @@ func logSecurityPosture(cfg *config.Config, authConfigured, authzOpen bool, refu
 			remediation: "set TOOLMESH_FILE_BROKER_MAX_TOTAL_BYTES (and TOOLMESH_FILE_BROKER_MAX_BYTES_PER_USER), or TOOLMESH_FILE_BROKER_ENABLED=false where no files are exchanged",
 		})
 	}
+	if cfg.CIMDEnabled && len(cfg.CIMDHosts) == 0 {
+		relaxed = append(relaxed, relaxedControl{
+			summary:     "client ID metadata documents are fetched from any public https host — any visitor can make this instance request a URL of their choice, within the limits of that fetch",
+			remediation: "set TOOLMESH_CIMD_HOSTS to the hosts of your clients' documents (the log line 'client metadata document fetched' names them), or unset TOOLMESH_CIMD_ENABLED",
+		})
+	}
 	if cfg.DebugTools {
 		relaxed = append(relaxed, relaxedControl{
 			summary:     "debug tools are exposed on the MCP surface (debug_echo, debug_generate)",

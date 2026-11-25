@@ -157,9 +157,11 @@ for the full narrative and details.
   warns when the redirect goes to a loopback address. A loopback redirect
   URI of such a client matches with any port (RFC 8252). Grants of kits are
   bound to the sign-in of such a client, since every installation of it has
-  the same `client_id`. **Off by default:** documents are
-  accepted only from the hosts `TOOLMESH_CIMD_HOSTS` names; without the
-  variable nothing is fetched and clients register as before. A client
+  the same `client_id`. **Off by default:**
+  `TOOLMESH_CIMD_ENABLED=true` switches it on, and `TOOLMESH_CIMD_HOSTS`
+  names the hosts documents are accepted from (unset: any public host,
+  which the security posture summary reports). Without the switch nothing
+  is fetched and clients register as before. A client
   known by its document gets the login page, as a registered client does,
   and access still takes a user's login. See
   [Client ID metadata documents](docs/configuration.md#client-id-metadata-documents).

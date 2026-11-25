@@ -251,7 +251,6 @@ func main() {
 		logger.Error("failed to build backends", "error", err)
 		os.Exit(1)
 	}
-	defer res.mcpAdapter.Close()
 
 	// Health checks declared by the DADLs (spec §4.6): each runs once now,
 	// in the background, and is polled where backends.yaml asks for it.
@@ -285,6 +284,8 @@ func main() {
 
 	// Watch backends.yaml for changes and hot-reload. The reloader keeps
 	// the echo backend and the units, which backends.yaml does not describe.
+	// It owns the MCP adapter: each reload closes the one it replaces, and
+	// close ends the one in use at shutdown.
 	reloader := &backendsReloader{
 		build:        func(ctx context.Context) (*backendsResult, error) { return buildBackends(ctx, bldCfg) },
 		composite:    compositeBackend,
@@ -296,7 +297,9 @@ func main() {
 			warnUnusedUserValues(ctx, users, userBackends, logger)
 			tc.SetMCPServerCount(res.mcpAdapter.BackendCount())
 		},
+		adapter: res.mcpAdapter,
 	}
+	defer reloader.close()
 	go watchBackendsConfig(ctx, cfg.BackendsConfigPath, 5*time.Second, func() {
 		logger.Info("backends.yaml changed, reloading backends")
 		if reloadErr := reloader.reload(ctx); reloadErr != nil {

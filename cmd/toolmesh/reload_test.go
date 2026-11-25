@@ -174,7 +174,9 @@ func startReloadServer(t *testing.T, dir string) *reloadServer {
 		units:        units,
 		userBackends: s.userBackends,
 		health:       s.health,
+		adapter:      res.mcpAdapter,
 	}
+	t.Cleanup(s.reloader.close)
 	exec := executor.New(nil, nil, s.composite, nil, nil, 5*time.Second, logger, nil, nil)
 	s.handler = mcp.NewHandler(exec, s.composite, nil, "", nil, logger, false)
 	return s

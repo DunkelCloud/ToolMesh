@@ -1660,6 +1660,8 @@ The two limits must be plain integers of bytes, `0` or more; anything else stops
 
 Units (`TOOLMESH_UNITS_DIR`) and the built-in `echo` backend are not part of `backends.yaml`. They are loaded at startup and stay as they are through every reload; changes to a unit, to its `unit.yaml` or to a DADL a unit uses take effect after a restart. A reload that would load a backend under the name of a running unit is refused as a whole: the log line `hot-reload failed, keeping current backends` names the unit, and the previous backends stay. Rename the entry, or restart ToolMesh. At startup an entry in `backends.yaml` takes precedence, and a unit of the same name is skipped.
 
+A reload connects every MCP backend anew: new sessions, and for `transport: stdio` a new child process per backend. The sessions and child processes of the backends it replaces are ended once the calls already running on them have returned, so a reload cuts no call off; calls that start after the reload go to the new sessions. The wait lasts as long as the slowest of those calls, which `TOOLMESH_EXEC_TIMEOUT` bounds. Every ended session is logged as `disconnected backend` with the backend's name. A reload that fails keeps the running sessions and ends those it opened itself. At shutdown the sessions in use are ended.
+
 ### Credential and host binding
 
 Every REST backend is bound to its `backends.yaml` entry. The binding comes from the operator's configuration, never from the DADL: a DADL cannot read the credentials of another backend, and the hosts its own credentials go to are limited as described below.

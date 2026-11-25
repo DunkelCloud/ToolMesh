@@ -308,6 +308,18 @@ type Config struct {
 	DCRClientTTL     int // TOOLMESH_DCR_CLIENT_TTL, default 86400
 	DCRClientIdleTTL int // TOOLMESH_DCR_CLIENT_IDLE_TTL, default 7776000
 
+	// CIMDEnabled lets an OAuth client name itself by the https URL of a
+	// client ID metadata document instead of registering first. The
+	// authorization endpoint then fetches that document, before anyone has
+	// logged in. Off, the default, such a client_id is an unknown client
+	// and nothing is fetched.
+	CIMDEnabled bool // TOOLMESH_CIMD_ENABLED, default false
+	// CIMDHosts, when non-empty, restricts the hosts a metadata document
+	// is fetched from. Entries are host names ("claude.ai") or
+	// "*.example.com" for any subdomain. Empty (the variable unset, or
+	// "*") fetches from any public https host.
+	CIMDHosts []string // TOOLMESH_CIMD_HOSTS, comma-separated
+
 	// DevMode selects the local-development security posture. It deliberately
 	// does NOT relax any individual default — every secure default stands on
 	// its own so the server is secure-by-default whether or not this is set.
@@ -410,6 +422,9 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 	if err := cfg.loadDCRClientTTL(); err != nil {
+		return nil, err
+	}
+	if err := cfg.loadCIMD(); err != nil {
 		return nil, err
 	}
 	if err := cfg.loadTrustedProxies(); err != nil {
@@ -656,6 +671,55 @@ func (c *Config) loadDCRClientTTL() error {
 	}
 	c.DCRClientIdleTTL = idle
 	return nil
+}
+
+// loadCIMD reads the switch and the host allowlist of client ID metadata
+// documents. Both are parsed strictly: a value that is no boolean must not
+// be taken for off by an operator who meant on, and an entry that can never
+// match a host must not look like a restriction that is in force.
+func (c *Config) loadCIMD() error {
+	enabled, err := envBoolStrict("TOOLMESH_CIMD_ENABLED", false)
+	if err != nil {
+		return err
+	}
+	c.CIMDEnabled = enabled
+
+	// "*" says in words what the unset variable means: any public host.
+	if strings.TrimSpace(envStr("TOOLMESH_CIMD_HOSTS", "")) == "*" {
+		return nil
+	}
+	for _, h := range strings.Split(envStr("TOOLMESH_CIMD_HOSTS", ""), ",") {
+		entry := strings.ToLower(strings.TrimSpace(h))
+		if entry == "" {
+			continue
+		}
+		if !validHostPattern(entry) {
+			return fmt.Errorf("invalid TOOLMESH_CIMD_HOSTS entry %q (must be a host name such as claude.ai, or *.example.com for any subdomain; no scheme, port or path; * alone allows every host)", entry)
+		}
+		c.CIMDHosts = append(c.CIMDHosts, entry)
+	}
+	return nil
+}
+
+// validHostPattern reports whether entry, already in lower case, is a host
+// name or "*." followed by one.
+func validHostPattern(entry string) bool {
+	host := strings.TrimPrefix(entry, "*.")
+	if host == "" || len(host) > 253 {
+		return false
+	}
+	for label := range strings.SplitSeq(host, ".") {
+		if label == "" || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for i := 0; i < len(label); i++ {
+			ch := label[i]
+			if (ch < 'a' || ch > 'z') && (ch < '0' || ch > '9') && ch != '-' {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // LoginThrottleDisabled lists the failed-login limits that are switched off,

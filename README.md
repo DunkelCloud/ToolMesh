@@ -82,7 +82,7 @@ The script runs in a sandbox (goja) inside ToolMesh, and each `toolmesh.*` call 
 
 ToolMesh is at version 0.x. A minor release can still change the configuration; the [changelog](CHANGELOG.md) lists under *Changed* and *Deprecated* what an operator has to adjust.
 
-`docker compose up` pulls the latest release (`ghcr.io/dunkelcloud/toolmesh:latest`, at present v0.6.0). This README describes `main`; when `main` is ahead of the latest release, this section names what the release does not have yet. At present that is the credentials of users (`user_credentials` in `backends.yaml` and the page `/credentials`), built-in TLS (`TOOLMESH_TLS_ACME`, `TOOLMESH_TLS_CERT`), MCP revision 2026-07-28 (the release speaks the revisions up to 2025-11-25) and commands over SSH (`transport: ssh`).
+`docker compose up` pulls the latest release (`ghcr.io/dunkelcloud/toolmesh:latest`, at present v0.6.0). This README describes `main`; when `main` is ahead of the latest release, this section names what the release does not have yet. At present that is the credentials of users (`user_credentials` in `backends.yaml` and the page `/credentials`), built-in TLS (`TOOLMESH_TLS_ACME`, `TOOLMESH_TLS_CERT`), MCP revision 2026-07-28 (the release speaks the revisions up to 2025-11-25), commands over SSH (`transport: ssh`) and OAuth clients that name themselves by a client ID metadata document (with the release, every client registers at `/register`).
 
 ## Getting started
 
@@ -268,6 +268,8 @@ The endpoint speaks MCP revision 2026-07-28, which has no sessions and no handsh
 ## Authentication
 
 Clients sign in with OAuth 2.1, which suits clients with a login dialog, or send an API key as bearer token, which suits Claude Code and scripts. Both work side by side. OAuth state (tokens, codes, registered clients) is kept in Redis and survives restarts.
+
+An OAuth client needs no setup on the ToolMesh side: it registers at `/register`. With `TOOLMESH_CIMD_ENABLED=true` a client can also name itself by the URL of its client ID metadata document, the way of MCP revision 2026-07-28. ToolMesh then fetches that document: only from public addresses, without following redirects, limited in time, size and number, and from the hosts in `TOOLMESH_CIMD_HOSTS` alone once that is set. Either way, being known gives a client no access: a user has to log in. The redirect back to the client carries the issuer as `iss` (RFC 9207). See [client registration](docs/configuration.md#client-registration).
 
 For one person, `TOOLMESH_AUTH_PASSWORD` (OAuth login) or `TOOLMESH_API_KEY` in `.env` is enough. `TOOLMESH_AUTH_USER`, `TOOLMESH_AUTH_PLAN` and `TOOLMESH_AUTH_ROLES` set the identity (defaults: `owner`, `pro`, `admin`).
 

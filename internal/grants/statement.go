@@ -24,6 +24,7 @@ import (
 
 	"github.com/DunkelCloud/ToolMesh/internal/authz"
 	"github.com/DunkelCloud/ToolMesh/internal/bip322"
+	"github.com/DunkelCloud/ToolMesh/internal/userctx"
 )
 
 // StatementVersion is the first line of every statement. A change of what a
@@ -199,9 +200,14 @@ func missing(all, kept []string) []string {
 	return out
 }
 
-// connection describes what the grant is bound to besides the user.
+// connection describes what the grant is bound to besides the user: an API
+// key, one sign-in of an OAuth client whose client_id every installation of
+// it shares, or the caller id.
 func connection(g Grant) string {
-	if g.GrantKey != "" {
+	switch {
+	case strings.HasPrefix(g.GrantKey, userctx.GrantKeyLoginPrefix):
+		return g.CallerID + ", sign-in " + g.GrantKey
+	case g.GrantKey != "":
 		return "API key " + g.GrantKey
 	}
 	return g.CallerID

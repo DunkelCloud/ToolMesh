@@ -73,19 +73,31 @@ type AuthCode struct {
 	// CredentialFP fingerprints the credential the user logged in with,
 	// carried over into the tokens (see TokenInfo.CredentialFP).
 	CredentialFP string `json:"credential_fp,omitempty"`
+	// ClientName is the client_name of a client that is identified by a
+	// client ID metadata document. No registration is stored for such a
+	// client, so the code carries the name to the token. Empty for
+	// registered clients, whose name is in their registration.
+	ClientName string `json:"client_name,omitempty"`
 }
 
 // TokenInfo represents an access or refresh token with associated user data.
 type TokenInfo struct {
-	AccessToken      string    `json:"access_token"`
-	RefreshToken     string    `json:"refresh_token"`
-	ClientID         string    `json:"client_id"`
-	UserID           string    `json:"user_id"`
-	CompanyID        string    `json:"company_id"`
-	Plan             string    `json:"plan"`
-	Roles            []string  `json:"roles"`
-	CallerID         string    `json:"caller_id,omitempty"`
-	CallerName       string    `json:"caller_name,omitempty"`
+	AccessToken  string   `json:"access_token"`
+	RefreshToken string   `json:"refresh_token"`
+	ClientID     string   `json:"client_id"`
+	UserID       string   `json:"user_id"`
+	CompanyID    string   `json:"company_id"`
+	Plan         string   `json:"plan"`
+	Roles        []string `json:"roles"`
+	CallerID     string   `json:"caller_id,omitempty"`
+	CallerName   string   `json:"caller_name,omitempty"`
+	// GrantKey identifies the sign-in the token comes from, for a client
+	// whose client_id is the URL of its metadata document. Every
+	// installation of such a client has the same client_id, so grants of
+	// kits are bound to the sign-in instead (userctx.UserContext.GrantKey).
+	// It is carried over at every refresh. Empty for registered clients,
+	// whose client_id belongs to one registration.
+	GrantKey         string    `json:"grant_key,omitempty"`
 	Scope            string    `json:"scope"`
 	ExpiresAt        time.Time `json:"expires_at"`
 	RefreshExpiresAt time.Time `json:"refresh_expires_at,omitempty"`

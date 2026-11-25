@@ -536,6 +536,19 @@ func main() {
 		"maxFailuresPerIP", cfg.LoginMaxFailuresPerIP,
 		"windowSeconds", cfg.LoginFailureWindow)
 
+	// An OAuth client may name itself by the URL of its metadata document,
+	// which the authorization endpoint then fetches. The log says once what
+	// this instance fetches, because the fetch is something a visitor
+	// causes, not the operator.
+	switch {
+	case !cfg.CIMDEnabled:
+		logger.Info("client ID metadata documents are off, OAuth clients register at /register; TOOLMESH_CIMD_ENABLED=true accepts them")
+	case len(cfg.CIMDHosts) == 0:
+		logger.Info("client ID metadata documents are fetched from any public https host; TOOLMESH_CIMD_HOSTS names the hosts")
+	default:
+		logger.Info("client ID metadata documents are fetched from the listed hosts only", "hosts", cfg.CIMDHosts)
+	}
+
 	httpMux := http.NewServeMux()
 	// SetupRoutes registers /blobs/ (GET/HEAD capability-based, DELETE
 	// authenticated) and /files/upload when a blob store is configured.

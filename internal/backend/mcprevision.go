@@ -16,6 +16,7 @@ package backend
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -33,6 +34,8 @@ const (
 	// mcpRevisionHandshake is the newest revision that opens with
 	// initialize, the one the adapter asks for when it falls back.
 	mcpRevisionHandshake = "2025-11-25"
+	// mcpRevisionStateless is the first revision without the handshake.
+	mcpRevisionStateless = "2026-07-28"
 
 	// mcpProbeTimeout bounds the attempt in the newer way. A server of the
 	// older generation normally answers the unknown request with an error
@@ -79,6 +82,13 @@ func (a *MCPAdapter) newClient(backendName string) *mcp.Client {
 		// with an error for the caller, instead of the SDK trying to supply
 		// the input and repeating the call.
 		MultiRoundTrip: &mcp.MultiRoundTripOptions{Disabled: true},
+		// A backend that says its tool list has changed has the list read
+		// again. With the handler set, the SDK also asks a server of the
+		// stateless revision for these notifications, which such a server
+		// sends to a client that subscribed only.
+		ToolListChangedHandler: func(context.Context, *mcp.ToolListChangedRequest) {
+			a.toolListChanged(backendName)
+		},
 	})
 	client.AddReceivingMiddleware(func(next mcp.MethodHandler) mcp.MethodHandler {
 		return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
@@ -93,7 +103,8 @@ func (a *MCPAdapter) newClient(backendName string) *mcp.Client {
 }
 
 // openSession connects to a backend and settles the protocol revision with
-// it. The caller holds the adapter lock.
+// it. It returns the session and the function that releases what the session
+// holds, to be called once the session has ended. The caller holds conn.op.
 //
 // The SDK asks in the way of the stateless revision first and falls back to
 // initialize when the server answers that with an error. Over HTTP that is
@@ -106,69 +117,65 @@ func (a *MCPAdapter) newClient(backendName string) *mcp.Client {
 // that is remembered, so that a reconnect goes straight to the handshake;
 // the memory is dropped when the handshake fails, and the next connect asks
 // anew.
-func (a *MCPAdapter) openSession(ctx context.Context, name string, conn *backendConn) (*mcp.ClientSession, error) {
+func (a *MCPAdapter) openSession(ctx context.Context, name string, conn *backendConn) (*mcp.ClientSession, context.CancelFunc, error) {
 	client := a.newClient(name)
 
 	if conn.entry.Transport != transportTypeSTDIO {
-		transport, err := a.createTransport(ctx, conn.entry)
-		if err != nil {
-			return nil, fmt.Errorf("create transport: %w", err)
-		}
 		var opts *mcp.ClientSessionOptions
 		if usesSSETransport(conn.entry) {
 			// The transport of 2024-11-05: there is nothing newer to ask for.
 			opts = &mcp.ClientSessionOptions{ProtocolVersion: mcpRevisionHandshake}
 		}
-		session, err := connectWithin(ctx, client, transport, mcpHandshakeTimeout, opts)
+		session, release, err := a.connectOnce(ctx, client, conn.entry, a.currentPace().handshake, opts)
 		if err != nil {
-			return nil, fmt.Errorf("connect to %s: %w", name, err)
+			return nil, nil, connectError(name, err)
 		}
-		return session, nil
+		return session, release, nil
 	}
 
 	var probeErr error
 	if !conn.handshakeOnly {
-		transport, err := a.createTransport(ctx, conn.entry)
-		if err != nil {
-			return nil, fmt.Errorf("create transport: %w", err)
-		}
 		probeTimeout := mcpProbeTimeout
 		if a.probeTimeout > 0 {
 			probeTimeout = a.probeTimeout
 		}
-		session, err := connectWithin(ctx, client, transport, probeTimeout, nil)
+		session, release, err := a.connectOnce(ctx, client, conn.entry, probeTimeout, nil)
 		if err == nil {
-			return session, nil
+			return session, release, nil
 		}
-		if ctx.Err() != nil {
-			return nil, fmt.Errorf("connect to %s: %w", name, err)
+		var setup *transportSetupError
+		if errors.As(err, &setup) || ctx.Err() != nil {
+			return nil, nil, connectError(name, err)
 		}
 		probeErr = err
 		a.logger.Debug("backend did not answer without the initialize handshake, trying the handshake on a new connection",
-			"name", name, "error", err)
+			"name", name, "error", loggableError(err))
 	}
 
-	transport, err := a.createTransport(ctx, conn.entry)
+	session, release, err := a.connectOnce(ctx, client, conn.entry, a.currentPace().handshake, &mcp.ClientSessionOptions{ProtocolVersion: mcpRevisionHandshake})
 	if err != nil {
-		return nil, fmt.Errorf("create transport: %w", err)
-	}
-	session, err := connectWithin(ctx, client, transport, mcpHandshakeTimeout, &mcp.ClientSessionOptions{ProtocolVersion: mcpRevisionHandshake})
-	if err != nil {
+		var setup *transportSetupError
+		if errors.As(err, &setup) {
+			return nil, nil, err
+		}
 		conn.handshakeOnly = false
 		if probeErr != nil {
-			return nil, fmt.Errorf("connect to %s: %w (without the initialize handshake: %v)", name, err, probeErr) //nolint:errorlint // one error is the cause, the other is told
+			return nil, nil, fmt.Errorf("connect to %s: %w (without the initialize handshake: %v)", name, err, probeErr) //nolint:errorlint // one error is the cause, the other is told
 		}
-		return nil, fmt.Errorf("connect to %s: %w", name, err)
+		return nil, nil, connectError(name, err)
 	}
 	conn.handshakeOnly = probeErr != nil || conn.handshakeOnly
-	return session, nil
+	return session, release, nil
 }
 
-// connectWithin opens one MCP connection, giving up after timeout.
-func connectWithin(ctx context.Context, client *mcp.Client, transport mcp.Transport, timeout time.Duration, opts *mcp.ClientSessionOptions) (*mcp.ClientSession, error) {
-	connectCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	return client.Connect(connectCtx, transport, opts)
+// connectError names the backend in the error of a failed connect. An error
+// about the transport itself says what it is about already.
+func connectError(name string, err error) error {
+	var setup *transportSetupError
+	if errors.As(err, &setup) {
+		return err
+	}
+	return fmt.Errorf("connect to %s: %w", name, err)
 }
 
 // sessionRevision returns the protocol revision a session runs in.

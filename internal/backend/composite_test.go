@@ -492,6 +492,115 @@ func TestCompositeBackend_ToolSetVersion(t *testing.T) {
 	}
 }
 
+// changingBackend is a child whose tool list changes on its own, the way the
+// tools of an MCP server do: set puts another list in place and then says so.
+type changingBackend struct {
+	mu      sync.Mutex
+	tools   []ToolDescriptor
+	changed func()
+}
+
+func (b *changingBackend) Execute(_ context.Context, _ string, _ map[string]any) (*ToolResult, error) {
+	return &ToolResult{}, nil
+}
+
+func (b *changingBackend) ListTools(_ context.Context) ([]ToolDescriptor, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.tools, nil
+}
+
+func (b *changingBackend) Healthy(_ context.Context) error { return nil }
+
+func (b *changingBackend) OnToolSetChange(fn func()) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.changed = fn
+}
+
+func (b *changingBackend) set(names ...string) {
+	b.mu.Lock()
+	b.tools = b.tools[:0:0]
+	for _, name := range names {
+		b.tools = append(b.tools, ToolDescriptor{Name: name})
+	}
+	changed := b.changed
+	b.mu.Unlock()
+	if changed != nil {
+		changed()
+	}
+}
+
+// A child that changes its own tool list moves the tool set version too,
+// however the child came into the composite, and the new tools are listed
+// once the version moved. Without that, what is built from a listing would
+// follow a hot reload but not an MCP server that added a tool.
+func TestCompositeBackend_ToolSetVersionFollowsChildren(t *testing.T) {
+	const added = "late"
+	tests := []struct {
+		name string
+		// build returns the composite with child in it and the name the
+		// composite lists the child's tool under.
+		build func(child *changingBackend) (*CompositeBackend, string)
+	}{
+		{
+			name: "child given to NewCompositeBackend",
+			build: func(child *changingBackend) (*CompositeBackend, string) {
+				return NewCompositeBackend(map[string]ToolBackend{"named": child}), "named_" + added
+			},
+		},
+		{
+			name: "child added as a named backend",
+			build: func(child *changingBackend) (*CompositeBackend, string) {
+				c := NewCompositeBackend(map[string]ToolBackend{})
+				c.AddNamed("named", child)
+				return c, "named_" + added
+			},
+		},
+		{
+			name: "child added as a passthrough",
+			build: func(child *changingBackend) (*CompositeBackend, string) {
+				c := NewCompositeBackend(map[string]ToolBackend{})
+				c.AddPassthrough(child)
+				return c, added
+			},
+		},
+		{
+			name: "Swap, passthrough",
+			build: func(child *changingBackend) (*CompositeBackend, string) {
+				c := NewCompositeBackend(map[string]ToolBackend{})
+				c.Swap(map[string]ToolBackend{}, []ToolBackend{child})
+				return c, added
+			},
+		},
+		{
+			name: "Swap, named",
+			build: func(child *changingBackend) (*CompositeBackend, string) {
+				c := NewCompositeBackend(map[string]ToolBackend{})
+				c.Swap(map[string]ToolBackend{"named": child}, nil)
+				return c, "named_" + added
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			child := &changingBackend{}
+			c, wantTool := tc.build(child)
+			before := c.ToolSetVersion()
+
+			child.set(added)
+			if got := c.ToolSetVersion(); got <= before {
+				t.Fatalf("version after the child changed = %d, want more than %d", got, before)
+			}
+			tools, _ := c.ListTools(context.Background())
+			if len(tools) != 1 || tools[0].Name != wantTool {
+				t.Errorf("tools = %+v, want only %s", tools, wantTool)
+			}
+		})
+	}
+}
+
 // TestCompositeBackend_ConcurrentAccess exercises AddNamed / Execute /
 // ListTools in parallel. The point is to detect data races under -race,
 // not to assert on outputs.

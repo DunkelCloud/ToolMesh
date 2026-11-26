@@ -162,3 +162,19 @@ type ToolAliasResolver interface {
 type ToolSetVersioner interface {
 	ToolSetVersion() uint64
 }
+
+// ToolSetChangeNotifier is implemented by a backend whose own tool list can
+// change while it runs, such as the adapter for MCP servers: a server adds
+// and removes tools, and comes back from a restart with another list. Such
+// a backend calls the function given to OnToolSetChange each time its
+// ListTools reports other tools than before, and only after the new list is
+// in place.
+//
+// The composite backend sets the function on its children and counts their
+// changes in its ToolSetVersion, so that what is derived from a listing
+// follows a child's change as it follows a hot reload. The function must
+// return at once; it is called from a goroutine of the backend. A second
+// call of OnToolSetChange replaces the function, nil removes it.
+type ToolSetChangeNotifier interface {
+	OnToolSetChange(fn func())
+}

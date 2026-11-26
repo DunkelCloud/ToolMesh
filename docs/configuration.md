@@ -1670,7 +1670,7 @@ mail addresses would be unreadable.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `TOOLMESH_MCP_TIMEOUT` | `120` | HTTP client timeout in seconds for calls to downstream MCP servers |
+| `TOOLMESH_MCP_TIMEOUT` | `120` | Timeout in seconds for a request to a downstream MCP server, from sending it until its answer has been read. The streams on which a server sends notifications are not bound by it. |
 | `TOOLMESH_EXEC_TIMEOUT` | `120` | Tool execution timeout in seconds — context deadline for a single backend call. Falls back to `TOOLMESH_ACTIVITY_TIMEOUT` if set (backwards compat). |
 | `TOOLMESH_CODE_TIMEOUT` | `120` | Wall-clock budget in seconds for one `execute_code` run. Bounds a whole orchestration of `toolmesh.*` calls, so set it at least as high as the slowest backend timeout times the number of calls chained in one run (e.g. a committee of slow models). |
 | `TOOLMESH_CODE_MAX_CONCURRENT` | `16` | `execute_code` runs in progress at once; `0` for no limit. One user may hold at most half of them, rounded up (8 with the default), so a single caller cannot keep every other user waiting; a run beyond that share is refused at once. A run that finds every slot taken waits up to 10 seconds for one and is then refused with an error result. On a deployment with a single user, that user can run half the limit in parallel; raise the limit there if needed. Must be an integer of `0` or more; anything else stops the server at startup. |
@@ -1715,7 +1715,7 @@ The two limits must be plain integers of bytes, `0` or more; anything else stops
 
 Units (`TOOLMESH_UNITS_DIR`) and the built-in `echo` backend are not part of `backends.yaml`. They are loaded at startup and stay as they are through every reload; changes to a unit, to its `unit.yaml` or to a DADL a unit uses take effect after a restart. A reload that would load a backend under the name of a running unit is refused as a whole: the log line `hot-reload failed, keeping current backends` names the unit, and the previous backends stay. Rename the entry, or restart ToolMesh. At startup an entry in `backends.yaml` takes precedence, and a unit of the same name is skipped.
 
-A reload connects every MCP backend anew: new sessions, and for `transport: stdio` a new child process per backend. The sessions and child processes of the backends it replaces are ended once the calls already running on them have returned, so a reload cuts no call off; calls that start after the reload go to the new sessions. The wait lasts as long as the slowest of those calls, which `TOOLMESH_EXEC_TIMEOUT` bounds. Every ended session is logged as `disconnected backend` with the backend's name. A reload that fails keeps the running sessions and ends those it opened itself. At shutdown the sessions in use are ended.
+A reload connects every MCP backend anew: new sessions, and for `transport: stdio` a new child process per backend. The sessions and child processes of the backends it replaces are ended once the calls already running on them have returned, so a reload cuts no call off; calls that start after the reload go to the new sessions. The wait lasts as long as the slowest of those calls, which `TOOLMESH_EXEC_TIMEOUT` bounds. Every ended session is logged as `disconnected backend` with the backend's name. A reload that fails keeps the running sessions and ends those it opened itself. At shutdown the sessions in use are ended: a call that is still running gets 5 seconds to return and the child process of a `stdio` backend 5 seconds to end, then both are stopped.
 
 ### Credential and host binding
 
@@ -1819,6 +1819,32 @@ A tool parameter that a backend marks with `x-mcp-header` is repeated in the `Mc
 Where the name of one MCP backend starts the name of another, as `git` and `git_hub` do, a tool name belongs to the backend with the longest name that starts it: `git_hub_search` is the tool `search` of `git_hub`, on every call. That is the rule the rights of a call are checked by. A call that this backend does not offer fails; it is not passed on to the backend with the shorter name. A tool of the shorter backend whose name falls under the longer one (`hub_search` of `git`) cannot be called. It is not listed and not promoted, and the log names it with the warning `tool is not reachable: its name is routed to another backend`. Renaming one of the two backends makes it reachable again.
 
 A backend that returns its tool list in pages is read to the end of the list, for at most 100 pages. A backend that returns a cursor even then is cut off there, with the warning `tool list cut off`.
+
+#### Tools that change while ToolMesh runs
+
+An MCP server can add and remove tools while it runs, and come back from a restart with another list. ToolMesh follows that without a restart of its own:
+
+- **When the backend says so.** A backend that sends `notifications/tools/list_changed` has its list read again at once. A backend that sends many of them is read once every 5 seconds at most.
+- **At an interval.** The list of every connected backend is read again every 60 seconds, because not every change is announced: a server may send no notification, the stream a notification arrives on may be down, and a server of revision 2026-07-28 that was restarted answers the next request like the one before. The stream of such a server is not opened again once it has ended; from then on its changes are found by this reading.
+- **After the connection was lost.** A backend whose session has ended is connected again in the background, and its list is read over the new session. That happens at once for a session that had lasted a minute, and at the growing intervals below for a backend whose sessions end sooner. A call that finds the connection closed connects the backend itself and is sent once more, as before. A call that was running when the session ended is not sent again: the backend may have run it.
+- **When the backend was down.** A backend that cannot be connected when ToolMesh starts, or when `backends.yaml` is loaded again, is tried again after 5 seconds and then at doubling intervals of up to 5 minutes. The log line `backend is not connected, trying again later` names the backend, the error and the wait. A call to a backend that is not connected fails at once, and has the next attempt made within 5 seconds.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `TOOLMESH_MCP_REFRESH_INTERVAL` | `60` | Seconds between two readings of the tool list of a connected MCP backend, at most `86400`. `0` turns the periodic reading off: the list then follows notifications and reconnects only, and a server of revision 2026-07-28 whose stream has ended is not followed until it is connected again. |
+
+A changed list shows in `discover_tools`, in `execute_code` and, for tools under `expose_tools`, in `tools/list`. A script that is running in `execute_code` keeps the tools it started with; the next script gets the new ones. Every reading goes through the checks of the first: `include_tools` decides what the backend exposes, a tool whose name is routed to another backend is left out, and the entries of `include_tools` and `expose_tools` are compared with what the backend offers. A tool under `expose_tools` that the backend did not offer at startup is promoted once the backend offers it.
+
+A reading that finds another list is logged as `backend tool list changed`, with the names of the tools `added`, `removed` and `changed`, at most 20 names each. A tool counts as changed when it keeps its name and gets another description or another input schema. A reading that finds the list as it was logs nothing. While a backend is slow to answer, calls to the other backends and to its own tools go on.
+
+A backend of revision 2026-07-28 that returns its tool list in pages gets a new session after 1000 pages read with a cursor, logged as `replacing the session of backend`. The SDK ToolMesh uses keeps every such page for as long as a session lasts. Calls that are running on the old session finish there.
+
+What this means for a configuration:
+
+- A tool that a backend adds is available to every caller whose rights cover it. A grant for a whole backend (`backends`, `all_tools`) covers the tools the backend adds later, as it does after a restart; a grant or a deny that names tools covers those names only, so a deny does not reach a tool the backend adds under another name. Where a backend must not gain tools on its own account, name its tools in `include_tools`: a tool outside the list is neither listed nor callable, whenever the backend starts to offer it.
+- The description and the input schema of a tool are what a model reads about it, and a backend can change them at any time. The `changed` names in the log line are the record of that.
+
+ToolMesh's own endpoint sends no change notifications (see [Protocol revisions](#protocol-revisions)); a client gets a changed list with its next `tools/list`.
 
 ### SSH backends
 

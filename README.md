@@ -172,7 +172,7 @@ backends:
     api_key_env: "NOTES_API_KEY"
 ```
 
-with `CREDENTIAL_NOTES_API_KEY=...` in `.env`. A local MCP server runs with `transport: stdio`, `command` and `args`; [config/backends.yaml.example](config/backends.yaml.example) shows all fields. The server may speak MCP revision 2026-07-28 or an older one with the `initialize` handshake; ToolMesh finds out when it connects ([MCP server backends](docs/configuration.md#mcp-server-backends)).
+with `CREDENTIAL_NOTES_API_KEY=...` in `.env`. A local MCP server runs with `transport: stdio`, `command` and `args`; [config/backends.yaml.example](config/backends.yaml.example) shows all fields. The server may speak MCP revision 2026-07-28 or an older one with the `initialize` handshake; ToolMesh finds out when it connects ([MCP server backends](docs/configuration.md#mcp-server-backends)). Tools that the server adds or removes while it runs show up in ToolMesh without a restart, and a server that was down at the start is connected once it is up ([Tools that change while ToolMesh runs](docs/configuration.md#tools-that-change-while-toolmesh-runs)).
 
 ### Commands on a host
 

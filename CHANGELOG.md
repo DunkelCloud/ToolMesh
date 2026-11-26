@@ -155,7 +155,8 @@ for the full narrative and details.
   list of every connected backend is read again every 60 seconds for the
   changes nobody announces (`TOOLMESH_MCP_REFRESH_INTERVAL`, `0` turns that
   off). A backend that is down when ToolMesh starts is tried again at
-  growing intervals of up to 5 minutes. A changed list shows in
+  growing intervals of up to 5 minutes, and within 5 seconds of a call that
+  needs it. A changed list shows in
   `discover_tools`, in `execute_code` and, for `expose_tools`, in
   `tools/list`, without a restart of ToolMesh; until now `execute_code`
   kept the tools of the start, and a backend that was down at the start
@@ -333,7 +334,24 @@ for the full narrative and details.
 - Closing the sessions of MCP server backends, at shutdown and after a
   reload of `backends.yaml`, also ends a connect that is still in progress,
   and no session is opened for a set of backends that a reload has
-  replaced.
+  replaced. A call that is still running at shutdown gets 5 seconds to
+  return, and the child process of a `stdio` backend 5 seconds to end;
+  until now a backend that did not answer could hold up the shutdown.
+- `TOOLMESH_MCP_TIMEOUT` bounds the requests to an MCP server backend that
+  are calls, and no longer the streams on which a server sends its
+  notifications. It cut such a stream off every time it ran out, and after
+  several times in a row the connection to a server that keeps sessions
+  ended; a call running at that moment failed.
+- A backend on the HTTP+SSE transport (a `url` that ends in `/sse`) keeps
+  its event stream. The stream ended when the connect returned, so such a
+  backend listed no tools and its calls failed.
+- A connect to an MCP server backend that answers the handshake and then
+  leaves the stream for its notifications unanswered is given up within
+  about half a minute. It waited for `TOOLMESH_MCP_TIMEOUT` at least, and
+  held up the start of ToolMesh that long.
+- An MCP server backend whose connection could not be made again after it
+  was lost is tried again in the background. It stayed disconnected until
+  ToolMesh was restarted.
 
 - A REST response body over 10 MB was cut off at 10 MB and returned as a
   successful result; a JSON body was then neither complete nor valid, and the

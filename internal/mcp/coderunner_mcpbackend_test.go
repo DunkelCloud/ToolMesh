@@ -121,10 +121,12 @@ func newMCPBackendHandler(t *testing.T, host *mbHost) *Handler {
 // checkMCPBackendCatalog waits until a script can call the tool the backend
 // brought, and then checks the rest of the catalog: the tool the backend no
 // longer has is gone from execute_code and from discover_tools, the new one
-// is found by both.
+// is found by both. While it waits, scripts go on calling the tool the
+// backend had all along, as the callers of a backend do.
 func checkMCPBackendCatalog(t *testing.T, h *Handler) {
 	t.Helper()
 	waitFor(t, "execute_code to call the tool the backend added", func() bool {
+		_, _, _ = execScript(h, mbCallKept)
 		text, isErr, err := execScript(h, mbCallFresh)
 		return err == nil && !isErr && strings.Contains(text, mbFresh+" ran")
 	})
@@ -161,9 +163,9 @@ func TestExecuteCode_FollowsToolsAnMCPBackendAddsAndRemoves(t *testing.T) {
 	checkMCPBackendCatalog(t, h)
 }
 
-// An MCP backend restarts with another tool list. Once ToolMesh has
-// connected again, which it does on its own, execute_code and discover_tools
-// show the tools the backend has now.
+// An MCP backend restarts with another tool list. ToolMesh connects again,
+// here as soon as a call needs the backend, and execute_code and
+// discover_tools show the tools the backend has now.
 func TestExecuteCode_FollowsMCPBackendRestart(t *testing.T) {
 	host := newMBHost(t, mbServer(mbKept, mbOld))
 	h := newMCPBackendHandler(t, host)

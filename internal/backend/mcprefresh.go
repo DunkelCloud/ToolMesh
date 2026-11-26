@@ -35,6 +35,7 @@ import (
 //
 //   - connects a backend that is not connected, at growing intervals, so a
 //     backend that was down when ToolMesh started is there once it is up;
+//   - connects a backend again whose session has ended on its own;
 //   - reads the tool list again when the backend says it has changed
 //     (notifications/tools/list_changed);
 //   - reads it again at an interval all the same, because not every change
@@ -63,9 +64,23 @@ const (
 	mcpListTimeout = 60 * time.Second
 	// mcpRetryMin and mcpRetryMax bound the wait before the next attempt to
 	// connect a backend that is not connected. It starts at the lower value
-	// and doubles with every failed attempt.
+	// and doubles with every attempt, and with every session that did not
+	// last. A call that needs the backend has it tried after the lower
+	// value.
 	mcpRetryMin = 5 * time.Second
 	mcpRetryMax = 5 * time.Minute
+	// mcpStableSession is how long a session has to last to count as one
+	// that worked. A backend whose session ends after that is connected
+	// again at once; one whose sessions end sooner is connected at the
+	// growing intervals of a backend that cannot be connected at all.
+	mcpStableSession = time.Minute
+	// mcpCloseGrace is how long Close waits for running calls to return and
+	// for the children of stdio backends to end before it cuts them off.
+	mcpCloseGrace = 5 * time.Second
+	// mcpMaxCursorPages is how many pages asked for with a cursor a session
+	// of the stateless revision serves before it is replaced; see
+	// renewSession.
+	mcpMaxCursorPages = 1000
 
 	// maxLoggedToolNames bounds how many names one log line about a changed
 	// tool list carries per kind of change, and maxLoggedToolNameLen how
@@ -87,11 +102,15 @@ var (
 
 // mcpPace is the timing of the background work for the backends.
 type mcpPace struct {
-	refresh  time.Duration // interval of the periodic reading; 0 turns it off
-	minGap   time.Duration
-	list     time.Duration
-	retryMin time.Duration
-	retryMax time.Duration
+	refresh        time.Duration // interval of the periodic reading; 0 turns it off
+	minGap         time.Duration
+	list           time.Duration
+	handshake      time.Duration // bound of one attempt to connect
+	retryMin       time.Duration
+	retryMax       time.Duration
+	stable         time.Duration
+	closeGrace     time.Duration
+	maxCursorPages int
 }
 
 // currentPace returns the timing in force: the defaults, with the interval
@@ -101,11 +120,15 @@ func (a *MCPAdapter) currentPace() mcpPace {
 		return *a.pace
 	}
 	return mcpPace{
-		refresh:  refreshIntervalFromEnv(),
-		minGap:   mcpRefreshMinGap,
-		list:     mcpListTimeout,
-		retryMin: mcpRetryMin,
-		retryMax: mcpRetryMax,
+		refresh:        refreshIntervalFromEnv(),
+		minGap:         mcpRefreshMinGap,
+		list:           mcpListTimeout,
+		handshake:      mcpHandshakeTimeout,
+		retryMin:       mcpRetryMin,
+		retryMax:       mcpRetryMax,
+		stable:         mcpStableSession,
+		closeGrace:     mcpCloseGrace,
+		maxCursorPages: mcpMaxCursorPages,
 	}
 }
 
@@ -131,16 +154,17 @@ func refreshIntervalFromEnv() time.Duration {
 func (a *MCPAdapter) lifetime() context.Context {
 	a.lifeOnce.Do(func() {
 		a.life, a.lifeCancel = context.WithCancel(context.Background())
-		a.procs, a.procsCancel = context.WithCancel(context.Background())
+		a.hard, a.hardCancel = context.WithCancel(context.Background())
 	})
 	return a.life
 }
 
-// processes returns the context of the child processes of stdio backends,
-// which ends when Close is done.
-func (a *MCPAdapter) processes() context.Context {
+// untilStopped returns the context that ends when Close stops waiting: the
+// context of the child processes of stdio backends and of the connections
+// to the others.
+func (a *MCPAdapter) untilStopped() context.Context {
 	a.lifetime()
-	return a.procs
+	return a.hard
 }
 
 // isClosed reports whether Close has run.
@@ -155,6 +179,40 @@ func (a *MCPAdapter) currentSession(conn *backendConn) *mcp.ClientSession {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	return conn.session
+}
+
+// sessionState returns the session of a backend and whether that session
+// has ended on its own.
+func (a *MCPAdapter) sessionState(conn *backendConn) (session *mcp.ClientSession, ended bool) {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return conn.session, conn.ended
+}
+
+// sessionEnded records that a session is over and has the watcher look at
+// the backend. It is called for every session, also for one that was closed
+// here and is no longer the session of its backend; only the session in
+// place is marked.
+func (a *MCPAdapter) sessionEnded(conn *backendConn, session *mcp.ClientSession) {
+	a.mu.Lock()
+	if conn.session == session {
+		conn.ended = true
+	}
+	a.mu.Unlock()
+	a.wakeWatcher(conn)
+}
+
+// dropSession takes an ended session away from its backend, which is then
+// without one: a call fails at once instead of running into the dead
+// connection, and the watcher connects the backend again.
+func (a *MCPAdapter) dropSession(conn *backendConn, session *mcp.ClientSession) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.closed || conn.session != session {
+		return
+	}
+	conn.session, conn.ended = nil, false
+	a.retireLocked(session)
 }
 
 // OnToolSetChange implements [ToolSetChangeNotifier]: fn is called after the
@@ -194,11 +252,16 @@ func (a *MCPAdapter) toolListChanged(name string) {
 	a.wakeWatcher(conn)
 }
 
-// wakeWatcher tells the watcher of a backend to look at it now. It never
-// blocks: a wake that is already pending covers this one.
+// wakeWatcher tells the watcher of a backend to look at it now.
 func (a *MCPAdapter) wakeWatcher(conn *backendConn) {
+	signal(conn.wake)
+}
+
+// signal leaves a note in a channel that holds one. It never blocks: a note
+// that is already there covers this one.
+func signal(ch chan struct{}) {
 	select {
-	case conn.wake <- struct{}{}:
+	case ch <- struct{}{}:
 	default:
 	}
 }
@@ -220,16 +283,35 @@ func (a *MCPAdapter) startWatchers() {
 	})
 }
 
-// refreshBackend reads the tool list of a connected backend again and
-// returns the session it asked; see listLocked.
-func (a *MCPAdapter) refreshBackend(ctx context.Context, name string, conn *backendConn) (*mcp.ClientSession, error) {
+// usesListCache reports whether the SDK keeps the tool lists it reads over a
+// session, which it does in the stateless revision.
+func usesListCache(session *mcp.ClientSession) bool {
+	return sessionRevision(session) >= mcpRevisionStateless
+}
+
+// renewSession replaces the session of a backend with a new one once the
+// session has served more pages of tool lists than the pace allows.
+//
+// In the stateless revision the SDK keeps every page of a tool list it has
+// read, under the cursor the page was asked for with, and lets go of a page
+// only when the same cursor is asked again. A server whose cursors are new
+// with every listing therefore makes a session grow with each reading, and
+// the SDK looks through all of it on every call. A session is read for as
+// long as it lives, so it is replaced before that adds up: the new session
+// starts empty, and the old one ends when the calls running on it have
+// returned.
+func (a *MCPAdapter) renewSession(ctx context.Context, name string, conn *backendConn) {
 	conn.op.Lock()
 	defer conn.op.Unlock()
-	session := a.currentSession(conn)
-	if session == nil {
-		return nil, errNotConnected
+	if conn.cursorPages <= a.currentPace().maxCursorPages {
+		return
 	}
-	return session, a.listLocked(ctx, name, conn, session)
+	a.logger.Info("replacing the session of backend: it has read many pages of tool lists",
+		"name", name, "pages", conn.cursorPages)
+	if err := a.connectLocked(ctx, name, conn); err != nil && ctx.Err() == nil {
+		a.logger.Warn("replacing the session of backend failed, keeping the one it has",
+			"name", name, "error", loggableError(err))
+	}
 }
 
 // watchBackend is the background work for one backend, until ctx ends. See
@@ -238,42 +320,67 @@ func (a *MCPAdapter) refreshBackend(ctx context.Context, name string, conn *back
 // It is the only place that reads a tool list unasked, and it reads for one
 // backend at a time, so what a backend can make ToolMesh do by announcing
 // changes is one listing per mcpRefreshMinGap, on top of the periodic one.
+// A session is taken for lost only when it has ended, never for what an
+// error says: a backend chooses the text of its errors.
 func (a *MCPAdapter) watchBackend(ctx context.Context, name string, conn *backendConn) {
 	pace := a.currentPace()
-	retry := pace.retryMin
-	// lastAsked is when the list was last read because the backend asked.
-	var lastAsked time.Time
-	// failing remembers that the latest reading failed, so that a failure is
-	// logged when it starts and when it ends, not at every interval.
-	failing := false
+	var (
+		// retry is the wait before the next attempt to connect.
+		retry = pace.retryMin
+		// lastAttempt is when the watcher last tried to connect.
+		lastAttempt time.Time
+		// seen is the session the watcher last found in place, since when.
+		seen      *mcp.ClientSession
+		seenSince time.Time
+		// lastAsked is when the list was last read because the backend
+		// asked.
+		lastAsked time.Time
+		// failing remembers that the latest reading failed, so that a
+		// failure is logged when it starts and when it ends, not at every
+		// interval.
+		failing bool
+	)
 
 	for ctx.Err() == nil {
-		if a.currentSession(conn) == nil {
-			if !sleepCtx(ctx, retry) {
-				return
-			}
-			if a.currentSession(conn) != nil {
-				// A call has connected the backend meanwhile.
+		session, ended := a.sessionState(conn)
+		if session != nil && session != seen {
+			seen, seenSince, failing = session, time.Now(), false
+		}
+		if session != nil && ended {
+			a.logger.Warn("backend connection lost", "name", name)
+			a.dropSession(conn, session)
+			session = nil
+		}
+
+		if session == nil {
+			lasted := seen != nil && time.Since(seenSince) >= pace.stable
+			seen = nil
+			if lasted {
+				// A connection that had worked is made again at once.
 				retry = pace.retryMin
-				continue
+			} else {
+				if !awaitRetry(ctx, conn.want, retry, pace.retryMin, lastAttempt) {
+					return
+				}
+				retry = min(retry*2, pace.retryMax)
 			}
+			lastAttempt = time.Now()
 			if err := a.connectBackend(ctx, name, conn); err != nil {
 				if ctx.Err() != nil {
 					return
 				}
-				retry = min(retry*2, pace.retryMax)
 				a.logger.Warn("backend is not connected, trying again later",
 					"name", name, "error", loggableError(err), "retry_in", retry.String())
-				continue
 			}
-			retry = pace.retryMin
-			failing = false
 			continue
 		}
 
 		asked, ok := awaitWake(ctx, conn.wake, pace.refresh)
 		if !ok {
 			return
+		}
+		if _, ended := a.sessionState(conn); ended {
+			continue
 		}
 		if asked {
 			// The first notice is acted on at once, the next ones no
@@ -289,7 +396,7 @@ func (a *MCPAdapter) watchBackend(ctx context.Context, name string, conn *backen
 			lastAsked = time.Now()
 		}
 
-		session, err := a.refreshBackend(ctx, name, conn)
+		err := a.discoverTools(ctx, name, conn)
 		switch {
 		case ctx.Err() != nil:
 			return
@@ -298,26 +405,39 @@ func (a *MCPAdapter) watchBackend(ctx context.Context, name string, conn *backen
 				a.logger.Info("tool list of backend can be read again", "name", name)
 			}
 			failing = false
+			a.renewSession(ctx, name, conn)
 		case errors.Is(err, errNotConnected), errors.Is(err, errSessionReplaced):
-			// A call found the connection lost before the watcher did. It
-			// has connected the backend again, which read the list, or has
-			// left it without a session, which the next round takes up.
-		case isConnectionClosed(err):
-			// Replaced at once, without waiting for a call to run into it.
-			a.logger.Warn("backend connection lost, connecting again", "name", name, "error", loggableError(err))
-			if _, rerr := a.reconnectAfter(ctx, name, conn, session); rerr != nil && ctx.Err() == nil {
-				a.logger.Warn("backend is not connected, trying again later",
-					"name", name, "error", loggableError(rerr), "retry_in", retry.String())
-			}
-			failing = false
+			// A call found the connection lost and has connected the
+			// backend again, which read the list, or has left it without a
+			// session, which the next round takes up.
 		default:
-			// The backend keeps the list it had.
+			// The backend keeps the list it had. If the session is gone,
+			// it ends, and the next round finds it so.
 			if !failing {
 				a.logger.Warn("reading the tool list of backend failed, keeping the list it had",
 					"name", name, "error", loggableError(err))
 			}
 			failing = true
 		}
+	}
+}
+
+// awaitRetry waits before the next attempt to connect a backend: for wait,
+// or until a call wants the backend, but then no sooner than floor after
+// the last attempt. It reports false when ctx ended first.
+func awaitRetry(ctx context.Context, want <-chan struct{}, wait, floor time.Duration, last time.Time) bool {
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	case <-want:
+		if rest := floor - time.Since(last); rest > 0 {
+			return sleepCtx(ctx, rest)
+		}
+		return true
 	}
 }
 
@@ -401,19 +521,25 @@ func diffTools(before, after []ToolDescriptor) toolListChange {
 
 // loggedToolNames returns names as they go into a log line: all of them up
 // to maxLoggedToolNames, beyond that the first ones and how many more there
-// are, and of a name no more than maxLoggedToolNameLen bytes. A backend
-// chooses the names and their number, so both are bounded here.
+// are. A backend chooses the names and their number, so both are bounded
+// here.
 func loggedToolNames(names []string) []string {
 	shown := min(len(names), maxLoggedToolNames)
 	out := make([]string, 0, shown+1)
 	for _, name := range names[:shown] {
-		if len(name) > maxLoggedToolNameLen {
-			name = strings.ToValidUTF8(name[:maxLoggedToolNameLen], "") + "..."
-		}
-		out = append(out, name)
+		out = append(out, loggedToolName(name))
 	}
 	if rest := len(names) - shown; rest > 0 {
 		out = append(out, fmt.Sprintf("and %d more", rest))
 	}
 	return out
+}
+
+// loggedToolName returns a tool name as it goes into a log line: no more
+// than maxLoggedToolNameLen bytes of it.
+func loggedToolName(name string) string {
+	if len(name) > maxLoggedToolNameLen {
+		return strings.ToValidUTF8(name[:maxLoggedToolNameLen], "") + "..."
+	}
+	return name
 }

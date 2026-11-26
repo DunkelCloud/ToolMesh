@@ -157,10 +157,13 @@ func (h *rfHost) entry(name string) BackendEntry {
 // reading unless a test asks for one.
 func rfPace() mcpPace {
 	return mcpPace{
-		minGap:   20 * time.Millisecond,
-		list:     5 * time.Second,
-		retryMin: 20 * time.Millisecond,
-		retryMax: 100 * time.Millisecond,
+		minGap:         20 * time.Millisecond,
+		list:           5 * time.Second,
+		handshake:      mcpHandshakeTimeout,
+		retryMin:       20 * time.Millisecond,
+		retryMax:       100 * time.Millisecond,
+		closeGrace:     2 * time.Second,
+		maxCursorPages: mcpMaxCursorPages,
 	}
 }
 
@@ -382,8 +385,7 @@ func TestMCPAdapter_UnchangedListIsNoChange(t *testing.T) {
 
 // A backend with sessions that restarts with another tool list no longer
 // knows the session. The adapter connects again on its own, without a call
-// having to fail first, and lists what the backend offers now. A call made
-// right after the restart reaches the new server as well.
+// having to fail first, and lists what the backend offers now.
 func TestMCPAdapter_BackendRestartsWithAnotherToolList(t *testing.T) {
 	host := newRFHost(t, false, rfServer(nil, rfFirst, rfSecond))
 	tr := rfConnected(t, rfPace(), host.entry(rfLive))
@@ -391,10 +393,6 @@ func TestMCPAdapter_BackendRestartsWithAnotherToolList(t *testing.T) {
 
 	host.restart(rfServer(nil, rfFirst, rfThird))
 
-	result, err := tr.Execute(context.Background(), rfLiveFirst, map[string]any{})
-	if err != nil || result.IsError {
-		t.Fatalf("call after the restart: %v %+v", err, result)
-	}
 	rfEventually(t, "the adapter lists the tools of the restarted backend", func() bool {
 		return tr.lists(rfLiveFirst, rfLiveThird)
 	})
@@ -404,18 +402,9 @@ func TestMCPAdapter_BackendRestartsWithAnotherToolList(t *testing.T) {
 	if result, err := tr.Execute(context.Background(), rfLiveThird, map[string]any{}); err != nil || result.IsError {
 		t.Fatalf("call of the tool the restart brought: %v %+v", err, result)
 	}
-}
-
-// The same restart with nobody calling: the lost session alone has the
-// adapter connect again.
-func TestMCPAdapter_ReconnectsWithoutACall(t *testing.T) {
-	host := newRFHost(t, false, rfServer(nil, rfFirst))
-	tr := rfConnected(t, rfPace(), host.entry(rfLive))
-
-	host.restart(rfServer(nil, rfThird))
-	rfEventually(t, "the adapter lists the tools of the restarted backend", func() bool {
-		return tr.lists(rfLiveThird)
-	})
+	if _, err := tr.Execute(context.Background(), rfLiveSecond, map[string]any{}); err == nil {
+		t.Error("the tool the restart took away could still be called")
+	}
 }
 
 // A backend that is down when ToolMesh starts is connected once it is up.

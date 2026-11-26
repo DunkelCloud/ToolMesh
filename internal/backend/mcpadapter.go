@@ -226,15 +226,16 @@ type MCPAdapter struct {
 
 	// life ends when Close begins: it is the context of everything the
 	// adapter does on its own account, and ends every attempt to connect a
-	// backend. procs is the context of the child processes of stdio
-	// backends and ends when Close is done: until then a child gets the
-	// time to end on its own once its session is closed. Both are made on
-	// first use, see lifetime.
-	lifeOnce    sync.Once
-	life        context.Context
-	lifeCancel  context.CancelFunc
-	procs       context.Context
-	procsCancel context.CancelFunc
+	// backend. hard ends when Close stops waiting: it is the context of the
+	// child processes of stdio backends and of the HTTP requests to the
+	// others, which get a grace period to end on their own once their
+	// session is closed (see Close). Both are made on first use, see
+	// lifetime.
+	lifeOnce   sync.Once
+	life       context.Context
+	lifeCancel context.CancelFunc
+	hard       context.Context
+	hardCancel context.CancelFunc
 	// closed is set by Close; no session is opened after it. Guarded by mu.
 	closed bool
 	// watchers are the goroutines that keep the backends connected and their
@@ -252,8 +253,10 @@ type MCPAdapter struct {
 type backendConn struct {
 	entry BackendEntry
 	// session and tools are guarded by the adapter lock; discovery and
-	// reconnect rewrite them.
+	// reconnect rewrite them. ended says that the session in place has ended
+	// on its own: the backend went away or no longer knows it.
 	session *mcp.ClientSession
+	ended   bool
 	tools   []ToolDescriptor
 	// include is the include_tools allow-set, or nil when the backend places
 	// no restriction on its surface. It is built once at registration and
@@ -273,9 +276,14 @@ type backendConn struct {
 	// listed says that a tool list of the backend has been read. Guarded by
 	// op.
 	listed bool
+	// cursorPages counts the pages of tool lists that were asked for with a
+	// cursor over the session in place; see renewSession. Guarded by op.
+	cursorPages int
 	// wake tells the watcher of the backend to look at it now instead of at
-	// the next interval; see MCPAdapter.wakeWatcher.
+	// the next interval; see MCPAdapter.wakeWatcher. want tells it that a
+	// call found the backend without a session.
 	wake chan struct{}
+	want chan struct{}
 }
 
 // included reports whether a tool name is exposed by this backend. With no
@@ -383,6 +391,7 @@ func NewMCPAdapterFromEntries(entries []BackendEntry, creds credentials.Credenti
 			entry:   entry,
 			include: buildMCPIncludeSet(entry.IncludeTools),
 			wake:    make(chan struct{}, 1),
+			want:    make(chan struct{}, 1),
 		}
 		logger.Info("registered backend", "name", entry.Name, "transport", entry.Transport)
 		if len(entry.CredentialEnv) > 0 && entry.Transport != transportTypeSTDIO {
@@ -422,16 +431,23 @@ func (a *MCPAdapter) Connect(ctx context.Context) error {
 	return nil
 }
 
-// connectBackend connects a backend that has no session.
+// connectBackend connects a backend that has no session. Whoever finds the
+// backend connected when its turn comes, by a call or by the watcher, leaves
+// that session in place.
 func (a *MCPAdapter) connectBackend(ctx context.Context, name string, conn *backendConn) error {
 	conn.op.Lock()
 	defer conn.op.Unlock()
+	if a.currentSession(conn) != nil {
+		return nil
+	}
 	return a.connectLocked(ctx, name, conn)
 }
 
 // connectLocked opens a session to a backend, makes it the session of the
-// backend and reads the tool list over it. A backend whose tool list cannot
-// be read stays connected, with the list it had. The caller holds conn.op.
+// backend and reads the tool list over it. A session the backend had is
+// ended in the background once the calls running on it have returned. A
+// backend whose tool list cannot be read stays connected, with the list it
+// had. The caller holds conn.op.
 //
 // ctx bounds how long the caller waits. The session does not end with it:
 // it lives until it is replaced or the adapter is closed.
@@ -452,7 +468,7 @@ func (a *MCPAdapter) connectLocked(ctx context.Context, name string, conn *backe
 		"command", conn.entry.Command,
 	)
 
-	session, err := a.openSession(ctx, name, conn)
+	session, release, err := a.openSession(ctx, name, conn)
 	if err != nil {
 		return err
 	}
@@ -462,23 +478,26 @@ func (a *MCPAdapter) connectLocked(ctx context.Context, name string, conn *backe
 		// Close ran while the session was opened; nobody else would end it.
 		a.mu.Unlock()
 		_ = session.Close()
+		release()
 		return errAdapterClosed
 	}
 	previous := conn.session
-	conn.session = session
+	conn.session, conn.ended = session, false
 	// A session that ends without being closed here, because the backend
-	// went away or no longer knows it, has the watcher look at the backend
-	// at once: it then connects again without a call having to fail first.
-	// Started under the lock, so that Close either waits for this goroutine
-	// or has kept the session from being put in place.
+	// went away or no longer knows it, is marked as ended, and the watcher
+	// then connects the backend again without a call having to fail first.
+	// The goroutines are started under the lock, so that Close either waits
+	// for them or has kept the session from being put in place.
 	a.watchers.Go(func() {
 		_ = session.Wait()
-		a.wakeWatcher(conn)
+		release()
+		a.sessionEnded(conn, session)
 	})
-	a.mu.Unlock()
 	if previous != nil {
-		_ = previous.Close()
+		a.retireLocked(previous)
 	}
+	a.mu.Unlock()
+	conn.cursorPages = 0
 
 	a.logger.Info("connected to backend", "name", name, "transport", conn.entry.Transport, "protocol", sessionRevision(session))
 	a.flagDeprecated(name, conn.entry)
@@ -489,6 +508,14 @@ func (a *MCPAdapter) connectLocked(ctx context.Context, name string, conn *backe
 	}
 
 	return nil
+}
+
+// retireLocked ends a session that is no longer the session of its backend,
+// in the background: closing a session waits for the calls that run on it,
+// and nothing else should wait with it. The caller holds the adapter lock
+// for writing and has found the adapter open.
+func (a *MCPAdapter) retireLocked(session *mcp.ClientSession) {
+	a.watchers.Go(func() { _ = session.Close() })
 }
 
 func (a *MCPAdapter) createTransport(ctx context.Context, entry BackendEntry) (mcp.Transport, error) {
@@ -502,6 +529,9 @@ func (a *MCPAdapter) createTransport(ctx context.Context, entry BackendEntry) (m
 	}
 }
 
+// createHTTPTransport builds the transport of one connection to an HTTP
+// backend. ctx is the context of that connection: every request the
+// transport sends ends with it (see sessionTransport).
 func (a *MCPAdapter) createHTTPTransport(ctx context.Context, entry BackendEntry) (mcp.Transport, error) {
 	origin, err := url.Parse(entry.URL)
 	if err != nil {
@@ -512,8 +542,11 @@ func (a *MCPAdapter) createHTTPTransport(ctx context.Context, entry BackendEntry
 	// is a request to another origin from any other source, such as the
 	// endpoint event of a legacy SSE server. Otherwise Go would carry the
 	// Mcp-Session-Id header, and on 307/308 the JSON-RPC body, to that host.
+	//
+	// The client has no Timeout of its own: that would bound the streams a
+	// server sends its notifications on like any call and cut them off.
+	// sessionTransport bounds the requests that are calls.
 	httpClient := &http.Client{
-		Timeout:       envDuration("TOOLMESH_MCP_TIMEOUT", 120*time.Second),
 		CheckRedirect: mcpRedirectPolicy,
 		Transport:     &originLockTransport{base: http.DefaultTransport, origin: origin},
 	}
@@ -529,6 +562,12 @@ func (a *MCPAdapter) createHTTPTransport(ctx context.Context, entry BackendEntry
 			token:  apiKey,
 			origin: origin,
 		}
+	}
+
+	httpClient.Transport = &sessionTransport{
+		base:    httpClient.Transport,
+		scope:   ctx,
+		timeout: envDuration("TOOLMESH_MCP_TIMEOUT", 120*time.Second),
 	}
 
 	// Try SSE transport first (for legacy servers like mcp/everything),
@@ -553,7 +592,7 @@ func (a *MCPAdapter) createSTDIOTransport(entry BackendEntry) (mcp.Transport, er
 	// The child lives as long as the adapter, not as long as the context of
 	// whoever connects it: a backend that is connected again while a call
 	// waits for it would otherwise be ended together with that call.
-	cmd := exec.CommandContext(a.processes(), entry.Command, entry.Args...) //nolint:gosec // command from trusted backends config
+	cmd := exec.CommandContext(a.untilStopped(), entry.Command, entry.Args...) //nolint:gosec // command from trusted backends config
 	if len(entry.CredentialEnv) > 0 {
 		extra, err := a.credentialEnv(entry)
 		if err != nil {
@@ -603,21 +642,21 @@ const maxToolListPages = 100
 // listed up to that page.
 //
 // The loop asks page by page instead of ranging over ClientSession.Tools,
-// which follows a cursor without any bound.
-func (a *MCPAdapter) listAllTools(ctx context.Context, name string, session *mcp.ClientSession) ([]*mcp.Tool, error) {
-	var tools []*mcp.Tool
+// which follows a cursor without any bound. It also returns the number of
+// pages it read.
+func (a *MCPAdapter) listAllTools(ctx context.Context, name string, session *mcp.ClientSession) (tools []*mcp.Tool, pages int, err error) {
 	params := &mcp.ListToolsParams{}
 	for page := 1; ; page++ {
 		result, err := session.ListTools(ctx, params)
 		if err != nil {
 			if page == 1 {
-				return nil, fmt.Errorf("list tools: %w", err)
+				return nil, 0, fmt.Errorf("list tools: %w", err)
 			}
-			return nil, fmt.Errorf("list tools, page %d: %w", page, err)
+			return nil, 0, fmt.Errorf("list tools, page %d: %w", page, err)
 		}
 		tools = append(tools, result.Tools...)
 		if result.NextCursor == "" {
-			return tools, nil
+			return tools, page, nil
 		}
 		if page == maxToolListPages {
 			a.logger.Warn("tool list cut off: the backend returns a cursor with every page, tools of further pages are missing",
@@ -625,7 +664,7 @@ func (a *MCPAdapter) listAllTools(ctx context.Context, name string, session *mcp
 				"pages", page,
 				"tools", len(tools),
 			)
-			return tools, nil
+			return tools, page, nil
 		}
 		params.Cursor = result.NextCursor
 	}
@@ -648,8 +687,13 @@ func (a *MCPAdapter) shadowedBy(name, tool string) string {
 // discoverTools reads the tool list of a connected backend again; see
 // listLocked.
 func (a *MCPAdapter) discoverTools(ctx context.Context, name string, conn *backendConn) error {
-	_, err := a.refreshBackend(ctx, name, conn)
-	return err
+	conn.op.Lock()
+	defer conn.op.Unlock()
+	session := a.currentSession(conn)
+	if session == nil {
+		return errNotConnected
+	}
+	return a.listLocked(ctx, name, conn, session)
 }
 
 // listedTools is one reading of a backend's tool list after the checks of
@@ -735,11 +779,25 @@ func (a *MCPAdapter) admitTools(name string, conn *backendConn, listed []*mcp.To
 func (a *MCPAdapter) listLocked(ctx context.Context, name string, conn *backendConn, session *mcp.ClientSession) error {
 	listCtx, cancel := context.WithTimeout(ctx, a.currentPace().list)
 	defer cancel()
-	listed, err := a.listAllTools(listCtx, name, session)
+	listed, pages, err := a.listAllTools(listCtx, name, session)
 	if err != nil {
 		return err
 	}
+	if usesListCache(session) {
+		conn.cursorPages += pages - 1
+	}
 	admitted := a.admitTools(name, conn, listed)
+
+	// The lists are compared outside the adapter lock: a large one would
+	// otherwise hold up the calls to every backend for the time it takes.
+	// conn.op keeps another reading from changing the list meanwhile.
+	a.mu.RLock()
+	before, current := conn.tools, conn.session
+	a.mu.RUnlock()
+	if current != session {
+		return errSessionReplaced
+	}
+	change := diffTools(before, admitted.tools)
 
 	a.mu.Lock()
 	if conn.session != session {
@@ -747,7 +805,6 @@ func (a *MCPAdapter) listLocked(ctx context.Context, name string, conn *backendC
 		a.mu.Unlock()
 		return errSessionReplaced
 	}
-	change := diffTools(conn.tools, admitted.tools)
 	conn.tools = admitted.tools
 	a.mu.Unlock()
 
@@ -773,10 +830,19 @@ func (a *MCPAdapter) reportListing(name string, conn *backendConn, listed listed
 	for _, tool := range listed.hidden {
 		a.logger.Debug("tool hidden by include_tools", "backend", name, "tool", tool)
 	}
-	for _, s := range listed.shadowed {
+	// The backend chooses how many such tools it lists, and it is reported
+	// with every reading that finds another list: a bounded number of lines.
+	for i, s := range listed.shadowed {
+		if i == maxLoggedToolNames {
+			a.logger.Warn("more tools are not reachable: their names are routed to another backend",
+				"backend", name,
+				"more", len(listed.shadowed)-i,
+			)
+			break
+		}
 		a.logger.Warn("tool is not reachable: its name is routed to another backend, rename one of the two backends to expose it",
 			"backend", name,
-			"tool", s.tool,
+			"tool", loggedToolName(s.tool),
 			"routed_to", s.owner,
 		)
 	}
@@ -889,6 +955,9 @@ func (a *MCPAdapter) Execute(ctx context.Context, toolName string, params map[st
 	}
 
 	if session == nil {
+		// The watcher of the backend tries to connect it at growing
+		// intervals; a call that needs the backend has it try soon.
+		signal(conn.want)
 		return nil, fmt.Errorf("backend %q is not connected", backendName)
 	}
 
@@ -1038,9 +1107,6 @@ func isConnectionClosed(err error) bool {
 	if err == nil {
 		return false
 	}
-	if errors.Is(err, mcp.ErrConnectionClosed) || errors.Is(err, mcp.ErrSessionMissing) {
-		return true
-	}
 	msg := err.Error()
 	for _, pattern := range []string{
 		"connection closed",
@@ -1072,25 +1138,29 @@ func (a *MCPAdapter) reconnectBackend(ctx context.Context, name string) error {
 // the backend, gets that one: several calls that fail on one lost connection
 // open one new connection, not one each.
 //
-// When no connection can be made, the backend is left without a session and
-// its watcher is told, which then tries again in the background.
+// The old session is ended in the background. When no connection can be
+// made, the backend is left without a session, so that the calls after this
+// one fail at once instead of each waiting for a connect, and its watcher
+// tries again in the background.
 func (a *MCPAdapter) reconnectAfter(ctx context.Context, name string, conn *backendConn, failed *mcp.ClientSession) (*mcp.ClientSession, error) {
 	conn.op.Lock()
 	defer conn.op.Unlock()
 
 	a.mu.Lock()
+	if a.closed {
+		a.mu.Unlock()
+		return nil, errAdapterClosed
+	}
 	current := conn.session
 	if current != nil && current != failed {
 		a.mu.Unlock()
 		return current, nil
 	}
-	conn.session = nil
-	a.mu.Unlock()
-
-	// Tear down the old session if it still exists.
+	conn.session, conn.ended = nil, false
 	if current != nil {
-		_ = current.Close()
+		a.retireLocked(current)
 	}
+	a.mu.Unlock()
 
 	if err := a.connectLocked(ctx, name, conn); err != nil {
 		a.wakeWatcher(conn)
@@ -1106,6 +1176,11 @@ func (a *MCPAdapter) reconnectAfter(ctx context.Context, name string, conn *back
 // Close terminates all backend sessions and ends the background work of the
 // adapter. It returns when that work has stopped; no session is opened
 // afterwards.
+//
+// Sessions are closed in order: a call that is running may return, and the
+// child of a stdio backend may end on its own once its input is closed.
+// What has not ended after the grace period is cut off: the requests a
+// backend leaves unanswered, and the children that are still there.
 func (a *MCPAdapter) Close() {
 	a.mu.Lock()
 	a.closed = true
@@ -1119,17 +1194,17 @@ func (a *MCPAdapter) Close() {
 	a.mu.Unlock()
 
 	// Ending the lifetime first lets a connect or a listing in progress give
-	// up at once instead of running into its timeout. Closing a session lets
-	// the child of a stdio backend end on its own; whatever is left of the
-	// children when all of that is done is stopped.
+	// up at once instead of running into its timeout.
 	a.lifetime()
 	a.lifeCancel()
+	halt := time.AfterFunc(a.currentPace().closeGrace, a.hardCancel)
 	for name, session := range sessions {
 		_ = session.Close()
 		a.logger.Info("disconnected backend", "name", name)
 	}
 	a.watchers.Wait()
-	a.procsCancel()
+	halt.Stop()
+	a.hardCancel()
 }
 
 // BackendSummaries returns name and hint for each registered backend.

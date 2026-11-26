@@ -116,12 +116,33 @@ func (s *compositeState) sortedNames() []string {
 // NewCompositeBackend creates a CompositeBackend from named backends.
 func NewCompositeBackend(backends map[string]ToolBackend) *CompositeBackend {
 	c := &CompositeBackend{}
+	for _, b := range backends {
+		c.followChild(b)
+	}
 	c.state.Store(&compositeState{
 		backends:     backends,
 		passthroughs: nil,
 		calls:        newCallTracker(),
 	})
 	return c
+}
+
+// followChild makes the composite's version move when the tool list of a
+// child changes on its own (see ToolSetChangeNotifier). Every child is
+// followed before it is published. A child that a Swap has replaced may
+// still report a change until it is closed; that moves the version once
+// more than needed and has whoever follows it list the tools again, which
+// costs a listing and is never wrong.
+func (c *CompositeBackend) followChild(b ToolBackend) {
+	if n, ok := b.(ToolSetChangeNotifier); ok {
+		n.OnToolSetChange(c.childToolSetChanged)
+	}
+}
+
+// childToolSetChanged counts a change of a child's tool list. The child has
+// its new list in place by the time it calls, as ToolSetVersioner asks.
+func (c *CompositeBackend) childToolSetChanged() {
+	c.version.Add(1)
 }
 
 // SetLogger configures the slog logger used to surface promotion-aliasing
@@ -178,6 +199,7 @@ func (c *CompositeBackend) AddPassthrough(b ToolBackend) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.applyGuardLocked(b)
+	c.followChild(b)
 	old := c.state.Load()
 	c.state.Store(&compositeState{
 		backends:     old.backends,
@@ -355,6 +377,7 @@ func (c *CompositeBackend) AddNamed(name string, b ToolBackend) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.applyGuardLocked(b)
+	c.followChild(b)
 	old := c.state.Load()
 	newMap := make(map[string]ToolBackend, len(old.backends)+1)
 	for k, v := range old.backends {
@@ -386,9 +409,11 @@ func (c *CompositeBackend) Swap(backends map[string]ToolBackend, passthroughs []
 	defer c.mu.Unlock()
 	for _, b := range backends {
 		c.applyGuardLocked(b)
+		c.followChild(b)
 	}
 	for _, b := range passthroughs {
 		c.applyGuardLocked(b)
+		c.followChild(b)
 	}
 	old := c.state.Load()
 	c.state.Store(&compositeState{
@@ -401,9 +426,9 @@ func (c *CompositeBackend) Swap(backends map[string]ToolBackend, passthroughs []
 }
 
 // ToolSetVersion implements [ToolSetVersioner]: Swap, AddNamed and
-// AddPassthrough each bump it once the new state is published. It does not
-// see a child whose own tool list changes, such as an MCP server whose tools
-// are discovered again on reconnect.
+// AddPassthrough each bump it once the new state is published, and so does
+// a child that reports a change of its own tool list, such as an MCP server
+// that added or removed a tool (see followChild).
 func (c *CompositeBackend) ToolSetVersion() uint64 {
 	return c.version.Load()
 }

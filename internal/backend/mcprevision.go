@@ -79,6 +79,13 @@ func (a *MCPAdapter) newClient(backendName string) *mcp.Client {
 		// with an error for the caller, instead of the SDK trying to supply
 		// the input and repeating the call.
 		MultiRoundTrip: &mcp.MultiRoundTripOptions{Disabled: true},
+		// A backend that says its tool list has changed has the list read
+		// again. With the handler set, the SDK also asks a server of the
+		// stateless revision for these notifications, which such a server
+		// sends to a client that subscribed only.
+		ToolListChangedHandler: func(context.Context, *mcp.ToolListChangedRequest) {
+			a.toolListChanged(backendName)
+		},
 	})
 	client.AddReceivingMiddleware(func(next mcp.MethodHandler) mcp.MethodHandler {
 		return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
@@ -93,7 +100,7 @@ func (a *MCPAdapter) newClient(backendName string) *mcp.Client {
 }
 
 // openSession connects to a backend and settles the protocol revision with
-// it. The caller holds the adapter lock.
+// it. The caller holds conn.op.
 //
 // The SDK asks in the way of the stateless revision first and falls back to
 // initialize when the server answers that with an error. Over HTTP that is
@@ -145,7 +152,7 @@ func (a *MCPAdapter) openSession(ctx context.Context, name string, conn *backend
 		}
 		probeErr = err
 		a.logger.Debug("backend did not answer without the initialize handshake, trying the handshake on a new connection",
-			"name", name, "error", err)
+			"name", name, "error", loggableError(err))
 	}
 
 	transport, err := a.createTransport(ctx, conn.entry)

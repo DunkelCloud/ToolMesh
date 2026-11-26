@@ -138,8 +138,35 @@ for the full narrative and details.
   logged as `[REDACTED]`, the parameter name stays. A password in a
   backend URL is logged as `xxxxx`, and the debug line about connecting to
   an MCP server backend shows its URL without the query string.
+- The log lines about a failed connect, reconnect or call of an MCP server
+  backend no longer carry the query string or the password of the backend's
+  URL. The error of a failed request names the URL that was asked, and
+  these lines logged it as it was; an API key that a backend takes in its
+  `url` (`?api_key=...`) reached the log that way whenever the backend
+  could not be reached. The lines now name scheme, host and path. The
+  error a caller gets and the audit entry were already free of it.
 
 ### Added
+
+- The tools of an MCP server backend are kept current while ToolMesh runs.
+  A backend that says its tool list has changed
+  (`notifications/tools/list_changed`) has it read again at once, a backend
+  whose connection is lost is connected again in the background, and the
+  list of every connected backend is read again every 60 seconds for the
+  changes nobody announces (`TOOLMESH_MCP_REFRESH_INTERVAL`, `0` turns that
+  off). A backend that is down when ToolMesh starts is tried again at
+  growing intervals of up to 5 minutes. A changed list shows in
+  `discover_tools`, in `execute_code` and, for `expose_tools`, in
+  `tools/list`, without a restart of ToolMesh; until now `execute_code`
+  kept the tools of the start, and a backend that was down at the start
+  stayed away until the next one. Every reading goes through the checks of
+  the first (`include_tools`, names routed to another backend), and one
+  that finds another list is logged as `backend tool list changed` with the
+  tools added, removed and changed. A backend that announces changes
+  without end is read once every 5 seconds at most. A tool a backend adds
+  is available to whoever has the rights for it; name a backend's tools in
+  `include_tools` where it must not gain any on its own account. See
+  [Tools that change while ToolMesh runs](docs/configuration.md#tools-that-change-while-toolmesh-runs).
 
 - OAuth clients with a client ID metadata document. A client that has not
   registered uses the https URL of a JSON document with its metadata as its
@@ -293,6 +320,20 @@ for the full narrative and details.
 - The MCP Go SDK is at v1.8.0.
 
 ### Fixed
+
+- An MCP server backend that is slow to connect, or to answer with its tool
+  list, no longer holds up the calls to other MCP server backends. While
+  one backend was being connected again, every call to a tool of an MCP
+  server backend waited for it, for up to the 15 seconds a handshake may
+  take.
+- A `transport: stdio` backend that was connected again after its process
+  had ended is no longer stopped when the call that found it gone returns.
+  The new process was tied to that call, so the call after it found the
+  backend gone once more and started it again.
+- Closing the sessions of MCP server backends, at shutdown and after a
+  reload of `backends.yaml`, also ends a connect that is still in progress,
+  and no session is opened for a set of backends that a reload has
+  replaced.
 
 - A REST response body over 10 MB was cut off at 10 MB and returned as a
   successful result; a JSON body was then neither complete nor valid, and the

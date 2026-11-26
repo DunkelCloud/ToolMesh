@@ -220,7 +220,7 @@ func TestMCPAdapter_CreateTransport_Unsupported(t *testing.T) {
 
 func TestMCPAdapter_CreateSTDIOTransport_MissingCommand(t *testing.T) {
 	a := &MCPAdapter{logger: slog.Default()}
-	_, err := a.createSTDIOTransport(context.Background(), BackendEntry{})
+	_, err := a.createSTDIOTransport(BackendEntry{})
 	if err == nil {
 		t.Error("expected error for missing command")
 	}
@@ -228,7 +228,7 @@ func TestMCPAdapter_CreateSTDIOTransport_MissingCommand(t *testing.T) {
 
 func TestMCPAdapter_CreateSTDIOTransport_OK(t *testing.T) {
 	a := &MCPAdapter{logger: slog.Default()}
-	_, err := a.createSTDIOTransport(context.Background(), BackendEntry{Command: "echo", Args: []string{"hi"}})
+	_, err := a.createSTDIOTransport(BackendEntry{Command: "echo", Args: []string{"hi"}})
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}

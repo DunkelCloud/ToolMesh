@@ -103,7 +103,7 @@ func TestCreateSTDIOTransport_CredentialEnv(t *testing.T) {
 	}}
 	a := &MCPAdapter{logger: slog.Default(), creds: store}
 
-	tr, err := a.createSTDIOTransport(context.Background(), stdioEntry(t, map[string]string{testChildTokenVar: testStoreTokenKey}))
+	tr, err := a.createSTDIOTransport(stdioEntry(t, map[string]string{testChildTokenVar: testStoreTokenKey}))
 	if err != nil {
 		t.Fatalf("createSTDIOTransport: %v", err)
 	}
@@ -128,7 +128,7 @@ func TestCreateSTDIOTransport_CredentialEnv(t *testing.T) {
 func TestCreateSTDIOTransport_CredentialEnvEmbedded(t *testing.T) {
 	t.Setenv("CREDENTIAL_EMBEDDED_TOKEN", "from-environment")
 	a := &MCPAdapter{logger: slog.Default(), creds: credentials.NewEmbeddedStore()}
-	tr, err := a.createSTDIOTransport(context.Background(), stdioEntry(t, map[string]string{"CHILD_TOKEN": "CREDENTIAL_EMBEDDED_TOKEN"})) //nolint:gosec // key names, not credentials
+	tr, err := a.createSTDIOTransport(stdioEntry(t, map[string]string{"CHILD_TOKEN": "CREDENTIAL_EMBEDDED_TOKEN"})) //nolint:gosec // key names, not credentials
 	if err != nil {
 		t.Fatalf("createSTDIOTransport: %v", err)
 	}
@@ -139,7 +139,7 @@ func TestCreateSTDIOTransport_CredentialEnvEmbedded(t *testing.T) {
 
 func TestCreateSTDIOTransport_NoCredentialEnvInherits(t *testing.T) {
 	a := &MCPAdapter{logger: slog.Default(), creds: keyStore{}}
-	tr, err := a.createSTDIOTransport(context.Background(), stdioEntry(t, nil))
+	tr, err := a.createSTDIOTransport(stdioEntry(t, nil))
 	if err != nil {
 		t.Fatalf("createSTDIOTransport: %v", err)
 	}
@@ -162,7 +162,7 @@ func TestCreateSTDIOTransport_CredentialEnvErrors(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := a.createSTDIOTransport(context.Background(), stdioEntry(t, tt.credEnv))
+			_, err := a.createSTDIOTransport(stdioEntry(t, tt.credEnv))
 			if err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("error = %v, want one containing %q", err, tt.want)
 			}

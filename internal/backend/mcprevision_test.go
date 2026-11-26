@@ -43,6 +43,10 @@ const (
 	mcpHelperSilent = "silent"
 	// A server that ends on a request before initialize.
 	mcpHelperClosing = "closing"
+	// A server that, like the closing one, ends on a request before
+	// initialize, and that gets a second tool with its first tool call and
+	// says so with notifications/tools/list_changed.
+	mcpHelperChanging = "changing"
 
 	testRevisionStateless = "2026-07-28"
 	testHeaderRegion      = "Mcp-Param-Region"
@@ -56,6 +60,8 @@ const (
 	// goes into the "result" or "error" of the JSON-RPC answer.
 	helperInitializeResult = `{"protocolVersion":"2025-11-25","capabilities":{"tools":{}},"serverInfo":{"name":"helper","version":"1"}}`
 	helperToolsResult      = `{"tools":[{"name":"query","description":"a tool","inputSchema":{"type":"object"}}]}`
+	helperChangedResult    = `{"tools":[{"name":"query","description":"a tool","inputSchema":{"type":"object"}},{"name":"ask","description":"a later tool","inputSchema":{"type":"object"}}]}`
+	helperListChanged      = `{"jsonrpc":"2.0","method":"notifications/tools/list_changed"}`
 	helperCallResult       = `{"content":[{"type":"text","text":"ok"}]}`
 	helperMethodNotFound   = `{"code":-32601,"message":"Method not found"}`
 
@@ -87,7 +93,7 @@ func TestHelperMCPServer(t *testing.T) {
 	if mode == "" {
 		t.Skip("child process for the stdio revision tests")
 	}
-	initialized := false
+	initialized, changed := false, false
 	scanner := bufio.NewScanner(os.Stdin)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1<<20)
 	for scanner.Scan() {
@@ -104,7 +110,7 @@ func TestHelperMCPServer(t *testing.T) {
 			continue
 		}
 		if !initialized {
-			if mode == mcpHelperClosing {
+			if mode != mcpHelperSilent {
 				os.Exit(1)
 			}
 			continue
@@ -114,9 +120,17 @@ func TestHelperMCPServer(t *testing.T) {
 		}
 		switch msg.Method {
 		case testMethodToolsList:
-			fmt.Println(rpcAnswer(msg.ID, "result", helperToolsResult))
+			tools := helperToolsResult
+			if changed {
+				tools = helperChangedResult
+			}
+			fmt.Println(rpcAnswer(msg.ID, "result", tools))
 		case testMethodToolsCall:
 			fmt.Println(rpcAnswer(msg.ID, "result", helperCallResult))
+			if mode == mcpHelperChanging && !changed {
+				changed = true
+				fmt.Println(helperListChanged)
+			}
 		default:
 			fmt.Println(rpcAnswer(msg.ID, "error", helperMethodNotFound))
 		}

@@ -1820,6 +1820,30 @@ Where the name of one MCP backend starts the name of another, as `git` and `git_
 
 A backend that returns its tool list in pages is read to the end of the list, for at most 100 pages. A backend that returns a cursor even then is cut off there, with the warning `tool list cut off`.
 
+#### Tools that change while ToolMesh runs
+
+An MCP server can add and remove tools while it runs, and come back from a restart with another list. ToolMesh follows that without a restart of its own:
+
+- **When the backend says so.** A backend that sends `notifications/tools/list_changed` has its list read again at once. A backend that sends many of them is read once every 5 seconds at most.
+- **At an interval.** The list of every connected backend is read again every 60 seconds, because not every change is announced: a server may send no notification, the stream a notification arrives on may be down, and a server of revision 2026-07-28 that was restarted answers the next request like the one before. For a server of that revision the stream is one long request, which ends with `TOOLMESH_MCP_TIMEOUT`; from then on its changes are found by this reading.
+- **After the connection was lost.** A backend whose connection is lost is connected again in the background, and its list is read over the new connection. A call that finds the connection lost before that connects the backend itself and is sent once more, as before.
+- **When the backend was down.** A backend that cannot be connected when ToolMesh starts, or when `backends.yaml` is loaded again, is tried again after 5 seconds and then at doubling intervals of up to 5 minutes. The log line `backend is not connected, trying again later` names the backend, the error and the wait.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `TOOLMESH_MCP_REFRESH_INTERVAL` | `60` | Seconds between two readings of the tool list of a connected MCP backend, at most `86400`. `0` turns the periodic reading off; notifications and reconnects still update the list. |
+
+A changed list shows in `discover_tools`, in `execute_code` and, for tools under `expose_tools`, in `tools/list`. A script that is running in `execute_code` keeps the tools it started with; the next script gets the new ones. Every reading goes through the checks of the first: `include_tools` decides what the backend exposes, a tool whose name is routed to another backend is left out, and the entries of `include_tools` and `expose_tools` are compared with what the backend offers. A tool under `expose_tools` that the backend did not offer at startup is promoted once the backend offers it.
+
+A reading that finds another list is logged as `backend tool list changed`, with the names of the tools `added`, `removed` and `changed`, at most 20 names each. A tool counts as changed when it keeps its name and gets another description or another input schema. A reading that finds the list as it was logs nothing. While a backend is slow to answer, calls to the other backends and to its own tools go on.
+
+What this means for a configuration:
+
+- A tool that a backend adds is available to every caller whose rights cover it. A grant for a whole backend (`backends`, `all_tools`) covers the tools the backend adds later, as it does after a restart; a grant or a deny that names tools covers those names only, so a deny does not reach a tool the backend adds under another name. Where a backend must not gain tools on its own account, name its tools in `include_tools`: a tool outside the list is neither listed nor callable, whenever the backend starts to offer it.
+- The description and the input schema of a tool are what a model reads about it, and a backend can change them at any time. The `changed` names in the log line are the record of that.
+
+ToolMesh's own endpoint sends no change notifications (see [Protocol revisions](#protocol-revisions)); a client gets a changed list with its next `tools/list`.
+
 ### SSH backends
 
 A backend with `transport: ssh` runs commands on hosts over SSH. It gives an agent no shell. A command file lists the commands as templates: a fixed argument vector with placeholders for typed parameters. Each command is a tool; a call picks one and fills in its parameters, and ToolMesh builds the command line. For every call ToolMesh connects, logs in with the backend's key, runs the one command without a terminal and disconnects. Nothing is kept between calls.

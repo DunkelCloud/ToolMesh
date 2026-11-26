@@ -45,6 +45,17 @@ func loggableEndpoint(raw string) string {
 	return u.String()
 }
 
+// loggableError returns the text of an error for a log line, with every
+// http(s) URL in it reduced to scheme, host and path. An error about a
+// connection names the URL that was asked, and the URL of a backend can
+// carry a credential in its query string or its userinfo.
+func loggableError(err error) string {
+	if err == nil {
+		return ""
+	}
+	return urlredact.Text(urlredact.URLErrors(err).Error())
+}
+
 // RedactURLErrors returns an error equivalent to err whose message shows the
 // URL of every *url.Error in its chain reduced to scheme://host (see
 // urlredact.URLErrors).

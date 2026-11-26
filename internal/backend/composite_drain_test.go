@@ -206,3 +206,63 @@ func TestCompositeBackend_SwapDrainedNoLateCalls(t *testing.T) {
 		t.Errorf("%d time(s) a call ran on a backend after the channel of its swap was closed", n)
 	}
 }
+
+// No call counted on a tracker runs while its drained channel is closed,
+// with calls returning and entering while the tracker is retired. A call
+// that returns as the last one, just as another call enters and a swap
+// retires the tracker, must not close drained: the call that entered is
+// still running on the replaced children.
+func TestCallTracker_DrainedWhileCallRuns(t *testing.T) {
+	const (
+		callers = 8
+		rounds  = 500
+	)
+	var cur atomic.Pointer[callTracker]
+	cur.Store(newCallTracker())
+
+	var early atomic.Int64
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	for range callers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				// As CompositeBackend.enter: count the call, then make
+				// sure the tracker was not replaced in between.
+				tr := cur.Load()
+				tr.begin()
+				if cur.Load() != tr {
+					tr.done()
+					continue
+				}
+				if isClosed(tr.drained) {
+					early.Add(1)
+				}
+				tr.done()
+			}
+		}()
+	}
+
+	for range rounds {
+		old := cur.Swap(newCallTracker())
+		select {
+		case <-old.retire():
+		case <-time.After(5 * time.Second):
+			close(stop)
+			wg.Wait()
+			t.Fatal("drained not closed within 5s of retiring the tracker")
+		}
+	}
+	close(stop)
+	wg.Wait()
+
+	if n := early.Load(); n > 0 {
+		t.Errorf("%d time(s) a call was running on a tracker whose drained channel was closed", n)
+	}
+}

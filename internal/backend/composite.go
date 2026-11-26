@@ -39,32 +39,53 @@ type compositeState struct {
 // of children and that have not returned yet. Swap retires the tracker of
 // the children it replaces; drained is closed once the tracker is retired
 // and no call on it is running any more.
+//
+// The count and the retired mark share one word, so that done and retire
+// each decide from a single atomic step. Read one after the other, a call
+// returning as the last one could see a count of zero, then another call
+// could enter and a swap retire the tracker, and the returning call would
+// see the mark and close drained while the call that entered still runs on
+// the replaced children.
 type callTracker struct {
-	running atomic.Int64
-	retired atomic.Bool
+	// state is the number of running calls, plus trackerRetired once the
+	// tracker is retired.
+	state   atomic.Int64
 	once    sync.Once
 	drained chan struct{}
 }
+
+// trackerRetired is the bit retire sets in callTracker.state. The bits below
+// it count the running calls.
+const trackerRetired int64 = 1 << 62
 
 func newCallTracker() *callTracker {
 	return &callTracker{drained: make(chan struct{})}
 }
 
+// begin counts a call on t; done ends it.
+func (t *callTracker) begin() {
+	t.state.Add(1)
+}
+
 // done ends a call counted on t.
 func (t *callTracker) done() {
-	if t.running.Add(-1) == 0 && t.retired.Load() {
-		t.once.Do(func() { close(t.drained) })
+	if t.state.Add(-1) == trackerRetired {
+		t.markDrained()
 	}
 }
 
 // retire marks the children of t as replaced and returns the channel that is
 // closed once their last running call has returned, at once when none runs.
 func (t *callTracker) retire() <-chan struct{} {
-	t.retired.Store(true)
-	if t.running.Load() == 0 {
-		t.once.Do(func() { close(t.drained) })
+	if t.state.Or(trackerRetired)&^trackerRetired == 0 {
+		t.markDrained()
 	}
 	return t.drained
+}
+
+// markDrained closes drained; only the first call does.
+func (t *callTracker) markDrained() {
+	t.once.Do(func() { close(t.drained) })
 }
 
 // CompositeBackend aggregates multiple ToolBackend instances.
@@ -263,7 +284,7 @@ func (c *CompositeBackend) Execute(ctx context.Context, toolName string, params 
 func (c *CompositeBackend) enter() *compositeState {
 	for {
 		s := c.state.Load()
-		s.calls.running.Add(1)
+		s.calls.begin()
 		if cur := c.state.Load(); cur.calls == s.calls {
 			return cur
 		}

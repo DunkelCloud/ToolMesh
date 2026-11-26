@@ -63,7 +63,7 @@ tools:
       state: { type: string, in: query }
 ```
 
-The file also declares how the API authenticates (bearer token, API key, OAuth2, session login), how it pages and when to retry. ToolMesh does the HTTP work. The [DADL registry](https://dadl.ai/browse) has descriptions for 36 APIs; for others, ask an LLM that knows the [DADL spec](https://dadl.ai/spec/dadl-spec-v0.2) and test the result against the real API.
+The file also declares how the API authenticates (bearer token, API key, OAuth2, session login), how it pages, when to retry and whether it takes large files in chunks ([resumable uploads](docs/configuration.md#resumable-uploads), as YouTube and Drive do). ToolMesh does the HTTP work. The [DADL registry](https://dadl.ai/browse) has descriptions for 36 APIs; for others, ask an LLM that knows the [DADL spec](https://dadl.ai/spec/dadl-spec-v0.2) and test the result against the real API.
 
 In Code Mode the model calls these tools from JavaScript:
 

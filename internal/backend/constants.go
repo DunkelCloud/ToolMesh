@@ -103,6 +103,7 @@ const (
 	// URL scheme & host literals used by SSRF/redirect validation.
 	urlSchemeHTTP          = "http"
 	urlSchemeHTTPS         = "https"
+	urlSchemeFile          = "file"
 	hostnameLocalhost      = "localhost"
 	hostnameGoogleMetadata = "metadata.google.internal"
 )

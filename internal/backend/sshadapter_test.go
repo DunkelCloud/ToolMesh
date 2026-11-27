@@ -239,6 +239,26 @@ func (s *sshTestServer) seen() (commands, requests []string) {
 	return append([]string(nil), s.commands...), append([]string(nil), s.requests...)
 }
 
+// sshRequestWait bounds how long a test waits for the server to record a
+// session request.
+const sshRequestWait = 5 * time.Second
+
+// awaitRequests returns the session requests the server got, once it got at
+// least n of them or sshRequestWait is over. A request the client sends
+// without asking for a reply, such as a signal, can reach the server after
+// the call that sent it has returned: the server reads and records requests
+// on a goroutine of its own.
+func (s *sshTestServer) awaitRequests(n int) []string {
+	deadline := time.Now().Add(sshRequestWait)
+	for {
+		_, requests := s.seen()
+		if len(requests) >= n || time.Now().After(deadline) {
+			return requests
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 // sshTestKey is a client key in the forms a backend can be given it.
 type sshTestKey struct {
 	public    ssh.PublicKey
@@ -445,7 +465,10 @@ func TestSSHAdapter_Timeout(t *testing.T) {
 	if result.Metadata[metadataKeyErrorCode] != dadl.ErrCodeTimeout {
 		t.Errorf("metadata = %v", result.Metadata)
 	}
-	if _, requests := server.seen(); !reflect.DeepEqual(requests, []string{sshRequestExec, "signal"}) {
+	// The adapter sends the signal without waiting for a reply, so the
+	// server may record it only after Execute has returned.
+	want := []string{sshRequestExec, "signal"}
+	if requests := server.awaitRequests(len(want)); !reflect.DeepEqual(requests, want) {
 		t.Errorf("session requests = %v, want the command to be asked to end", requests)
 	}
 }

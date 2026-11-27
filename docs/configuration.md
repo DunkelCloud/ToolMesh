@@ -307,7 +307,58 @@ The default is half of the CPUs the process may use (in a container with a CPU l
 
 ## Client Registration
 
-MCP clients such as Claude register themselves at `/register` (OAuth 2.0 Dynamic Client Registration) before the user logs in. Registration takes no credential, so registered clients do not stay forever:
+Before a user can log in, ToolMesh has to know the client that asks: what it calls itself and where it may be sent back to. An MCP client makes itself known in one of two ways. Registration works without a setting; metadata documents are off until you switch them on:
+
+- **A client ID metadata document.** The client publishes its metadata as a JSON document at an https URL and uses that URL as its `client_id`. ToolMesh fetches the document when the client asks for authorization. Nothing is registered and nothing is stored. This is the way of MCP revision 2026-07-28. It is off by default: with `TOOLMESH_CIMD_ENABLED=true`, the metadata of the authorization server announces it as `client_id_metadata_document_supported`. See [Client ID metadata documents](#client-id-metadata-documents).
+- **Dynamic Client Registration** at `/register`. The MCP specification keeps it for backward compatibility only, and ToolMesh keeps it as the fallback for clients that publish no document. See [Dynamic Client Registration](#dynamic-client-registration).
+
+A client that knows both ways uses its document where the metadata announces that; otherwise, and always for an older client, it registers.
+
+**Being known is not access.** Neither way signs anyone in. A client that registered, or whose document was accepted, gets the login page and nothing else. A token is issued only after a user has logged in on that page with a ToolMesh credential and confirmed where the authorization goes, and it carries that user's rights. A request without a token is answered `401` as before.
+
+**The issuer in the answer.** The redirect that takes the authorization code back to the client carries the issuer of this server as `iss` ([RFC 9207](https://www.rfc-editor.org/rfc/rfc9207)), for clients of both kinds, and the metadata announces it as `authorization_response_iss_parameter_supported`. A client that talks to several authorization servers compares `iss` with the issuer it sent the user to, so that the answer of one server cannot be passed off as the answer of another. The value is the `issuer` of the metadata, character for character: `TOOLMESH_ISSUER` with one trailing slash. ToolMesh answers a failed authorization itself and never redirects with an error.
+
+### Client ID metadata documents
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `TOOLMESH_CIMD_ENABLED` | `false` | `true` accepts a `client_id` that is the https URL of a client ID metadata document, and the metadata announces it. With `false`, such a `client_id` is an unknown client, nothing is fetched, and clients register. Must be `true` or `false`; anything else stops the server at startup. |
+| `TOOLMESH_CIMD_HOSTS` | *(empty: any public https host)* | Comma-separated hosts a metadata document is fetched from: host names (`claude.ai`) or `*.example.com` for any subdomain, which does not include `example.com` itself. `*` alone says what the empty value means. An entry with a scheme, a port or a path stops the server at startup. Without `TOOLMESH_CIMD_ENABLED=true` the list has no effect. |
+
+Switched on, a request to `/authorize` whose `client_id` starts with `https://` names such a client, and ToolMesh fetches that URL before anyone has logged in. Any visitor can cause the fetch, to a URL the visitor chose unless `TOOLMESH_CIMD_HOSTS` names the hosts, so every part of it is bounded:
+
+- **Which URLs.** Only https, with a path other than `/`, without user information, query, fragment or `.` and `..` segments, written in ASCII (a host with other characters in its punycode form), at most 2048 bytes long, and with `TOOLMESH_CIMD_HOSTS` set only on a listed host. A URL on the host of this server (`TOOLMESH_ISSUER`) is refused. The specification of these documents advises against a query; ToolMesh refuses one.
+- **Where the connection goes.** Only to public addresses, also for a listed host. ToolMesh resolves the host name itself and connects to the address it checked. A name that resolves to a loopback, private, link-local, carrier-grade NAT or otherwise reserved address, or to a cloud metadata address, is not reached. No redirect is followed, no proxy is used, and no cookie or credential is sent.
+- **How much.** A fetch takes at most 5 seconds as a whole. The answer must have status `200`, be served as JSON (`application/json` or a type ending in `+json`) and be at most 16 KiB long.
+- **How often.** One client address (an IPv6 address counts as its /64) causes at most 10 fetches a minute; a further request that would need one gets `429` with `Retry-After`. The count lives in Redis when it is connected, and in process memory otherwise and while Redis cannot be reached. An instance runs at most 16 fetches at once; a request beyond them gets `503` with `Retry-After: 1`. A request for a document that is still kept, and a request that is turned away before a fetch, do not count. Without a host list, a host that does not answer holds its fetch for the 5 seconds, so someone with a few dozen addresses can keep all 16 busy, and for as long as that lasts a client whose document is not kept at that moment cannot sign in. Registered clients and existing sessions are not affected. `TOOLMESH_CIMD_HOSTS` closes this: with it, nothing is fetched from a host a stranger chose.
+- **When.** Only when a login could follow: after the `redirect_uri` of the request passed its own checks, `TOOLMESH_OAUTH_REDIRECT_HOSTS` among them, and only on a server that has a password login.
+
+**The document.** It must be a JSON object in which
+
+- `client_id` is the URL it was fetched from, character for character,
+- `client_name` is given (at most 256 bytes) and `redirect_uris` lists at least one URI,
+- there is no `client_secret`, and `token_endpoint_auth_method` is `none` or absent: ToolMesh serves public clients only, and a document that declares only another method, such as `private_key_jwt`, is refused instead of being served without it,
+- `grant_types` includes `authorization_code` and `response_types` includes `code`, where they are given.
+
+Other fields are ignored. A `logo_uri` is neither fetched nor shown.
+
+**Redirect URIs.** The `redirect_uri` of the request must be one the document lists, compared as strings. There is one exception, the one OAuth makes for native clients ([RFC 8252, section 7.3](https://www.rfc-editor.org/rfc/rfc8252#section-7.3)): a loopback redirect URI (`http://localhost`, `127.0.0.1`, `[::1]`) matches with any port, because such a client learns its port when it starts and its document cannot name it. Only https and loopback http redirect URIs are redirected to, whatever a document lists, and `TOOLMESH_OAUTH_REDIRECT_HOSTS` applies as it does to registered clients.
+
+**How long a document is used.** A fetched document is kept in the memory of the instance for as long as the `Cache-Control: max-age` of the response says (less its `Age`), but for at least 5 minutes and at most 24 hours. The 5 minutes also hold for a response that says `no-store` or nothing: the login page and its submission are two requests that need the same document. A redirect URI that a client removes from its document can therefore still be used for that long. An instance keeps at most 512 documents, and never a failed fetch or a refused document. Each instance fetches for itself, so an authorization that begins on one instance and continues on another needs no shared state.
+
+**What the requester is told.** A request whose document cannot be used is answered `400` with `invalid_client` and is never redirected. When no document of the client was obtained (the fetch failed, the answer was not JSON, or it does not name the URL as its `client_id`), the description says only that: which of these it was would tell a visitor about hosts that only ToolMesh can reach. The reason is in the log, at `WARN` as `client metadata document not usable`, with `clientId`, `reason` and `remote`. For a document that is the client's own and cannot be used, the description names what is wrong with it. No answer repeats anything read from a response. A fetch that succeeded is logged at `INFO` as `client metadata document fetched`.
+
+**On the login page.** Besides the redirect host, which the user confirms, the page names the host the document was read from, with the note that whoever can publish a document on that host can describe an application this way. Where the redirect goes to a loopback address, the page says that ToolMesh cannot tell which program on the device receives the access: any program there can present the same document.
+
+**Who the caller is.** The caller id of such a client is its `client_id`, the URL: in the audit log and for caller classes. It is the same for every installation of the client and for every user. Grants of kits are therefore bound to the sign-in and not to the URL (see [Granting kits](#granting-kits)). A client that moves from registration to its document gets a new caller id with it: an entry in `caller-classes.yaml` for its registered identifier no longer matches, and the client falls into the default class. Do not put a client with loopback redirect URIs into a trusted caller class by its URL: any program on a user's device can present that URL.
+
+**Turning it on.** Set `TOOLMESH_CIMD_ENABLED=true`. To find out what your clients present, leave `TOOLMESH_CIMD_HOSTS` unset at first: every fetch is logged at `INFO` as `client metadata document fetched` with the `clientId`, the URL of the document. Then name the hosts you saw in `TOOLMESH_CIMD_HOSTS` (Claude publishes its documents on `claude.ai`) and, where you use caller classes, enter the URLs there. While no host is named, the security posture summary at startup lists the open fetch as a relaxed control. Switch documents on only when the instance can open https connections to those hosts: a client that reads `client_id_metadata_document_supported: true` in the metadata uses its document, and may not fall back to registration when ToolMesh cannot fetch it. Both variables are read at startup. From the restart that switches documents off or narrows the hosts, the tokens of clients that are no longer accepted are refused with their next request and are not renewed.
+
+**What it does not do.** Clients are not authenticated at the token endpoint, with or without a document. A document is not fetched again when a token is renewed: tokens keep working when the document changes or goes away, until they expire or are revoked.
+
+### Dynamic Client Registration
+
+The fallback for clients that publish no metadata document: such a client registers itself at `/register` (OAuth 2.0 Dynamic Client Registration, [RFC 7591](https://www.rfc-editor.org/rfc/rfc7591)) before the user logs in, and gets an identifier of its own. Registration takes no credential, so registered clients do not stay forever:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -627,7 +678,11 @@ see these counts.
 **Who holds a grant.** The requesting user, as the caller it connected as:
 the `caller_id` of an API key, or the OAuth client. An API key without
 `caller_id` binds the grant to that key itself (shown as `grant_key`), so two
-such keys of one user do not share grants. The grant survives a token
+such keys of one user do not share grants. An OAuth client that names itself
+by a [client ID metadata document](#client-id-metadata-documents) has the
+same `client_id` in every installation, so its grant is bound to the sign-in
+it was requested in (a `grant_key` that starts with `login-`): another
+sign-in through the same client does not hold it. The grant survives a token
 refresh; other connections of the same user do not hold it. A grant of the
 whole kit with an approver key gives the kit as it is defined at the time of
 each call: a kit removed from the file allows nothing any more, and a changed
@@ -1615,7 +1670,7 @@ mail addresses would be unreadable.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `TOOLMESH_MCP_TIMEOUT` | `120` | HTTP client timeout in seconds for calls to downstream MCP servers |
+| `TOOLMESH_MCP_TIMEOUT` | `120` | Timeout in seconds for a request to a downstream MCP server, from sending it until its answer has been read. The streams on which a server sends notifications are not bound by it. |
 | `TOOLMESH_EXEC_TIMEOUT` | `120` | Tool execution timeout in seconds — context deadline for a single backend call. Falls back to `TOOLMESH_ACTIVITY_TIMEOUT` if set (backwards compat). |
 | `TOOLMESH_CODE_TIMEOUT` | `120` | Wall-clock budget in seconds for one `execute_code` run. Bounds a whole orchestration of `toolmesh.*` calls, so set it at least as high as the slowest backend timeout times the number of calls chained in one run (e.g. a committee of slow models). |
 | `TOOLMESH_CODE_MAX_CONCURRENT` | `16` | `execute_code` runs in progress at once; `0` for no limit. One user may hold at most half of them, rounded up (8 with the default), so a single caller cannot keep every other user waiting; a run beyond that share is refused at once. A run that finds every slot taken waits up to 10 seconds for one and is then refused with an error result. On a deployment with a single user, that user can run half the limit in parallel; raise the limit there if needed. Must be an integer of `0` or more; anything else stops the server at startup. |
@@ -1657,6 +1712,10 @@ The two limits must be plain integers of bytes, `0` or more; anything else stops
 | `TOOLMESH_POLICIES_DIR` | `/app/policies` | Path to output gate policy directory |
 
 **Changes without a restart.** ToolMesh checks the modification time of `backends.yaml` every 5 seconds and loads the backends again after a change. A backend the change adds can be called right away, through `tools/list`, `discover_tools` and `execute_code` alike, and a backend it removes is gone from all three. A script that is running in `execute_code` while the reload lands keeps the tools it started with; the next script gets the new ones. A file that does not load keeps the previous backends. A DADL file is read when its backend is loaded, so after changing only a DADL, touch `backends.yaml` to load it.
+
+Units (`TOOLMESH_UNITS_DIR`) and the built-in `echo` backend are not part of `backends.yaml`. They are loaded at startup and stay as they are through every reload; changes to a unit, to its `unit.yaml` or to a DADL a unit uses take effect after a restart. A reload that would load a backend under the name of a running unit is refused as a whole: the log line `hot-reload failed, keeping current backends` names the unit, and the previous backends stay. Rename the entry, or restart ToolMesh. At startup an entry in `backends.yaml` takes precedence, and a unit of the same name is skipped.
+
+A reload connects every MCP backend anew: new sessions, and for `transport: stdio` a new child process per backend. The sessions and child processes of the backends it replaces are ended once the calls already running on them have returned, so a reload cuts no call off; calls that start after the reload go to the new sessions. The wait lasts as long as the slowest of those calls, which `TOOLMESH_EXEC_TIMEOUT` bounds. Every ended session is logged as `disconnected backend` with the backend's name. A reload that fails keeps the running sessions and ends those it opened itself. At shutdown the sessions in use are ended: a call that is still running gets 5 seconds to return and the child process of a `stdio` backend 5 seconds to end, then both are stopped.
 
 ### Credential and host binding
 
@@ -1760,6 +1819,32 @@ A tool parameter that a backend marks with `x-mcp-header` is repeated in the `Mc
 Where the name of one MCP backend starts the name of another, as `git` and `git_hub` do, a tool name belongs to the backend with the longest name that starts it: `git_hub_search` is the tool `search` of `git_hub`, on every call. That is the rule the rights of a call are checked by. A call that this backend does not offer fails; it is not passed on to the backend with the shorter name. A tool of the shorter backend whose name falls under the longer one (`hub_search` of `git`) cannot be called. It is not listed and not promoted, and the log names it with the warning `tool is not reachable: its name is routed to another backend`. Renaming one of the two backends makes it reachable again.
 
 A backend that returns its tool list in pages is read to the end of the list, for at most 100 pages. A backend that returns a cursor even then is cut off there, with the warning `tool list cut off`.
+
+#### Tools that change while ToolMesh runs
+
+An MCP server can add and remove tools while it runs, and come back from a restart with another list. ToolMesh follows that without a restart of its own:
+
+- **When the backend says so.** A backend that sends `notifications/tools/list_changed` has its list read again at once. A backend that sends many of them is read once every 5 seconds at most.
+- **At an interval.** The list of every connected backend is read again every 60 seconds, because not every change is announced: a server may send no notification, the stream a notification arrives on may be down, and a server of revision 2026-07-28 that was restarted answers the next request like the one before. The stream of such a server is not opened again once it has ended; from then on its changes are found by this reading.
+- **After the connection was lost.** A backend whose session has ended is connected again in the background, and its list is read over the new session. That happens at once for a session that had lasted a minute, and at the growing intervals below for a backend whose sessions end sooner. A call that finds the connection closed connects the backend itself and is sent once more, as before. A call that was running when the session ended is not sent again: the backend may have run it.
+- **When the backend was down.** A backend that cannot be connected when ToolMesh starts, or when `backends.yaml` is loaded again, is tried again after 5 seconds and then at doubling intervals of up to 5 minutes. The log line `backend is not connected, trying again later` names the backend, the error and the wait. A call to a backend that is not connected fails at once, and has the next attempt made within 5 seconds.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `TOOLMESH_MCP_REFRESH_INTERVAL` | `60` | Seconds between two readings of the tool list of a connected MCP backend, at most `86400`. `0` turns the periodic reading off: the list then follows notifications and reconnects only, and a server of revision 2026-07-28 whose stream has ended is not followed until it is connected again. |
+
+A changed list shows in `discover_tools`, in `execute_code` and, for tools under `expose_tools`, in `tools/list`. A script that is running in `execute_code` keeps the tools it started with; the next script gets the new ones. Every reading goes through the checks of the first: `include_tools` decides what the backend exposes, a tool whose name is routed to another backend is left out, and the entries of `include_tools` and `expose_tools` are compared with what the backend offers. A tool under `expose_tools` that the backend did not offer at startup is promoted once the backend offers it.
+
+A reading that finds another list is logged as `backend tool list changed`, with the names of the tools `added`, `removed` and `changed`, at most 20 names each. A tool counts as changed when it keeps its name and gets another description or another input schema. A reading that finds the list as it was logs nothing. While a backend is slow to answer, calls to the other backends and to its own tools go on.
+
+A backend of revision 2026-07-28 that returns its tool list in pages gets a new session after 1000 pages read with a cursor, logged as `replacing the session of backend`. The SDK ToolMesh uses keeps every such page for as long as a session lasts. Calls that are running on the old session finish there.
+
+What this means for a configuration:
+
+- A tool that a backend adds is available to every caller whose rights cover it. A grant for a whole backend (`backends`, `all_tools`) covers the tools the backend adds later, as it does after a restart; a grant or a deny that names tools covers those names only, so a deny does not reach a tool the backend adds under another name. Where a backend must not gain tools on its own account, name its tools in `include_tools`: a tool outside the list is neither listed nor callable, whenever the backend starts to offer it.
+- The description and the input schema of a tool are what a model reads about it, and a backend can change them at any time. The `changed` names in the log line are the record of that.
+
+ToolMesh's own endpoint sends no change notifications (see [Protocol revisions](#protocol-revisions)); a client gets a changed list with its next `tools/list`.
 
 ### SSH backends
 

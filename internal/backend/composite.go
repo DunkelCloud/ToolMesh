@@ -29,6 +29,63 @@ import (
 type compositeState struct {
 	backends     map[string]ToolBackend
 	passthroughs []ToolBackend
+	// calls counts the Execute calls running on these children. AddNamed
+	// and AddPassthrough hand it on to the state they publish, since they
+	// keep the children; Swap starts a new one and retires this one.
+	calls *callTracker
+}
+
+// callTracker counts the Execute calls the composite has routed to one set
+// of children and that have not returned yet. Swap retires the tracker of
+// the children it replaces; drained is closed once the tracker is retired
+// and no call on it is running any more.
+//
+// The count and the retired mark share one word, so that done and retire
+// each decide from a single atomic step. Read one after the other, a call
+// returning as the last one could see a count of zero, then another call
+// could enter and a swap retire the tracker, and the returning call would
+// see the mark and close drained while the call that entered still runs on
+// the replaced children.
+type callTracker struct {
+	// state is the number of running calls, plus trackerRetired once the
+	// tracker is retired.
+	state   atomic.Int64
+	once    sync.Once
+	drained chan struct{}
+}
+
+// trackerRetired is the bit retire sets in callTracker.state. The bits below
+// it count the running calls.
+const trackerRetired int64 = 1 << 62
+
+func newCallTracker() *callTracker {
+	return &callTracker{drained: make(chan struct{})}
+}
+
+// begin counts a call on t; done ends it.
+func (t *callTracker) begin() {
+	t.state.Add(1)
+}
+
+// done ends a call counted on t.
+func (t *callTracker) done() {
+	if t.state.Add(-1) == trackerRetired {
+		t.markDrained()
+	}
+}
+
+// retire marks the children of t as replaced and returns the channel that is
+// closed once their last running call has returned, at once when none runs.
+func (t *callTracker) retire() <-chan struct{} {
+	if t.state.Or(trackerRetired)&^trackerRetired == 0 {
+		t.markDrained()
+	}
+	return t.drained
+}
+
+// markDrained closes drained; only the first call does.
+func (t *callTracker) markDrained() {
+	t.once.Do(func() { close(t.drained) })
 }
 
 // CompositeBackend aggregates multiple ToolBackend instances.
@@ -80,11 +137,33 @@ func (s *compositeState) sortedNames() []string {
 // NewCompositeBackend creates a CompositeBackend from named backends.
 func NewCompositeBackend(backends map[string]ToolBackend) *CompositeBackend {
 	c := &CompositeBackend{}
+	for _, b := range backends {
+		c.followChild(b)
+	}
 	c.state.Store(&compositeState{
 		backends:     backends,
 		passthroughs: nil,
+		calls:        newCallTracker(),
 	})
 	return c
+}
+
+// followChild makes the composite's version move when the tool list of a
+// child changes on its own (see ToolSetChangeNotifier). Every child is
+// followed before it is published. A child that a Swap has replaced may
+// still report a change until it is closed; that moves the version once
+// more than needed and has whoever follows it list the tools again, which
+// costs a listing and is never wrong.
+func (c *CompositeBackend) followChild(b ToolBackend) {
+	if n, ok := b.(ToolSetChangeNotifier); ok {
+		n.OnToolSetChange(c.childToolSetChanged)
+	}
+}
+
+// childToolSetChanged counts a change of a child's tool list. The child has
+// its new list in place by the time it calls, as ToolSetVersioner asks.
+func (c *CompositeBackend) childToolSetChanged() {
+	c.version.Add(1)
 }
 
 // SetLogger configures the slog logger used to surface promotion-aliasing
@@ -141,10 +220,12 @@ func (c *CompositeBackend) AddPassthrough(b ToolBackend) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.applyGuardLocked(b)
+	c.followChild(b)
 	old := c.state.Load()
 	c.state.Store(&compositeState{
 		backends:     old.backends,
 		passthroughs: append(append([]ToolBackend(nil), old.passthroughs...), b),
+		calls:        old.calls,
 	})
 	c.version.Add(1)
 }
@@ -166,7 +247,8 @@ func (c *CompositeBackend) AddPassthrough(b ToolBackend) {
 // before this method is called, so Execute itself only needs the standard
 // prefix dispatch.
 func (c *CompositeBackend) Execute(ctx context.Context, toolName string, params map[string]any) (*ToolResult, error) {
-	s := c.state.Load()
+	s := c.enter()
+	defer s.calls.done()
 
 	if match, ok := c.longestPrefix(toolName, s); ok && match.isNamed {
 		realTool := strings.TrimPrefix(toolName, match.name+"_")
@@ -189,6 +271,25 @@ func (c *CompositeBackend) Execute(ctx context.Context, toolName string, params 
 	}
 
 	return nil, fmt.Errorf("no backend found for tool %q", toolName)
+}
+
+// enter returns the current state with one running call counted on its
+// tracker; the caller ends it with s.calls.done().
+//
+// The count is checked against the state published after it was taken: a
+// Swap between loading the state and counting the call may already have
+// found the replaced children idle, and whoever waits for that may be
+// closing them. Such a call is counted again on the newer state instead, so
+// no call reaches children after their drained channel is closed.
+func (c *CompositeBackend) enter() *compositeState {
+	for {
+		s := c.state.Load()
+		s.calls.begin()
+		if cur := c.state.Load(); cur.calls == s.calls {
+			return cur
+		}
+		s.calls.done()
+	}
 }
 
 // prefixMatch is the result of CompositeBackend.longestPrefix.
@@ -297,6 +398,7 @@ func (c *CompositeBackend) AddNamed(name string, b ToolBackend) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.applyGuardLocked(b)
+	c.followChild(b)
 	old := c.state.Load()
 	newMap := make(map[string]ToolBackend, len(old.backends)+1)
 	for k, v := range old.backends {
@@ -306,6 +408,7 @@ func (c *CompositeBackend) AddNamed(name string, b ToolBackend) {
 	c.state.Store(&compositeState{
 		backends:     newMap,
 		passthroughs: old.passthroughs,
+		calls:        old.calls,
 	})
 	c.version.Add(1)
 }
@@ -315,26 +418,38 @@ func (c *CompositeBackend) AddNamed(name string, b ToolBackend) {
 // old or the new state — never a mix. Use this for hot-reload scenarios.
 // A guard installed with SetChildGuard is applied to every new backend before
 // the new state is published.
-func (c *CompositeBackend) Swap(backends map[string]ToolBackend, passthroughs []ToolBackend) {
+//
+// The returned channel is closed once every Execute call that was routed to
+// the replaced children has returned, at once when none is running. Calls
+// that start after the swap reach the new children only. Closing a replaced
+// backend before then would cut off calls still running on it; the
+// composite does not close anything itself, as the caller may hand the same
+// backend on to the new state.
+func (c *CompositeBackend) Swap(backends map[string]ToolBackend, passthroughs []ToolBackend) <-chan struct{} {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for _, b := range backends {
 		c.applyGuardLocked(b)
+		c.followChild(b)
 	}
 	for _, b := range passthroughs {
 		c.applyGuardLocked(b)
+		c.followChild(b)
 	}
+	old := c.state.Load()
 	c.state.Store(&compositeState{
 		backends:     backends,
 		passthroughs: passthroughs,
+		calls:        newCallTracker(),
 	})
 	c.version.Add(1)
+	return old.calls.retire()
 }
 
 // ToolSetVersion implements [ToolSetVersioner]: Swap, AddNamed and
-// AddPassthrough each bump it once the new state is published. It does not
-// see a child whose own tool list changes, such as an MCP server whose tools
-// are discovered again on reconnect.
+// AddPassthrough each bump it once the new state is published, and so does
+// a child that reports a change of its own tool list, such as an MCP server
+// that added or removed a tool (see followChild).
 func (c *CompositeBackend) ToolSetVersion() uint64 {
 	return c.version.Load()
 }

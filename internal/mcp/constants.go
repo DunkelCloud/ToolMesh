@@ -60,6 +60,7 @@ const (
 	logKeyTool     = "tool"
 	logKeyRemote   = "remote"
 	logKeyReason   = "reason"
+	logKeyClientID = "clientId"
 
 	// Backend labels of the metrics for calls no backend owns: the built-in
 	// tools, and a tool no backend claims (the executor's label for it).
@@ -80,6 +81,11 @@ const (
 	// generateID (client IDs, auth codes, access and refresh tokens).
 	generatedIDBytes = 32
 
+	// loginGrantKeyLen is the length in hex characters of the identifier of
+	// one sign-in that grants of kits are bound to. It tells sign-ins apart
+	// and is no secret; 64 bits, like the grant key of an API key.
+	loginGrantKeyLen = 16
+
 	// toolmesh_logins_total method labels recorded by the server.
 	loginMethodPassword     = "password" //nolint:gosec // metric label, not a credential
 	loginMethodOAuthCode    = "oauth_code"
@@ -96,15 +102,26 @@ const (
 	loginReasonInvalidRedirectURI    = "invalid_redirect_uri"
 	loginReasonRedirectHostDenied    = "redirect_host_not_allowed"
 	loginReasonConsentMissing        = "consent_not_confirmed"
-	loginReasonUnknownCredential     = "unknown_credential"
-	loginReasonUnknownToken          = "unknown_token"
-	loginReasonExpiredToken          = "expired_token"
+	// Reasons for turning away a client that names itself by the URL of its
+	// client ID metadata document.
+	loginReasonInvalidClientID           = "invalid_client_id"
+	loginReasonClientHostDenied          = "client_host_not_allowed"
+	loginReasonClientMetadataLimit       = "client_metadata_rate_limited"
+	loginReasonClientMetadataBusy        = "client_metadata_busy"
+	loginReasonClientMetadataUnavailable = "client_metadata_unavailable"
+	loginReasonClientMetadataInvalid     = "client_metadata_invalid"
+	loginReasonUnknownCredential         = "unknown_credential"
+	loginReasonUnknownToken              = "unknown_token"
+	loginReasonExpiredToken              = "expired_token"
 
 	// Texts shown to the person at the login form or returned to the client.
 	msgInvalidCredentials     = "Invalid username or password."
 	msgLoginBusy              = "The server is busy. Try again in a moment."
 	descPasswordLoginDisabled = "password login is not configured on this server"
 	descUnknownClient         = "unknown client"
+	// descClientMetadataUnavailable is all a requester learns when no
+	// metadata document of the client was obtained; the log has the reason.
+	descClientMetadataUnavailable = "the client metadata document could not be fetched from the client_id URL, or what the URL serves is not the document of this client_id"
 
 	// OAuth 2.1 / authorization endpoint fields.
 	oauthClientID         = "client_id"
@@ -124,6 +141,12 @@ const (
 	oauthErrAccessDenied  = "access_denied"
 	invalidGrantError     = "invalid_grant"
 	oauthErrInvalidReq    = "invalid_request"
+	// oauthErrInvalidClient refuses a client_id that is the URL of a client
+	// ID metadata document, or the document itself.
+	oauthErrInvalidClient = "invalid_client"
+	// oauthErrTemporarilyUnavailable is the body of a 503 from the
+	// authorization endpoint.
+	oauthErrTemporarilyUnavailable = "temporarily_unavailable"
 	// oauthErrInvalidClientMetadata refuses a registration over one of its
 	// metadata fields (RFC 7591 section 3.2.2).
 	oauthErrInvalidClientMetadata = "invalid_client_metadata"
@@ -167,4 +190,7 @@ const (
 	// Media types negotiated on the MCP endpoint.
 	mimeTextHTML    = "text/html"
 	mimeEventStream = "text/event-stream"
+	// mimeJSON is the media type a client ID metadata document is asked
+	// for and served with.
+	mimeJSON = "application/json"
 )

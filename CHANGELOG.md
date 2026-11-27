@@ -138,9 +138,65 @@ for the full narrative and details.
   logged as `[REDACTED]`, the parameter name stays. A password in a
   backend URL is logged as `xxxxx`, and the debug line about connecting to
   an MCP server backend shows its URL without the query string.
+- The log lines about a failed connect, reconnect or call of an MCP server
+  backend no longer carry the query string or the password of the backend's
+  URL. The error of a failed request names the URL that was asked, and
+  these lines logged it as it was; an API key that a backend takes in its
+  `url` (`?api_key=...`) reached the log that way whenever the backend
+  could not be reached. The lines now name scheme, host and path. The
+  error a caller gets and the audit entry were already free of it.
 
 ### Added
 
+- The tools of an MCP server backend are kept current while ToolMesh runs.
+  A backend that says its tool list has changed
+  (`notifications/tools/list_changed`) has it read again at once, a backend
+  whose connection is lost is connected again in the background, and the
+  list of every connected backend is read again every 60 seconds for the
+  changes nobody announces (`TOOLMESH_MCP_REFRESH_INTERVAL`, `0` turns that
+  off). A backend that is down when ToolMesh starts is tried again at
+  growing intervals of up to 5 minutes, and within 5 seconds of a call that
+  needs it. A changed list shows in
+  `discover_tools`, in `execute_code` and, for `expose_tools`, in
+  `tools/list`, without a restart of ToolMesh; until now `execute_code`
+  kept the tools of the start, and a backend that was down at the start
+  stayed away until the next one. Every reading goes through the checks of
+  the first (`include_tools`, names routed to another backend), and one
+  that finds another list is logged as `backend tool list changed` with the
+  tools added, removed and changed. A backend that announces changes
+  without end is read once every 5 seconds at most. A tool a backend adds
+  is available to whoever has the rights for it; name a backend's tools in
+  `include_tools` where it must not gain any on its own account. See
+  [Tools that change while ToolMesh runs](docs/configuration.md#tools-that-change-while-toolmesh-runs).
+
+- OAuth clients with a client ID metadata document. A client that has not
+  registered uses the https URL of a JSON document with its metadata as its
+  `client_id`, the way MCP revision 2026-07-28 expects of clients, and
+  ToolMesh fetches the document when the client asks for authorization.
+  Nothing is stored for such a client. The metadata of the authorization
+  server announces it as `client_id_metadata_document_supported`.
+  Registration at `/register` works as before and is the fallback for
+  clients without a document. The fetch is one any visitor can cause, so it
+  is bounded: https only, public addresses only (checked at the connection,
+  so a name cannot resolve to a private one), no redirects, 5 seconds,
+  16 KiB, 10 fetches a minute per client address and 16 at once. A document
+  is used for the time its `Cache-Control` names, between 5 minutes and
+  24 hours. The login page names the host a document was read from and
+  warns when the redirect goes to a loopback address. A loopback redirect
+  URI of such a client matches with any port (RFC 8252). Grants of kits are
+  bound to the sign-in of such a client, since every installation of it has
+  the same `client_id`. **Off by default:**
+  `TOOLMESH_CIMD_ENABLED=true` switches it on, and `TOOLMESH_CIMD_HOSTS`
+  names the hosts documents are accepted from (unset: any public host,
+  which the security posture summary reports). Without the switch nothing
+  is fetched and clients register as before. A client
+  known by its document gets the login page, as a registered client does,
+  and access still takes a user's login. See
+  [Client ID metadata documents](docs/configuration.md#client-id-metadata-documents).
+- The authorization response carries `iss` (RFC 9207), and the metadata
+  announces it as `authorization_response_iss_parameter_supported`. A client
+  that talks to several authorization servers can tell which one answered.
+  The value is the `issuer` of the metadata.
 - REST backends take `options.max_response_size` in `backends.yaml`: the
   largest non-binary response body, `10MB` unless set, at most `100MB`. See
   [REST backend options](docs/configuration.md#rest-backend-options).
@@ -266,6 +322,37 @@ for the full narrative and details.
 
 ### Fixed
 
+- An MCP server backend that is slow to connect, or to answer with its tool
+  list, no longer holds up the calls to other MCP server backends. While
+  one backend was being connected again, every call to a tool of an MCP
+  server backend waited for it, for up to the 15 seconds a handshake may
+  take.
+- A `transport: stdio` backend that was connected again after its process
+  had ended is no longer stopped when the call that found it gone returns.
+  The new process was tied to that call, so the call after it found the
+  backend gone once more and started it again.
+- Closing the sessions of MCP server backends, at shutdown and after a
+  reload of `backends.yaml`, also ends a connect that is still in progress,
+  and no session is opened for a set of backends that a reload has
+  replaced. A call that is still running at shutdown gets 5 seconds to
+  return, and the child process of a `stdio` backend 5 seconds to end;
+  until now a backend that did not answer could hold up the shutdown.
+- `TOOLMESH_MCP_TIMEOUT` bounds the requests to an MCP server backend that
+  are calls, and no longer the streams on which a server sends its
+  notifications. It cut such a stream off every time it ran out, and after
+  several times in a row the connection to a server that keeps sessions
+  ended; a call running at that moment failed.
+- A backend on the HTTP+SSE transport (a `url` that ends in `/sse`) keeps
+  its event stream. The stream ended when the connect returned, so such a
+  backend listed no tools and its calls failed.
+- A connect to an MCP server backend that answers the handshake and then
+  leaves the stream for its notifications unanswered is given up within
+  about half a minute. It waited for `TOOLMESH_MCP_TIMEOUT` at least, and
+  held up the start of ToolMesh that long.
+- An MCP server backend whose connection could not be made again after it
+  was lost is tried again in the background. It stayed disconnected until
+  ToolMesh was restarted.
+
 - A REST response body over 10 MB was cut off at 10 MB and returned as a
   successful result; a JSON body was then neither complete nor valid, and the
   DADL's `result_path` and `transform` were skipped without a sign. Such a
@@ -316,6 +403,21 @@ for the full narrative and details.
   `toolmesh.discover()` and `toolmesh.describe()` show what the reload
   brought. A script that is running while a reload lands keeps the tools it
   started with.
+- A hot reload of `config/backends.yaml` removed every unit until ToolMesh
+  was restarted: `tools/list`, `discover_tools` and `execute_code` no longer
+  knew their tools. Units now stay through every reload. A reload that
+  would load a backend under the name of a running unit is refused and
+  keeps the previous backends; the log line names the unit. See
+  [Backend Configuration](docs/configuration.md#backend-configuration).
+- Every hot reload of `config/backends.yaml` left the previous sessions to
+  all MCP backends open, and the child process of every `transport: stdio`
+  backend running, until ToolMesh was restarted: a reload connects the MCP
+  backends anew but never closed what it replaced, and a shutdown closed
+  only the sessions opened at startup. A reload now ends the replaced
+  sessions and child processes once the calls running on them have
+  returned, so no call is cut off, and a shutdown ends the sessions in use.
+  A reload that fails keeps the running sessions. See
+  [Backend Configuration](docs/configuration.md#backend-configuration).
 - An MCP backend that returns its tool list in pages lost every tool after
   the first page, without a line in the log. ToolMesh now follows the cursor
   to the end of the list, for at most 100 pages; a backend that returns a

@@ -67,6 +67,24 @@ func TestLogSecurityPosture(t *testing.T) {
 			wantAbsent:     []string{levelWARN, "relaxed control"},
 		},
 		{
+			name:           "client metadata documents from any host warn",
+			mutate:         func(c *config.Config) { c.CIMDEnabled = true },
+			authConfigured: true,
+			wantLevel:      levelWARN,
+			wantContains:   []string{"client ID metadata documents are fetched from any public https host", "TOOLMESH_CIMD_HOSTS"},
+		},
+		{
+			name: "client metadata documents from listed hosts are hardened",
+			mutate: func(c *config.Config) {
+				c.CIMDEnabled = true
+				c.CIMDHosts = []string{"client.example"}
+			},
+			authConfigured: true,
+			wantLevel:      "",
+			wantContains:   []string{"controls are hardened"},
+			wantAbsent:     []string{levelWARN, "relaxed control"},
+		},
+		{
 			name:           "authz disabled in production posture warns",
 			mutate:         func(c *config.Config) { c.AuthzMode = config.AuthzModeDisabled },
 			authConfigured: true,

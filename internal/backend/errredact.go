@@ -16,6 +16,7 @@ package backend
 
 import (
 	"net/url"
+	"strings"
 
 	"github.com/DunkelCloud/ToolMesh/internal/urlredact"
 )
@@ -43,6 +44,26 @@ func loggableEndpoint(raw string) string {
 		u.User = url.User(u.User.Username())
 	}
 	return u.String()
+}
+
+// maxLoggedErrorLen bounds the text of an error in a log line of the MCP
+// adapter. The text can come from a backend, which chooses its length.
+const maxLoggedErrorLen = 1000
+
+// loggableError returns the text of an error for a log line, with every
+// http(s) URL in it reduced to scheme, host and path, and cut off after
+// maxLoggedErrorLen bytes. An error about a connection names the URL that
+// was asked, and the URL of a backend can carry a credential in its query
+// string or its userinfo.
+func loggableError(err error) string {
+	if err == nil {
+		return ""
+	}
+	text := urlredact.Text(urlredact.URLErrors(err).Error())
+	if len(text) > maxLoggedErrorLen {
+		text = strings.ToValidUTF8(text[:maxLoggedErrorLen], "") + "..."
+	}
+	return text
 }
 
 // RedactURLErrors returns an error equivalent to err whose message shows the

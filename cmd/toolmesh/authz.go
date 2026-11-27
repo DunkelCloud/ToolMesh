@@ -52,9 +52,7 @@ type authzSetup struct {
 // apikeys.yaml is in force, so it is applied at startup, by the watcher of
 // the authz config file, and when one of the two files comes into force while
 // ToolMesh runs. mu keeps these apart: the policy resolved last is the one
-// written last. The approver check of a reloaded apikeys.yaml runs under mu
-// as well (underPolicy), so that no approver key and API key can come into
-// force side by side.
+// written last.
 type authzApplier struct {
 	cfg    *config.Config
 	emb    *authz.Embedded
@@ -63,9 +61,9 @@ type authzApplier struct {
 	mu sync.Mutex
 	// policy is the policy applied last.
 	policy authz.Policy
-	// inForce, once set, says what the MCP server has in force: whether
-	// users.yaml or apikeys.yaml is loaded, and the key_sha256 sums of the
-	// API keys. Until it is set (during startup) the files on disk decide.
+	// inForce, when set, says what is in force: whether users.yaml or
+	// apikeys.yaml is loaded, and the key_sha256 sums of the API keys.
+	// Without it the files on disk decide.
 	inForce func() (filesLoaded bool, keySums map[string]string)
 }
 
@@ -97,13 +95,12 @@ func (a *authzApplier) setInForce(f func() (bool, map[string]string)) {
 	a.inForce = f
 }
 
-// underPolicy calls f with the key_sha256 sums of the approvers of the policy
-// in force, mapped to a description of each, while no policy can be applied.
-// A nil applier (authorization not embedded) has no approvers.
-func (a *authzApplier) underPolicy(f func(approverKeys map[string]string)) {
+// approverKeys returns the key_sha256 sums of the approvers of the policy
+// applied last, mapped to a description of each. A nil applier
+// (authorization not embedded) has no approvers.
+func (a *authzApplier) approverKeys() map[string]string {
 	if a == nil {
-		f(nil)
-		return
+		return nil
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -113,7 +110,7 @@ func (a *authzApplier) underPolicy(f func(approverKeys map[string]string)) {
 			keys[strings.ToLower(ap.KeySHA256)] = fmt.Sprintf("approver %q", ap.Name)
 		}
 	}
-	f(keys)
+	return keys
 }
 
 // open reports whether every authenticated caller may execute every tool,
@@ -136,6 +133,14 @@ func (s *authzSetup) close() {
 // without authorization (OPENFGA_MODE=bypass, the old default) from a fresh
 // one.
 func setupAuthz(ctx context.Context, cfg *config.Config, priorState bool, logger *slog.Logger) (*authzSetup, error) {
+	return setupAuthzInForce(ctx, cfg, priorState, nil, logger)
+}
+
+// setupAuthzInForce is setupAuthz with the users.yaml and apikeys.yaml that
+// were loaded: inForce reports them (see authzApplier.inForce), so the
+// default preset and the approver check go by what was loaded and not by a
+// second read of the files. nil makes them go by the files on disk.
+func setupAuthzInForce(ctx context.Context, cfg *config.Config, priorState bool, inForce func() (bool, map[string]string), logger *slog.Logger) (*authzSetup, error) {
 	switch {
 	case cfg.LegacyOpenFGAMode != "" && cfg.AuthzModeSource == config.AuthzSourceEnv:
 		logger.Warn("OPENFGA_MODE is deprecated and ignored because TOOLMESH_AUTHZ_MODE is set; remove it",
@@ -175,7 +180,7 @@ func setupAuthz(ctx context.Context, cfg *config.Config, priorState bool, logger
 	if err != nil {
 		return nil, err
 	}
-	applier := &authzApplier{cfg: cfg, emb: emb, logger: logger}
+	applier := &authzApplier{cfg: cfg, emb: emb, logger: logger, inForce: inForce}
 	policy, err := applier.apply(ctx)
 	if err != nil {
 		_ = emb.Close()

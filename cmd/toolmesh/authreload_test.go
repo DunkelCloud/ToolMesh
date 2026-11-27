@@ -144,7 +144,7 @@ func TestAuthReload_UsersRefused(t *testing.T) {
 		change func(t *testing.T, cfg *config.Config)
 		reason string
 	}{
-		{"invalid YAML", func(t *testing.T, cfg *config.Config) { writeFile(t, cfg.UsersConfigPath, "users: [") }, "parse users config"},
+		{"invalid YAML", func(t *testing.T, cfg *config.Config) { writeFile(t, cfg.UsersConfigPath, "users: [") }, "does not load"},
 		{"misspelled key", func(t *testing.T, cfg *config.Config) {
 			writeFile(t, cfg.UsersConfigPath, strings.Replace(usersYAML(t, reloadUserB), "users:", "user:", 1))
 		}, noUsersList},
@@ -297,10 +297,12 @@ func TestAuthReload_APIKeyRemoved(t *testing.T) {
 	}
 }
 
-// An entry whose key is an approver's key is left out of a reloaded
-// apikeys.yaml; the rest of the file comes into force, so a key revoked in
-// the same edit stops working.
-func TestAuthReload_APIKeyOfApproverLeftOut(t *testing.T) {
+// An entry whose key is an approver's key does not stop a reload of
+// apikeys.yaml: the rest of the file comes into force, so a key revoked in the
+// same edit stops working, and the entry is reported. The MCP endpoint refuses
+// the approver's key whatever the store holds (see the tests of
+// mcp.Server.SetApproverKeyCheck).
+func TestAuthReload_APIKeyOfApproverReported(t *testing.T) {
 	cfg := authzTestConfig(t)
 	writeFile(t, cfg.AuthzConfigPath, approverFile(testApproverKey))
 	writeFile(t, cfg.APIKeysConfigPath, apiKeysYAML([2]string{reloadUserA, reloadKeyA}))
@@ -316,11 +318,78 @@ func TestAuthReload_APIKeyOfApproverLeftOut(t *testing.T) {
 	if holder.acceptsKey(reloadKeyA) || !holder.acceptsKey(reloadKeyB) {
 		t.Fatal("the reload was not put in force")
 	}
-	if holder.acceptsKey(testApproverKey) {
-		t.Error("an approver's key connects as an MCP caller")
+	if len(rec.entries) != 1 || rec.entries[0].Metadata["approver_keys"] != "1" {
+		t.Errorf("audit entries = %+v, want one reload naming one approver key", rec.entries)
 	}
-	if len(rec.entries) != 1 || rec.entries[0].Metadata["dropped"] != "1" {
-		t.Errorf("audit entries = %+v", rec.entries)
+}
+
+// A file refused, then restored to the content in force, then refused again
+// is reported both times; a refused file is not reported again while it
+// stays.
+func TestAuthReload_RefusalReportedPerChange(t *testing.T) {
+	cfg := authzTestConfig(t)
+	content := usersYAML(t, reloadUserA)
+	writeFile(t, cfg.UsersConfigPath, content)
+	r, _, rec := newTestReloader(t, cfg)
+	ctx := context.Background()
+
+	for _, step := range []string{"users: [", content, "users: ["} {
+		writeFile(t, cfg.UsersConfigPath, step)
+		for range 3 {
+			r.poll(ctx)
+		}
+	}
+	if got := statuses(rec); len(got) != 2 || got[0] != audit.StatusConfigReloadRefused || got[1] != audit.StatusConfigReloadRefused {
+		t.Errorf("audit statuses = %v, want two refusals", got)
+	}
+	if strings.Contains(rec.entries[0].Error, "yaml") {
+		t.Errorf("the audit entry carries the parser message %q; it belongs in the log only", rec.entries[0].Error)
+	}
+}
+
+// When the authorization policy cannot be applied again after users.yaml
+// came into force, the reloader tries again with every read until it can.
+func TestAuthReload_AuthzReapplyRetried(t *testing.T) {
+	cfg := authzTestConfig(t)
+	cfg.AuthPassword = testMCPKey
+	s := mustSetup(t, cfg, false)
+	r, holder, _ := newTestReloader(t, cfg)
+	r.authz = s.applier
+	s.applier.setInForce(holder.inForce)
+	ctx := context.Background()
+
+	// The authz config is broken while users.yaml appears.
+	writeFile(t, cfg.AuthzConfigPath, "grants: [")
+	writeFile(t, cfg.UsersConfigPath, usersYAML(t, reloadUserA))
+	r.poll(ctx)
+	r.poll(ctx)
+	if !holder.hasUser(reloadUserA) || !r.authzPending {
+		t.Fatalf("users in force %v, retry pending %v; want both", holder.hasUser(reloadUserA), r.authzPending)
+	}
+	if got := s.applier.policy.Preset; got != authz.PresetSingleUser {
+		t.Fatalf("preset = %q while the authz config is broken", got)
+	}
+
+	if err := os.Remove(cfg.AuthzConfigPath); err != nil {
+		t.Fatal(err)
+	}
+	r.poll(ctx)
+	if r.authzPending || s.applier.policy.Preset != authz.PresetTeam {
+		t.Errorf("after the fix: retry pending %v, preset %q; want applied with %q", r.authzPending, s.applier.policy.Preset, authz.PresetTeam)
+	}
+}
+
+// At startup the default preset goes by the stores that were loaded, not by
+// a second look at the files.
+func TestSetupAuthzInForce_FollowsLoadedStores(t *testing.T) {
+	cfg := authzTestConfig(t)
+	s, err := setupAuthzInForce(context.Background(), cfg, false, func() (bool, map[string]string) { return true, nil }, quietLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(s.close)
+	if s.policy.Preset != authz.PresetTeam {
+		t.Errorf("preset = %q with a store loaded and no file on disk, want %q", s.policy.Preset, authz.PresetTeam)
 	}
 }
 

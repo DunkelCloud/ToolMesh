@@ -245,33 +245,6 @@ func (s *APIKeyStore) SHA256Sums() map[string]string {
 	return keySHA256Sums(s.keys, "apikeys.yaml")
 }
 
-// Without returns a store of the entries of s whose key_sha256 is not one of
-// the sums in reserved (lower-case hex), with the descriptions of the entries
-// it left out. When it leaves none out it returns s itself.
-func (s *APIKeyStore) Without(reserved map[string]string) (*APIKeyStore, []string, error) {
-	if s == nil || len(reserved) == 0 {
-		return s, nil, nil
-	}
-	kept := make([]APIKeyEntry, 0, len(s.keys))
-	var dropped []string
-	for i, e := range s.keys {
-		if where, ok := reserved[normalizedSHA256(e)]; ok {
-			dropped = append(dropped, fmt.Sprintf("key %d (user_id %q), the key of %s", i+1, e.UserID, where))
-			continue
-		}
-		kept = append(kept, e)
-	}
-	if len(dropped) == 0 {
-		return s, nil, nil
-	}
-	store, err := newAPIKeyStore(kept, s.limiter)
-	if err != nil {
-		return nil, nil, err
-	}
-	store.problems = s.problems
-	return store, dropped, nil
-}
-
 // Diff compares the entries of s with those of next and returns the entries
 // next adds and removes, each as its user_id (with its caller_id, when it has
 // one), sorted. An entry is the same when its key hash is, so a changed key

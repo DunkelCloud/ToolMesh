@@ -59,8 +59,11 @@ type Server struct {
 	// force, nil without the file. A reload replaces them while requests run
 	// (SetUserStore, SetAPIKeyStore), so a handler loads each one once and
 	// decides on that snapshot.
-	users       atomic.Pointer[auth.UserStore]
-	apiKeys     atomic.Pointer[auth.APIKeyStore]
+	users   atomic.Pointer[auth.UserStore]
+	apiKeys atomic.Pointer[auth.APIKeyStore]
+	// approverKey reports whether a key, by its SHA-256, belongs to an
+	// approver; nil without approvers (see SetApproverKeyCheck).
+	approverKey func(keySHA256 string) bool
 	rateLimiter *auth.DCRRateLimiter
 	// revokeLimiter limits revocation requests per client address.
 	revokeLimiter *auth.AddressRateLimiter
@@ -880,6 +883,15 @@ func (s *Server) checkBearer(r *http.Request, bearer string, slot *bearerSlot) (
 	// must not make the request see two configurations.
 	users, keys := s.users.Load(), s.apiKeys.Load()
 
+	// The key of an approver never connects as an MCP caller, whichever
+	// store would accept it.
+	if s.isApproverKey(bearer) {
+		s.logger.WarnContext(r.Context(), "bearer refused: it is the key of an approver, which is for the approver API only",
+			logKeyRemote, auth.ClientIP(r))
+		s.bearerRejected(r, bearer, true, false, false)
+		return anonymousCaller(), nil
+	}
+
 	if bearer != "" {
 		// 1. API keys from apikeys.yaml that are in the index.
 		if keys != nil {
@@ -1009,12 +1021,38 @@ func (s *Server) checkBearer(r *http.Request, bearer string, slot *bearerSlot) (
 		s.bearerRejected(r, bearer, checkedAPIKey, checkedOAuth, expiredToken)
 	}
 
+	return anonymousCaller(), nil
+}
+
+// anonymousCaller is the caller of a request that no credential was accepted
+// for.
+func anonymousCaller() *userctx.UserContext {
 	return &userctx.UserContext{
 		UserID:        userAnonymous,
 		Authenticated: false,
 		CallerID:      userAnonymous,
 		CallerClass:   "untrusted",
-	}, nil
+	}
+}
+
+// SetApproverKeyCheck makes the MCP endpoint refuse every bearer credential
+// that isApproverKey reports as the key of an approver, by its SHA-256 in
+// lower-case hex. An approver key is for the approver API only: accepted as
+// an MCP credential, it would let a caller approve its own requests for kits.
+// The check holds whatever apikeys.yaml says, also for entries that are known
+// only by a bcrypt key_hash and so cannot be compared when the file is
+// loaded. Call it before the server handles requests.
+func (s *Server) SetApproverKeyCheck(isApproverKey func(keySHA256 string) bool) {
+	s.approverKey = isApproverKey
+}
+
+// isApproverKey reports whether bearer is the key of an approver in force.
+func (s *Server) isApproverKey(bearer string) bool {
+	if s.approverKey == nil || bearer == "" {
+		return false
+	}
+	sum := sha256.Sum256([]byte(bearer))
+	return s.approverKey(hex.EncodeToString(sum[:]))
 }
 
 // apiKeyCaller counts an accepted API key from apikeys.yaml and returns the

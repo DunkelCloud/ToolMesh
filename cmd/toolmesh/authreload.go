@@ -23,6 +23,7 @@ import (
 	"log/slog"
 	"maps"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -205,6 +206,9 @@ type authReloader struct {
 	logger *slog.Logger
 	// usersApplied, when set, runs after a users.yaml was put in force.
 	usersApplied func()
+	// authzPending is set while the authorization policy is to be applied
+	// again because a file came into force and the last try failed.
+	authzPending bool
 
 	users watchedAuthFile
 	keys  watchedAuthFile
@@ -240,6 +244,9 @@ func (r *authReloader) run(ctx context.Context, interval time.Duration) {
 
 // poll reads both files once and acts on what changed.
 func (r *authReloader) poll(ctx context.Context) {
+	if r.authzPending {
+		r.reapplyAuthz(ctx)
+	}
 	if st, ok := r.users.next(); ok && r.applyUsers(ctx, st) {
 		r.users.inForce = st
 	}
@@ -268,7 +275,7 @@ func (r *authReloader) applyUsers(ctx context.Context, st authFileState) bool {
 	}
 	next, err := auth.ParseUserStore(st.data, r.limiter)
 	if err != nil {
-		return r.refuse(ctx, &r.users, err.Error())
+		return r.refuseUnparsable(ctx, &r.users, err)
 	}
 	if problems := next.Problems(); len(problems) > 0 {
 		return r.refuse(ctx, &r.users, strings.Join(problems, "; "))
@@ -300,40 +307,39 @@ func (r *authReloader) applyUsers(ctx context.Context, st authFileState) bool {
 }
 
 // applyKeys puts the apikeys.yaml in st in force and reports whether it did.
-// Entries whose key is an approver's key are left out: an approver key must
-// not also connect as an MCP caller, and refusing the whole file instead
-// would keep a key in force that the same edit revoked.
+// An entry whose key is also an approver's key comes into force as well but
+// never connects: the MCP server refuses approver keys whatever the store
+// holds (mcp.Server.SetApproverKeyCheck). It is named in an ERROR, so that
+// the operator gives one of the two a key of its own.
 func (r *authReloader) applyKeys(ctx context.Context, st authFileState) bool {
 	if reason := unusable(st, "TOOLMESH_API_KEY"); reason != "" {
 		return r.refuse(ctx, &r.keys, reason)
 	}
 	next, err := auth.ParseAPIKeyStore(st.data, r.limiter)
 	if err != nil {
-		return r.refuse(ctx, &r.keys, err.Error())
+		return r.refuseUnparsable(ctx, &r.keys, err)
 	}
 	if problems := next.Problems(); len(problems) > 0 {
 		return r.refuse(ctx, &r.keys, strings.Join(problems, "; "))
 	}
 
-	var before *auth.APIKeyStore
-	var dropped []string
-	r.authz.underPolicy(func(approverKeys map[string]string) {
-		next, dropped, err = next.Without(approverKeys)
-		if err == nil {
-			before = r.server.APIKeyStore()
-			r.server.SetAPIKeyStore(next)
-		}
-	})
-	if err != nil {
-		return r.refuse(ctx, &r.keys, err.Error())
-	}
-
+	before := r.server.APIKeyStore()
 	added, removed := before.Diff(next)
+	r.server.SetAPIKeyStore(next)
+
 	r.logger.Info("apikeys config reloaded, in force now", "file", r.keys.path, "keys", next.Count(),
 		"added", added, "removed", removed)
-	if len(dropped) > 0 {
-		r.logger.Error("apikeys config: entries left out because their key is also an approver's key; give the approver or the caller a key of its own, then save apikeys.yaml again",
-			"file", r.keys.path, "entries", dropped)
+	approverKeys := r.authz.approverKeys()
+	var clashes []string
+	for sum, entry := range next.SHA256Sums() {
+		if approver, ok := approverKeys[sum]; ok {
+			clashes = append(clashes, entry+", the key of "+approver)
+		}
+	}
+	if len(clashes) > 0 {
+		slices.Sort(clashes)
+		r.logger.Error("apikeys config: entries hold the key of an approver; the MCP endpoint refuses such a key, give the approver or the caller a key of its own",
+			"file", r.keys.path, "entries", clashes)
 	}
 	logAPIKeysLoaded(r.logger, r.keys.path, next)
 	if before == nil {
@@ -346,7 +352,7 @@ func (r *authReloader) applyKeys(ctx context.Context, st authFileState) bool {
 		"keys":          strconv.Itoa(next.Count()),
 		auditKeyAdded:   auditList(added),
 		auditKeyRemoved: auditList(removed),
-		"dropped":       strconv.Itoa(len(dropped)),
+		"approver_keys": strconv.Itoa(len(clashes)),
 	})
 	return true
 }
@@ -359,14 +365,30 @@ func (r *authReloader) refuse(ctx context.Context, w *watchedAuthFile, reason st
 	return false
 }
 
+// refuseUnparsable is refuse for a file that does not parse. The parser's
+// message can quote part of a value of the file, a password hash among them,
+// so it goes to the log only; the audit entry says that the file does not
+// parse.
+func (r *authReloader) refuseUnparsable(ctx context.Context, w *watchedAuthFile, err error) bool {
+	r.logger.Error("auth config reload refused, keeping what is in force", "file", w.path, "reason", err.Error())
+	r.record(ctx, w, audit.StatusConfigReloadRefused, "the file does not load; the log has the details", nil)
+	return false
+}
+
 // reapplyAuthz applies the authorization policy again after users.yaml or
 // apikeys.yaml came into force: the default preset depends on them.
 func (r *authReloader) reapplyAuthz(ctx context.Context) {
 	if r.authz == nil {
 		return
 	}
-	if _, err := r.authz.apply(ctx); err != nil && !errors.Is(err, context.Canceled) {
-		r.logger.Error("authorization policy not applied again after the auth config changed, keeping the current grants", "error", err)
+	_, err := r.authz.apply(ctx)
+	wasPending := r.authzPending
+	r.authzPending = err != nil
+	switch {
+	case err != nil && !wasPending && !errors.Is(err, context.Canceled):
+		r.logger.Error("authorization policy not applied again after the auth config changed, keeping the current grants and trying again with every read of the files", "error", err)
+	case err == nil && wasPending:
+		r.logger.Info("authorization policy applied again after the auth config changed")
 	}
 }
 

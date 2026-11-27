@@ -84,41 +84,31 @@ func TestUserStore_Diff(t *testing.T) {
 	}
 }
 
-// TestAPIKeyStore_Without pins that entries whose key_sha256 is reserved are
-// left out and the others keep working.
-func TestAPIKeyStore_Without(t *testing.T) {
+// TestAPIKeyStore_Diff pins which entries a reload reports as added and
+// removed, and the key_sha256 sums of the loaded entries.
+func TestAPIKeyStore_Diff(t *testing.T) {
 	sum := func(key string) string {
 		s := sha256.Sum256([]byte(key))
 		return hex.EncodeToString(s[:])
 	}
-	content := "keys:\n  - user_id: ada\n    key_sha256: " + strings.ToUpper(sum("key-ada")) + "\n  - user_id: grace\n    key_sha256: " + sum("key-grace") + "\n"
-	store, err := ParseAPIKeyStore([]byte(content), nil)
-	if err != nil {
-		t.Fatal(err)
+	parse := func(content string) *APIKeyStore {
+		t.Helper()
+		store, err := ParseAPIKeyStore([]byte(content), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return store
 	}
+	before := parse("keys:\n  - user_id: ada\n    key_sha256: " + strings.ToUpper(sum("key-ada")) + "\n  - user_id: grace\n    key_sha256: " + sum("key-grace") + "\n")
+	after := parse("keys:\n  - user_id: grace\n    key_sha256: " + sum("key-grace") + "\n  - user_id: linus\n    key_sha256: " + sum("key-linus") + "\n    caller_id: ci\n")
 
-	same, dropped, err := store.Without(map[string]string{sum("unrelated"): "approver x"})
-	if err != nil || same != store || dropped != nil {
-		t.Fatalf("Without(unrelated) = %p, %v, %v; want the store itself", same, dropped, err)
-	}
-
-	kept, dropped, err := store.Without(map[string]string{sum("key-ada"): `approver "x"`})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(dropped) != 1 || !strings.Contains(dropped[0], reloadAda) {
-		t.Errorf("dropped = %v, want the entry of ada", dropped)
-	}
-	if kept.Find("key-ada") != nil || kept.Find("key-grace") == nil {
-		t.Error("the reserved key is still accepted, or the other one is not")
-	}
-	if store.Find("key-ada") == nil {
-		t.Error("Without changed the store it was called on")
-	}
-
-	added, removed := store.Diff(kept)
-	if len(added) != 0 || !slices.Equal(removed, []string{reloadAda}) {
+	added, removed := before.Diff(after)
+	if !slices.Equal(added, []string{reloadLinus + " (caller_id ci)"}) || !slices.Equal(removed, []string{reloadAda}) {
 		t.Errorf("Diff = added %v removed %v", added, removed)
+	}
+	sums := before.SHA256Sums()
+	if _, ok := sums[sum("key-ada")]; !ok || len(sums) != 2 {
+		t.Errorf("SHA256Sums = %v, want both entries in lower case", sums)
 	}
 }
 

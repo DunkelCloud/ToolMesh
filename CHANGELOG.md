@@ -33,6 +33,11 @@ for the full narrative and details.
   [Tokens](docs/configuration.md#tokens).
 - A change to `users.yaml` takes effect without a restart (see Added), so a
   changed password ends the sessions issued for the old one within seconds.
+- The MCP endpoint refuses a bearer credential that is the key of an
+  approver, whatever `apikeys.yaml` holds. Until now an `apikeys.yaml` entry
+  known only by its bcrypt `key_hash` could hold an approver's key, since
+  the check at startup compares `key_sha256` values only; a caller with that
+  key could approve its own requests for kits.
 - The `backend refused` log line no longer offers every line that would
   load the backend as a line to add. Under `add_to_backends_yaml_entry` it
   keeps what leaves the binding as it is: for a credential name outside
@@ -163,8 +168,7 @@ for the full narrative and details.
   removed file is refused as well: ToolMesh does not fall back to
   `TOOLMESH_AUTH_PASSWORD` or `TOOLMESH_API_KEY` while it runs. A file that
   appears is put in force and the default authorization preset follows it.
-  An API key that is also an approver's key is left out of a reload. Every
-  reload, applied or refused, is logged and recorded in the audit trail
+  Every reload, applied or refused, is logged and recorded in the audit trail
   (tool `toolmesh_auth_config`, status `config_reloaded` or
   `config_reload_refused`). See
   [Changing Users and API Keys](docs/configuration.md#changing-users-and-api-keys).

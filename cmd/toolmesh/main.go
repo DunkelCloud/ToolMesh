@@ -309,10 +309,43 @@ func main() {
 		logger.Info("backends hot-reloaded successfully", "units", len(units))
 	})
 
+	// One bound for every bcrypt comparison in the process: password logins
+	// and API keys that are only known by their bcrypt hash share it.
+	compareLimiter := auth.NewCompareLimiter(cfg.BcryptMaxConcurrent)
+	logger.Info("bcrypt comparisons bounded", "maxConcurrent", compareLimiter.Capacity())
+
+	// Load user identity configs. Each file is read once and its store built
+	// from those bytes; the reloader started below compares with them.
+	usersFile, userStore, err := loadUsersFile(cfg.UsersConfigPath, compareLimiter)
+	if err != nil {
+		logger.Error("failed to load users config", "error", err)
+		os.Exit(1)
+	}
+	if userStore != nil {
+		logger.Info("loaded users config", "path", cfg.UsersConfigPath, "users", userStore.Count())
+		logUsersLoaded(logger, cfg.UsersConfigPath, userStore)
+	}
+
+	keysFile, apiKeyStore, err := loadAPIKeysFile(cfg.APIKeysConfigPath, compareLimiter)
+	if err != nil {
+		logger.Error("failed to load apikeys config", "error", err)
+		os.Exit(1)
+	}
+	if apiKeyStore != nil {
+		keys := apiKeyStore.Summary()
+		logger.Info("loaded apikeys config", "path", cfg.APIKeysConfigPath, "sha256", keys.Indexed, "bcryptOnly", keys.BcryptOnly)
+		logAPIKeysLoaded(logger, cfg.APIKeysConfigPath, apiKeyStore)
+	}
+
 	// Initialize authorization (TOOLMESH_AUTHZ_MODE). The disabled case
 	// (authorizer == nil) is reported by the consolidated security-posture
 	// summary emitted just before the server starts listening.
-	authzEngine, err := setupAuthz(ctx, cfg, priorState, logger)
+	// The default preset and the approver check go by the users.yaml and
+	// apikeys.yaml just loaded, not by a second read of the files, which may
+	// have changed in between: the reloader compares with what was loaded.
+	authzEngine, err := setupAuthzInForce(ctx, cfg, priorState, func() (bool, map[string]string) {
+		return userStore != nil || apiKeyStore != nil, apiKeyStore.SHA256Sums()
+	}, logger)
 	if err != nil {
 		logger.Error("failed to initialize authorization", "mode", cfg.AuthzMode, "error", err)
 		os.Exit(1)
@@ -415,34 +448,6 @@ func main() {
 		logger.Info("dynamic client registration (/register) is rate-limited per process: no Redis to share the limit across replicas")
 	}
 
-	// One bound for every bcrypt comparison in the process: password logins
-	// and API keys that are only known by their bcrypt hash share it.
-	compareLimiter := auth.NewCompareLimiter(cfg.BcryptMaxConcurrent)
-	logger.Info("bcrypt comparisons bounded", "maxConcurrent", compareLimiter.Capacity())
-
-	// Load user identity configs. Each file is read once and its store built
-	// from those bytes; the reloader started below compares with them.
-	usersFile, userStore, err := loadUsersFile(cfg.UsersConfigPath, compareLimiter)
-	if err != nil {
-		logger.Error("failed to load users config", "error", err)
-		os.Exit(1)
-	}
-	if userStore != nil {
-		logger.Info("loaded users config", "path", cfg.UsersConfigPath, "users", userStore.Count())
-		logUsersLoaded(logger, cfg.UsersConfigPath, userStore)
-	}
-
-	keysFile, apiKeyStore, err := loadAPIKeysFile(cfg.APIKeysConfigPath, compareLimiter)
-	if err != nil {
-		logger.Error("failed to load apikeys config", "error", err)
-		os.Exit(1)
-	}
-	if apiKeyStore != nil {
-		keys := apiKeyStore.Summary()
-		logger.Info("loaded apikeys config", "path", cfg.APIKeysConfigPath, "sha256", keys.Indexed, "bcryptOnly", keys.BcryptOnly)
-		logAPIKeysLoaded(logger, cfg.APIKeysConfigPath, apiKeyStore)
-	}
-
 	callerClasses, err := config.LoadCallerClasses(cfg.CallerClassesConfigPath)
 	if err != nil {
 		logger.Error("failed to load caller-classes config", "error", err)
@@ -483,6 +488,18 @@ func main() {
 		authzEngine.applier.setInForce(func() (bool, map[string]string) {
 			keys := mcpServer.APIKeyStore()
 			return mcpServer.UserStore() != nil || keys != nil, keys.SHA256Sums()
+		})
+	}
+	// An approver's key never connects as an MCP caller, also when an
+	// apikeys.yaml entry known only by its bcrypt hash holds it.
+	if emb := authzEngine.embedded; emb != nil {
+		mcpServer.SetApproverKeyCheck(func(keySHA256 string) bool {
+			for _, a := range emb.Approvers() {
+				if a.KeySHA256 != "" && a.KeySHA256 == keySHA256 {
+					return true
+				}
+			}
+			return false
 		})
 	}
 

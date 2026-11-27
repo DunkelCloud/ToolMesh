@@ -22,6 +22,9 @@ import (
 	"time"
 )
 
+// defaultContentType is the media type of a file whose type nobody named.
+const defaultContentType = "application/octet-stream"
+
 // uploadMemoryLimit is the in-memory threshold for multipart parsing; larger
 // uploads spill to temporary files that are removed after the request.
 const uploadMemoryLimit = 32 << 20 // 32 MB
@@ -69,6 +72,7 @@ func (s *Store) HandleUpload(w http.ResponseWriter, r *http.Request, limits Uplo
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	extendUploadDeadline(w)
 	// A body that cannot fit even without the form overhead is turned away
 	// before it is read and spooled to disk. Everything else is checked
 	// against the file size below, and again while the file is stored.
@@ -113,7 +117,7 @@ func (s *Store) HandleUpload(w http.ResponseWriter, r *http.Request, limits Uplo
 
 	contentType := header.Header.Get("Content-Type")
 	if contentType == "" {
-		contentType = "application/octet-stream"
+		contentType = defaultContentType
 	}
 
 	ttl := limits.DefaultTTL

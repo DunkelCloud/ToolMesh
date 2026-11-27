@@ -487,7 +487,7 @@ func (r *CodeRunner) ExecuteWithOptions(ctx context.Context, code string, opts E
 			r.logger.DebugContext(ctx, "execute_code dispatching",
 				"jsFn", sn,
 				logKeyTool, cn,
-				"params", toolParams,
+				"params", redactedForLog{toolParams},
 			)
 
 			// Apply coercion
@@ -577,7 +577,7 @@ func (r *CodeRunner) ExecuteWithOptions(ctx context.Context, code string, opts E
 				r.logger.DebugContext(ctx, "execute_code tool result",
 					logKeyTool, cn,
 					"isError", result.IsError,
-					"content", string(contentJSON),
+					"content", redactUploadURLs(string(contentJSON)),
 				)
 			}
 
@@ -1025,7 +1025,7 @@ func (r *CodeRunner) buildResult(results []any, console []string) *backend.ToolR
 	}
 
 	r.logger.Debug("execute_code complete",
-		"resultJSON", string(resultJSON),
+		"resultJSON", redactUploadURLs(string(resultJSON)),
 		"consoleLines", len(console),
 	)
 

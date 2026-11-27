@@ -81,7 +81,7 @@ func logSecurityPosture(cfg *config.Config, authConfigured, authzOpen bool, refu
 	}
 	if cfg.FileBrokerEnabled && cfg.FileBrokerMaxTotalBytes == 0 {
 		relaxed = append(relaxed, relaxedControl{
-			summary:     "the file broker has no total quota — any authenticated caller can fill the data volume through upload_file and /files/upload",
+			summary:     "the file broker has no total quota — any authenticated caller can fill the data volume through upload_file, upload URLs and /files/upload",
 			remediation: "set TOOLMESH_FILE_BROKER_MAX_TOTAL_BYTES (and TOOLMESH_FILE_BROKER_MAX_BYTES_PER_USER), or TOOLMESH_FILE_BROKER_ENABLED=false where no files are exchanged",
 		})
 	}

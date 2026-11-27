@@ -160,6 +160,11 @@ type ToolDef struct {
 	// that should be retried belongs in errors.retry_on. A ToolMesh
 	// extension: DADL spec v0.2 does not define the key.
 	NotReadyOn []int `yaml:"not_ready_on"`
+	// Upload makes the tool a resumable upload of its file_url parameter
+	// (see UploadConfig). nil = an ordinary request. A ToolMesh extension:
+	// DADL spec v0.2 does not define the key, and a file that uses it must
+	// list FeatureResumableUpload in requires.features.
+	Upload *UploadConfig `yaml:"upload"`
 	// Returns types the result for TypeScript generation (spec §6.5):
 	// either the name of a `types` entry (string) or an inline schema
 	// (map). Describes the value after the response pipeline; never

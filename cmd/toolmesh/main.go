@@ -480,9 +480,11 @@ func main() {
 	mcpHandler := mcp.NewHandler(exec, compositeBackend, coercer, rawTS, metricsReg, logger, cfg.DebugTools)
 	mcpHandler.SetCodeTimeout(time.Duration(cfg.CodeTimeout) * time.Second)
 	mcpHandler.SetCodeMaxConcurrent(cfg.CodeMaxConcurrent)
-	mcpHandler.SetBlobStore(blobStore, blob.DefaultUploadLimits())
+	uploadLimits := blob.DefaultUploadLimits()
+	uploadLimits.MaxBytes = cfg.FileBrokerMaxFileBytes
+	mcpHandler.SetBlobStore(blobStore, uploadLimits)
 	mcpServer := mcp.NewServer(mcpHandler, cfg, logger, tokenStore, userStore, apiKeyStore, rateLimiter, callerClasses, metricsReg)
-	mcpServer.SetBlobStore(blobStore, blob.DefaultUploadLimits())
+	mcpServer.SetBlobStore(blobStore, uploadLimits)
 	mcpServer.SetHealthReporter(healthMonitor)
 
 	// Kit grants (embedded authorization only, where kits exist): requests
@@ -721,7 +723,8 @@ func newBlobStore(cfg *config.Config, logger *slog.Logger) (*blob.Store, error) 
 	})
 	logger.Info("blob store initialized", "dir", dir, "base_url", baseURL,
 		"maxTotalBytes", cfg.FileBrokerMaxTotalBytes,
-		"maxBytesPerUser", cfg.FileBrokerMaxBytesPerUser)
+		"maxBytesPerUser", cfg.FileBrokerMaxBytesPerUser,
+		"maxFileBytes", cfg.FileBrokerMaxFileBytes)
 	return store, nil
 }
 

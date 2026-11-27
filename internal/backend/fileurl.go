@@ -143,7 +143,7 @@ func (a *RESTAdapter) fetchFileURL(ctx context.Context, paramName, rawURL string
 	switch u.Scheme {
 	case urlSchemeHTTP, "https":
 		return a.fetchHTTPFile(ctx, paramName, rawURL, maxBody)
-	case "file":
+	case urlSchemeFile:
 		return a.openLocalFileURL(paramName, u, maxBody)
 	default:
 		return nil, fmt.Errorf("file parameter %q: unsupported URL scheme %q (use http, https, tm-blob, or file)", paramName, u.Scheme)

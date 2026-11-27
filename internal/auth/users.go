@@ -20,6 +20,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"os"
+	"slices"
 	"sort"
 
 	"golang.org/x/crypto/bcrypt"
@@ -54,6 +55,10 @@ type UserStore struct {
 	compare func(hashedPassword, password []byte) error
 
 	limiter *CompareLimiter
+
+	// problems lists what in the file is most likely a mistake, although it
+	// loads (see Problems).
+	problems []string
 }
 
 // NewUserStore loads users from a YAML file. Returns nil if the file doesn't
@@ -67,27 +72,106 @@ func NewUserStore(path string, limiter *CompareLimiter) (*UserStore, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read users config: %w", err)
 	}
+	return ParseUserStore(data, limiter)
+}
 
-	var cfg UsersConfig
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
+// usersFile is UsersConfig with the list as a pointer, so that a document
+// without a users key can be told from one with an empty list.
+type usersFile struct {
+	Users *[]UserEntry `yaml:"users"`
+}
+
+// ParseUserStore builds a UserStore from the contents of a users.yaml, as
+// NewUserStore does from the file. A username listed twice keeps its last
+// entry, as it always has; that and the other doubtful contents are reported
+// by Problems.
+func ParseUserStore(data []byte, limiter *CompareLimiter) (*UserStore, error) {
+	var file usersFile
+	if err := yaml.Unmarshal(data, &file); err != nil {
 		return nil, fmt.Errorf("parse users config: %w", err)
 	}
+	var users []UserEntry
+	var problems []string
+	if file.Users == nil {
+		problems = append(problems, "the file has no users list")
+	} else {
+		users = *file.Users
+	}
 
-	dummyHash, err := newDummyHash(dummyHashCost(cfg.Users))
+	dummyHash, err := newDummyHash(dummyHashCost(users))
 	if err != nil {
 		return nil, fmt.Errorf("prepare dummy password hash: %w", err)
 	}
 
 	store := &UserStore{
-		users:     make(map[string]*UserEntry, len(cfg.Users)),
+		users:     make(map[string]*UserEntry, len(users)),
 		dummyHash: dummyHash,
 		compare:   bcrypt.CompareHashAndPassword,
 		limiter:   limiter,
 	}
-	for i := range cfg.Users {
-		store.users[cfg.Users[i].Username] = &cfg.Users[i]
+	for i := range users {
+		name := users[i].Username
+		switch {
+		case name == "":
+			problems = append(problems, fmt.Sprintf("user %d has no username", i+1))
+		case store.users[name] != nil:
+			problems = append(problems, fmt.Sprintf("username %q is listed more than once", name))
+		}
+		store.users[name] = &users[i]
 	}
+	store.problems = problems
 	return store, nil
+}
+
+// Problems reports what in the loaded file is most likely a mistake although
+// it loads: no users list at all (an empty file, or a misspelled key), a user
+// without a username, a username listed twice. A reload of users.yaml while
+// ToolMesh runs refuses such a file and keeps the users in force; at startup
+// they are logged.
+func (s *UserStore) Problems() []string {
+	if s == nil {
+		return nil
+	}
+	return slices.Clone(s.problems)
+}
+
+// Count returns how many usernames the store holds.
+func (s *UserStore) Count() int {
+	if s == nil {
+		return 0
+	}
+	return len(s.users)
+}
+
+// Diff compares the users of s with those of next and returns the usernames
+// next adds, removes and changes (password hash, company, plan or roles),
+// each sorted. A nil store holds no users.
+func (s *UserStore) Diff(next *UserStore) (added, removed, changed []string) {
+	var before, after map[string]*UserEntry
+	if s != nil {
+		before = s.users
+	}
+	if next != nil {
+		after = next.users
+	}
+	for name, u := range after {
+		old, ok := before[name]
+		switch {
+		case !ok:
+			added = append(added, name)
+		case old.PasswordHash != u.PasswordHash || old.Company != u.Company || old.Plan != u.Plan || !slices.Equal(old.Roles, u.Roles):
+			changed = append(changed, name)
+		}
+	}
+	for name := range before {
+		if _, ok := after[name]; !ok {
+			removed = append(removed, name)
+		}
+	}
+	sort.Strings(added)
+	sort.Strings(removed)
+	sort.Strings(changed)
+	return added, removed, changed
 }
 
 // HashProblems reports what in the loaded password hashes weakens the login:

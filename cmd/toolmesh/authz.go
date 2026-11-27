@@ -21,8 +21,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/DunkelCloud/ToolMesh/internal/audit"
@@ -38,8 +41,79 @@ type authzSetup struct {
 	authorizer authz.Authorizer
 	// embedded is set in embedded mode, where ToolMesh manages the grants.
 	embedded *authz.Embedded
+	// applier applies the policy to embedded (embedded mode only).
+	applier *authzApplier
 	// policy is the policy applied at startup (embedded mode only).
 	policy authz.Policy
+}
+
+// authzApplier applies the authorization policy to the embedded store. The
+// policy depends on the authz config file and on whether users.yaml or
+// apikeys.yaml is in force, so it is applied at startup, by the watcher of
+// the authz config file, and when one of the two files comes into force while
+// ToolMesh runs. mu keeps these apart: the policy resolved last is the one
+// written last. The approver check of a reloaded apikeys.yaml runs under mu
+// as well (underPolicy), so that no approver key and API key can come into
+// force side by side.
+type authzApplier struct {
+	cfg    *config.Config
+	emb    *authz.Embedded
+	logger *slog.Logger
+
+	mu sync.Mutex
+	// policy is the policy applied last.
+	policy authz.Policy
+	// inForce, once set, says what the MCP server has in force: whether
+	// users.yaml or apikeys.yaml is loaded, and the key_sha256 sums of the
+	// API keys. Until it is set (during startup) the files on disk decide.
+	inForce func() (filesLoaded bool, keySums map[string]string)
+}
+
+// apply resolves the policy and writes it to the embedded store. On an error
+// the grants in the store stay as they were.
+func (a *authzApplier) apply(ctx context.Context) (authz.Policy, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	preset := defaultAuthzPreset(a.cfg)
+	keySums := func() (map[string]string, error) { return auth.KeySHA256Sums(a.cfg.APIKeysConfigPath) }
+	if a.inForce != nil {
+		loaded, sums := a.inForce()
+		preset = presetForAuthFiles(loaded)
+		keySums = func() (map[string]string, error) { return sums, nil }
+	}
+	policy, err := applyAuthzPolicyWith(ctx, a.cfg, a.emb, a.logger, preset, keySums)
+	if err != nil {
+		return authz.Policy{}, err
+	}
+	a.policy = policy
+	return policy, nil
+}
+
+// setInForce makes the policy follow what the MCP server has in force from
+// now on, instead of the files on disk.
+func (a *authzApplier) setInForce(f func() (bool, map[string]string)) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.inForce = f
+}
+
+// underPolicy calls f with the key_sha256 sums of the approvers of the policy
+// in force, mapped to a description of each, while no policy can be applied.
+// A nil applier (authorization not embedded) has no approvers.
+func (a *authzApplier) underPolicy(f func(approverKeys map[string]string)) {
+	if a == nil {
+		f(nil)
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	keys := make(map[string]string)
+	for _, ap := range a.policy.Approvers {
+		if ap.KeySHA256 != "" {
+			keys[strings.ToLower(ap.KeySHA256)] = fmt.Sprintf("approver %q", ap.Name)
+		}
+	}
+	f(keys)
 }
 
 // open reports whether every authenticated caller may execute every tool,
@@ -101,7 +175,8 @@ func setupAuthz(ctx context.Context, cfg *config.Config, priorState bool, logger
 	if err != nil {
 		return nil, err
 	}
-	policy, err := applyAuthzPolicy(ctx, cfg, emb, logger)
+	applier := &authzApplier{cfg: cfg, emb: emb, logger: logger}
+	policy, err := applier.apply(ctx)
 	if err != nil {
 		_ = emb.Close()
 		return nil, err
@@ -109,14 +184,24 @@ func setupAuthz(ctx context.Context, cfg *config.Config, priorState bool, logger
 	logger.Info("authorization: embedded",
 		"database", filepath.Join(cfg.DataDir, authz.DBFileName),
 		"store_id", emb.StoreID(), "model_id", emb.ModelID())
-	return &authzSetup{authorizer: emb, embedded: emb, policy: policy}, nil
+	return &authzSetup{authorizer: emb, embedded: emb, applier: applier, policy: policy}, nil
 }
 
 // applyAuthzPolicy resolves the grants (config file, TOOLMESH_AUTHZ_PRESET,
 // upgrade preset, default preset) and writes them, with the denies and kits
-// of the config file, to the embedded store. On
-// an error the grants in the store stay as they were.
+// of the config file, to the embedded store, deciding the default preset and
+// the approver check by the files on disk. On an error the grants in the
+// store stay as they were.
 func applyAuthzPolicy(ctx context.Context, cfg *config.Config, emb *authz.Embedded, logger *slog.Logger) (authz.Policy, error) {
+	return applyAuthzPolicyWith(ctx, cfg, emb, logger, defaultAuthzPreset(cfg), func() (map[string]string, error) {
+		return auth.KeySHA256Sums(cfg.APIKeysConfigPath)
+	})
+}
+
+// applyAuthzPolicyWith is applyAuthzPolicy with the default preset and the
+// key_sha256 sums of the API keys in force given. keySums is called only when
+// the policy has approvers.
+func applyAuthzPolicyWith(ctx context.Context, cfg *config.Config, emb *authz.Embedded, logger *slog.Logger, defaultPreset string, keySums func() (map[string]string, error)) (authz.Policy, error) {
 	file, err := authz.LoadFile(cfg.AuthzConfigPath)
 	if err != nil {
 		return authz.Policy{}, err
@@ -129,13 +214,13 @@ func applyAuthzPolicy(ctx context.Context, cfg *config.Config, emb *authz.Embedd
 		File:          file,
 		EnvPreset:     cfg.AuthzPreset,
 		UpgradePreset: emb.UpgradePreset(),
-		DefaultPreset: defaultAuthzPreset(cfg),
+		DefaultPreset: defaultPreset,
 		Owner:         cfg.AuthUser,
 	})
 	if err != nil {
 		return authz.Policy{}, err
 	}
-	if err := checkApproverKeys(cfg, policy.Approvers); err != nil {
+	if err := checkApproverKeys(cfg, policy.Approvers, keySums); err != nil {
 		return authz.Policy{}, fmt.Errorf("authz config: %w", err)
 	}
 	res, err := emb.ApplyPolicy(ctx, policy)
@@ -169,19 +254,18 @@ const (
 
 // checkApproverKeys refuses an approver whose key is also a credential MCP
 // callers connect with: TOOLMESH_API_KEY, TOOLMESH_AUTH_PASSWORD or a key
-// with a key_sha256 in apikeys.yaml. Keys known only by a bcrypt key_hash
-// cannot be compared.
-func checkApproverKeys(cfg *config.Config, approvers []authz.Approver) error {
+// with a key_sha256 in apikeys.yaml, whose sums keySums returns. Keys known
+// only by a bcrypt key_hash cannot be compared.
+func checkApproverKeys(cfg *config.Config, approvers []authz.Approver, keySums func() (map[string]string, error)) error {
 	if len(approvers) == 0 {
 		return nil
 	}
-	reserved, err := auth.KeySHA256Sums(cfg.APIKeysConfigPath)
+	sums, err := keySums()
 	if err != nil {
 		return fmt.Errorf("compare the approver keys with the API keys: %w", err)
 	}
-	if reserved == nil {
-		reserved = map[string]string{}
-	}
+	reserved := make(map[string]string, len(sums)+2)
+	maps.Copy(reserved, sums)
 	for name, secret := range map[string]string{envAPIKey: cfg.APIKey, envAuthPassword: cfg.AuthPassword} {
 		if secret != "" {
 			sum := sha256.Sum256([]byte(secret))
@@ -191,14 +275,23 @@ func checkApproverKeys(cfg *config.Config, approvers []authz.Approver) error {
 	return authz.CheckApproverKeys(approvers, reserved)
 }
 
-// defaultAuthzPreset picks the preset for an installation that names none:
-// team when callers are configured in users.yaml or apikeys.yaml, so their
-// plans count, otherwise single-user.
+// defaultAuthzPreset picks the preset for an installation that names none,
+// by the files on disk: team when callers are configured in users.yaml or
+// apikeys.yaml, so their plans count, otherwise single-user.
 func defaultAuthzPreset(cfg *config.Config) string {
 	for _, path := range []string{cfg.UsersConfigPath, cfg.APIKeysConfigPath} {
 		if _, err := os.Stat(path); err == nil {
-			return authz.PresetTeam
+			return presetForAuthFiles(true)
 		}
+	}
+	return presetForAuthFiles(false)
+}
+
+// presetForAuthFiles is the default preset when users.yaml or apikeys.yaml is
+// in force (loaded) or not.
+func presetForAuthFiles(loaded bool) string {
+	if loaded {
+		return authz.PresetTeam
 	}
 	return authz.PresetSingleUser
 }
@@ -211,7 +304,8 @@ func defaultAuthzPreset(cfg *config.Config) string {
 // The state to compare against is taken before startAuthzConfigWatch
 // returns, not inside the goroutine: otherwise an edit made right after the
 // call could become that starting state and never be applied.
-func startAuthzConfigWatch(ctx context.Context, cfg *config.Config, emb *authz.Embedded, interval time.Duration, logger *slog.Logger) {
+func startAuthzConfigWatch(ctx context.Context, applier *authzApplier, interval time.Duration) {
+	cfg, logger := applier.cfg, applier.logger
 	// Size as well as time: two edits within the file system's timestamp
 	// resolution would otherwise look like one.
 	type fileStamp struct {
@@ -241,7 +335,7 @@ func startAuthzConfigWatch(ctx context.Context, cfg *config.Config, emb *authz.E
 				}
 				last = cur
 				logger.Info("authz config changed, applying grants", "file", cfg.AuthzConfigPath, "exists", cur.exists)
-				if _, err := applyAuthzPolicy(ctx, cfg, emb, logger); err != nil && !errors.Is(err, context.Canceled) {
+				if _, err := applier.apply(ctx); err != nil && !errors.Is(err, context.Canceled) {
 					logger.Error("authz config reload failed, keeping the current grants", "file", cfg.AuthzConfigPath, "error", err)
 				}
 			}
@@ -256,8 +350,8 @@ func recordAuthzDisabled(ctx context.Context, store audit.AuditStore, cfg *confi
 	err := store.Record(ctx, audit.AuditEntry{
 		TraceID:     uuid.New().String(),
 		Timestamp:   time.Now(),
-		UserID:      "system",
-		CallerID:    "system",
+		UserID:      auditSystem,
+		CallerID:    auditSystem,
 		CallerClass: "trusted",
 		Tool:        "toolmesh_authz",
 		Backend:     "toolmesh",

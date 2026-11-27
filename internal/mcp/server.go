@@ -51,12 +51,16 @@ import (
 // Server is the ToolMesh MCP server that handles Streamable HTTP transport,
 // OAuth 2.1 authentication, and tool call routing.
 type Server struct {
-	handler     *Handler
-	cfg         *config.Config
-	logger      *slog.Logger
-	tokenStore  auth.TokenStore
-	userStore   *auth.UserStore
-	apiKeys     *auth.APIKeyStore
+	handler    *Handler
+	cfg        *config.Config
+	logger     *slog.Logger
+	tokenStore auth.TokenStore
+	// users and apiKeys are the stores of users.yaml and apikeys.yaml in
+	// force, nil without the file. A reload replaces them while requests run
+	// (SetUserStore, SetAPIKeyStore), so a handler loads each one once and
+	// decides on that snapshot.
+	users       atomic.Pointer[auth.UserStore]
+	apiKeys     atomic.Pointer[auth.APIKeyStore]
 	rateLimiter *auth.DCRRateLimiter
 	// revokeLimiter limits revocation requests per client address.
 	revokeLimiter *auth.AddressRateLimiter
@@ -109,13 +113,11 @@ func NewServer(handler *Handler, cfg *config.Config, logger *slog.Logger, tokenS
 	if len(cfg.CORSAllowedOrigins) == 0 {
 		logger.Warn("TOOLMESH_CORS_ORIGINS not set: CORS will reflect any origin (open policy)")
 	}
-	return &Server{
+	s := &Server{
 		handler:        handler,
 		cfg:            cfg,
 		logger:         logger,
 		tokenStore:     tokenStore,
-		userStore:      userStore,
-		apiKeys:        apiKeys,
 		rateLimiter:    rateLimiter,
 		revokeLimiter:  auth.NewRevokeRateLimiter(nil),
 		cimd:           newCIMDFetcher(cimdHTTPClient(cimdTransport())),
@@ -125,6 +127,36 @@ func NewServer(handler *Handler, cfg *config.Config, logger *slog.Logger, tokenS
 		callerClasses:  callerClasses,
 		metrics:        m,
 	}
+	s.users.Store(userStore)
+	s.apiKeys.Store(apiKeys)
+	return s
+}
+
+// SetUserStore puts users in force as the users of users.yaml, in place of
+// the ones loaded before; nil means there is no users.yaml. Requests already
+// running finish on the store they started with. Tokens are resolved against
+// the new users from their next request or refresh on: a user who is gone or
+// whose password_hash changed loses access then.
+func (s *Server) SetUserStore(users *auth.UserStore) {
+	s.users.Store(users)
+}
+
+// UserStore returns the users of users.yaml in force, nil without the file.
+func (s *Server) UserStore() *auth.UserStore {
+	return s.users.Load()
+}
+
+// SetAPIKeyStore puts keys in force as the keys of apikeys.yaml, in place of
+// the ones loaded before; nil means there is no apikeys.yaml, which lets
+// TOOLMESH_API_KEY apply. Requests already running finish on the store they
+// started with.
+func (s *Server) SetAPIKeyStore(keys *auth.APIKeyStore) {
+	s.apiKeys.Store(keys)
+}
+
+// APIKeyStore returns the keys of apikeys.yaml in force, nil without the file.
+func (s *Server) APIKeyStore() *auth.APIKeyStore {
+	return s.apiKeys.Load()
 }
 
 // UseRedisLoginThrottle moves the failed-login counters and the counts of
@@ -538,7 +570,7 @@ func toolCallParams(req *jsonRPCRequest) (name string, arguments map[string]any,
 // password, users.yaml, an API key or apikeys.yaml. Authentication does not
 // depend on it; without one, every request is rejected.
 func (s *Server) credentialConfigured() bool {
-	return s.cfg.AuthPassword != "" || s.cfg.APIKey != "" || s.userStore != nil || s.apiKeys != nil
+	return s.cfg.AuthPassword != "" || s.cfg.APIKey != "" || s.users.Load() != nil || s.apiKeys.Load() != nil
 }
 
 // handleInitialize answers the handshake of the revisions up to 2025-11-25,
@@ -844,18 +876,21 @@ func (s *Server) checkBearer(r *http.Request, bearer string, slot *bearerSlot) (
 	var revokedUser bool
 	// unchecked is set when a method could not look at the bearer at all.
 	var unchecked error
+	// One snapshot of the stores for the whole check: a reload in the middle
+	// must not make the request see two configurations.
+	users, keys := s.users.Load(), s.apiKeys.Load()
 
 	if bearer != "" {
 		// 1. API keys from apikeys.yaml that are in the index.
-		if s.apiKeys != nil {
+		if keys != nil {
 			checkedAPIKey = true
-			if entry := s.apiKeys.Find(bearer); entry != nil {
+			if entry := keys.Find(bearer); entry != nil {
 				return s.apiKeyCaller(entry), nil
 			}
 		}
 
 		// 2. Single API key (env var), compared in constant time.
-		if s.cfg.APIKey != "" && s.apiKeys == nil {
+		if s.cfg.APIKey != "" && keys == nil {
 			checkedAPIKey = true
 			if secretsEqual(bearer, s.cfg.APIKey) {
 				s.metrics.RecordLogin(loginMethodAPIKey, "success")
@@ -875,7 +910,7 @@ func (s *Server) checkBearer(r *http.Request, bearer string, slot *bearerSlot) (
 		// password login and are honored only where there is one: a token
 		// still in the store from a time when the configuration was
 		// different is not a credential anymore.
-		if s.tokenStore != nil && s.passwordLoginConfigured() {
+		if s.tokenStore != nil && s.passwordLoginConfiguredIn(users) {
 			ti, err := s.tokenStore.GetToken(r.Context(), bearer)
 			// The identity a token stands for is resolved against the
 			// configuration in force now: a user removed or disabled since
@@ -885,8 +920,12 @@ func (s *Server) checkBearer(r *http.Request, bearer string, slot *bearerSlot) (
 			current := false
 			valid := err == nil && time.Now().Before(ti.ExpiresAt)
 			if valid {
-				id, current = s.currentIdentity(ti.UserID)
-				current = current && id.matches(ti.CredentialFP) && s.clientAccepted(ti.ClientID) && signInBound(ti)
+				var reason string
+				id, reason = s.tokenRefusal(users, ti.UserID, ti.CredentialFP)
+				if reason == "" && (!s.clientAccepted(ti.ClientID) || !signInBound(ti)) {
+					reason = refusalClientNotAccepted
+				}
+				current = reason == ""
 				if !current {
 					// The pair ends as a whole: a user who is added again
 					// must log in, not resume the old refresh chain.
@@ -894,8 +933,8 @@ func (s *Server) checkBearer(r *http.Request, bearer string, slot *bearerSlot) (
 					if ti.RefreshToken != "" {
 						_, _ = s.tokenStore.ConsumeRefreshToken(r.Context(), ti.RefreshToken)
 					}
-					s.logger.InfoContext(r.Context(), "access token refused: its user is no longer configured, the credential changed, or its client is not accepted",
-						"user", truncateForLog(ti.UserID), logKeyClientID, truncateForLog(ti.ClientID), logKeyRemote, auth.ClientIP(r))
+					s.logger.InfoContext(r.Context(), "access token refused",
+						logKeyReason, reason, "user", truncateForLog(ti.UserID), logKeyClientID, truncateForLog(ti.ClientID), logKeyRemote, auth.ClientIP(r))
 				}
 			}
 			switch {
@@ -941,11 +980,11 @@ func (s *Server) checkBearer(r *http.Request, bearer string, slot *bearerSlot) (
 		// any unknown credential, which keeps a client that holds an expired
 		// token able to refresh it.
 		skipComparison := false
-		if s.apiKeys != nil && !expiredToken && !revokedUser && !slot.reserved && s.apiKeys.NeedsComparison() {
+		if keys != nil && !expiredToken && !revokedUser && !slot.reserved && keys.NeedsComparison() {
 			skipComparison = s.reserveBearerSlot(r, slot) != nil
 		}
-		if s.apiKeys != nil && !expiredToken && !revokedUser && !skipComparison {
-			entry, err := s.apiKeys.Verify(r.Context(), bearer)
+		if keys != nil && !expiredToken && !revokedUser && !skipComparison {
+			entry, err := keys.Verify(r.Context(), bearer)
 			switch {
 			case err != nil:
 				unchecked = err
@@ -1342,7 +1381,13 @@ func (s *Server) extendClient(ctx context.Context, clientID string) {
 // value. The same goes for what follows from a login: authorization codes are
 // not exchanged, and access and refresh tokens are not honored.
 func (s *Server) passwordLoginConfigured() bool {
-	return s.userStore != nil || s.cfg.AuthPassword != ""
+	return s.passwordLoginConfiguredIn(s.users.Load())
+}
+
+// passwordLoginConfiguredIn is passwordLoginConfigured for a snapshot of the
+// users in force.
+func (s *Server) passwordLoginConfiguredIn(users *auth.UserStore) bool {
+	return users != nil || s.cfg.AuthPassword != ""
 }
 
 // clientRejection says why the client or the redirect_uri of an authorization
@@ -1818,7 +1863,8 @@ func (s *Server) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Req
 		writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: invalidGrantError})
 		return
 	}
-	if !s.passwordLoginConfigured() {
+	users := s.users.Load()
+	if !s.passwordLoginConfiguredIn(users) {
 		s.tokenGrantRefused(r, loginMethodOAuthCode)
 		writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: invalidGrantError})
 		return
@@ -1868,6 +1914,16 @@ func (s *Server) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Req
 	if !s.clientAccepted(ac.ClientID) {
 		s.logger.WarnContext(ctx, "auth code grant refused: the client is no longer accepted",
 			logKeyClientID, truncateForLog(ac.ClientID), logKeyRemote, auth.ClientIP(r))
+		s.metrics.RecordLogin(loginMethodOAuthCode, "failure")
+		writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: invalidGrantError})
+		return
+	}
+
+	// users.yaml may have been reloaded since the login: a code whose user is
+	// gone or whose password changed in the meantime gets no tokens.
+	if _, reason := s.tokenRefusal(users, ac.UserID, ac.CredentialFP); reason != "" {
+		s.logger.WarnContext(ctx, "auth code grant refused",
+			logKeyReason, reason, "user", truncateForLog(ac.UserID), logKeyClientID, truncateForLog(ac.ClientID), logKeyRemote, auth.ClientIP(r))
 		s.metrics.RecordLogin(loginMethodOAuthCode, "failure")
 		writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: invalidGrantError})
 		return
@@ -1944,7 +2000,8 @@ func (s *Server) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request)
 		writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: invalidGrantError})
 		return
 	}
-	if !s.passwordLoginConfigured() {
+	users := s.users.Load()
+	if !s.passwordLoginConfiguredIn(users) {
 		s.tokenGrantRefused(r, loginMethodOAuthRefresh)
 		writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: invalidGrantError})
 		return
@@ -1999,11 +2056,11 @@ func (s *Server) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request)
 	// Renewal re-checks the user against the configuration in force now and
 	// takes the current company, plan and roles; a user removed or disabled
 	// since the login gets no new token.
-	id, ok := s.currentIdentity(oldTI.UserID)
-	if !ok || !id.matches(oldTI.CredentialFP) {
+	id, reason := s.tokenRefusal(users, oldTI.UserID, oldTI.CredentialFP)
+	if reason != "" {
 		s.metrics.RecordLogin(loginMethodOAuthRefresh, "failure")
-		s.logger.WarnContext(ctx, "refresh refused: user is no longer configured",
-			"user", truncateForLog(oldTI.UserID), "clientId", oldTI.ClientID, logKeyRemote, auth.ClientIP(r))
+		s.logger.WarnContext(ctx, "refresh refused",
+			logKeyReason, reason, "user", truncateForLog(oldTI.UserID), "clientId", oldTI.ClientID, logKeyRemote, auth.ClientIP(r))
 		writeJSON(w, http.StatusBadRequest, map[string]string{outcomeError: invalidGrantError})
 		return
 	}
@@ -2062,10 +2119,34 @@ type tokenIdentity struct {
 	fp string
 }
 
-// matches reports whether a token carrying credentialFP may stand for this
-// identity. Tokens from before fingerprints existed carry none and match.
-func (id tokenIdentity) matches(credentialFP string) bool {
-	return credentialFP == "" || credentialFP == id.fp
+// Why a token or an authorization code no longer stands for its user, as
+// logged under "reason".
+const (
+	refusalUserGone          = "user no longer configured or disabled"
+	refusalCredentialChanged = "password changed since the login"
+	// refusalNoFingerprint is a token from a version before tokens were
+	// bound to the password (before v0.6.0): its user signs in again.
+	refusalNoFingerprint     = "token from before the password binding, sign in again"
+	refusalClientNotAccepted = "client not accepted"
+)
+
+// tokenRefusal resolves userID against users (the users.yaml in force, nil
+// in single-password mode) and says why a token or code of that user
+// carrying credentialFP may not stand for it, or "" when it may. Every token
+// and code carries the fingerprint of the password it was issued for; one
+// without a fingerprint comes from a version before that binding and is
+// refused, so that it cannot outlive a password change.
+func (s *Server) tokenRefusal(users *auth.UserStore, userID, credentialFP string) (id tokenIdentity, reason string) {
+	id, ok := s.currentIdentityIn(users, userID)
+	switch {
+	case !ok:
+		return id, refusalUserGone
+	case credentialFP == "":
+		return id, refusalNoFingerprint
+	case id.fp == "" || credentialFP != id.fp:
+		return id, refusalCredentialChanged
+	}
+	return id, ""
 }
 
 // credentialFPLen is the length in bytes of a credential fingerprint.
@@ -2104,8 +2185,13 @@ func (s *Server) ownerFingerprint() string {
 // false when the user no longer exists or can no longer log in, so tokens
 // issued to it are neither renewed nor honored.
 func (s *Server) currentIdentity(userID string) (id tokenIdentity, ok bool) {
-	if s.userStore != nil {
-		u := s.userStore.Lookup(userID)
+	return s.currentIdentityIn(s.users.Load(), userID)
+}
+
+// currentIdentityIn is currentIdentity for a snapshot of the users in force.
+func (s *Server) currentIdentityIn(users *auth.UserStore, userID string) (id tokenIdentity, ok bool) {
+	if users != nil {
+		u := users.Lookup(userID)
 		if u == nil {
 			return tokenIdentity{}, false
 		}

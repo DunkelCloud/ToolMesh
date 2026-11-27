@@ -16,6 +16,8 @@ package mcp
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -41,10 +43,13 @@ const (
 )
 
 // issuePair stores an access and refresh token for userID with the given
-// roles, as a login some time ago would have, and returns both.
+// roles, as a login some time ago would have, and returns both. The tokens
+// carry the fingerprint of the user's password in force now, as a login
+// would have given them; a user who is not configured gets none.
 func (ts *loginTestServer) issuePair(t *testing.T, userID string, roles []string) (access, refresh string) {
 	t.Helper()
 	now := time.Now()
+	id, _ := ts.srv.currentIdentity(userID)
 	ti := &auth.TokenInfo{
 		AccessToken:      generateID(),
 		RefreshToken:     generateID(),
@@ -55,6 +60,7 @@ func (ts *loginTestServer) issuePair(t *testing.T, userID string, roles []string
 		Roles:            roles,
 		ExpiresAt:        now.Add(time.Hour),
 		RefreshExpiresAt: now.Add(24 * time.Hour),
+		CredentialFP:     id.fp,
 	}
 	ctx := context.Background()
 	if err := ts.srv.tokenStore.SaveToken(ctx, ti); err != nil {
@@ -151,13 +157,13 @@ func TestRefresh_ChecksUsersYAML(t *testing.T) {
 
 	// Removed from users.yaml: no renewal.
 	_, refresh = ts.issuePair(t, refreshTestUser, []string{refreshTestRole})
-	ts.srv.userStore = writeUsers(t, map[string]string{testKitUserBob: bcryptHash(t, "pw-bob")})
+	ts.srv.SetUserStore(writeUsers(t, map[string]string{testKitUserBob: bcryptHash(t, "pw-bob")}))
 	if w := ts.refreshGrant(refresh); w.Code != http.StatusBadRequest {
 		t.Errorf("refresh for a removed user: status %d, want 400", w.Code)
 	}
 
 	// Disabled by an unusable password_hash: no renewal either.
-	ts.srv.userStore = writeUsers(t, map[string]string{refreshTestUser: "!"})
+	ts.srv.SetUserStore(writeUsers(t, map[string]string{refreshTestUser: "!"}))
 	_, refresh = ts.issuePair(t, refreshTestUser, []string{refreshTestRole})
 	if w := ts.refreshGrant(refresh); w.Code != http.StatusBadRequest {
 		t.Errorf("refresh for a disabled user: status %d, want 400", w.Code)
@@ -172,7 +178,7 @@ func TestBearer_TokenOfRemovedUserRefused(t *testing.T) {
 	if w := ts.mcpCall("Bearer " + access); w.Code != http.StatusOK {
 		t.Fatalf("token of a configured user: status %d, want 200", w.Code)
 	}
-	ts.srv.userStore = writeUsers(t, map[string]string{testKitUserBob: bcryptHash(t, "pw-bob")})
+	ts.srv.SetUserStore(writeUsers(t, map[string]string{testKitUserBob: bcryptHash(t, "pw-bob")}))
 	if w := ts.mcpCall("Bearer " + access); w.Code != http.StatusUnauthorized {
 		t.Errorf("token of a removed user: status %d, want 401", w.Code)
 	}
@@ -262,8 +268,7 @@ func (ts *loginTestServer) issuePairFP(t *testing.T, userID, fp string) (access,
 
 // TestTokens_EndWithPasswordChange pins that changing a user's password
 // ends the sessions issued for the old one: the access token is refused and
-// no refresh succeeds. Tokens without a fingerprint, issued before
-// fingerprints existed, stay valid and are bound at their next refresh.
+// no refresh succeeds.
 func TestTokens_EndWithPasswordChange(t *testing.T) {
 	t.Run("users.yaml", func(t *testing.T) {
 		ts := newLoginTestServer(t, loginTestConfig(), loginTestOptions{users: map[string]string{refreshTestUser: "old-pw"}})
@@ -275,7 +280,7 @@ func TestTokens_EndWithPasswordChange(t *testing.T) {
 		if w := ts.mcpCall("Bearer " + access); w.Code != http.StatusOK {
 			t.Fatalf("token for the current password: status %d", w.Code)
 		}
-		ts.srv.userStore = writeUsers(t, map[string]string{refreshTestUser: bcryptHash(t, "new-pw")})
+		ts.srv.SetUserStore(writeUsers(t, map[string]string{refreshTestUser: bcryptHash(t, "new-pw")}))
 		if w := ts.mcpCall("Bearer " + access); w.Code != http.StatusUnauthorized {
 			t.Errorf("access token after a password change: status %d, want 401", w.Code)
 		}
@@ -299,13 +304,109 @@ func TestTokens_EndWithPasswordChange(t *testing.T) {
 		}
 	})
 
-	t.Run("token without fingerprint is bound at refresh", func(t *testing.T) {
-		ts := newLoginTestServer(t, loginTestConfig(), loginTestOptions{})
-		_, refresh := ts.issuePairFP(t, testLoginOwner, "")
-		ti := ts.refreshedToken(t, refresh)
-		if ti.CredentialFP != ts.srv.ownerFingerprint() {
-			t.Errorf("refreshed token fingerprint = %q, want the current one", ti.CredentialFP)
-		}
+}
+
+// TestTokens_WithoutFingerprintRefused pins that a token without a credential
+// fingerprint, as versions before the binding issued them, is neither honored
+// nor renewed, in both login modes, and that refusing it ends the pair. Such a
+// token would otherwise be bound to whatever password is in force at its next
+// refresh and so outlive a password change.
+func TestTokens_WithoutFingerprintRefused(t *testing.T) {
+	modes := map[string]loginTestOptions{
+		"single password": {},
+		"users.yaml":      {users: map[string]string{testLoginOwner: "pw-owner"}},
+	}
+	for name, opts := range modes {
+		t.Run(name, func(t *testing.T) {
+			t.Run("bearer", func(t *testing.T) {
+				ts := newLoginTestServer(t, loginTestConfig(), opts)
+				access, refresh := ts.issuePairFP(t, testLoginOwner, "")
+				if w := ts.mcpCall("Bearer " + access); w.Code != http.StatusUnauthorized {
+					t.Errorf("access token without fingerprint: status %d, want 401", w.Code)
+				}
+				if !strings.Contains(ts.logs.String(), refusalNoFingerprint) {
+					t.Errorf("the refusal does not name its reason %q; log:\n%s", refusalNoFingerprint, ts.logs.String())
+				}
+				// The pair ended with the refusal.
+				if _, err := ts.srv.tokenStore.GetToken(context.Background(), access); err == nil {
+					t.Error("the refused access token is still stored")
+				}
+				if w := ts.refreshGrant(refresh); w.Code != http.StatusBadRequest {
+					t.Errorf("refresh token of the refused pair: status %d, want 400", w.Code)
+				}
+			})
+			t.Run("refresh", func(t *testing.T) {
+				ts := newLoginTestServer(t, loginTestConfig(), opts)
+				_, refresh := ts.issuePairFP(t, testLoginOwner, "")
+				if w := ts.refreshGrant(refresh); w.Code != http.StatusBadRequest {
+					t.Errorf("refresh token without fingerprint: status %d, want 400", w.Code)
+				}
+			})
+		})
+	}
+}
+
+// TestAuthCode_RefusedAfterPasswordChange pins that an authorization code
+// issued before a reload of users.yaml that removed its user or changed the
+// password gets no tokens, and that a code without a fingerprint gets none
+// either.
+func TestAuthCode_RefusedAfterPasswordChange(t *testing.T) {
+	cases := []struct {
+		name string
+		// change runs between the login and the code exchange and returns
+		// the fingerprint the code carries.
+		change func(t *testing.T, ts *loginTestServer, fp string) string
+		want   int
+	}{
+		{"unchanged", func(_ *testing.T, _ *loginTestServer, fp string) string { return fp }, http.StatusOK},
+		{"password changed", func(t *testing.T, ts *loginTestServer, fp string) string {
+			ts.srv.SetUserStore(writeUsers(t, map[string]string{refreshTestUser: bcryptHash(t, "new-pw")}))
+			return fp
+		}, http.StatusBadRequest},
+		{"user removed", func(t *testing.T, ts *loginTestServer, fp string) string {
+			ts.srv.SetUserStore(writeUsers(t, map[string]string{testKitUserBob: bcryptHash(t, "pw-bob")}))
+			return fp
+		}, http.StatusBadRequest},
+		{"code without fingerprint", func(_ *testing.T, _ *loginTestServer, _ string) string { return "" }, http.StatusBadRequest},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ts := newLoginTestServer(t, loginTestConfig(), loginTestOptions{users: map[string]string{refreshTestUser: "old-pw"}})
+			id, ok := ts.srv.currentIdentity(refreshTestUser)
+			if !ok {
+				t.Fatal("no identity for the configured user")
+			}
+			code := ts.storeCode(t, refreshTestUser, tc.change(t, ts, id.fp))
+			if w := ts.exchangeStoredCode(code); w.Code != tc.want {
+				t.Errorf("code exchange: status %d, want %d; body %s", w.Code, tc.want, w.Body.String())
+			}
+		})
+	}
+}
+
+// storeCode stores an authorization code for userID carrying fp, as a login
+// would have, and returns it. Its challenge belongs to cimdTestVerifier.
+func (ts *loginTestServer) storeCode(t *testing.T, userID, fp string) string {
+	t.Helper()
+	sum := sha256.Sum256([]byte(cimdTestVerifier))
+	ac := &auth.AuthCode{
+		Code: generateID(), ClientID: ts.clientID, RedirectURI: testLoginRedirect, UserID: userID,
+		CodeChallenge: base64.RawURLEncoding.EncodeToString(sum[:]),
+		ExpiresAt:     time.Now().Add(time.Minute), CredentialFP: fp,
+	}
+	if err := ts.srv.tokenStore.SaveAuthCode(context.Background(), ac); err != nil {
+		t.Fatal(err)
+	}
+	return ac.Code
+}
+
+// exchangeStoredCode takes a code from storeCode to the token endpoint.
+func (ts *loginTestServer) exchangeStoredCode(code string) *httptest.ResponseRecorder {
+	return ts.token(url.Values{
+		oauthGrantType:    {oauthGrantAuthCode},
+		argNameCode:       {code},
+		oauthCodeVerifier: {cimdTestVerifier},
+		oauthClientID:     {ts.clientID},
 	})
 }
 
@@ -337,13 +438,13 @@ func TestLogin_TokenCarriesCredentialFingerprint(t *testing.T) {
 func TestTokens_RefusedPairEndsAsAWhole(t *testing.T) {
 	t.Run("removed user", func(t *testing.T) {
 		ts := newLoginTestServer(t, loginTestConfig(), loginTestOptions{users: map[string]string{refreshTestUser: "pw"}})
-		original := ts.srv.userStore
+		original := ts.srv.UserStore()
 		access, refresh := ts.issuePair(t, refreshTestUser, nil)
-		ts.srv.userStore = writeUsers(t, map[string]string{testKitUserBob: bcryptHash(t, "pw-bob")})
+		ts.srv.SetUserStore(writeUsers(t, map[string]string{testKitUserBob: bcryptHash(t, "pw-bob")}))
 		if w := ts.mcpCall("Bearer " + access); w.Code != http.StatusUnauthorized {
 			t.Fatalf("token of a removed user: status %d", w.Code)
 		}
-		ts.srv.userStore = original
+		ts.srv.SetUserStore(original)
 		if w := ts.refreshGrant(refresh); w.Code == http.StatusOK {
 			t.Error("the refresh chain of a removed user revived when the user came back")
 		}
@@ -456,7 +557,7 @@ func TestRefresh_ExpiredRefreshTokenRefused(t *testing.T) {
 				now := time.Now()
 				ti := &auth.TokenInfo{
 					AccessToken: generateID(), RefreshToken: generateID(), ClientID: ts.clientID, UserID: testLoginOwner,
-					ExpiresAt: now.Add(tc.accessExpiry), RefreshExpiresAt: now.Add(tc.refreshExpiry),
+					ExpiresAt: now.Add(tc.accessExpiry), RefreshExpiresAt: now.Add(tc.refreshExpiry), CredentialFP: ts.srv.ownerFingerprint(),
 				}
 				plant(ti)
 

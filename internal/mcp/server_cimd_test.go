@@ -735,7 +735,7 @@ func TestCIMD_SessionsEndWhenTheClientIsNoLongerAccepted(t *testing.T) {
 				access, refresh = generateID(), generateID()
 				ti := &auth.TokenInfo{
 					AccessToken: access, RefreshToken: refresh, ClientID: clientID, CallerID: clientID,
-					UserID: testLoginOwner, ExpiresAt: time.Now().Add(time.Hour), RefreshExpiresAt: time.Now().Add(time.Hour),
+					UserID: testLoginOwner, ExpiresAt: time.Now().Add(time.Hour), RefreshExpiresAt: time.Now().Add(time.Hour), CredentialFP: ts.srv.ownerFingerprint(),
 				}
 				if isClientIDURL(clientID) {
 					ti.GrantKey = userctx.GrantKeyLoginPrefix + generateID()[:loginGrantKeyLen]
@@ -806,7 +806,7 @@ func TestCIMD_TokenWithoutSignInIsNotHonored(t *testing.T) {
 		access, refresh = generateID(), generateID()
 		ti := &auth.TokenInfo{
 			AccessToken: access, RefreshToken: refresh, ClientID: clientID, CallerID: clientID, GrantKey: grantKey,
-			UserID: testLoginOwner, ExpiresAt: time.Now().Add(time.Hour), RefreshExpiresAt: time.Now().Add(time.Hour),
+			UserID: testLoginOwner, ExpiresAt: time.Now().Add(time.Hour), RefreshExpiresAt: time.Now().Add(time.Hour), CredentialFP: ts.srv.ownerFingerprint(),
 		}
 		if err := ts.srv.tokenStore.SaveToken(ctx, ti); err != nil {
 			t.Fatal(err)

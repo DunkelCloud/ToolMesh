@@ -148,6 +148,26 @@ for the full narrative and details.
 
 ### Added
 
+- Resumable uploads. A REST tool with `upload: {protocol: google_resumable}`
+  sends the file of its `file_url` parameter through Google's resumable
+  upload protocol (YouTube Data API, Drive, Cloud Storage): the metadata
+  and the file in one call, the file in chunks of 8 MiB, and after a broken
+  connection or a server error the transfer continues where the API says
+  it stopped. A call that runs out of time fails with `upload_incomplete`,
+  and the same call again continues the upload; after it finished, the same
+  call again returns the API's earlier answer instead of uploading a second
+  time. Once the chunk with the file's last byte has gone out, a session is
+  never given up without saying so, because the API may already have
+  created the resource. The file is
+  a `tm-blob://` handle. A DADL that uses the key must list
+  `resumable_upload` in `requires.features`, so an older ToolMesh refuses
+  the file instead of sending the file as an ordinary request. See
+  [Resumable uploads](docs/configuration.md#resumable-uploads).
+
+- `TOOLMESH_FILE_BROKER_MAX_FILE_BYTES` sets the largest file `upload_file`
+  and `POST /files/upload` accept, 100 MiB by default as before. See
+  [File Broker](docs/configuration.md#file-broker).
+
 - Upload URLs for the file broker. The built-in tool `create_upload_url`
   returns a one-time URL to which an agent sends a file it holds itself, for
   example one rendered with a local shell, with a plain HTTP `PUT` and no

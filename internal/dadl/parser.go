@@ -159,6 +159,7 @@ var yamlTypeContext = map[string]string{
 	"dadl.ScopeDef":            "scoping.scopes",
 	"dadl.DiscoveryConfig":     "scoping.discovery",
 	"dadl.HealthConfig":        "health",
+	"dadl.UploadConfig":        "upload",
 }
 
 // unknownKeyWarnings re-decodes data strictly and reports every key this
@@ -384,6 +385,9 @@ func Validate(spec *Spec) error {
 			return err
 		}
 	}
+	if err := validateUploadFeature(spec); err != nil {
+		return err
+	}
 
 	// Validate composites
 	for name, comp := range b.Composites {
@@ -481,6 +485,10 @@ func validateTool(name string, tool *ToolDef, defaults *DefaultsConfig) error {
 	}
 
 	if err := validateNotReadyOn(name, tool, defaults); err != nil {
+		return err
+	}
+
+	if err := validateUpload(name, tool); err != nil {
 		return err
 	}
 
@@ -639,7 +647,9 @@ func validateFileURLParams(name string, tool *ToolDef) error {
 			otherBodyCount++
 		}
 	}
-	if fileURLCount > 0 && tool.ContentType != ContentTypeMultipartForm {
+	// An upload tool sends its other body parameters as the metadata of the
+	// session request and the file on its own; validateUpload checks it.
+	if fileURLCount > 0 && tool.ContentType != ContentTypeMultipartForm && tool.Upload == nil {
 		if fileURLCount > 1 {
 			return fmt.Errorf("tool %q: multiple file_url parameters require content_type: %s", name, ContentTypeMultipartForm)
 		}

@@ -87,6 +87,23 @@ const ErrCodeResponseTooLarge = "response_too_large"
 // and the HTTP status is the one the API answered with.
 const ErrCodeInvalidTransform = "invalid_transform"
 
+// ErrCodeUploadIncomplete is the semantic code of a resumable upload (tool
+// key upload) that stopped before the API had the whole file: the call ran
+// out of time, or the transfer kept failing. The upload session is kept, so
+// the same call again continues where this one stopped.
+const ErrCodeUploadIncomplete = "upload_incomplete"
+
+// ErrCodeUploadInProgress is the semantic code of a resumable upload refused
+// because another call with the same arguments is sending the same file
+// right now.
+const ErrCodeUploadInProgress = "upload_in_progress"
+
+// ErrCodeUploadOutcomeUnknown is the semantic code of a resumable upload
+// whose session the API no longer knows after file bytes were sent. Whether
+// the API created the resource is unknown; the caller has to look before it
+// calls again, because the next call starts a new upload.
+const ErrCodeUploadOutcomeUnknown = "upload_outcome_unknown"
+
 // NotReadyError returns the error a response with the given status stands
 // for when the tool lists that status in not_ready_on, and nil for every
 // other status. Such a response says the API has not finished preparing the
@@ -260,21 +277,31 @@ func (r *Retryer) Do(ctx context.Context, fn func() (*http.Response, error)) (*h
 	return r.Retry(ctx, err, fn)
 }
 
+// MaxRetries returns how many retries the strategy allows: max_retries, or
+// 3 when it is not set.
+func (r *Retryer) MaxRetries() int {
+	if r.strategy.MaxRetries <= 0 {
+		return 3
+	}
+	return r.strategy.MaxRetries
+}
+
+// Delay returns the wait before retry number attempt (counted from 1) under
+// the strategy's backoff and initial_delay (1s when not set).
+func (r *Retryer) Delay(attempt int) time.Duration {
+	return r.calcDelay(attempt, parseDelayOrDefault(r.strategy.InitialDelay, time.Second))
+}
+
 // Retry runs fn again after a first attempt that the caller has already made
 // and that failed with firstErr. It waits before every attempt, the first
 // one included, and makes at most max_retries of them, so the caller's
 // attempt and these retries together are the sequence Do runs.
 func (r *Retryer) Retry(ctx context.Context, firstErr error, fn func() (*http.Response, error)) (*http.Response, error) {
-	maxRetries := r.strategy.MaxRetries
-	if maxRetries <= 0 {
-		maxRetries = 3
-	}
-
-	initialDelay := parseDelayOrDefault(r.strategy.InitialDelay, time.Second)
+	maxRetries := r.MaxRetries()
 
 	lastErr := firstErr
 	for attempt := 1; attempt <= maxRetries; attempt++ {
-		delay := r.calcDelay(attempt, initialDelay)
+		delay := r.Delay(attempt)
 		r.logger.Info("retrying request", "attempt", attempt, "delay", delay)
 
 		select {

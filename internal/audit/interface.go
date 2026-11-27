@@ -39,6 +39,17 @@ const (
 // not a tool call: it marks from when on calls went unchecked.
 const StatusAuthzDisabled = "authz_disabled"
 
+// StatusConfigReloaded is the status of the entry ToolMesh records when it
+// puts a changed users.yaml or apikeys.yaml in force while it runs. Like
+// StatusAuthzDisabled it is not a tool call; the metadata name the file and
+// what changed.
+const StatusConfigReloaded = "config_reloaded"
+
+// StatusConfigReloadRefused is the status of the entry ToolMesh records when
+// it does not put a changed users.yaml or apikeys.yaml in force and keeps the
+// one in force; the error says why.
+const StatusConfigReloadRefused = "config_reload_refused"
+
 // PolicyModification captures a single before/after snapshot proving that a
 // policy mutated the tool call. Recorded only when the bytes actually differ —
 // a no-op policy run produces no PolicyModification. Before and After are
@@ -70,7 +81,7 @@ type AuditEntry struct {
 	ToolAccess  string            `json:"tool_access,omitempty"`
 	Params      map[string]any    `json:"params,omitempty"`
 	DurationMs  int64             `json:"duration_ms"`
-	Status      string            `json:"status"` // "success" | "error" | "denied" | StatusAuthzDisabled
+	Status      string            `json:"status"` // "success" | "error" | "denied" | StatusAuthzDisabled | StatusConfigReloaded | StatusConfigReloadRefused
 	Error       string            `json:"error,omitempty"`
 	Backend     string            `json:"backend"`
 	IsComposite bool              `json:"is_composite,omitempty"`

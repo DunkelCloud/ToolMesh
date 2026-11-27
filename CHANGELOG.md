@@ -23,11 +23,26 @@ for the full narrative and details.
   publish ToolMesh's port on `127.0.0.1` only, or not at all. If your
   setting follows the old example, change it. See
   [Proxy in a container](docs/configuration.md#proxy-in-a-container).
-- The documentation says plainly that a password change ends sessions only
-  after a restart: `users.yaml` and `TOOLMESH_AUTH_PASSWORD` are read at
-  startup, and until then the old password signs in and its sessions keep
-  working. Restart ToolMesh right after changing a password that someone
-  else may know. See [Tokens](docs/configuration.md#tokens).
+- Tokens without a credential fingerprint, as versions before v0.6.0 issued
+  them, are refused. Until now such a token was accepted and bound at its
+  next refresh to whatever password was in force then, so it outlived a
+  password change. **Upgrading:** clients that still hold such a token sign
+  in once more; the log lines `access token refused` and `refresh refused`
+  give the reason. An authorization code whose user is gone or whose
+  password changed between the login and the exchange gets no tokens. See
+  [Tokens](docs/configuration.md#tokens).
+- A change to `users.yaml` takes effect without a restart (see Added), so a
+  changed password ends the sessions issued for the old one within seconds.
+- The MCP endpoint refuses a bearer credential that is the key of an
+  approver, whatever `apikeys.yaml` holds. Until now an `apikeys.yaml` entry
+  known only by its bcrypt `key_hash` could hold an approver's key, since
+  the check at startup compares `key_sha256` values only; a caller with that
+  key could approve its own requests for kits. While ToolMesh runs, an
+  approver whose key is a `key_sha256` entry of `apikeys.yaml` no longer
+  makes a change of the authz config fail: the change is applied and the
+  clash logged at `ERROR`, so it cannot block, say, the removal of a leaked
+  approver key. At startup it still stops the server, and an approver whose
+  key is `TOOLMESH_API_KEY` or `TOOLMESH_AUTH_PASSWORD` is still refused.
 - The `backend refused` log line no longer offers every line that would
   load the backend as a line to add. Under `add_to_backends_yaml_entry` it
   keeps what leaves the binding as it is: for a credential name outside
@@ -148,6 +163,20 @@ for the full narrative and details.
 
 ### Added
 
+- `users.yaml` and `apikeys.yaml` are applied without a restart. ToolMesh
+  reads both every 5 seconds and puts a change in force once two reads agree
+  on it: a removed or disabled user, or a removed key, stops working with
+  the next request, changed roles and plans apply to existing tokens, and a
+  changed password ends the user's sessions. A file that does not parse,
+  has no `users:` or `keys:` list, names a user twice or without a username,
+  or cannot be read is refused and the previous one stays in force. A
+  removed file is refused as well: ToolMesh does not fall back to
+  `TOOLMESH_AUTH_PASSWORD` or `TOOLMESH_API_KEY` while it runs. A file that
+  appears is put in force and the default authorization preset follows it.
+  Every reload, applied or refused, is logged and recorded in the audit trail
+  (tool `toolmesh_auth_config`, status `config_reloaded` or
+  `config_reload_refused`). See
+  [Changing Users and API Keys](docs/configuration.md#changing-users-and-api-keys).
 - Resumable uploads. A REST tool with `upload: {protocol: google_resumable}`
   sends the file of its `file_url` parameter through Google's resumable
   upload protocol (YouTube Data API, Drive, Cloud Storage): the metadata

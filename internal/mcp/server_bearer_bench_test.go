@@ -46,8 +46,10 @@ func benchAPIKey(i int) string { return fmt.Sprintf("bench-api-key-%d", i) }
 // benchBearerServer builds a server the way a deployment with both login
 // methods runs: password login with a Redis token store, and an apikeys.yaml.
 // With digests the keys are written as key_sha256, otherwise as bcrypt hashes
-// at the default cost, as files written for earlier versions have them.
-func benchBearerServer(b *testing.B, digests bool) (*http.ServeMux, auth.TokenStore) {
+// at the default cost, as files written for earlier versions have them. It
+// also returns the fingerprint of the single password, which access tokens of
+// the owner carry.
+func benchBearerServer(b *testing.B, digests bool) (*http.ServeMux, auth.TokenStore, string) {
 	b.Helper()
 
 	content := "keys:\n"
@@ -85,7 +87,7 @@ func benchBearerServer(b *testing.B, digests bool) (*http.ServeMux, auth.TokenSt
 	srv := NewServer(handler, cfg, logger, tokens, nil, apiKeys, nil, nil, metrics.New(metrics.Options{}))
 	mux := http.NewServeMux()
 	srv.SetupRoutes(mux)
-	return mux, tokens
+	return mux, tokens, srv.ownerFingerprint()
 }
 
 func benchMCPCall(mux *http.ServeMux, bearer string) int {
@@ -119,7 +121,7 @@ func BenchmarkMCP_Bearer(b *testing.B) {
 	for _, st := range setups {
 		newServer := func(b *testing.B) (*http.ServeMux, string) {
 			b.Helper()
-			mux, tokens := benchBearerServer(b, st.digests)
+			mux, tokens, ownerFP := benchBearerServer(b, st.digests)
 			if st.seen {
 				for i := range benchAPIKeys {
 					if code := benchMCPCall(mux, benchAPIKey(i)); code != http.StatusOK {
@@ -129,7 +131,7 @@ func BenchmarkMCP_Bearer(b *testing.B) {
 			}
 			token := generateID()
 			err := tokens.SaveToken(context.Background(), &auth.TokenInfo{
-				AccessToken: token, ClientID: "bench", UserID: testLoginOwner, ExpiresAt: time.Now().Add(time.Hour),
+				AccessToken: token, ClientID: "bench", UserID: testLoginOwner, ExpiresAt: time.Now().Add(time.Hour), CredentialFP: ownerFP,
 			})
 			if err != nil {
 				b.Fatalf("SaveToken: %v", err)

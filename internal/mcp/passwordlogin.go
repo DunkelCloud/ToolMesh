@@ -33,8 +33,10 @@ import (
 // configured account: typing a different name must not start a fresh count.
 // The caller makes sure a password login is configured.
 func (s *Server) checkPassword(r *http.Request, username, password string) auth.PasswordCheck {
+	// One snapshot of users.yaml for the whole check (see Server.users).
+	users := s.users.Load()
 	account := username
-	if s.userStore == nil {
+	if users == nil {
 		account = s.cfg.AuthUser
 	}
 	ip := auth.ClientIP(r)
@@ -48,9 +50,9 @@ func (s *Server) checkPassword(r *http.Request, username, password string) auth.
 	}
 
 	var check auth.PasswordCheck
-	if s.userStore != nil {
+	if users != nil {
 		// Multi-user mode (users.yaml)
-		user, err := s.userStore.Authenticate(r.Context(), username, password)
+		user, err := users.Authenticate(r.Context(), username, password)
 		if err != nil {
 			// The password was not checked. The attempt is neither a failed
 			// login nor a successful one, so its slot goes back unused.

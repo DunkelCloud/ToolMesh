@@ -289,7 +289,7 @@ users:
 htpasswd -nbBC 10 "" "my-password" | cut -d: -f2
 ```
 
-ToolMesh reads `users.yaml` when it starts. Restart it after a change: a new password signs in only then, and only then do the sessions issued for the old password end.
+A change to `users.yaml` or `apikeys.yaml` takes effect within about ten seconds, without a restart: a removed user or key stops working with the next request, and a new password ends the sessions issued for the old one. A file that does not load is refused and the previous one stays in force ([Changing Users and API Keys](docs/configuration.md#changing-users-and-api-keys)).
 
 Add API keys in `config/apikeys.yaml`, each named by the SHA-256 of the key:
 

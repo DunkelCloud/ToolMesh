@@ -309,17 +309,50 @@ func main() {
 		logger.Info("backends hot-reloaded successfully", "units", len(units))
 	})
 
+	// One bound for every bcrypt comparison in the process: password logins
+	// and API keys that are only known by their bcrypt hash share it.
+	compareLimiter := auth.NewCompareLimiter(cfg.BcryptMaxConcurrent)
+	logger.Info("bcrypt comparisons bounded", "maxConcurrent", compareLimiter.Capacity())
+
+	// Load user identity configs. Each file is read once and its store built
+	// from those bytes; the reloader started below compares with them.
+	usersFile, userStore, err := loadUsersFile(cfg.UsersConfigPath, compareLimiter)
+	if err != nil {
+		logger.Error("failed to load users config", "error", err)
+		os.Exit(1)
+	}
+	if userStore != nil {
+		logger.Info("loaded users config", "path", cfg.UsersConfigPath, "users", userStore.Count())
+		logUsersLoaded(logger, cfg.UsersConfigPath, userStore)
+	}
+
+	keysFile, apiKeyStore, err := loadAPIKeysFile(cfg.APIKeysConfigPath, compareLimiter)
+	if err != nil {
+		logger.Error("failed to load apikeys config", "error", err)
+		os.Exit(1)
+	}
+	if apiKeyStore != nil {
+		keys := apiKeyStore.Summary()
+		logger.Info("loaded apikeys config", "path", cfg.APIKeysConfigPath, "sha256", keys.Indexed, "bcryptOnly", keys.BcryptOnly)
+		logAPIKeysLoaded(logger, cfg.APIKeysConfigPath, apiKeyStore)
+	}
+
 	// Initialize authorization (TOOLMESH_AUTHZ_MODE). The disabled case
 	// (authorizer == nil) is reported by the consolidated security-posture
 	// summary emitted just before the server starts listening.
-	authzEngine, err := setupAuthz(ctx, cfg, priorState, logger)
+	// The default preset and the approver check go by the users.yaml and
+	// apikeys.yaml just loaded, not by a second read of the files, which may
+	// have changed in between: the reloader compares with what was loaded.
+	authzEngine, err := setupAuthzInForce(ctx, cfg, priorState, func() (bool, map[string]string) {
+		return userStore != nil || apiKeyStore != nil, apiKeyStore.SHA256Sums()
+	}, logger)
 	if err != nil {
 		logger.Error("failed to initialize authorization", "mode", cfg.AuthzMode, "error", err)
 		os.Exit(1)
 	}
 	defer authzEngine.close()
 	if authzEngine.embedded != nil {
-		startAuthzConfigWatch(ctx, cfg, authzEngine.embedded, 5*time.Second, logger)
+		startAuthzConfigWatch(ctx, authzEngine.applier, 5*time.Second)
 	}
 
 	// Initialize gate pipeline via registry
@@ -415,45 +448,6 @@ func main() {
 		logger.Info("dynamic client registration (/register) is rate-limited per process: no Redis to share the limit across replicas")
 	}
 
-	// One bound for every bcrypt comparison in the process: password logins
-	// and API keys that are only known by their bcrypt hash share it.
-	compareLimiter := auth.NewCompareLimiter(cfg.BcryptMaxConcurrent)
-	logger.Info("bcrypt comparisons bounded", "maxConcurrent", compareLimiter.Capacity())
-
-	// Load user identity configs
-	userStore, err := auth.NewUserStore(cfg.UsersConfigPath, compareLimiter)
-	if err != nil {
-		logger.Error("failed to load users config", "error", err)
-		os.Exit(1)
-	}
-	if userStore != nil {
-		logger.Info("loaded users config", "path", cfg.UsersConfigPath)
-		unusable, costs := userStore.HashProblems()
-		if len(unusable) > 0 {
-			logger.Warn("users config: password_hash is not a usable bcrypt hash, these users cannot log in", "users", unusable)
-		}
-		if len(costs) > 0 {
-			logger.Warn("users config: password hashes use different bcrypt costs, so response time can tell some configured users from unknown ones; re-hash all passwords at one cost", "costs", costs)
-		}
-	}
-
-	apiKeyStore, err := auth.NewAPIKeyStore(cfg.APIKeysConfigPath, compareLimiter)
-	if err != nil {
-		logger.Error("failed to load apikeys config", "error", err)
-		os.Exit(1)
-	}
-	if apiKeyStore != nil {
-		keys := apiKeyStore.Summary()
-		logger.Info("loaded apikeys config", "path", cfg.APIKeysConfigPath, "sha256", keys.Indexed, "bcryptOnly", keys.BcryptOnly)
-		if len(keys.Unusable) > 0 {
-			logger.Warn("apikeys config: entries have neither a key_sha256 nor a usable bcrypt key_hash, no key matches them", "user_ids", keys.Unusable)
-		}
-		if keys.BcryptOnly > 0 {
-			logger.Warn("apikeys config: entries without key_sha256 are compared with bcrypt until their key has been used once since startup; an unknown bearer credential costs one comparison per such entry until then. Add key_sha256 to look them up without bcrypt",
-				"entries", keys.BcryptOnly)
-		}
-	}
-
 	callerClasses, err := config.LoadCallerClasses(cfg.CallerClassesConfigPath)
 	if err != nil {
 		logger.Error("failed to load caller-classes config", "error", err)
@@ -486,6 +480,31 @@ func main() {
 	mcpServer := mcp.NewServer(mcpHandler, cfg, logger, tokenStore, userStore, apiKeyStore, rateLimiter, callerClasses, metricsReg)
 	mcpServer.SetBlobStore(blobStore, uploadLimits)
 	mcpServer.SetHealthReporter(healthMonitor)
+
+	// From here on the authorization policy follows the users.yaml and
+	// apikeys.yaml the server has in force, not the files on disk: a file
+	// that was removed keeps its store in force until the next start.
+	if authzEngine.applier != nil {
+		authzEngine.applier.setInForce(func() (bool, map[string]string) {
+			keys := mcpServer.APIKeyStore()
+			return mcpServer.UserStore() != nil || keys != nil, keys.SHA256Sums()
+		})
+	}
+	// An approver's key never connects as an MCP caller, also when an
+	// apikeys.yaml entry known only by its bcrypt hash holds it.
+	if emb := authzEngine.embedded; emb != nil {
+		mcpServer.SetApproverKeyCheck(approverKeyCheck(emb))
+	}
+
+	// Changes to users.yaml and apikeys.yaml take effect without a restart.
+	authReload := newAuthReloader(cfg, mcpServer, usersFile, keysFile, logger)
+	authReload.limiter = compareLimiter
+	authReload.authz = authzEngine.applier
+	authReload.audit = auditStore
+	if users != nil {
+		authReload.usersApplied = func() { warnOrphanedAccounts(users, mcpServer, logger) }
+	}
+	go authReload.run(ctx, authReloadInterval)
 
 	// Kit grants (embedded authorization only, where kits exist): requests
 	// and grants live in Redis when it is connected, so that they survive a

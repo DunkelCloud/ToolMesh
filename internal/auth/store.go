@@ -104,8 +104,7 @@ type TokenInfo struct {
 	// CredentialFP fingerprints the credential the user logged in with.
 	// When the credential changes, the tokens are no longer honored or
 	// renewed. Empty for tokens issued before the field existed; such a
-	// token is accepted and gets the current fingerprint at its next
-	// refresh.
+	// token is refused, and its user signs in again.
 	CredentialFP string `json:"credential_fp,omitempty"`
 }
 

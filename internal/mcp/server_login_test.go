@@ -751,10 +751,11 @@ func (ts *loginTestServer) issueToken(t *testing.T, expiresAt time.Time) string 
 	t.Helper()
 	token := generateID()
 	err := ts.srv.tokenStore.SaveToken(context.Background(), &auth.TokenInfo{
-		AccessToken: token,
-		ClientID:    ts.clientID,
-		UserID:      testLoginOwner,
-		ExpiresAt:   expiresAt,
+		AccessToken:  token,
+		ClientID:     ts.clientID,
+		UserID:       testLoginOwner,
+		ExpiresAt:    expiresAt,
+		CredentialFP: ts.srv.ownerFingerprint(),
 	})
 	if err != nil {
 		t.Fatalf("SaveToken: %v", err)
@@ -1103,7 +1104,7 @@ func TestOAuth_TokensAreNotHonoredWithoutPasswordLogin(t *testing.T) {
 	access := ts.issueToken(t, time.Now().Add(time.Hour))
 	refresh := generateID()
 	if err := ts.srv.tokenStore.SaveRefreshToken(context.Background(), &auth.TokenInfo{
-		AccessToken: access, RefreshToken: refresh, ClientID: ts.clientID, UserID: testLoginOwner, ExpiresAt: time.Now().Add(time.Hour),
+		AccessToken: access, RefreshToken: refresh, ClientID: ts.clientID, UserID: testLoginOwner, ExpiresAt: time.Now().Add(time.Hour), CredentialFP: ts.srv.ownerFingerprint(),
 	}); err != nil {
 		t.Fatalf("SaveRefreshToken: %v", err)
 	}

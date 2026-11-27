@@ -81,13 +81,25 @@ func KeySHA256Sums(path string) (map[string]string, error) {
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parse apikeys config: %w", err)
 	}
-	out := make(map[string]string, len(cfg.Keys))
-	for i, e := range cfg.Keys {
-		if sum := strings.ToLower(strings.TrimSpace(e.KeySHA256)); sum != "" {
-			out[sum] = fmt.Sprintf("key %d (user_id %q) of %s", i+1, e.UserID, path)
+	return keySHA256Sums(cfg.Keys, path), nil
+}
+
+// keySHA256Sums maps the key_sha256 of each entry that has one, in lower
+// case, to a description of the entry in source.
+func keySHA256Sums(keys []APIKeyEntry, source string) map[string]string {
+	out := make(map[string]string, len(keys))
+	for i, e := range keys {
+		if sum := normalizedSHA256(e); sum != "" {
+			out[sum] = fmt.Sprintf("key %d (user_id %q) of %s", i+1, e.UserID, source)
 		}
 	}
-	return out, nil
+	return out
+}
+
+// normalizedSHA256 returns the entry's key_sha256 in the form the index and
+// the comparisons use.
+func normalizedSHA256(e APIKeyEntry) string {
+	return strings.ToLower(strings.TrimSpace(e.KeySHA256))
 }
 
 // APIKeysConfig is the top-level structure of apikeys.yaml.
@@ -156,6 +168,10 @@ type APIKeyStore struct {
 	mu     sync.RWMutex
 	index  map[indexKey]int // position in keys
 	unseen []int            // positions in keys
+
+	// problems lists what in the file is most likely a mistake, although it
+	// loads (see Problems).
+	problems []string
 }
 
 // NewAPIKeyStore loads API keys from a YAML file. Returns nil if the file
@@ -169,17 +185,109 @@ func NewAPIKeyStore(path string, limiter *CompareLimiter) (*APIKeyStore, error) 
 	if err != nil {
 		return nil, fmt.Errorf("read apikeys config: %w", err)
 	}
+	return ParseAPIKeyStore(data, limiter)
+}
 
-	var cfg APIKeysConfig
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
+// apiKeysFile is APIKeysConfig with the list as a pointer, so that a document
+// without a keys key can be told from one with an empty list.
+type apiKeysFile struct {
+	Keys *[]APIKeyEntry `yaml:"keys"`
+}
+
+// ParseAPIKeyStore builds an APIKeyStore from the contents of an apikeys.yaml,
+// as NewAPIKeyStore does from the file.
+func ParseAPIKeyStore(data []byte, limiter *CompareLimiter) (*APIKeyStore, error) {
+	var file apiKeysFile
+	if err := yaml.Unmarshal(data, &file); err != nil {
 		return nil, fmt.Errorf("parse apikeys config: %w", err)
 	}
+	var keys []APIKeyEntry
+	var problems []string
+	if file.Keys == nil {
+		problems = append(problems, "the file has no keys list")
+	} else {
+		keys = *file.Keys
+	}
+	store, err := newAPIKeyStore(keys, limiter)
+	if err != nil {
+		return nil, err
+	}
+	store.problems = problems
+	return store, nil
+}
 
+// Problems reports what in the loaded file is most likely a mistake although
+// it loads: no keys list at all (an empty file, or a misspelled key). A
+// reload of apikeys.yaml while ToolMesh runs refuses such a file and keeps
+// the keys in force; at startup it is logged.
+func (s *APIKeyStore) Problems() []string {
+	if s == nil {
+		return nil
+	}
+	return slices.Clone(s.problems)
+}
+
+// Count returns how many entries the store holds.
+func (s *APIKeyStore) Count() int {
+	if s == nil {
+		return 0
+	}
+	return len(s.keys)
+}
+
+// SHA256Sums returns the key_sha256 of each loaded entry that has one, in
+// lower case, mapped to a description of the entry. Entries known only by a
+// bcrypt key_hash have none.
+func (s *APIKeyStore) SHA256Sums() map[string]string {
+	if s == nil {
+		return nil
+	}
+	return keySHA256Sums(s.keys, "apikeys.yaml")
+}
+
+// Diff compares the entries of s with those of next and returns the entries
+// next adds and removes, each as its user_id (with its caller_id, when it has
+// one), sorted. An entry is the same when its key hash is, so a changed key
+// shows as one removed and one added. A nil store holds no entries.
+func (s *APIKeyStore) Diff(next *APIKeyStore) (added, removed []string) {
+	ids := func(st *APIKeyStore) map[string]string {
+		out := make(map[string]string)
+		if st == nil {
+			return out
+		}
+		for i := range st.keys {
+			e := &st.keys[i]
+			label := e.UserID
+			if e.CallerID != "" {
+				label += " (caller_id " + e.CallerID + ")"
+			}
+			out[e.GrantKey()] = label
+		}
+		return out
+	}
+	before, after := ids(s), ids(next)
+	for id, label := range after {
+		if _, ok := before[id]; !ok {
+			added = append(added, label)
+		}
+	}
+	for id, label := range before {
+		if _, ok := after[id]; !ok {
+			removed = append(removed, label)
+		}
+	}
+	slices.Sort(added)
+	slices.Sort(removed)
+	return added, removed
+}
+
+// newAPIKeyStore builds the store and its index over keys.
+func newAPIKeyStore(keys []APIKeyEntry, limiter *CompareLimiter) (*APIKeyStore, error) {
 	store := &APIKeyStore{
-		keys:    cfg.Keys,
+		keys:    keys,
 		limiter: limiter,
 		compare: bcrypt.CompareHashAndPassword,
-		index:   make(map[indexKey]int, len(cfg.Keys)),
+		index:   make(map[indexKey]int, len(keys)),
 	}
 	if limiter != nil {
 		store.scans = NewCompareLimiter(apiKeyScanConcurrency)

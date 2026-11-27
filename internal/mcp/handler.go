@@ -164,7 +164,7 @@ func (h *Handler) isBuiltinTool(name string) bool {
 	switch name {
 	case toolDiscoverTools, toolExecuteCode, toolTellMeMyRights:
 		return true
-	case toolUploadFile:
+	case toolUploadFile, toolCreateUploadURL:
 		return h.blobStore != nil
 	case toolRequestGrant:
 		return h.grants != nil
@@ -187,7 +187,7 @@ func (h *Handler) offersBuiltinTool(name string) bool {
 // HandleToolCall processes a single tool call through the execution pipeline.
 func (h *Handler) HandleToolCall(ctx context.Context, toolName string, params map[string]any) (result *backend.ToolResult, err error) {
 	h.logger.InfoContext(ctx, "handling tool call", logKeyTool, toolName)
-	h.logger.DebugContext(ctx, "tool call params", logKeyTool, toolName, "params", params)
+	h.logger.DebugContext(ctx, "tool call params", logKeyTool, toolName, "params", redactedForLog{params})
 
 	// Resolve promoted bare-name aliases (e.g. "web_search") to their
 	// canonical "<backend>_<tool>" form before anything downstream sees the
@@ -235,6 +235,9 @@ func (h *Handler) HandleToolCall(ctx context.Context, toolName string, params ma
 		// handleUploadFile reports a clear "not configured" error itself when
 		// no blob store is set; the tool is only advertised when one is.
 		return h.handleUploadFile(ctx, params)
+	case toolCreateUploadURL:
+		// Like upload_file: an error result without a blob store.
+		return h.handleCreateUploadURL(ctx, params), nil
 	case toolDebugEcho:
 		if !h.debugTools {
 			return debugDisabledResult(toolName), nil
@@ -260,7 +263,7 @@ func (h *Handler) HandleToolCall(ctx context.Context, toolName string, params ma
 				}, nil
 			}
 			if fmt.Sprintf("%v", coerced) != fmt.Sprintf("%v", params) {
-				h.logger.DebugContext(ctx, "params after coercion", logKeyTool, toolName, "coerced", coerced)
+				h.logger.DebugContext(ctx, "params after coercion", logKeyTool, toolName, "coerced", redactedForLog{coerced})
 			}
 			params = coerced
 		}
@@ -563,7 +566,7 @@ func (h *Handler) handleExecuteCode(ctx context.Context, params map[string]any) 
 		}
 	}
 
-	h.logger.DebugContext(ctx, "execute_code input", argNameCode, code)
+	h.logger.DebugContext(ctx, "execute_code input", argNameCode, redactUploadURLs(code))
 
 	// include_results is optional; accept a real boolean or its string form
 	// (some clients serialize booleans as strings).
@@ -762,7 +765,7 @@ func (h *Handler) BuildToolList(ctx context.Context) ([]ToolDefinition, error) {
 		tools = append(tools, requestGrantToolDefinition())
 	}
 	if h.blobStore != nil {
-		tools = append(tools, uploadFileToolDefinition())
+		tools = append(tools, uploadFileToolDefinition(), createUploadURLToolDefinition())
 	}
 
 	tools = append(tools, h.promotedToolDefinitions(ctx)...)

@@ -17,13 +17,53 @@ package mcp
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"path"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/DunkelCloud/ToolMesh/internal/auth"
+	"github.com/DunkelCloud/ToolMesh/internal/blob"
 )
+
+// loggedPath is the path of a request as it goes into the log. The token of
+// an upload URL is a credential, so it is replaced, also in a path that is
+// not clean yet (the mux redirects such a request to the clean path).
+func loggedPath(p string) string {
+	if strings.HasPrefix(path.Clean(p), blob.UploadURLPathPrefix) {
+		return blob.UploadURLPathPrefix + redactedMark
+	}
+	return redactUploadURLs(p)
+}
+
+// redactedMark stands for a value kept out of the log.
+const redactedMark = "[REDACTED]"
+
+// uploadURLToken matches the token of an upload URL in any text.
+var uploadURLToken = regexp.MustCompile(regexp.QuoteMeta(blob.UploadURLPathPrefix) + `[A-Za-z0-9_-]+`)
+
+// redactUploadURLs replaces the tokens of upload URLs in text, such as the
+// result of create_upload_url, before it goes into a debug log line.
+func redactUploadURLs(text string) string {
+	return uploadURLToken.ReplaceAllString(text, blob.UploadURLPathPrefix+redactedMark)
+}
+
+// redactedForLog wraps a value for a debug log line: rendered as JSON with
+// the tokens of upload URLs replaced, and only when the line is written.
+type redactedForLog struct{ v any }
+
+// LogValue implements slog.LogValuer.
+func (r redactedForLog) LogValue() slog.Value {
+	b, err := json.Marshal(r.v)
+	if err != nil {
+		return slog.StringValue(redactUploadURLs(fmt.Sprint(r.v)))
+	}
+	return slog.StringValue(redactUploadURLs(string(b)))
+}
 
 // SecurityHeaders sets standard security response headers on all responses (M-4).
 func SecurityHeaders(next http.Handler) http.Handler {
@@ -44,7 +84,7 @@ func PanicRecovery(logger *slog.Logger) func(http.Handler) http.Handler {
 					logger.ErrorContext(r.Context(), "panic recovered in HTTP handler",
 						"panic", fmt.Sprintf("%v", rec),
 						"method", r.Method,
-						"path", r.URL.Path,
+						"path", loggedPath(r.URL.Path),
 					)
 					http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 				}
@@ -76,7 +116,7 @@ func RequestLogging(logger *slog.Logger) func(http.Handler) http.Handler {
 
 			logger.InfoContext(ctx, "http request start",
 				"method", r.Method,
-				"path", r.URL.Path,
+				"path", loggedPath(r.URL.Path),
 				"remote", auth.ClientIP(r),
 			)
 
@@ -84,7 +124,7 @@ func RequestLogging(logger *slog.Logger) func(http.Handler) http.Handler {
 
 			logger.InfoContext(ctx, "http request done",
 				"method", r.Method,
-				"path", r.URL.Path,
+				"path", loggedPath(r.URL.Path),
 				"status", rw.status,
 				"duration_ms", time.Since(start).Milliseconds(),
 				"remote", auth.ClientIP(r),

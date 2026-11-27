@@ -233,7 +233,7 @@ func TestTellMeMyRights_PreflightBuiltinTools(t *testing.T) {
 	always := []string{toolDiscoverTools, toolExecuteCode, toolTellMeMyRights}
 	tests := []struct {
 		name    string
-		blob    bool // file broker on: upload_file
+		blob    bool // file broker on: upload_file and create_upload_url
 		grants  bool // grant service: request_grant while a kit exists
 		noKits  bool // the policy defines no kit
 		debug   bool // debug_echo and debug_generate
@@ -241,15 +241,15 @@ func TestTellMeMyRights_PreflightBuiltinTools(t *testing.T) {
 	}{
 		{
 			name: "everything offered", blob: true, grants: true, debug: true,
-			allowed: append(slices.Clone(always), toolUploadFile, toolRequestGrant, toolDebugEcho, toolDebugGenerate),
+			allowed: append(slices.Clone(always), toolUploadFile, toolCreateUploadURL, toolRequestGrant, toolDebugEcho, toolDebugGenerate),
 		},
 		{name: "nothing optional offered", allowed: always},
-		{name: "file broker only", blob: true, allowed: append(slices.Clone(always), toolUploadFile)},
+		{name: "file broker only", blob: true, allowed: append(slices.Clone(always), toolUploadFile, toolCreateUploadURL)},
 		{name: "grant service without kits", grants: true, noKits: true, allowed: always},
 		{name: "debug tools only", debug: true, allowed: append(slices.Clone(always), toolDebugEcho, toolDebugGenerate)},
 	}
 	names := []string{
-		toolDiscoverTools, toolExecuteCode, toolTellMeMyRights, toolUploadFile,
+		toolDiscoverTools, toolExecuteCode, toolTellMeMyRights, toolUploadFile, toolCreateUploadURL,
 		toolRequestGrant, toolDebugEcho, toolDebugGenerate, testUnknownToolName,
 	}
 	for _, tc := range tests {

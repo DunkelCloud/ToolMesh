@@ -36,7 +36,8 @@ import (
 )
 
 // blobFileName matches the names Put gives blob files: the 32 hex digits of
-// the ID and an optional extension.
+// the ID and an optional extension. The part files of upload URLs (".part")
+// match too.
 var blobFileName = regexp.MustCompile(`^[0-9a-f]{32}(\.[A-Za-z0-9._+-]+)?$`)
 
 // Store manages binary blobs on disk with TTL-based expiry.
@@ -50,6 +51,11 @@ type Store struct {
 	quota  Quota
 	used   int64            // bytes of all blobs on disk, including those being written
 	usedBy map[string]int64 // the same per owner; owners without blobs have no entry
+
+	// ticketMu guards tickets, the upload URLs by the hash of their token.
+	// It is taken before mu where both are held, never after.
+	ticketMu sync.Mutex
+	tickets  map[string]*uploadTicket
 }
 
 type blobEntry struct {
@@ -333,13 +339,15 @@ func (s *Store) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	http.ServeFile(w, r, entry.FilePath)
 }
 
-// cleanupLoop removes expired blobs every 60 seconds.
+// cleanupLoop removes expired blobs and upload URLs every 60 seconds.
 func (s *Store) cleanupLoop() {
 	ticker := time.NewTicker(60 * time.Second)
 	defer ticker.Stop()
 
 	for range ticker.C {
-		s.removeExpired(time.Now())
+		now := time.Now()
+		s.removeExpired(now)
+		s.removeExpiredUploadURLs(now)
 	}
 }
 

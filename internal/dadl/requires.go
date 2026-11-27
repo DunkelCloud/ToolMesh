@@ -39,6 +39,8 @@ var implementedFeatures = map[string]bool{
 	"returns":            true, // §6.5: typed results in TS generation + descriptors
 	"deprecation":        true, // §6.7: deprecated/replaced_by markers
 	"health":             true, // §4.6: health check + synthetic health tool
+	// ToolMesh extension: tool-level upload (resumable file uploads)
+	FeatureResumableUpload: true,
 }
 
 // checkRequires enforces the file's requires block (DADL spec §15.3,

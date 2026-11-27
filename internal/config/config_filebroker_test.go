@@ -23,13 +23,14 @@ const (
 	envFileBroker       = "TOOLMESH_FILE_BROKER_ENABLED"
 	envFileBrokerTotal  = "TOOLMESH_FILE_BROKER_MAX_TOTAL_BYTES"
 	envFileBrokerUser   = "TOOLMESH_FILE_BROKER_MAX_BYTES_PER_USER"
+	envFileBrokerFile   = "TOOLMESH_FILE_BROKER_MAX_FILE_BYTES"
 	envDCRClientTTL     = "TOOLMESH_DCR_CLIENT_TTL"
 	envDCRClientIdleTTL = "TOOLMESH_DCR_CLIENT_IDLE_TTL"
 )
 
 func clearFileBrokerAndDCREnv(t *testing.T) {
 	t.Helper()
-	for _, key := range []string{envFileBroker, envFileBrokerTotal, envFileBrokerUser, envDCRClientTTL, envDCRClientIdleTTL} {
+	for _, key := range []string{envFileBroker, envFileBrokerTotal, envFileBrokerUser, envFileBrokerFile, envDCRClientTTL, envDCRClientIdleTTL} {
 		t.Setenv(key, "")
 	}
 }
@@ -46,6 +47,9 @@ func TestLoad_FileBrokerAndDCRDefaults(t *testing.T) {
 		t.Errorf("file broker defaults = enabled %v, total %d, per user %d; want on without quota",
 			cfg.FileBrokerEnabled, cfg.FileBrokerMaxTotalBytes, cfg.FileBrokerMaxBytesPerUser)
 	}
+	if cfg.FileBrokerMaxFileBytes != 100<<20 {
+		t.Errorf("FileBrokerMaxFileBytes = %d, want 100 MiB as before", cfg.FileBrokerMaxFileBytes)
+	}
 	if cfg.DCRClientTTL != 86400 || cfg.DCRClientIdleTTL != 7776000 {
 		t.Errorf("DCR client lifetimes = %d/%d, want 86400/7776000", cfg.DCRClientTTL, cfg.DCRClientIdleTTL)
 	}
@@ -56,6 +60,7 @@ func TestLoad_FileBrokerAndDCRCustom(t *testing.T) {
 	t.Setenv(envFileBroker, "false")
 	t.Setenv(envFileBrokerTotal, "10737418240") // 10 GiB, beyond 32 bits
 	t.Setenv(envFileBrokerUser, " 1073741824 ")
+	t.Setenv(envFileBrokerFile, "524288000")
 	t.Setenv(envDCRClientTTL, "0")
 	t.Setenv(envDCRClientIdleTTL, "604800")
 
@@ -68,6 +73,9 @@ func TestLoad_FileBrokerAndDCRCustom(t *testing.T) {
 	}
 	if cfg.FileBrokerMaxTotalBytes != 10737418240 || cfg.FileBrokerMaxBytesPerUser != 1073741824 {
 		t.Errorf("quota = %d/%d, want 10737418240/1073741824", cfg.FileBrokerMaxTotalBytes, cfg.FileBrokerMaxBytesPerUser)
+	}
+	if cfg.FileBrokerMaxFileBytes != 524288000 {
+		t.Errorf("FileBrokerMaxFileBytes = %d, want 524288000", cfg.FileBrokerMaxFileBytes)
 	}
 	if cfg.DCRClientTTL != 0 || cfg.DCRClientIdleTTL != 604800 {
 		t.Errorf("DCR client lifetimes = %d/%d, want 0/604800", cfg.DCRClientTTL, cfg.DCRClientIdleTTL)
@@ -83,6 +91,9 @@ func TestLoad_FileBrokerAndDCRRejectInvalidValues(t *testing.T) {
 		{"total with a unit", envFileBrokerTotal, "10GiB"},
 		{"negative total", envFileBrokerTotal, "-1"},
 		{"negative per user", envFileBrokerUser, "-5"},
+		{"file size zero", envFileBrokerFile, "0"},
+		{"negative file size", envFileBrokerFile, "-1"},
+		{"file size with a unit", envFileBrokerFile, "500MB"},
 		{"client TTL with a unit", envDCRClientTTL, "24h"},
 		{"client TTL too short to sign in", envDCRClientTTL, "60"},
 		{"negative client TTL", envDCRClientTTL, "-1"},

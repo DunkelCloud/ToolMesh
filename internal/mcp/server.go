@@ -194,6 +194,7 @@ func (s *Server) SetupRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/health", s.cors(s.handleHealth))
 	if s.blobStore != nil {
 		mux.HandleFunc("/files/upload", s.cors(s.handleFileUpload))
+		mux.HandleFunc(blob.UploadURLPathPrefix, s.handleUploadURL)
 		mux.HandleFunc("/blobs/", s.handleBlobs)
 	}
 	// Registered last: "/" is the catch-all, so every pattern above still wins.
@@ -410,7 +411,7 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.logger.DebugContext(ctx, "mcp request payload", "method", req.Method, "id", req.ID, "params", req.Params)
+	s.logger.DebugContext(ctx, "mcp request payload", "method", req.Method, "id", req.ID, "params", redactedForLog{req.Params})
 
 	// JSON-RPC notifications have no "id" field.
 	// Per MCP Streamable HTTP spec, respond with 202 Accepted (no body).
@@ -2355,7 +2356,7 @@ func jsonRPCErrorEnvelope(id any, code int, message string) map[string]any {
 }
 
 func (s *Server) writeJSONRPCResult(w http.ResponseWriter, id, result any) {
-	s.logger.Debug("mcp response", "id", id, "result", result)
+	s.logger.Debug("mcp response", "id", id, "result", redactedForLog{result})
 	writeJSON(w, http.StatusOK, jsonRPCResultEnvelope(id, result))
 }
 

@@ -53,6 +53,8 @@ func TestFileBrokerDisabled_RoutesAnswer404(t *testing.T) {
 
 	for _, tt := range []struct{ method, path string }{
 		{http.MethodPost, "/files/upload"},
+		{http.MethodPut, "/files/upload/some-token"},
+		{http.MethodGet, "/files/upload/some-token"},
 		{http.MethodGet, testBlobPath},
 		{http.MethodHead, testBlobPath},
 		{http.MethodDelete, testBlobPath},
@@ -71,12 +73,14 @@ func TestFileBrokerDisabled_RoutesAnswer404(t *testing.T) {
 		t.Fatalf("BuildToolList: %v", err)
 	}
 	for _, tool := range tools {
-		if tool.Name == toolUploadFile {
-			t.Errorf("%s is listed although the file broker is off", toolUploadFile)
+		if tool.Name == toolUploadFile || tool.Name == toolCreateUploadURL {
+			t.Errorf("%s is listed although the file broker is off", tool.Name)
 		}
 	}
-	if handler.isBuiltinTool(toolUploadFile) {
-		t.Errorf("%s is dispatched as a built-in although the file broker is off", toolUploadFile)
+	for _, name := range []string{toolUploadFile, toolCreateUploadURL} {
+		if handler.isBuiltinTool(name) {
+			t.Errorf("%s is dispatched as a built-in although the file broker is off", name)
+		}
 	}
 }
 

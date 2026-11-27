@@ -148,6 +148,39 @@ for the full narrative and details.
 
 ### Added
 
+- Resumable uploads. A REST tool with `upload: {protocol: google_resumable}`
+  sends the file of its `file_url` parameter through Google's resumable
+  upload protocol (YouTube Data API, Drive, Cloud Storage): the metadata
+  and the file in one call, the file in chunks of 8 MiB, and after a broken
+  connection or a server error the transfer continues where the API says
+  it stopped. A call that runs out of time fails with `upload_incomplete`,
+  and the same call again continues the upload; after it finished, the same
+  call again returns the API's earlier answer instead of uploading a second
+  time. Once the chunk with the file's last byte has gone out, a session is
+  never given up without saying so, because the API may already have
+  created the resource. The file is
+  a `tm-blob://` handle. A DADL that uses the key must list
+  `resumable_upload` in `requires.features`, so an older ToolMesh refuses
+  the file instead of sending the file as an ordinary request. See
+  [Resumable uploads](docs/configuration.md#resumable-uploads).
+
+- `TOOLMESH_FILE_BROKER_MAX_FILE_BYTES` sets the largest file `upload_file`
+  and `POST /files/upload` accept, 100 MiB by default as before. See
+  [File Broker](docs/configuration.md#file-broker).
+
+- Upload URLs for the file broker. The built-in tool `create_upload_url`
+  returns a one-time URL to which an agent sends a file it holds itself, for
+  example one rendered with a local shell, with a plain HTTP `PUT` and no
+  credential; the returned `tm-blob://` handle then works like one from
+  `upload_file`. Where a proxy caps a request below the file broker's limit
+  (Cloudflare at 100 MB), the file goes in parts with `Content-Range`, and
+  an interrupted upload continues where it stopped. The file counts against
+  the quota of the caller who created the URL. The URL takes one file within
+  an hour and does not let its holder read the file; ToolMesh writes its
+  token as `[REDACTED]` in the request log and in `DEBUG` lines. Clients that keep an older tool list reach the tool
+  from `execute_code` as `toolmesh.create_upload_url`. See
+  [Upload URLs](docs/configuration.md#upload-urls).
+
 - The tools of an MCP server backend are kept current while ToolMesh runs.
   A backend that says its tool list has changed
   (`notifications/tools/list_changed`) has it read again at once, a backend
@@ -321,6 +354,10 @@ for the full narrative and details.
 - The MCP Go SDK is at v1.8.0.
 
 ### Fixed
+
+- `POST /files/upload` no longer breaks off a large file on a slow
+  connection after 30 seconds, the read timeout of the server: an
+  authenticated upload now has 10 minutes to send its body.
 
 - An MCP server backend that is slow to connect, or to answer with its tool
   list, no longer holds up the calls to other MCP server backends. While

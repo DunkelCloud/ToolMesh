@@ -24,6 +24,7 @@ ToolMesh moves the keys, the permissions and the record of calls into one servic
 - Authorization from the first start. OpenFGA runs inside ToolMesh; grants name users, roles, plans or companies and allow all tools, a backend, single tools or an access class such as `read`. Tool listings show each caller only what it may call. Rights that are needed only now and then can be bundled as kits: the agent asks for one, a person approves it, and the grant ends after its time.
 - An audit entry for every call: who called which tool with which parameters, how long it took and how it ended. By default as structured log lines; with `AUDIT_STORE=sqlite` in a database you can query with SQL.
 - Code Mode. The model sees two tools, `discover_tools` and `execute_code`, looks up the signatures it needs and writes short JavaScript that makes several calls in one round trip. A client with hundreds of tools behind ToolMesh does not load all their definitions into its context.
+- Files without their bytes in the conversation. `upload_file` fetches a file from the web into ToolMesh's file broker, and `create_upload_url` gives an agent a one-time URL to `PUT` a file from its own machine to, in parts if it is large; a tool then takes the file by its handle. See [File Broker](docs/configuration.md#file-broker).
 - Optional JavaScript policies that check a call before it runs and filter its result, for example to redact personal data. Examples are in [`config/policies/examples/`](config/policies/examples/).
 - Optional house rules per backend. A `hint` in `backends.yaml` says what an agent must know before it uses a backend, such as a naming convention. With `hint_required_for`, the calls you pick, such as all writes or single tools, are refused until the agent shows that it has received the hint, so every conversation gets it before its first such call.
 
@@ -63,7 +64,7 @@ tools:
       state: { type: string, in: query }
 ```
 
-The file also declares how the API authenticates (bearer token, API key, OAuth2, session login), how it pages and when to retry. ToolMesh does the HTTP work. The [DADL registry](https://dadl.ai/browse) has descriptions for 36 APIs; for others, ask an LLM that knows the [DADL spec](https://dadl.ai/spec/dadl-spec-v0.2) and test the result against the real API.
+The file also declares how the API authenticates (bearer token, API key, OAuth2, session login), how it pages, when to retry and whether it takes large files in chunks ([resumable uploads](docs/configuration.md#resumable-uploads), as YouTube and Drive do). ToolMesh does the HTTP work. The [DADL registry](https://dadl.ai/browse) has descriptions for 36 APIs; for others, ask an LLM that knows the [DADL spec](https://dadl.ai/spec/dadl-spec-v0.2) and test the result against the real API.
 
 In Code Mode the model calls these tools from JavaScript:
 
@@ -82,7 +83,7 @@ The script runs in a sandbox (goja) inside ToolMesh, and each `toolmesh.*` call 
 
 ToolMesh is at version 0.x. A minor release can still change the configuration; the [changelog](CHANGELOG.md) lists under *Changed* and *Deprecated* what an operator has to adjust.
 
-`docker compose up` pulls the latest release (`ghcr.io/dunkelcloud/toolmesh:latest`, at present v0.6.0). This README describes `main`; when `main` is ahead of the latest release, this section names what the release does not have yet. At present that is the credentials of users (`user_credentials` in `backends.yaml` and the page `/credentials`), built-in TLS (`TOOLMESH_TLS_ACME`, `TOOLMESH_TLS_CERT`), MCP revision 2026-07-28 (the release speaks the revisions up to 2025-11-25), commands over SSH (`transport: ssh`) and OAuth clients that name themselves by a client ID metadata document (with the release, every client registers at `/register`).
+`docker compose up` pulls the latest release (`ghcr.io/dunkelcloud/toolmesh:latest`, at present v0.6.0). This README describes `main`; when `main` is ahead of the latest release, this section names what the release does not have yet. At present that is the credentials of users (`user_credentials` in `backends.yaml` and the page `/credentials`), built-in TLS (`TOOLMESH_TLS_ACME`, `TOOLMESH_TLS_CERT`), MCP revision 2026-07-28 (the release speaks the revisions up to 2025-11-25), commands over SSH (`transport: ssh`), OAuth clients that name themselves by a client ID metadata document (with the release, every client registers at `/register`) and upload URLs of the file broker (`create_upload_url`).
 
 ## Getting started
 

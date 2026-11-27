@@ -886,7 +886,8 @@ approval link and fingerprint, so that the link can be handed over later), and
 describes these kits with their warnings.
 
 The built-in tools ToolMesh lists (`discover_tools`, `execute_code`,
-`tell_me_my_rights`, and `request_grant` and `upload_file` where offered) are
+`tell_me_my_rights`, and `request_grant`, `upload_file` and `create_upload_url`
+where offered) are
 `allowed` in a preflight: ToolMesh runs them itself, without the authorization
 step and the gate policies, and checks every tool that `execute_code` calls
 when it calls it. The answer shows only the tools the caller may call or get
@@ -1689,20 +1690,37 @@ Each `execute_code` run gets its own JavaScript runtime (goja), which has no mem
 
 ## File Broker
 
-The file broker holds files that tool calls pass around without sending their content through the conversation: `upload_file` fetches a public URL into it, `POST /files/upload` takes a file directly (multipart field `file`, optional `ttl`), and tools with a binary response (audio, images, PDFs) return a download URL under `/blobs/<id>` instead of the bytes. Files are kept in `blobs/` in the data directory for their TTL: 1 hour by default, at most 24 hours for uploads, at most 100 MB each. Files left there by a previous run are removed at startup, since the index of files lives in memory.
+The file broker holds files that tool calls pass around without sending their content through the conversation: `upload_file` fetches a public URL into it, `POST /files/upload` takes a file directly (multipart field `file`, optional `ttl`), and tools with a binary response (audio, images, PDFs) return a download URL under `/blobs/<id>` instead of the bytes. Files are kept in `blobs/` in the data directory for their TTL: 1 hour by default, at most 24 hours for uploads, at most 100 MiB each unless `TOOLMESH_FILE_BROKER_MAX_FILE_BYTES` says otherwise. Files left there by a previous run are removed at startup, since the index of files lives in memory.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `TOOLMESH_FILE_BROKER_ENABLED` | `true` | `false` switches the file broker off: `upload_file` is not offered, `/files/upload` and `/blobs/` answer `404`, and a tool with a binary response returns an error instead of a download URL. Must be `true` or `false`; anything else stops the server at startup. |
+| `TOOLMESH_FILE_BROKER_ENABLED` | `true` | `false` switches the file broker off: `upload_file` and `create_upload_url` are not offered, `/files/upload`, upload URLs and `/blobs/` answer `404`, and a tool with a binary response returns an error instead of a download URL. Must be `true` or `false`; anything else stops the server at startup. |
 | `TOOLMESH_FILE_BROKER_MAX_TOTAL_BYTES` | `0` (no limit) | Bytes all files together may take. |
 | `TOOLMESH_FILE_BROKER_MAX_BYTES_PER_USER` | `0` (no limit) | Bytes the files of one user may take. |
+| `TOOLMESH_FILE_BROKER_MAX_FILE_BYTES` | `104857600` (100 MiB) | Bytes one file may have, for `upload_file` and `POST /files/upload`. Raise it for files that only a [resumable upload](#resumable-uploads) sends on; any other tool still takes at most 100 MB per request. |
 
-The two limits must be plain integers of bytes, `0` or more; anything else stops the server at startup. While the broker is on without `TOOLMESH_FILE_BROKER_MAX_TOTAL_BYTES`, the startup security-posture summary lists it as a relaxed control. Switch the broker off on an instance where callers have no files to exchange, such as a public demo.
+The two quota limits must be plain integers of bytes, `0` or more, and the file limit a plain integer above `0`; anything else stops the server at startup. A larger file limit has two neighbors to check: a reverse proxy in front of ToolMesh may cap request bodies on its own (Cloudflare does at 100 MB on its smaller plans), so a larger file reaches the broker through `upload_file` from a URL; and `upload_file` gives a fetch 60 seconds, so the source has to deliver the file within that time. `POST /files/upload` spools a file to a temporary file while it reads the request, so a file briefly takes its size twice on disk. While the broker is on without `TOOLMESH_FILE_BROKER_MAX_TOTAL_BYTES`, the startup security-posture summary lists it as a relaxed control. Switch the broker off on an instance where callers have no files to exchange, such as a public demo.
 
 - **Deleting a file.** `DELETE /blobs/<id>` needs MCP authentication and succeeds only for the user the file was created for, the same user it counts against. For anyone else it answers `404`, as for an unknown ID. A file created without a user cannot be deleted this way and goes after its TTL.
 - **What counts.** A file counts from the moment it is written until it is deleted (`DELETE /blobs/<id>`) or removed after its TTL, which happens within a minute of the TTL running out. Uploads through `/files/upload` and `upload_file` count against the user who made the call, and so do binary responses of that user's tool calls.
 - **A file that does not fit is refused.** `/files/upload` answers `507 Insufficient Storage`; `upload_file` and a tool with a binary response return an error. The message names the limit, the bytes already in use, and how to make room. A file of unknown length stops as soon as it reaches the limit, and nothing of it stays on disk. Each refusal is logged at `WARN` as `blob refused: file broker quota exceeded` with the `owner`.
 - **Lowering a limit** keeps the files already stored; it only keeps new ones out until enough of them are gone.
+
+### Upload URLs
+
+An agent that holds a file itself, rendered or downloaded with a local shell, gets it into the file broker without a credential of its own. The built-in tool `create_upload_url` returns a one-time URL; the agent sends the file there with a plain `PUT` and passes the returned `tm-blob://` handle on like one from `upload_file`.
+
+```bash
+# upload_url comes from create_upload_url
+curl -fsS -T short.mp4 -H 'Content-Type: video/mp4' "$UPLOAD_URL"
+```
+
+- **One file, one hour.** The URL takes one file and accepts requests for one hour after it was created. The handle is part of the answer of `create_upload_url` and works once the file is complete; a `PUT` after that gets the same answer again and stores nothing. The file counts against the quota of the caller who created the URL, and its TTL (`ttl`, 1 hour by default, 24 hours at most) starts when it is complete.
+- **Size and parts.** The file may be as large as the file broker's limit for one file (`max_bytes` in the answer of `create_upload_url`, 100 MiB by default). A proxy may cap a request below that, Cloudflare at 100 MB on its free and pro plans; then the file goes in parts: one `PUT` per part, in order, each with `Content-Range: bytes FIRST-LAST/TOTAL`. `create_upload_url` suggests 32 MiB per part (`part_bytes`). A part is stored completely or not at all, which also lets an interrupted upload continue: `GET` on the URL answers with the bytes stored (`received`), and the client sends the part that starts there. A part sent again because its answer got lost is answered `409` with `received`, and the client goes on with the next one.
+- **Answers.** JSON with `received`, `complete` and `size`: `202` after a part, `201` when the file is complete, then also with `expires` and `content_type` of the file. No answer names the file: the handle comes only with `create_upload_url`, so the URL does not let anyone read what was uploaded. `409` while another request writes to the same URL or when a part does not start at `received`, `413` over the size limit, `507` over the quota, `400` for an empty file or a body that does not match its `Content-Range`, `404` for an unknown or expired URL. `500` when ToolMesh could not store a part; when the part file has lost what was stored before, the answer says so, `received` is back at 0 and the file has to be sent again from the start.
+- **Optional checks.** With `size`, the URL takes only a file of exactly that size, and the size is checked against the limit and the quota when the URL is created. `content_type` sets the media type; without it, the `Content-Type` of the first `PUT` counts.
+- **The URL is a credential.** Its token is the only one: whoever holds the URL can upload one file into the creator's quota until the file is complete or the hour is over. ToolMesh keeps only a hash of the token. The request log writes the path as `/files/upload/[REDACTED]`, and so do the `DEBUG` lines that log tool results and parameters, such as the answer of `create_upload_url`. One user may hold 16 upload URLs whose file is not complete, the server 256.
+- **Slow connections.** A request to an upload URL, and an authenticated `POST /files/upload`, has 10 minutes to send its body and get the answer; other requests keep the server's shorter timeouts.
 
 ## Backend Configuration
 
@@ -2050,6 +2068,40 @@ get_stats_contributors:
 - **What it does not do.** It repeats one request. It does not follow a `Location` header, call another endpoint or read a job state from the body; an API that hands out a job to poll is outside its scope.
 
 `not_ready_on` is a ToolMesh extension: DADL spec v0.2 does not define the key. A ToolMesh version that does not know it warns and ignores it, and the tool then returns the not-ready response as its result; a validator that checks strictly against the v0.2 schema rejects the file.
+
+### Resumable uploads
+
+Some APIs take a large file in a session of its own instead of in one request. Google's resumable upload protocol is the common example, spoken by the YouTube Data API, Drive and the Cloud Storage JSON API: one request opens the session and carries the metadata, the file follows in chunks, and after an interruption the client asks how much the API has stored and continues from there. A DADL tool declares it with `upload`:
+
+```yaml
+requires:
+  features: [resumable_upload]
+
+backend:
+  tools:
+    upload_video:
+      method: POST
+      path: /upload/youtube/v3/videos
+      access: write
+      upload:
+        protocol: google_resumable
+      nest_body_keys: true
+      params:
+        part:                 { type: string, in: query, default: "snippet,status" }
+        snippet.title:        { type: string, in: body, required: true }
+        status.privacyStatus: { type: string, in: body, default: private }
+        file:                 { type: file_url, in: body, required: true }
+```
+
+- **What happens.** ToolMesh sends the tool's request with `uploadType=resumable`, the body parameters except the file as JSON metadata, and the file's size and media type (`X-Upload-Content-Length`, `X-Upload-Content-Type`). The API answers with the session in its `Location` header. ToolMesh then sends the file in chunks of 8 MiB. After a broken connection, a `408`, `429`, `5xx` or a status from `errors.retry_on`, it waits under the tool's `errors.retry_strategy` or the API's `Retry-After`, asks the API how much it has stored and continues from there. The API's answer to the last chunk is the result of the call and passes `result_path`, `transform` and `redact` like any other.
+- **The file.** A `tm-blob://` handle from `upload_file` or `POST /files/upload`. Only a stored file stays the same between the calls that continue an upload, so an `http(s)` or `file://` URL is refused. Store the file for as long as the upload may take: a file is kept for 1 hour unless `upload_file` or the upload form asks for more (`ttl`, at most 24 hours). The tool's `content_type`, if set, is the file's media type; otherwise the type stored with the file. `max_body_size` bounds the whole file and is not capped at the 100 MB of a single request; how large a stored file can be is set by `TOOLMESH_FILE_BROKER_MAX_FILE_BYTES`.
+- **Calling again continues.** ToolMesh keeps the session, keyed by backend, tool, caller, account and the arguments of the call, the handle of the file among them. No chunk starts with less than 15 seconds left before `TOOLMESH_EXEC_TIMEOUT`, and a chunk still running 5 seconds before it is cut off; with a timeout of 15 seconds or less no chunk starts at all. A call that stops this way, and one whose transfer failed `max_retries` times in a row, fails with the error code `upload_incomplete` and says how many bytes the API has confirmed. The same call again continues the upload. Once the upload has finished, the same call again returns the API's answer from then for an hour (metadata `upload_repeated`) and does not upload the file a second time. A session that has not finished is kept for 24 hours after its last use. The sessions live in the process and outlast a reload of `backends.yaml`; after a restart the same call starts a new upload.
+- **Once the last byte has gone out, the session is not given up silently.** The API can complete the upload only with the chunk that carries the file's last byte. Until that chunk has been sent, nothing can exist: an error drops the session, and the next call starts a new upload. After it, any other error keeps the session and says so: the same call again asks the API how far the upload got. To start over on purpose, store the file again and pass the new handle. Should the stored file expire first, the next call still asks the API and returns the finished upload if there is one; if the API has only part of the file, the call says how much, and a new handle starts a new upload.
+- **What else the caller can get.** `upload_in_progress`: another call with the same arguments is sending the file right now. `upload_outcome_unknown`: the whole file was sent, but the API no longer knows the session, or the tool's address changed in a reload, so the session must not be asked with the new configuration; the API may or may not have created the resource, so look before calling again, because the next call starts a new upload. A session the API dropped, or a tool that moved, before the last byte went out gets a new session without a word.
+- **Safeguards.** The session URI authorizes the upload, and every request to it carries the backend's credentials. It must keep the scheme, host, port and path of the request that opened it, the requests of an upload follow no redirect, and the URI appears in no log line, result or error; the queries of URLs in the API's error messages, and the upload ID wherever it stands, are removed for the same reason. A `Range` header outside the file is refused, and answers that do not move the upload forward count as failures.
+- **Where it is allowed.** On `POST`, `PUT` and `PATCH` tools with exactly one `file_url` parameter; not together with `content_type: multipart/form-data`, a binary or streamed response, `not_ready_on`, `idempotency` or pagination, and no parameter or path query may be named `uploadType` or `upload_id`. A DADL that uses `upload` without listing `resumable_upload` in `requires.features` is refused when it is parsed.
+
+`upload` is a ToolMesh extension: DADL spec v0.2 does not define the key. Because the file lists `resumable_upload` in `requires.features`, a ToolMesh version without the feature refuses the whole file, with all its tools, instead of ignoring the key and sending the file as the body of the session request. A validator that checks strictly against the v0.2 schema rejects the file.
 
 ### Backend health checks
 

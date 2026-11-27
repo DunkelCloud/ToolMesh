@@ -300,6 +300,8 @@ type Config struct {
 	// Quota of the file broker in bytes; 0 means no limit.
 	FileBrokerMaxTotalBytes   int64 // TOOLMESH_FILE_BROKER_MAX_TOTAL_BYTES, default 0
 	FileBrokerMaxBytesPerUser int64 // TOOLMESH_FILE_BROKER_MAX_BYTES_PER_USER, default 0
+	// Largest file upload_file and POST /files/upload accept, in bytes.
+	FileBrokerMaxFileBytes int64 // TOOLMESH_FILE_BROKER_MAX_FILE_BYTES, default DefaultFileBrokerMaxFileBytes
 
 	// Lifetime in seconds of OAuth clients from Dynamic Client Registration.
 	// DCRClientTTL applies from registration until the client obtains its
@@ -558,9 +560,13 @@ func (c *Config) loadBcryptLimit() error {
 	return nil
 }
 
-// loadFileBroker reads the file broker switch and quota. All three are parsed
-// strictly: a typo must not leave the broker on, or without the quota the
-// operator meant to set.
+// DefaultFileBrokerMaxFileBytes is the default of
+// TOOLMESH_FILE_BROKER_MAX_FILE_BYTES: 100 MiB.
+const DefaultFileBrokerMaxFileBytes = 100 << 20
+
+// loadFileBroker reads the file broker switch, quota and file size limit.
+// All of them are parsed strictly: a typo must not leave the broker on, or
+// without the limits the operator meant to set.
 func (c *Config) loadFileBroker() error {
 	enabled, err := envBoolStrict("TOOLMESH_FILE_BROKER_ENABLED", true)
 	if err != nil {
@@ -585,6 +591,17 @@ func (c *Config) loadFileBroker() error {
 		}
 		*l.dst = n
 	}
+
+	// A file is stored whole before anything else looks at it, so there is
+	// always a per-file limit: 0 is refused, not taken as "no limit".
+	maxFile, err := envInt64Strict("TOOLMESH_FILE_BROKER_MAX_FILE_BYTES", DefaultFileBrokerMaxFileBytes)
+	if err != nil {
+		return err
+	}
+	if maxFile <= 0 {
+		return fmt.Errorf("invalid TOOLMESH_FILE_BROKER_MAX_FILE_BYTES: %d (must be a positive number of bytes)", maxFile)
+	}
+	c.FileBrokerMaxFileBytes = maxFile
 	return nil
 }
 

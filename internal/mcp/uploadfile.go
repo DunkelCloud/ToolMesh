@@ -47,16 +47,22 @@ const (
 // uploadFetchTimeout bounds a single server-side fetch for upload_file.
 const uploadFetchTimeout = 60 * time.Second
 
-// SetBlobStore enables the upload_file built-in tool. The fetch client is
-// SSRF-safe and public-only: private, loopback, and link-local destinations
-// are rejected at dial time. Callers on private networks upload directly via
-// POST /files/upload instead.
+// SetBlobStore enables the upload_file and create_upload_url built-in tools.
+// The fetch client of upload_file is SSRF-safe and public-only: private,
+// loopback, and link-local destinations are rejected at dial time. Callers
+// that hold a file themselves send it through an upload URL or POST
+// /files/upload instead. Call it before the handler serves requests.
 func (h *Handler) SetBlobStore(store *blob.Store, limits blob.UploadLimits) {
 	h.blobStore = store
 	h.uploadLimits = limits
 	h.uploadFetchClient = &http.Client{
 		Timeout:   uploadFetchTimeout,
 		Transport: backend.SSRFSafeTransport(uploadFetchTimeout, false, false),
+	}
+	// Reachable from execute_code too, for clients that keep the tool list
+	// they read before this server offered the tool.
+	if store != nil && h.codeRunner != nil && h.codeRunner.metaTools != nil {
+		h.codeRunner.metaTools[toolCreateUploadURL] = h.codeModeMetaTool(toolCreateUploadURL, h.handleCreateUploadURL)
 	}
 }
 
@@ -77,16 +83,9 @@ func (h *Handler) handleUploadFile(ctx context.Context, params map[string]any) (
 		return uploadFileError(fmt.Sprintf("invalid url %q: only http(s) URLs can be fetched; for local or private sources POST the file to /files/upload directly", rawURL)), nil
 	}
 
-	ttl := h.uploadLimits.DefaultTTL
-	if v, _ := params[argNameTTL].(string); v != "" {
-		d, err := time.ParseDuration(v)
-		if err != nil || d <= 0 {
-			return uploadFileError(fmt.Sprintf("invalid ttl %q: expected a positive Go duration like 24h", v)), nil
-		}
-		if d > h.uploadLimits.MaxTTL {
-			d = h.uploadLimits.MaxTTL
-		}
-		ttl = d
+	ttl, err := h.blobTTL(params)
+	if err != nil {
+		return uploadFileError(err.Error()), nil
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, http.NoBody)

@@ -76,6 +76,7 @@ type RESTAdapter struct {
 	spec                *dadl.Spec
 	httpClient          *http.Client
 	streamingHTTPClient *http.Client // separate client with longer timeout for streaming responses
+	uploadHTTPClient    *http.Client // requests of resumable uploads: long timeout, no redirects
 	fileFetchClient     *http.Client // dedicated client for file_url input fetches (no backend cookies/auth)
 	auth                *dadl.RestAuth
 	creds               credentials.CredentialStore
@@ -315,6 +316,16 @@ func NewRESTAdapter(spec *dadl.Spec, creds credentials.CredentialStore, logger *
 		Transport:     streamTransport,
 		CheckRedirect: redirectCheck,
 	}
+	// The requests of a resumable upload follow no redirect at all: the
+	// session URI is checked once, against the session request, and every
+	// later request carries the backend's auth to it. A redirect answer is
+	// taken as the answer. Chunks of several MB need the long timeout; the
+	// call's deadline still bounds each request through its context.
+	uploadClient := &http.Client{
+		Timeout:       defaultStreamingHTTPTimeout,
+		Transport:     streamTransport,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
 
 	// Dedicated client for fetching caller-provided file_url inputs. Caller URLs
 	// are a separate trust domain from the configured backend, so the fetch
@@ -345,6 +356,7 @@ func NewRESTAdapter(spec *dadl.Spec, creds credentials.CredentialStore, logger *
 	if jar := auth.CookieJar(); jar != nil {
 		httpClient.Jar = jar
 		streamingClient.Jar = jar
+		uploadClient.Jar = jar
 	}
 
 	includeTools := buildIncludeSet(spec, opts.IncludeTools, logger)
@@ -380,6 +392,7 @@ func NewRESTAdapter(spec *dadl.Spec, creds credentials.CredentialStore, logger *
 		authExpiresAt:       opts.AuthExpiresAt,
 		httpClient:          httpClient,
 		streamingHTTPClient: streamingClient,
+		uploadHTTPClient:    uploadClient,
 		fileFetchClient:     fileFetchClient,
 		auth:                auth,
 		creds:               creds,
@@ -429,6 +442,18 @@ func resolveMaxBodySizes(spec *dadl.Spec, logger *slog.Logger) (map[string]int64
 		limit, err := dadl.ParseByteSize(declared)
 		if err != nil {
 			return nil, fmt.Errorf("REST backend %q: tool %q: max_body_size: %w", spec.Backend.Name, name, err)
+		}
+		// On an upload tool the size bounds the whole file, which travels
+		// in chunks well under the ceiling, and it can only narrow: the
+		// file comes from the file broker, whose own limit the operator
+		// sets. Its value is kept under its own key, so a tool without
+		// upload that declares the same string still gets the clamp.
+		if spec.Backend.Tools[name].Upload != nil {
+			if sizes == nil {
+				sizes = make(map[string]int64)
+			}
+			sizes[uploadSizeKey(declared)] = limit
+			continue
 		}
 		if limit > maxUploadBytes {
 			logger.Warn("max_body_size exceeds the runtime upload ceiling, clamping",
@@ -837,6 +862,14 @@ func (a *RESTAdapter) execute(ctx context.Context, toolName string, params map[s
 		"params", params,
 	)
 
+	// Resumable upload: a session request, then the file in chunks (see
+	// upload.go). dadl.Validate keeps the keys the upload replaces
+	// (binary responses, pagination, not_ready_on, idempotency) off such
+	// a tool.
+	if tool.Upload != nil {
+		return a.executeUpload(ctx, toolName, &tool, params), nil
+	}
+
 	// Streaming binary path: stream directly to file broker without buffering
 	rc := a.effectiveResponseConfig(&tool)
 	if isBinaryResponse(rc) && rc.Streaming && rc.StreamHandling == "collect" && a.fileBroker != nil {
@@ -986,31 +1019,37 @@ func (a *RESTAdapter) execute(ctx context.Context, toolName string, params map[s
 		}
 	}
 
-	// Transform response, then redact (DADL spec §9.3 pipeline order:
-	// result_path → transform → redact). Redaction is fail-closed: with a
-	// redact list declared, neither a transform error (paths are relative
-	// to the transformed result — positions would be unverifiable) nor a
-	// redact error may leak the unredacted body. An expression that cannot
-	// be parsed fails the call in any case (see transformResponse).
-	body, err = a.transformResponse(&tool, body)
+	return a.finishResult(ctx, toolName, &tool, resp.StatusCode, body), nil
+}
+
+// finishResult runs a successful response body through the response
+// pipeline and returns the tool result: transform, then redact (DADL spec
+// §9.3 pipeline order: result_path → transform → redact). Redaction is
+// fail-closed: with a redact list declared, neither a transform error
+// (paths are relative to the transformed result — positions would be
+// unverifiable) nor a redact error may leak the unredacted body. An
+// expression that cannot be parsed fails the call in any case (see
+// transformResponse).
+func (a *RESTAdapter) finishResult(ctx context.Context, toolName string, tool *dadl.ToolDef, status int, body []byte) *ToolResult {
+	body, err := a.transformResponse(tool, body)
 	var exprErr *dadl.ExpressionError
 	if errors.As(err, &exprErr) {
-		return a.invalidTransformResult(ctx, toolName, resp.StatusCode, exprErr), nil
+		return a.invalidTransformResult(ctx, toolName, status, exprErr)
 	}
-	redactPaths := a.effectiveRedactPaths(&tool)
+	redactPaths := a.effectiveRedactPaths(tool)
 	if len(redactPaths) > 0 {
 		if err != nil {
 			return &ToolResult{
 				Content: []any{textContent(fmt.Sprintf("Error: response transformation failed on a tool with response.redact; refusing unredacted output: %s", err))},
 				IsError: true,
-			}, nil
+			}
 		}
 		body, err = dadl.RedactResult(body, redactPaths)
 		if err != nil {
 			return &ToolResult{
 				Content: []any{textContent(fmt.Sprintf("Error: response redaction failed: %s", err))},
 				IsError: true,
-			}, nil
+			}
 		}
 	} else if err != nil {
 		a.logger.WarnContext(ctx, "response transformation error",
@@ -1023,7 +1062,7 @@ func (a *RESTAdapter) execute(ctx context.Context, toolName string, params map[s
 	a.logger.DebugContext(ctx, "REST tool response",
 		"backend", a.spec.Backend.Name,
 		"tool", toolName,
-		"status", resp.StatusCode,
+		"status", status,
 		"bodyLen", len(body),
 		"body", string(body),
 	)
@@ -1033,9 +1072,9 @@ func (a *RESTAdapter) execute(ctx context.Context, toolName string, params map[s
 		Metadata: map[string]any{
 			metadataKeyBackend:    a.spec.Backend.Name,
 			metadataKeyTransport:  transportTypeREST,
-			metadataKeyStatusCode: resp.StatusCode,
+			metadataKeyStatusCode: status,
 		},
-	}, nil
+	}
 }
 
 // Healthy checks if the backend is reachable.
@@ -1278,16 +1317,30 @@ func (a *RESTAdapter) loggableURL(u *url.URL) string {
 // body is closed before returning; once the request reaches an http.Client,
 // the transport owns closing the body.
 func (a *RESTAdapter) buildHTTPRequest(ctx context.Context, tool *dadl.ToolDef, params map[string]any) (*http.Request, error) {
-	toolPath, err := a.buildPath(tool, params)
+	urlStr, err := a.buildToolURL(tool, params)
 	if err != nil {
 		return nil, err
 	}
-	if err := checkPathStaysRelative(tool.Path, toolPath); err != nil {
+	bodyReader, contentTypeOverride, contentLen, err := a.buildRequestBody(ctx, tool, params)
+	if err != nil {
 		return nil, err
+	}
+	return a.newToolRequest(ctx, tool, params, urlStr, bodyReader, contentLen, contentTypeOverride)
+}
+
+// buildToolURL returns the URL of a tool request: base URL, the tool path
+// with its path parameters, and the query parameters.
+func (a *RESTAdapter) buildToolURL(tool *dadl.ToolDef, params map[string]any) (string, error) {
+	toolPath, err := a.buildPath(tool, params)
+	if err != nil {
+		return "", err
+	}
+	if err := checkPathStaysRelative(tool.Path, toolPath); err != nil {
+		return "", err
 	}
 	urlStr, err := joinURL(a.spec.Backend.BaseURL, toolPath)
 	if err != nil {
-		return nil, err
+		return "", err
 	}
 
 	// A tool path may carry a query of its own ("/search?kind=issue"); the
@@ -1300,11 +1353,15 @@ func (a *RESTAdapter) buildHTTPRequest(ctx context.Context, tool *dadl.ToolDef, 
 		}
 		urlStr += sep + query
 	}
+	return urlStr, nil
+}
 
-	bodyReader, contentTypeOverride, contentLen, err := a.buildRequestBody(ctx, tool, params)
-	if err != nil {
-		return nil, err
-	}
+// newToolRequest creates the request of a tool call with the given URL and
+// body: the tool's method, default headers, `in: header` parameters,
+// content type and auth. contentLen < 0 leaves the length to the body
+// reader; a non-empty contentTypeOverride is the Content-Type. On any error
+// a closable body is closed before returning.
+func (a *RESTAdapter) newToolRequest(ctx context.Context, tool *dadl.ToolDef, params map[string]any, urlStr string, bodyReader io.Reader, contentLen int64, contentTypeOverride string) (*http.Request, error) {
 	closeBody := func() {
 		if c, ok := bodyReader.(io.Closer); ok {
 			_ = c.Close()

@@ -884,11 +884,15 @@ func (s *Server) checkBearer(r *http.Request, bearer string, slot *bearerSlot) (
 	users, keys := s.users.Load(), s.apiKeys.Load()
 
 	// The key of an approver never connects as an MCP caller, whichever
-	// store would accept it.
+	// store would accept it. The answer is the 401 of an unknown credential.
+	// A refusal counts against the bearer throttle like any rejected value
+	// when the request reserved a slot; a token-shaped value reserves none
+	// (see authenticate), which gives a guesser nothing: the answer is the
+	// same either way.
 	if s.isApproverKey(bearer) {
+		s.metrics.RecordLogin(loginMethodAPIKey, "failure")
 		s.logger.WarnContext(r.Context(), "bearer refused: it is the key of an approver, which is for the approver API only",
 			logKeyRemote, auth.ClientIP(r))
-		s.bearerRejected(r, bearer, true, false, false)
 		return anonymousCaller(), nil
 	}
 

@@ -338,7 +338,7 @@ func (r *authReloader) applyKeys(ctx context.Context, st authFileState) bool {
 	}
 	if len(clashes) > 0 {
 		slices.Sort(clashes)
-		r.logger.Error("apikeys config: entries hold the key of an approver; the MCP endpoint refuses such a key, give the approver or the caller a key of its own",
+		r.logger.Error("apikeys config: entries hold the key of an approver; the MCP endpoint refuses such a key, and ToolMesh does not start with this: give the approver or the caller a key of its own",
 			"file", r.keys.path, "entries", clashes)
 	}
 	logAPIKeysLoaded(r.logger, r.keys.path, next)

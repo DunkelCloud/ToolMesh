@@ -15,7 +15,9 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
 	"os"
 	"strings"
 	"testing"
@@ -393,20 +395,72 @@ func TestSetupAuthzInForce_FollowsLoadedStores(t *testing.T) {
 	}
 }
 
-// The approver check of a reloaded authz config compares with the API keys in
-// force, also when apikeys.yaml was removed from disk in the meantime.
-func TestAuthzApplier_ChecksApproversAgainstKeysInForce(t *testing.T) {
+// After startup, an approver whose key is a key of apikeys.yaml in force is
+// reported, not refused: the MCP endpoint refuses such a key at use time, and
+// a refusal would let the clash block every later edit of the authz config,
+// the removal of a leaked approver key among them. The comparison goes by
+// the keys in force, also when apikeys.yaml was removed from disk.
+func TestAuthzApplier_ApproverClashAfterStartupReported(t *testing.T) {
 	cfg := authzTestConfig(t)
 	writeFile(t, cfg.APIKeysConfigPath, apiKeysYAML([2]string{reloadUserA, testMCPKey}))
 	s := mustSetup(t, cfg, false)
 	_, holder, _ := newTestReloader(t, cfg)
 	s.applier.setInForce(holder.inForce)
+	var logs bytes.Buffer
+	s.applier.logger = slog.New(slog.NewTextHandler(&logs, nil))
 	if err := os.Remove(cfg.APIKeysConfigPath); err != nil {
 		t.Fatal(err)
 	}
+	ctx := context.Background()
 
 	writeFile(t, cfg.AuthzConfigPath, approverFile(testMCPKey))
-	if _, err := s.applier.apply(context.Background()); err == nil || !strings.Contains(err.Error(), "alice") {
-		t.Errorf("apply = %v, want the approver refused for holding a key in force", err)
+	if _, err := s.applier.apply(ctx); err != nil {
+		t.Fatalf("apply = %v, want the policy applied and the clash reported", err)
+	}
+	if got := s.embedded.Approvers(); len(got) != 1 || got[0].KeySHA256 != sha256Hex(testMCPKey) {
+		t.Fatalf("approvers = %+v", got)
+	}
+	if !strings.Contains(logs.String(), "also a key of apikeys.yaml") || !strings.Contains(logs.String(), "alice") {
+		t.Errorf("the clash with the key in force is not reported; log:\n%s", logs.String())
+	}
+
+	// The clash does not block the next edit: the leaked approver key is
+	// replaced.
+	writeFile(t, cfg.AuthzConfigPath, approverFile(testApproverKey))
+	if _, err := s.applier.apply(ctx); err != nil {
+		t.Fatalf("apply after the clash = %v", err)
+	}
+	if got := s.embedded.Approvers(); len(got) != 1 || got[0].KeySHA256 != sha256Hex(testApproverKey) {
+		t.Errorf("approvers after replacing the key = %+v", got)
+	}
+
+	// TOOLMESH_API_KEY stays refused after startup.
+	cfg.APIKey = testMCPKey
+	if _, err := s.applier.apply(ctx); err != nil {
+		t.Fatalf("apply = %v", err)
+	}
+	writeFile(t, cfg.AuthzConfigPath, approverFile(testMCPKey))
+	if _, err := s.applier.apply(ctx); err == nil || !strings.Contains(err.Error(), envAPIKey) {
+		t.Errorf("apply with an approver holding TOOLMESH_API_KEY = %v, want refused", err)
+	}
+}
+
+// The approver key check of the MCP endpoint follows the approvers in force:
+// a key stops being refused there once its approver has another key.
+func TestApproverKeyCheck_FollowsApprovers(t *testing.T) {
+	cfg := authzTestConfig(t)
+	writeFile(t, cfg.AuthzConfigPath, approverFile(testMCPKey))
+	s := mustSetup(t, cfg, false)
+	check := approverKeyCheck(s.embedded)
+	if !check(sha256Hex(testMCPKey)) || check(sha256Hex(testApproverKey)) {
+		t.Fatal("the check does not report the approver's key alone")
+	}
+
+	writeFile(t, cfg.AuthzConfigPath, approverFile(testApproverKey))
+	if _, err := s.applier.apply(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if check(sha256Hex(testMCPKey)) || !check(sha256Hex(testApproverKey)) {
+		t.Error("the check did not follow the new approver key")
 	}
 }

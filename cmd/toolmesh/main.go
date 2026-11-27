@@ -493,14 +493,7 @@ func main() {
 	// An approver's key never connects as an MCP caller, also when an
 	// apikeys.yaml entry known only by its bcrypt hash holds it.
 	if emb := authzEngine.embedded; emb != nil {
-		mcpServer.SetApproverKeyCheck(func(keySHA256 string) bool {
-			for _, a := range emb.Approvers() {
-				if a.KeySHA256 != "" && a.KeySHA256 == keySHA256 {
-					return true
-				}
-			}
-			return false
-		})
+		mcpServer.SetApproverKeyCheck(approverKeyCheck(emb))
 	}
 
 	// Changes to users.yaml and apikeys.yaml take effect without a restart.

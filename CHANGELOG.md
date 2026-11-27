@@ -37,7 +37,12 @@ for the full narrative and details.
   approver, whatever `apikeys.yaml` holds. Until now an `apikeys.yaml` entry
   known only by its bcrypt `key_hash` could hold an approver's key, since
   the check at startup compares `key_sha256` values only; a caller with that
-  key could approve its own requests for kits.
+  key could approve its own requests for kits. While ToolMesh runs, an
+  approver whose key is a `key_sha256` entry of `apikeys.yaml` no longer
+  makes a change of the authz config fail: the change is applied and the
+  clash logged at `ERROR`, so it cannot block, say, the removal of a leaked
+  approver key. At startup it still stops the server, and an approver whose
+  key is `TOOLMESH_API_KEY` or `TOOLMESH_AUTH_PASSWORD` is still refused.
 - The `backend refused` log line no longer offers every line that would
   load the backend as a line to add. Under `add_to_backends_yaml_entry` it
   keeps what leaves the binding as it is: for a credential name outside

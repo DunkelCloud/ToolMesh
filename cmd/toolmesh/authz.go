@@ -17,11 +17,11 @@ package main
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
-	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -61,6 +61,8 @@ type authzApplier struct {
 	mu sync.Mutex
 	// policy is the policy applied last.
 	policy authz.Policy
+	// applied is set once a policy was applied.
+	applied bool
 	// inForce, when set, says what is in force: whether users.yaml or
 	// apikeys.yaml is loaded, and the key_sha256 sums of the API keys.
 	// Without it the files on disk decide.
@@ -79,11 +81,17 @@ func (a *authzApplier) apply(ctx context.Context) (authz.Policy, error) {
 		preset = presetForAuthFiles(loaded)
 		keySums = func() (map[string]string, error) { return sums, nil }
 	}
-	policy, err := applyAuthzPolicyWith(ctx, a.cfg, a.emb, a.logger, preset, keySums)
+	// Only the first apply, at startup, refuses an approver that holds a key
+	// of apikeys.yaml. Later the MCP endpoint refuses such a key at use time
+	// (mcp.Server.SetApproverKeyCheck), and refusing the whole policy would
+	// let a clash brought in by apikeys.yaml block every later edit of the
+	// authz config, the removal of a leaked approver key among them.
+	policy, err := applyAuthzPolicyWith(ctx, a.cfg, a.emb, a.logger, preset, keySums, !a.applied)
 	if err != nil {
 		return authz.Policy{}, err
 	}
 	a.policy = policy
+	a.applied = true
 	return policy, nil
 }
 
@@ -200,13 +208,15 @@ func setupAuthzInForce(ctx context.Context, cfg *config.Config, priorState bool,
 func applyAuthzPolicy(ctx context.Context, cfg *config.Config, emb *authz.Embedded, logger *slog.Logger) (authz.Policy, error) {
 	return applyAuthzPolicyWith(ctx, cfg, emb, logger, defaultAuthzPreset(cfg), func() (map[string]string, error) {
 		return auth.KeySHA256Sums(cfg.APIKeysConfigPath)
-	})
+	}, true)
 }
 
 // applyAuthzPolicyWith is applyAuthzPolicy with the default preset and the
 // key_sha256 sums of the API keys in force given. keySums is called only when
-// the policy has approvers.
-func applyAuthzPolicyWith(ctx context.Context, cfg *config.Config, emb *authz.Embedded, logger *slog.Logger, defaultPreset string, keySums func() (map[string]string, error)) (authz.Policy, error) {
+// the policy has approvers. An approver whose key is TOOLMESH_API_KEY or
+// TOOLMESH_AUTH_PASSWORD is always refused; one whose key is a key of
+// apikeys.yaml is refused when apiKeyClashFatal is set and logged otherwise.
+func applyAuthzPolicyWith(ctx context.Context, cfg *config.Config, emb *authz.Embedded, logger *slog.Logger, defaultPreset string, keySums func() (map[string]string, error), apiKeyClashFatal bool) (authz.Policy, error) {
 	file, err := authz.LoadFile(cfg.AuthzConfigPath)
 	if err != nil {
 		return authz.Policy{}, err
@@ -225,8 +235,21 @@ func applyAuthzPolicyWith(ctx context.Context, cfg *config.Config, emb *authz.Em
 	if err != nil {
 		return authz.Policy{}, err
 	}
-	if err := checkApproverKeys(cfg, policy.Approvers, keySums); err != nil {
-		return authz.Policy{}, fmt.Errorf("authz config: %w", err)
+	if len(policy.Approvers) > 0 {
+		if err := authz.CheckApproverKeys(policy.Approvers, envKeySums(cfg)); err != nil {
+			return authz.Policy{}, fmt.Errorf("authz config: %w", err)
+		}
+		sums, err := keySums()
+		if err != nil {
+			return authz.Policy{}, fmt.Errorf("authz config: compare the approver keys with the API keys: %w", err)
+		}
+		if err := authz.CheckApproverKeys(policy.Approvers, sums); err != nil {
+			if apiKeyClashFatal {
+				return authz.Policy{}, fmt.Errorf("authz config: %w", err)
+			}
+			logger.Error("authz config: an approver's key is also a key of apikeys.yaml; the MCP endpoint refuses that key while the approver holds it, and ToolMesh does not start with this: give one of them a key of its own",
+				"file", cfg.AuthzConfigPath, "error", err)
+		}
 	}
 	res, err := emb.ApplyPolicy(ctx, policy)
 	if err != nil {
@@ -251,33 +274,42 @@ func applyAuthzPolicyWith(ctx context.Context, cfg *config.Config, emb *authz.Em
 	return policy, nil
 }
 
-// Variables of the credentials checkApproverKeys compares approver keys with.
+// Variables of the credentials an approver key must not be.
 const (
 	envAPIKey       = "TOOLMESH_API_KEY"       //nolint:gosec // the variable's name, not a credential
 	envAuthPassword = "TOOLMESH_AUTH_PASSWORD" //nolint:gosec // the variable's name, not a credential
 )
 
-// checkApproverKeys refuses an approver whose key is also a credential MCP
-// callers connect with: TOOLMESH_API_KEY, TOOLMESH_AUTH_PASSWORD or a key
-// with a key_sha256 in apikeys.yaml, whose sums keySums returns. Keys known
-// only by a bcrypt key_hash cannot be compared.
-func checkApproverKeys(cfg *config.Config, approvers []authz.Approver, keySums func() (map[string]string, error)) error {
-	if len(approvers) == 0 {
-		return nil
-	}
-	sums, err := keySums()
-	if err != nil {
-		return fmt.Errorf("compare the approver keys with the API keys: %w", err)
-	}
-	reserved := make(map[string]string, len(sums)+2)
-	maps.Copy(reserved, sums)
+// envKeySums maps the SHA-256 of TOOLMESH_API_KEY and TOOLMESH_AUTH_PASSWORD,
+// where set, to the variable's name. An approver key must be neither: both
+// are credentials MCP callers connect with. Keys of apikeys.yaml are compared
+// separately; those known only by a bcrypt key_hash cannot be compared here
+// and are refused by the MCP endpoint at use time instead.
+func envKeySums(cfg *config.Config) map[string]string {
+	out := make(map[string]string, 2)
 	for name, secret := range map[string]string{envAPIKey: cfg.APIKey, envAuthPassword: cfg.AuthPassword} {
 		if secret != "" {
 			sum := sha256.Sum256([]byte(secret))
-			reserved[hex.EncodeToString(sum[:])] = name
+			out[hex.EncodeToString(sum[:])] = name
 		}
 	}
-	return authz.CheckApproverKeys(approvers, reserved)
+	return out
+}
+
+// approverKeyCheck reports whether a key, by its SHA-256 in lower-case hex,
+// belongs to an approver of the policy the embedded store has in force now,
+// so a change of approvers applies with the next request. Every approver is
+// compared, in constant time, as the approver API does.
+func approverKeyCheck(emb *authz.Embedded) func(keySHA256 string) bool {
+	return func(keySHA256 string) bool {
+		found := 0
+		for _, a := range emb.Approvers() {
+			if a.KeySHA256 != "" {
+				found |= subtle.ConstantTimeCompare([]byte(a.KeySHA256), []byte(keySHA256))
+			}
+		}
+		return found == 1
+	}
 }
 
 // defaultAuthzPreset picks the preset for an installation that names none,

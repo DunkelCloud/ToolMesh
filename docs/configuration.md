@@ -275,7 +275,7 @@ ToolMesh reads `users.yaml` and `apikeys.yaml` every 5 seconds and puts a change
 - **A file that cannot be used is refused.** A file that does not parse, has no `users:` or `keys:` list (an empty file, or a misspelled key), lists a user without a username or a username twice, has an invalid `key_sha256`, or cannot be read, is not put in force: what was loaded before stays. ToolMesh logs `auth config reload refused, keeping what is in force` at `ERROR` with the `reason`, once per version of the file, and records an audit entry. Save a corrected file and it is put in force. At startup the same doubtful contents are logged as a warning and the file loads as before.
 - **Removing a file takes a restart.** A removed `users.yaml` or `apikeys.yaml` is refused the same way: the users or keys loaded last stay in force until ToolMesh restarts. ToolMesh does not fall back to `TOOLMESH_AUTH_PASSWORD` or `TOOLMESH_API_KEY` while it runs, since a file moved aside for a moment would otherwise turn those into the credentials in force. To lock everyone out without a restart, save `users: []` or `keys: []`.
 - **A file that appears is put in force.** When ToolMesh runs without `users.yaml` and the file is created, its users sign in from then on and `TOOLMESH_AUTH_PASSWORD` no longer does, which ends the sessions issued for it. The same goes for `apikeys.yaml` and `TOOLMESH_API_KEY`. The grants are applied again, so the [default preset](#embedded-mode) becomes `team`.
-- **Keys of approvers.** The MCP endpoint refuses a bearer credential that is the key of an [approver](#approver-api), logged as `bearer refused: it is the key of an approver`, whatever `apikeys.yaml` says: also for an entry known only by its `key_hash`, which cannot be compared with the approver's `key_sha256` when the file is loaded. A changed `apikeys.yaml` with a `key_sha256` entry like that is put in force all the same, so that a key revoked in the same edit stops working, and the entry is named in an `ERROR`. At startup such a file stops the server, as before.
+- **Keys of approvers.** The MCP endpoint refuses a bearer credential that is the key of an [approver](#approver-api), logged as `bearer refused: it is the key of an approver`, whatever `apikeys.yaml` says: also for an entry known only by its `key_hash`, which cannot be compared with the approver's `key_sha256` when the file is loaded. A changed `apikeys.yaml` with a `key_sha256` entry like that is put in force all the same, so that a key revoked in the same edit stops working, and the entry is named in an `ERROR`; later edits of the authz config are not held up by it either. At startup such a file stops the server, as before.
 - **Environment variables.** `TOOLMESH_AUTH_PASSWORD`, `TOOLMESH_API_KEY`, `TOOLMESH_AUTH_USER`, `TOOLMESH_AUTH_PLAN` and `TOOLMESH_AUTH_ROLES` are read at startup; a change takes a restart (with Compose, `docker compose up -d`).
 - **In the log and the audit trail.** A change in force is logged at `INFO` as `users config reloaded, in force now` or `apikeys config reloaded, in force now`, with the usernames or key `user_id`s added, removed and changed, never a hash. The audit entry has the tool `toolmesh_auth_config`, the status `config_reloaded` or `config_reload_refused`, and the file in its metadata.
 - **Mount the directory.** The shipped `docker-compose.yml` mounts `./config` as a directory. A file mounted on its own is replaced inside the container only as long as the editor writes into the same file; most editors save by replacing it, and the container keeps the old one. Mount the directory.
@@ -648,11 +648,18 @@ away.
 
 An approver key works only on the approver API below, and the credentials MCP
 callers connect with do not work there, so an agent cannot approve its own
-request. Do not give an agent an approver key or signing key. An approver whose key is also
-an MCP credential is refused: `TOOLMESH_API_KEY`, `TOOLMESH_AUTH_PASSWORD` or
-an entry of `apikeys.yaml` with a `key_sha256`. An `apikeys.yaml` entry with
-only a `key_hash` cannot be compared, so never reuse such a key either. Names
-are slugs or e-mail addresses; neither names, keys nor addresses may repeat.
+request. Do not give an agent an approver key or signing key. The MCP
+endpoint refuses an approver's key as a bearer credential, logged as
+`bearer refused: it is the key of an approver`, whatever `apikeys.yaml`
+holds, also an entry known only by its `key_hash`. An approver whose key is
+`TOOLMESH_API_KEY` or `TOOLMESH_AUTH_PASSWORD` is refused. One whose key is
+an entry of `apikeys.yaml` with a `key_sha256` stops the server at startup;
+later, after a change of either file, it is applied and logged at `ERROR`,
+so that such a clash cannot block other edits of the file, such as the
+removal of a leaked approver key. Never reuse a key either way, and never use
+an approver key as a password in `users.yaml`, where only its bcrypt hash is
+known and no check can find it. Names are slugs or e-mail addresses; neither
+names, keys nor addresses may repeat.
 Without approvers, `request_grant` tells callers that no kit can be granted,
 and ToolMesh logs a warning when the file defines kits.
 

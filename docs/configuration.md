@@ -886,7 +886,8 @@ approval link and fingerprint, so that the link can be handed over later), and
 describes these kits with their warnings.
 
 The built-in tools ToolMesh lists (`discover_tools`, `execute_code`,
-`tell_me_my_rights`, and `request_grant` and `upload_file` where offered) are
+`tell_me_my_rights`, and `request_grant`, `upload_file` and `create_upload_url`
+where offered) are
 `allowed` in a preflight: ToolMesh runs them itself, without the authorization
 step and the gate policies, and checks every tool that `execute_code` calls
 when it calls it. The answer shows only the tools the caller may call or get
@@ -1693,7 +1694,7 @@ The file broker holds files that tool calls pass around without sending their co
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `TOOLMESH_FILE_BROKER_ENABLED` | `true` | `false` switches the file broker off: `upload_file` is not offered, `/files/upload` and `/blobs/` answer `404`, and a tool with a binary response returns an error instead of a download URL. Must be `true` or `false`; anything else stops the server at startup. |
+| `TOOLMESH_FILE_BROKER_ENABLED` | `true` | `false` switches the file broker off: `upload_file` and `create_upload_url` are not offered, `/files/upload`, upload URLs and `/blobs/` answer `404`, and a tool with a binary response returns an error instead of a download URL. Must be `true` or `false`; anything else stops the server at startup. |
 | `TOOLMESH_FILE_BROKER_MAX_TOTAL_BYTES` | `0` (no limit) | Bytes all files together may take. |
 | `TOOLMESH_FILE_BROKER_MAX_BYTES_PER_USER` | `0` (no limit) | Bytes the files of one user may take. |
 
@@ -1703,6 +1704,22 @@ The two limits must be plain integers of bytes, `0` or more; anything else stops
 - **What counts.** A file counts from the moment it is written until it is deleted (`DELETE /blobs/<id>`) or removed after its TTL, which happens within a minute of the TTL running out. Uploads through `/files/upload` and `upload_file` count against the user who made the call, and so do binary responses of that user's tool calls.
 - **A file that does not fit is refused.** `/files/upload` answers `507 Insufficient Storage`; `upload_file` and a tool with a binary response return an error. The message names the limit, the bytes already in use, and how to make room. A file of unknown length stops as soon as it reaches the limit, and nothing of it stays on disk. Each refusal is logged at `WARN` as `blob refused: file broker quota exceeded` with the `owner`.
 - **Lowering a limit** keeps the files already stored; it only keeps new ones out until enough of them are gone.
+
+### Upload URLs
+
+An agent that holds a file itself, rendered or downloaded with a local shell, gets it into the file broker without a credential of its own. The built-in tool `create_upload_url` returns a one-time URL; the agent sends the file there with a plain `PUT` and passes the returned `tm-blob://` handle on like one from `upload_file`.
+
+```bash
+# upload_url comes from create_upload_url
+curl -fsS -T short.mp4 -H 'Content-Type: video/mp4' "$UPLOAD_URL"
+```
+
+- **One file, one hour.** The URL takes one file and accepts requests for one hour after it was created. The handle is part of the answer of `create_upload_url` and works once the file is complete; a `PUT` after that gets the same answer again and stores nothing. The file counts against the quota of the caller who created the URL, and its TTL (`ttl`, 1 hour by default, 24 hours at most) starts when it is complete.
+- **Size and parts.** The file may be as large as the file broker's limit for one file (`max_bytes` in the answer of `create_upload_url`, 100 MiB by default). A proxy may cap a request below that, Cloudflare at 100 MB on its free and pro plans; then the file goes in parts: one `PUT` per part, in order, each with `Content-Range: bytes FIRST-LAST/TOTAL`. `create_upload_url` suggests 32 MiB per part (`part_bytes`). A part is stored completely or not at all, which also lets an interrupted upload continue: `GET` on the URL answers with the bytes stored (`received`), and the client sends the part that starts there. A part sent again because its answer got lost is answered `409` with `received`, and the client goes on with the next one.
+- **Answers.** JSON with `received`, `complete` and `size`: `202` after a part, `201` when the file is complete, then also with `expires` and `content_type` of the file. No answer names the file: the handle comes only with `create_upload_url`, so the URL does not let anyone read what was uploaded. `409` while another request writes to the same URL or when a part does not start at `received`, `413` over the size limit, `507` over the quota, `400` for an empty file or a body that does not match its `Content-Range`, `404` for an unknown or expired URL. `500` when ToolMesh could not store a part; when the part file has lost what was stored before, the answer says so, `received` is back at 0 and the file has to be sent again from the start.
+- **Optional checks.** With `size`, the URL takes only a file of exactly that size, and the size is checked against the limit and the quota when the URL is created. `content_type` sets the media type; without it, the `Content-Type` of the first `PUT` counts.
+- **The URL is a credential.** Its token is the only one: whoever holds the URL can upload one file into the creator's quota until the file is complete or the hour is over. ToolMesh keeps only a hash of the token. The request log writes the path as `/files/upload/[REDACTED]`, and so do the `DEBUG` lines that log tool results and parameters, such as the answer of `create_upload_url`. One user may hold 16 upload URLs whose file is not complete, the server 256.
+- **Slow connections.** A request to an upload URL, and an authenticated `POST /files/upload`, has 10 minutes to send its body and get the answer; other requests keep the server's shorter timeouts.
 
 ## Backend Configuration
 
